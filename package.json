@@ -1,7 +1,7 @@
 {
-  "name": "@workos/oagen-plugins",
+  "name": "@workos/oagen-emitters",
   "version": "0.0.1",
-  "description": "WorkOS' oagen plugins",
+  "description": "WorkOS' oagen emitters",
   "license": "MIT",
   "author": "WorkOS",
   "type": "module",
