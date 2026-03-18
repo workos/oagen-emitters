@@ -1,13 +1,13 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveMethodName, resolveClassName } from './naming.js';
+import { fileName, serviceDirName, servicePropertyName, resolveMethodName, resolveServiceName } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  const fixtures = generateFixtures(spec, ctx);
   for (const f of fixtures) {
     files.push({ path: f.path, content: f.content, headerPlacement: 'skip' });
   }
@@ -21,10 +21,11 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 }
 
 function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
-  const serviceDir = serviceDirName(service.name);
-  const serviceClass = resolveClassName(service, ctx);
-  const serviceProp = servicePropertyName(service.name);
-  const testPath = `src/${serviceDir}/${fileName(service.name)}.spec.ts`;
+  const resolvedName = resolveServiceName(service, ctx);
+  const serviceDir = serviceDirName(resolvedName);
+  const serviceClass = resolvedName;
+  const serviceProp = servicePropertyName(resolvedName);
+  const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
 
   const lines: string[] = [];
 

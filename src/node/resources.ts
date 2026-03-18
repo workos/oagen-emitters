@@ -7,7 +7,6 @@ import {
   fileName,
   serviceDirName,
   resolveMethodName,
-  resolveClassName,
   resolveInterfaceName,
   resolveServiceName,
   buildServiceNameMap,

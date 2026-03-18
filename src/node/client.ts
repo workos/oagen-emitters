@@ -1,5 +1,5 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveClassName, resolveInterfaceName } from './naming.js';
+import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, resolveServiceName, buildServiceNameMap } from './naming.js';
 import { assignModelsToServices } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -18,9 +18,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Service imports
   for (const service of spec.services) {
-    const serviceClass = resolveClassName(service, ctx);
-    const serviceDir = serviceDirName(service.name);
-    lines.push(`import { ${serviceClass} } from './${serviceDir}/${fileName(service.name)}';`);
+    const resolvedName = resolveServiceName(service, ctx);
+    const serviceDir = serviceDirName(resolvedName);
+    lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
 
   lines.push("import type { WorkOSOptions } from './common/interfaces/workos-options.interface';");
@@ -44,9 +44,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Resource accessors
   for (const service of spec.services) {
-    const serviceClass = resolveClassName(service, ctx);
-    const propName = servicePropertyName(service.name);
-    lines.push(`  readonly ${propName} = new ${serviceClass}(this);`);
+    const resolvedName = resolveServiceName(service, ctx);
+    const propName = servicePropertyName(resolvedName);
+    lines.push(`  readonly ${propName} = new ${resolvedName}(this);`);
   }
 
   lines.push('');
@@ -209,6 +209,9 @@ const RESERVED_BARREL_NAMES = new Set(['List', 'ListResponse', 'ListMetadata', '
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
   const modelToService = assignModelsToServices(spec.models, spec.services);
+  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
   // Common exports
   lines.push("export * from './common/exceptions';");
@@ -222,8 +225,8 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
 
   // Per-service exports: interfaces + resource class
   for (const service of spec.services) {
-    const serviceDir = serviceDirName(service.name);
-    const serviceClass = resolveClassName(service, ctx);
+    const resolvedName = resolveServiceName(service, ctx);
+    const serviceDir = serviceDirName(resolvedName);
 
     // Collect models that belong to this service, skipping reserved names
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
@@ -236,7 +239,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     }
 
     // Resource class
-    lines.push(`export { ${serviceClass} } from './${serviceDir}/${fileName(service.name)}';`);
+    lines.push(`export { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
     lines.push('');
   }
 
@@ -254,7 +257,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   for (const enumDef of spec.enums) {
     // Find which service directory the enum landed in
     const enumService = findEnumService(enumDef.name, spec.services);
-    const dir = enumService ? serviceDirName(enumService) : 'common';
+    const dir = resolveDir(enumService);
     lines.push(`export type { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`);
   }
 

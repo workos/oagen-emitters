@@ -36,6 +36,28 @@ export function servicePropertyName(name: string): string {
   return toCamelCase(name);
 }
 
+/**
+ * Resolve the effective service name, using the overlay-resolved class name
+ * when available. This ensures directory names, file names, and property names
+ * all derive from the same resolved name (e.g., "Mfa" instead of "MultiFactorAuth").
+ */
+export function resolveServiceName(service: Service, ctx: EmitterContext): string {
+  return resolveClassName(service, ctx);
+}
+
+/**
+ * Build a map from IR service name → resolved service name.
+ * Used to translate modelToService/enumToService map values to overlay-resolved
+ * directory names when the code only has the IR service name string.
+ */
+export function buildServiceNameMap(services: Service[], ctx: EmitterContext): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const service of services) {
+    map.set(service.name, resolveServiceName(service, ctx));
+  }
+  return map;
+}
+
 /** Resolve the SDK method name for an operation, checking overlay first. */
 export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;

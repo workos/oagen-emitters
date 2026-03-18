@@ -1,5 +1,5 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { wireFieldName, fileName, serviceDirName } from './naming.js';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
+import { wireFieldName, fileName, serviceDirName, buildServiceNameMap, resolveServiceName } from './naming.js';
 import { assignModelsToServices } from './utils.js';
 
 /**
@@ -10,17 +10,20 @@ export function generateFixtures(spec: {
   models: Model[];
   enums: Enum[];
   services: any[];
-}): { path: string; content: string }[] {
+}, ctx?: EmitterContext): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
   const modelToService = assignModelsToServices(spec.models, spec.services);
+  const serviceNameMap = ctx ? buildServiceNameMap(ctx.spec.services, ctx) : new Map<string, string>();
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
   for (const model of spec.models) {
     const service = modelToService.get(model.name);
-    const dirName = service ? serviceDirName(service) : 'common';
+    const dirName = resolveDir(service);
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
     files.push({
@@ -31,7 +34,8 @@ export function generateFixtures(spec: {
 
   // Generate list fixtures for models that appear in paginated responses
   for (const service of spec.services) {
-    const serviceDir = serviceDirName(service.name);
+    const resolvedName = ctx ? resolveServiceName(service, ctx) : service.name;
+    const serviceDir = serviceDirName(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {
         const itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;

@@ -1,16 +1,19 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from '@workos/oagen';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName } from './naming.js';
+import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap } from './naming.js';
 import { assignModelsToServices, relativeImport } from './utils.js';
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
   const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
     const service = modelToService.get(model.name);
-    const dirName = service ? serviceDirName(service) : 'common';
+    const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = `${domainName}Response`;
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
@@ -36,7 +39,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     // Import nested model deserializers/serializers
     for (const dep of nestedModelRefs) {
       const depService = modelToService.get(dep);
-      const depDir = depService ? serviceDirName(depService) : 'common';
+      const depDir = resolveDir(depService);
       const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
       const depName = resolveInterfaceName(dep, ctx);
       const imports = [`deserialize${depName}`, `serialize${depName}`];
