@@ -25,6 +25,17 @@ Derived from the existing WorkOS Node SDK at `workos-node`.
 | Directory        | kebab-case | `organizations/`, `user-management/`            |
 | Service property | camelCase  | `workos.organizations`, `workos.userManagement` |
 
+### Overlay Resolution
+
+All service-derived names (class, directory, file, property) are resolved through the overlay before falling back to the default PascalCase convention. This allows the generated SDK to match existing class names in the live SDK. For example, the IR service `MultiFactorAuth` (derived from the `multi-factor-auth` OpenAPI tag) is resolved to `Mfa` via the overlay, producing:
+
+- Class: `Mfa`
+- Directory: `src/mfa/`
+- File: `mfa.ts`
+- Property: `workos.mfa`
+
+Method names are also overlay-resolved per operation (`resolveMethodName`), and interface names per model (`resolveInterfaceName`).
+
 ## Type Mapping
 
 | IR TypeRef                | TypeScript (Domain) | TypeScript (Wire/Response) |

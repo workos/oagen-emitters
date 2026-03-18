@@ -82,6 +82,74 @@ describe('generateClient', () => {
     expect(tsconfig!.skipIfExists).toBe(true);
   });
 
+  it('uses overlay-resolved names for imports and accessors', () => {
+    const mfaService: Service = {
+      name: 'MultiFactorAuth',
+      operations: [
+        {
+          name: 'enrollFactor',
+          httpMethod: 'post',
+          path: '/auth/factors/enroll',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuthenticationFactor' },
+          errors: [],
+          injectIdempotencyKey: true,
+        },
+      ],
+    };
+
+    const mfaModel: Model = {
+      name: 'AuthenticationFactor',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    };
+
+    const overlaySpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [mfaService],
+      models: [mfaModel],
+      enums: [],
+    };
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: overlaySpec,
+      irVersion: 6,
+      overlayLookup: {
+        methodByOperation: new Map([
+          ['POST /auth/factors/enroll', { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateClient(overlaySpec, overlayCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts');
+    expect(workosFile).toBeDefined();
+
+    const content = workosFile!.content;
+    // Import path uses resolved name
+    expect(content).toContain("from './mfa/mfa'");
+    // Property uses resolved name
+    expect(content).toContain('readonly mfa = new Mfa(this);');
+
+    const barrel = files.find((f) => f.path === 'src/index.ts');
+    expect(barrel).toBeDefined();
+    // Barrel export uses resolved name
+    expect(barrel!.content).toContain("from './mfa/mfa'");
+  });
+
   it('generates error handling in WorkOS client', () => {
     const files = generateClient(spec, ctx);
     const workosFile = files.find((f) => f.path === 'src/workos.ts')!;

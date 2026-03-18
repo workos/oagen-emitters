@@ -168,6 +168,51 @@ describe('generateResources', () => {
     expect(content).toContain('requestOptions,');
   });
 
+  it('uses overlay-resolved name for output path and class', () => {
+    const mfaService: Service = {
+      name: 'MultiFactorAuth',
+      operations: [
+        {
+          name: 'enrollFactor',
+          httpMethod: 'post',
+          path: '/auth/factors/enroll',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          requestBody: { kind: 'model', name: 'EnrollFactorInput' },
+          response: { kind: 'model', name: 'AuthenticationFactor' },
+          errors: [],
+          injectIdempotencyKey: true,
+        },
+      ],
+    };
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services: [mfaService], models: [] },
+      irVersion: 6,
+      overlayLookup: {
+        methodByOperation: new Map([
+          ['POST /auth/factors/enroll', { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources([mfaService], overlayCtx);
+    expect(files.length).toBe(1);
+    expect(files[0].path).toBe('src/mfa/mfa.ts');
+
+    const content = files[0].content;
+    expect(content).toContain('export class Mfa {');
+  });
+
   it('renders multiline description and @deprecated in method docstring', () => {
     const services: Service[] = [
       {
