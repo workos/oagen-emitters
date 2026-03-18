@@ -147,8 +147,23 @@ function renderMethod(
   const usesTemplate = interpolatedPath.includes('${');
   const pathStr = usesTemplate ? `\`${interpolatedPath}\`` : `'${op.path}'`;
 
-  if (op.description) {
-    lines.push(`  /** ${op.description} */`);
+  const docParts: string[] = [];
+  if (op.description) docParts.push(op.description);
+  for (const param of op.pathParams) {
+    if (param.description) {
+      docParts.push(`@param ${fieldName(param.name)} - ${param.description}`);
+    }
+  }
+  if (op.deprecated) docParts.push('@deprecated');
+
+  if (docParts.length === 1 && !docParts[0].includes('\n')) {
+    lines.push(`  /** ${docParts[0]} */`);
+  } else if (docParts.length > 1) {
+    lines.push('  /**');
+    for (const part of docParts) {
+      lines.push(`   * ${part}`);
+    }
+    lines.push('   */');
   }
 
   if (plan.isPaginated) {
