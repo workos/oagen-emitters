@@ -1,5 +1,6 @@
 import type { TypeRef, PrimitiveType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
+import { wireInterfaceName } from './naming.js';
 
 /**
  * Map an IR TypeRef to a TypeScript domain type string.
@@ -26,7 +27,7 @@ export function mapWireTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
-    model: (r) => `${r.name}Response`,
+    model: (r) => wireInterfaceName(r.name),
     enum: (r) => r.name,
     union: (_r, variants) => variants.join(' | '),
     nullable: (_r, inner) => `${inner} | null`,

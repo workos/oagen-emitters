@@ -1,5 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from '@workos/oagen';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap } from './naming.js';
+import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
 import { assignModelsToServices, relativeImport } from './utils.js';
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
@@ -15,7 +15,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
-    const responseName = `${domainName}Response`;
+    const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
 
     // Find nested model refs that need their own serializer imports.

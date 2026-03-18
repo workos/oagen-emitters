@@ -26,6 +26,14 @@ export function wireFieldName(name: string): string {
   return toSnakeCase(name);
 }
 
+/**
+ * Wire/response interface name. Uses "Wire" suffix when the domain name
+ * already ends in "Response" to avoid stuttering (e.g., FooResponseResponse).
+ */
+export function wireInterfaceName(domainName: string): string {
+  return domainName.endsWith('Response') ? `${domainName}Wire` : `${domainName}Response`;
+}
+
 /** kebab-case service directory name. */
 export function serviceDirName(name: string): string {
   return toKebabCase(name);

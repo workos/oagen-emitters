@@ -1,7 +1,7 @@
 import type { Model, Field, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap } from './naming.js';
+import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
 import { assignModelsToServices, collectFieldDependencies, docComment } from './utils.js';
 
 /** Built-in TypeScript types that are always available (no import needed). */
@@ -38,7 +38,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
-    const responseName = `${domainName}Response`;
+    const responseName = wireInterfaceName(domainName);
     const deps = collectFieldDependencies(model);
     const lines: string[] = [];
 
@@ -54,7 +54,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const dep of deps.models) {
       const depName = resolveInterfaceName(dep, ctx);
       importableNames.add(depName);
-      importableNames.add(`${depName}Response`);
+      importableNames.add(wireInterfaceName(depName));
     }
     for (const dep of deps.enums) {
       importableNames.add(dep);
@@ -128,7 +128,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const depDir = resolveDir(depService);
       const relPath =
         depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
-      lines.push(`import type { ${depName}, ${depName}Response } from '${relPath}';`);
+      lines.push(`import type { ${depName}, ${wireInterfaceName(depName)} } from '${relPath}';`);
     }
     for (const dep of deps.enums) {
       const depService = enumToService.get(dep);

@@ -5,6 +5,7 @@ import {
   methodName,
   fieldName,
   wireFieldName,
+  wireInterfaceName,
   serviceDirName,
   servicePropertyName,
   resolveServiceName,
@@ -50,6 +51,16 @@ describe('naming', () => {
       expect(wireFieldName('allowProfilesOutsideOrganization')).toBe('allow_profiles_outside_organization');
       expect(wireFieldName('id')).toBe('id');
       expect(wireFieldName('created_at')).toBe('created_at');
+    });
+  });
+
+  describe('wireInterfaceName', () => {
+    it('appends Response for normal names', () => {
+      expect(wireInterfaceName('Organization')).toBe('OrganizationResponse');
+    });
+
+    it('appends Wire when name already ends in Response', () => {
+      expect(wireInterfaceName('PortalSessionsCreateResponse')).toBe('PortalSessionsCreateResponseWire');
     });
   });
 

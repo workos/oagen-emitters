@@ -1,5 +1,5 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, resolveServiceName, buildServiceNameMap } from './naming.js';
+import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, resolveServiceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
 import { assignModelsToServices } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -232,9 +232,10 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
     for (const model of serviceModels) {
       const name = resolveInterfaceName(model.name, ctx);
-      if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(`${name}Response`)) continue;
+      const wireName = wireInterfaceName(name);
+      if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(wireName)) continue;
       lines.push(
-        `export type { ${name}, ${name}Response } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
+        `export type { ${name}, ${wireName} } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
       );
     }
 
@@ -247,9 +248,10 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name));
   for (const model of unassignedModels) {
     const name = resolveInterfaceName(model.name, ctx);
-    if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(`${name}Response`)) continue;
+    const wireName = wireInterfaceName(name);
+    if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(wireName)) continue;
     lines.push(
-      `export type { ${name}, ${name}Response } from './common/interfaces/${fileName(model.name)}.interface';`,
+      `export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`,
     );
   }
 

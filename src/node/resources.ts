@@ -10,6 +10,7 @@ import {
   resolveInterfaceName,
   resolveServiceName,
   buildServiceNameMap,
+  wireInterfaceName,
 } from './naming.js';
 import { collectModelRefs, assignModelsToServices, docComment } from './utils.js';
 
@@ -75,7 +76,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       modelServiceDir === serviceDir
         ? `./interfaces/${fileName(name)}.interface`
         : `../${modelServiceDir}/interfaces/${fileName(name)}.interface`;
-    lines.push(`import type { ${resolved}, ${resolved}Response } from '${relPath}';`);
+    lines.push(`import type { ${resolved}, ${wireInterfaceName(resolved)} } from '${relPath}';`);
   }
 
   for (const name of responseModels) {
@@ -214,14 +215,14 @@ function renderPaginatedMethod(
 
   lines.push(`  async ${method}(options?: ${optionsType}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
   lines.push('    return new AutoPaginatable(');
-  lines.push(`      await fetchAndDeserialize<${itemType}Response, ${itemType}>(`);
+  lines.push(`      await fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(`);
   lines.push('        this.workos,');
   lines.push(`        ${pathStr},`);
   lines.push(`        deserialize${itemType},`);
   lines.push('        options,');
   lines.push('      ),');
   lines.push('      (params) =>');
-  lines.push(`        fetchAndDeserialize<${itemType}Response, ${itemType}>(`);
+  lines.push(`        fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(`);
   lines.push('          this.workos,');
   lines.push(`          ${pathStr},`);
   lines.push(`          deserialize${itemType},`);
@@ -275,13 +276,13 @@ function renderBodyMethod(
 
   lines.push(`  async ${method}(${paramsStr}): Promise<${responseModel}> {`);
   if (plan.isIdempotentPost) {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`);
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
     lines.push(`      ${pathStr},`);
     lines.push(`      ${bodyExpr},`);
     lines.push('      requestOptions,');
     lines.push('    );');
   } else {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`);
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
     lines.push(`      ${pathStr},`);
     lines.push(`      ${bodyExpr},`);
     lines.push('    );');
@@ -309,11 +310,11 @@ function renderGetMethod(
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(${pathStr}, {`);
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`);
     lines.push('      query: options,');
     lines.push('    });');
   } else {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(${pathStr});`);
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr});`);
   }
   lines.push(`    return deserialize${responseModel}(data);`);
   lines.push('  }');

@@ -196,6 +196,50 @@ describe('generateModels', () => {
     expect(files[0].content).toContain('export interface DirectoryUserResponse<TCustom = Record<string, any>> {');
   });
 
+  it('uses Wire suffix for models already ending in Response', () => {
+    const service: Service = {
+      name: 'PortalSessions',
+      operations: [
+        {
+          name: 'createPortalSession',
+          httpMethod: 'post',
+          path: '/portal/sessions',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'PortalSessionsCreateResponse' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'PortalSessionsCreateResponse',
+        fields: [
+          {
+            name: 'link',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const content = files[0].content;
+
+    // Should use Wire suffix, not ResponseResponse
+    expect(content).toContain('export interface PortalSessionsCreateResponseWire {');
+    expect(content).not.toContain('PortalSessionsCreateResponseResponse');
+  });
+
   it('renders @deprecated on fields', () => {
     const service: Service = {
       name: 'Organizations',
