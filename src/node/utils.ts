@@ -1,5 +1,5 @@
-import type { Model, Service, TypeRef } from "@workos/oagen";
-import { walkTypeRef } from "@workos/oagen";
+import type { Model, Service, TypeRef } from '@workos/oagen';
+import { walkTypeRef } from '@workos/oagen';
 
 /**
  * Collect all model names referenced (directly or transitively) by a TypeRef.
@@ -108,8 +108,8 @@ export function collectFieldDependencies(model: Model): {
  * Strips .ts extension from the result.
  */
 export function relativeImport(fromFile: string, toFile: string): string {
-  const fromDir = fromFile.split("/").slice(0, -1);
-  const toFileParts = toFile.split("/");
+  const fromDir = fromFile.split('/').slice(0, -1);
+  const toFileParts = toFile.split('/');
   const toDir = toFileParts.slice(0, -1);
   const toFileName = toFileParts[toFileParts.length - 1];
 
@@ -120,10 +120,10 @@ export function relativeImport(fromFile: string, toFile: string): string {
 
   const ups = fromDir.length - common;
   const downs = toDir.slice(common);
-  const parts = [...Array(ups).fill(".."), ...downs, toFileName];
-  let result = parts.join("/");
-  result = result.replace(/\.ts$/, "");
-  if (!result.startsWith(".")) result = "./" + result;
+  const parts = [...Array(ups).fill('..'), ...downs, toFileName];
+  let result = parts.join('/');
+  result = result.replace(/\.ts$/, '');
+  if (!result.startsWith('.')) result = './' + result;
   return result;
 }
 

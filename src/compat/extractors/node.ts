@@ -5,4 +5,4 @@
  *  1. Register it in oagen.config.ts alongside the emitter
  *  2. Customize hints if the generated SDK deviates from core defaults
  */
-export { nodeExtractor } from "@workos/oagen/compat";
+export { nodeExtractor } from '@workos/oagen/compat';

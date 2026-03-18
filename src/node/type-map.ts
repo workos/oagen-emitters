@@ -1,5 +1,5 @@
-import type { TypeRef, PrimitiveType } from "@workos/oagen";
-import { mapTypeRef as irMapTypeRef } from "@workos/oagen";
+import type { TypeRef, PrimitiveType } from '@workos/oagen';
+import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 
 /**
  * Map an IR TypeRef to a TypeScript domain type string.
@@ -11,9 +11,9 @@ export function mapTypeRef(ref: TypeRef): string {
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
     model: (r) => r.name,
     enum: (r) => r.name,
-    union: (_r, variants) => variants.join(" | "),
+    union: (_r, variants) => variants.join(' | '),
     nullable: (_r, inner) => `${inner} | null`,
-    literal: (r) => (typeof r.value === "string" ? `'${r.value}'` : String(r.value)),
+    literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),
     map: (_r, value) => `Record<string, ${value}>`,
   });
 }
@@ -28,28 +28,28 @@ export function mapWireTypeRef(ref: TypeRef): string {
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
     model: (r) => `${r.name}Response`,
     enum: (r) => r.name,
-    union: (_r, variants) => variants.join(" | "),
+    union: (_r, variants) => variants.join(' | '),
     nullable: (_r, inner) => `${inner} | null`,
-    literal: (r) => (typeof r.value === "string" ? `'${r.value}'` : String(r.value)),
+    literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),
     map: (_r, value) => `Record<string, ${value}>`,
   });
 }
 
 function mapPrimitive(ref: PrimitiveType): string {
   switch (ref.type) {
-    case "string":
-      return "string";
-    case "integer":
-    case "number":
-      return "number";
-    case "boolean":
-      return "boolean";
-    case "unknown":
-      return "any";
+    case 'string':
+      return 'string';
+    case 'integer':
+    case 'number':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'unknown':
+      return 'any';
   }
 }
 
 /** Wrap union types in parentheses when used as array item type. */
 function parenthesizeUnion(type: string): string {
-  return type.includes(" | ") ? `(${type})` : type;
+  return type.includes(' | ') ? `(${type})` : type;
 }

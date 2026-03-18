@@ -1,5 +1,5 @@
-import type { Operation, Service, EmitterContext } from "@workos/oagen";
-import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from "@workos/oagen";
+import type { Operation, Service, EmitterContext } from '@workos/oagen';
+import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from '@workos/oagen';
 
 /** PascalCase class/interface name. */
 export function className(name: string): string {

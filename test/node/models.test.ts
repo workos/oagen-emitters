@@ -1,40 +1,40 @@
-import { describe, it, expect } from "vitest";
-import { generateModels } from "../../src/node/models.js";
-import type { EmitterContext, ApiSpec, Model, Service } from "@workos/oagen";
+import { describe, it, expect } from 'vitest';
+import { generateModels } from '../../src/node/models.js';
+import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
-  name: "Test",
-  version: "1.0.0",
-  baseUrl: "",
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
   services: [],
   models: [],
   enums: [],
 };
 
 const ctx: EmitterContext = {
-  namespace: "workos",
-  namespacePascal: "WorkOS",
+  namespace: 'workos',
+  namespacePascal: 'WorkOS',
   spec: emptySpec,
   irVersion: 6,
 };
 
-describe("generateModels", () => {
-  it("returns empty for no models", () => {
+describe('generateModels', () => {
+  it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });
 
-  it("generates domain and response interfaces for a model", () => {
+  it('generates domain and response interfaces for a model', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          response: { kind: "model", name: "Organization" },
+          response: { kind: 'model', name: 'Organization' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -43,28 +43,28 @@ describe("generateModels", () => {
 
     const models: Model[] = [
       {
-        name: "Organization",
+        name: 'Organization',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "name",
-            type: { kind: "primitive", type: "string" },
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "created_at",
-            type: { kind: "primitive", type: "string", format: "date-time" },
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
             required: true,
           },
           {
-            name: "external_id",
+            name: 'external_id',
             type: {
-              kind: "nullable",
-              inner: { kind: "primitive", type: "string" },
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
             },
             required: false,
           },
@@ -79,33 +79,33 @@ describe("generateModels", () => {
 
     const files = generateModels(models, ctxWithServices);
     expect(files.length).toBe(1);
-    expect(files[0].path).toBe("src/organizations/interfaces/organization.interface.ts");
+    expect(files[0].path).toBe('src/organizations/interfaces/organization.interface.ts');
 
     // Domain interface has camelCase fields
-    expect(files[0].content).toContain("export interface Organization {");
-    expect(files[0].content).toContain("  id: string;");
-    expect(files[0].content).toContain("  name: string;");
-    expect(files[0].content).toContain("  createdAt: string;");
-    expect(files[0].content).toContain("  externalId?: string | null;");
+    expect(files[0].content).toContain('export interface Organization {');
+    expect(files[0].content).toContain('  id: string;');
+    expect(files[0].content).toContain('  name: string;');
+    expect(files[0].content).toContain('  createdAt: string;');
+    expect(files[0].content).toContain('  externalId?: string | null;');
 
     // Response interface has snake_case fields
-    expect(files[0].content).toContain("export interface OrganizationResponse {");
-    expect(files[0].content).toContain("  created_at: string;");
-    expect(files[0].content).toContain("  external_id?: string | null;");
+    expect(files[0].content).toContain('export interface OrganizationResponse {');
+    expect(files[0].content).toContain('  created_at: string;');
+    expect(files[0].content).toContain('  external_id?: string | null;');
   });
 
-  it("generates imports for referenced models", () => {
+  it('generates imports for referenced models', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          response: { kind: "model", name: "Organization" },
+          response: { kind: 'model', name: 'Organization' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -114,34 +114,34 @@ describe("generateModels", () => {
 
     const models: Model[] = [
       {
-        name: "Organization",
+        name: 'Organization',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "domains",
+            name: 'domains',
             type: {
-              kind: "array",
-              items: { kind: "model", name: "OrganizationDomain" },
+              kind: 'array',
+              items: { kind: 'model', name: 'OrganizationDomain' },
             },
             required: true,
           },
         ],
       },
       {
-        name: "OrganizationDomain",
+        name: 'OrganizationDomain',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "domain",
-            type: { kind: "primitive", type: "string" },
+            name: 'domain',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
         ],
@@ -156,35 +156,35 @@ describe("generateModels", () => {
     const files = generateModels(models, ctxWithServices);
 
     // Organization file should import OrganizationDomain
-    const orgFile = files.find((f) => f.path.includes("organization.interface.ts"))!;
+    const orgFile = files.find((f) => f.path.includes('organization.interface.ts'))!;
     expect(orgFile.content).toContain(
       "import type { OrganizationDomain, OrganizationDomainResponse } from './organization-domain.interface';",
     );
 
     // Domain interface uses OrganizationDomain[]
-    expect(orgFile.content).toContain("  domains: OrganizationDomain[];");
+    expect(orgFile.content).toContain('  domains: OrganizationDomain[];');
 
     // Response interface uses OrganizationDomainResponse[]
-    expect(orgFile.content).toContain("  domains: OrganizationDomainResponse[];");
+    expect(orgFile.content).toContain('  domains: OrganizationDomainResponse[];');
   });
 
-  it("handles generic type params", () => {
+  it('handles generic type params', () => {
     const models: Model[] = [
       {
-        name: "DirectoryUser",
+        name: 'DirectoryUser',
         typeParams: [
           {
-            name: "TCustom",
+            name: 'TCustom',
             default: {
-              kind: "map",
-              valueType: { kind: "primitive", type: "unknown" },
+              kind: 'map',
+              valueType: { kind: 'primitive', type: 'unknown' },
             },
           },
         ],
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
         ],
@@ -192,11 +192,7 @@ describe("generateModels", () => {
     ];
 
     const files = generateModels(models, ctx);
-    expect(files[0].content).toContain(
-      "export interface DirectoryUser<TCustom = Record<string, any>> {",
-    );
-    expect(files[0].content).toContain(
-      "export interface DirectoryUserResponse<TCustom = Record<string, any>> {",
-    );
+    expect(files[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>> {');
+    expect(files[0].content).toContain('export interface DirectoryUserResponse<TCustom = Record<string, any>> {');
   });
 });

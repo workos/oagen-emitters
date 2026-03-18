@@ -1,1 +1,1 @@
-export { nodeEmitter } from "./node/index.js";
+export { nodeEmitter } from './node/index.js';

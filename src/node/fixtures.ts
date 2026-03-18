@@ -1,6 +1,6 @@
-import type { Model, TypeRef, Enum } from "@workos/oagen";
-import { wireFieldName, fileName, serviceDirName } from "./naming.js";
-import { assignModelsToServices } from "./utils.js";
+import type { Model, TypeRef, Enum } from '@workos/oagen';
+import { wireFieldName, fileName, serviceDirName } from './naming.js';
+import { assignModelsToServices } from './utils.js';
 
 /**
  * Generate JSON fixture files for test data.
@@ -20,7 +20,7 @@ export function generateFixtures(spec: {
 
   for (const model of spec.models) {
     const service = modelToService.get(model.name);
-    const dirName = service ? serviceDirName(service) : "common";
+    const dirName = service ? serviceDirName(service) : 'common';
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
     files.push({
@@ -34,10 +34,7 @@ export function generateFixtures(spec: {
     const serviceDir = serviceDirName(service.name);
     for (const op of service.operations) {
       if (op.pagination) {
-        const itemModel =
-          op.pagination.itemType.kind === "model"
-            ? modelMap.get(op.pagination.itemType.name)
-            : null;
+        const itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;
         if (itemModel) {
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
@@ -81,53 +78,53 @@ function generateFieldValue(
   enumMap: Map<string, Enum>,
 ): any {
   switch (ref.kind) {
-    case "primitive":
+    case 'primitive':
       return generatePrimitiveValue(ref.type, ref.format, fieldName);
-    case "literal":
+    case 'literal':
       return ref.value;
-    case "enum": {
+    case 'enum': {
       const e = enumMap.get(ref.name);
-      return e?.values[0]?.value ?? "unknown";
+      return e?.values[0]?.value ?? 'unknown';
     }
-    case "model": {
+    case 'model': {
       const nested = modelMap.get(ref.name);
       if (nested) return generateModelFixture(nested, modelMap, enumMap);
       return {};
     }
-    case "array": {
+    case 'array': {
       const item = generateFieldValue(ref.items, fieldName, modelMap, enumMap);
       return [item];
     }
-    case "nullable":
+    case 'nullable':
       return generateFieldValue(ref.inner, fieldName, modelMap, enumMap);
-    case "union":
+    case 'union':
       if (ref.variants.length > 0) {
         return generateFieldValue(ref.variants[0], fieldName, modelMap, enumMap);
       }
       return null;
-    case "map":
-      return { key: generateFieldValue(ref.valueType, "value", modelMap, enumMap) };
+    case 'map':
+      return { key: generateFieldValue(ref.valueType, 'value', modelMap, enumMap) };
   }
 }
 
 function generatePrimitiveValue(type: string, format: string | undefined, name: string): any {
   switch (type) {
-    case "string":
-      if (format === "date-time") return "2023-01-01T00:00:00.000Z";
-      if (format === "date") return "2023-01-01";
-      if (format === "uuid") return "00000000-0000-0000-0000-000000000000";
-      if (name.includes("id")) return `${name}_01234`;
-      if (name.includes("email")) return "test@example.com";
-      if (name.includes("url") || name.includes("uri")) return "https://example.com";
-      if (name.includes("name")) return "Test";
+    case 'string':
+      if (format === 'date-time') return '2023-01-01T00:00:00.000Z';
+      if (format === 'date') return '2023-01-01';
+      if (format === 'uuid') return '00000000-0000-0000-0000-000000000000';
+      if (name.includes('id')) return `${name}_01234`;
+      if (name.includes('email')) return 'test@example.com';
+      if (name.includes('url') || name.includes('uri')) return 'https://example.com';
+      if (name.includes('name')) return 'Test';
       return `test_${name}`;
-    case "integer":
+    case 'integer':
       return 1;
-    case "number":
+    case 'number':
       return 1.0;
-    case "boolean":
+    case 'boolean':
       return true;
-    case "unknown":
+    case 'unknown':
       return {};
     default:
       return null;

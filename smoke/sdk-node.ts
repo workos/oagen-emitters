@@ -8,8 +8,8 @@
  * Requires API_KEY or WORKOS_API_KEY env var.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   parseSpec,
   planOperations,
@@ -23,9 +23,9 @@ import {
   isUnexpectedStatus,
   toCamelCase,
   SERVICE_PROPERTY_MAP,
-} from "@workos/oagen/smoke";
-import type { CapturedExchange, SmokeResults, ExchangeProvenance } from "@workos/oagen/smoke";
-import type { Operation } from "@workos/oagen";
+} from '@workos/oagen/smoke';
+import type { CapturedExchange, SmokeResults, ExchangeProvenance } from '@workos/oagen/smoke';
+import type { Operation } from '@workos/oagen';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,10 +57,8 @@ const originalFetch = globalThis.fetch;
 
 function interceptFetch(): void {
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
-    );
-    const method = (init?.method ?? "GET").toUpperCase();
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    const method = (init?.method ?? 'GET').toUpperCase();
     const path = url.pathname;
     const queryParams: Record<string, string> = {};
     url.searchParams.forEach((v, k) => {
@@ -70,7 +68,7 @@ function interceptFetch(): void {
     let body: unknown = null;
     if (init?.body) {
       try {
-        body = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
+        body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
       } catch {
         body = init.body;
       }
@@ -106,15 +104,13 @@ function restoreFetch(): void {
 // ---------------------------------------------------------------------------
 
 function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
-  const manifestPath = resolve(sdkPath, "smoke-manifest.json");
+  const manifestPath = resolve(sdkPath, 'smoke-manifest.json');
   if (!existsSync(manifestPath)) {
     console.warn(`⚠ No smoke-manifest.json found at ${manifestPath}`);
-    console.warn(
-      "  Method resolution will rely on heuristic tiers — most operations may be skipped.",
-    );
+    console.warn('  Method resolution will rely on heuristic tiers — most operations may be skipped.');
     return null;
   }
-  const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  const raw = JSON.parse(readFileSync(manifestPath, 'utf-8'));
   const manifest = new Map<string, ManifestEntry>();
   for (const [httpKey, entry] of Object.entries(raw)) {
     manifest.set(httpKey, entry as ManifestEntry);
@@ -129,7 +125,7 @@ function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
 interface MethodResolution {
   service: string;
   method: string;
-  tier: ExchangeProvenance["resolutionTier"];
+  tier: ExchangeProvenance['resolutionTier'];
   confidence: number;
 }
 
@@ -147,7 +143,7 @@ function resolveMethod(
       return {
         service: entry.service,
         method: entry.sdkMethod,
-        tier: "manifest",
+        tier: 'manifest',
         confidence: 1.0,
       };
     }
@@ -159,7 +155,7 @@ function resolveMethod(
   return {
     service: sdkProp,
     method: exactName,
-    tier: "exact",
+    tier: 'exact',
     confidence: 0.8,
   };
 }
@@ -173,11 +169,7 @@ function buildArgs(op: Operation, pathParams: Record<string, string>, spec: any)
 
   // Positional path params
   if (op.pathParams.length > 0) {
-    if (
-      op.pathParams.length === 1 &&
-      !op.requestBody &&
-      op.queryParams.filter((p) => p.required).length === 0
-    ) {
+    if (op.pathParams.length === 1 && !op.requestBody && op.queryParams.filter((p) => p.required).length === 0) {
       // Simple case: single path param, no body/query → positional arg
       args.push(pathParams[op.pathParams[0].name]);
     } else {
@@ -206,15 +198,15 @@ function buildArgs(op: Operation, pathParams: Record<string, string>, spec: any)
   } else if (op.pagination && !op.requestBody) {
     // If we already have path param args but it's paginated, merge limit
     const lastArg = args[args.length - 1];
-    if (typeof lastArg === "object" && lastArg !== null) {
-      (lastArg as Record<string, unknown>)["limit"] = 1;
+    if (typeof lastArg === 'object' && lastArg !== null) {
+      (lastArg as Record<string, unknown>)['limit'] = 1;
     } else {
       args.push({ limit: 1 });
     }
   }
 
   // Idempotent POST: append empty options for idempotency key slot
-  if (op.injectIdempotencyKey && op.httpMethod === "post") {
+  if (op.injectIdempotencyKey && op.httpMethod === 'post') {
     args.push({});
   }
 
@@ -229,13 +221,13 @@ async function main(): Promise<void> {
   const { spec: specPath, sdkPath, smokeConfig } = parseCliArgs();
 
   if (!sdkPath) {
-    console.error("--sdk-path is required");
+    console.error('--sdk-path is required');
     process.exit(1);
   }
 
   const apiKey = process.env.WORKOS_API_KEY || process.env.API_KEY;
   if (!apiKey) {
-    console.error("API key required. Set WORKOS_API_KEY or API_KEY env var.");
+    console.error('API key required. Set WORKOS_API_KEY or API_KEY env var.');
     process.exit(1);
   }
 
@@ -243,7 +235,7 @@ async function main(): Promise<void> {
   loadSmokeConfig(smokeConfig);
 
   // Parse spec
-  console.log("Parsing spec...");
+  console.log('Parsing spec...');
   const spec = await parseSpec(specPath);
   console.log(`Spec: ${spec.name} v${spec.version}`);
 
@@ -251,7 +243,7 @@ async function main(): Promise<void> {
   const manifest = loadManifest(sdkPath);
 
   // Import SDK dynamically from the sdk-path
-  const sdkEntryPoint = resolve(sdkPath, "src/index.ts");
+  const sdkEntryPoint = resolve(sdkPath, 'src/index.ts');
   const sdkModule = await import(sdkEntryPoint);
   const WorkOS = sdkModule.WorkOS || sdkModule.default?.WorkOS;
 
@@ -267,8 +259,7 @@ async function main(): Promise<void> {
   const groups = planOperations(spec);
   const ids = new IdRegistry();
   const exchanges: CapturedExchange[] = [];
-  const createdEntities: Array<{ service: string; id: string; deleteFn?: () => Promise<void> }> =
-    [];
+  const createdEntities: Array<{ service: string; id: string; deleteFn?: () => Promise<void> }> = [];
   const delayMs = Number(process.env.SMOKE_DELAY_MS) || 200;
 
   let successCount = 0;
@@ -290,7 +281,7 @@ async function main(): Promise<void> {
         const resolution = resolveMethod(op, irService, manifest);
         if (!resolution) {
           console.log(`  SKIP ${op.name} — no matching SDK method`);
-          exchanges.push(makeSkippedExchange(op, irService, "No matching SDK method"));
+          exchanges.push(makeSkippedExchange(op, irService, 'No matching SDK method'));
           skipCount++;
           continue;
         }
@@ -299,24 +290,16 @@ async function main(): Promise<void> {
         const resource = (client as any)[resolution.service];
         if (!resource) {
           console.log(`  SKIP ${op.name} — service "${resolution.service}" not found on client`);
-          exchanges.push(
-            makeSkippedExchange(op, irService, `Service "${resolution.service}" not found`),
-          );
+          exchanges.push(makeSkippedExchange(op, irService, `Service "${resolution.service}" not found`));
           skipCount++;
           continue;
         }
 
         const methodFn = resource[resolution.method];
-        if (typeof methodFn !== "function") {
-          console.log(
-            `  SKIP ${op.name} — method "${resolution.method}" not found on ${resolution.service}`,
-          );
+        if (typeof methodFn !== 'function') {
+          console.log(`  SKIP ${op.name} — method "${resolution.method}" not found on ${resolution.service}`);
           exchanges.push(
-            makeSkippedExchange(
-              op,
-              irService,
-              `Method "${resolution.method}" not found on ${resolution.service}`,
-            ),
+            makeSkippedExchange(op, irService, `Method "${resolution.method}" not found on ${resolution.service}`),
           );
           skipCount++;
           continue;
@@ -328,7 +311,7 @@ async function main(): Promise<void> {
           const resolved = ids.resolvePathParams(op, irService);
           if (!resolved) {
             console.log(`  SKIP ${op.name} — missing path param IDs`);
-            exchanges.push(makeSkippedExchange(op, irService, "Missing path param IDs"));
+            exchanges.push(makeSkippedExchange(op, irService, 'Missing path param IDs'));
             skipCount++;
             continue;
           }
@@ -348,7 +331,7 @@ async function main(): Promise<void> {
 
           if (!currentCapture) {
             console.log(`  SKIP ${op.name} — no HTTP capture (method may not make HTTP calls)`);
-            exchanges.push(makeSkippedExchange(op, irService, "No HTTP capture"));
+            exchanges.push(makeSkippedExchange(op, irService, 'No HTTP capture'));
             skipCount++;
             continue;
           }
@@ -360,15 +343,15 @@ async function main(): Promise<void> {
           ids.extractAndStore(irService, responseBody, isTopLevel);
 
           // Track created entities for cleanup
-          if (op.httpMethod === "post" && currentCapture.response.status < 300) {
+          if (op.httpMethod === 'post' && currentCapture.response.status < 300) {
             const body = responseBody as Record<string, unknown> | null;
-            if (body?.id && typeof body.id === "string") {
+            if (body?.id && typeof body.id === 'string') {
               // Find the delete method for this service
               const deleteResolution = findDeleteMethod(irService, manifest);
               if (deleteResolution) {
                 const deleteResource = (client as any)[deleteResolution.service];
                 const deleteFn = deleteResource?.[deleteResolution.method];
-                if (typeof deleteFn === "function") {
+                if (typeof deleteFn === 'function') {
                   createdEntities.push({
                     service: irService,
                     id: body.id as string,
@@ -382,7 +365,7 @@ async function main(): Promise<void> {
           if (exchange.unexpectedStatus) {
             unexpectedCount++;
             console.log(`  ⚠ ${op.name} → ${currentCapture.response.status} (unexpected)`);
-          } else if (exchange.outcome === "api-error") {
+          } else if (exchange.outcome === 'api-error') {
             errorCount++;
             console.log(`  ✗ ${op.name} → ${currentCapture.response.status}`);
           } else {
@@ -404,7 +387,7 @@ async function main(): Promise<void> {
           } else {
             exchanges.push({
               ...makeSkippedExchange(op, irService, message),
-              outcome: "api-error",
+              outcome: 'api-error',
               durationMs: elapsed,
             });
             errorCount++;
@@ -438,7 +421,7 @@ async function main(): Promise<void> {
 
   // Write results
   const results: SmokeResults = {
-    source: "sdk-node",
+    source: 'sdk-node',
     timestamp: new Date().toISOString(),
     specVersion: spec.version,
     exchanges,
@@ -471,7 +454,7 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationName: op.name,
     request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
     response: { status: 0, body: null },
-    outcome: "skipped",
+    outcome: 'skipped',
     error: reason,
     durationMs: 0,
   };
@@ -494,7 +477,7 @@ function buildExchange(
     operationName: op.name,
     request: capture.request,
     response: capture.response,
-    outcome: status >= 200 && status < 300 ? "success" : "api-error",
+    outcome: status >= 200 && status < 300 ? 'success' : 'api-error',
     unexpectedStatus: unexpected || undefined,
     expectedStatusCodes: expectedCodes,
     durationMs,
@@ -508,21 +491,18 @@ function buildExchange(
   };
 }
 
-function findDeleteMethod(
-  irService: string,
-  manifest: Map<string, ManifestEntry> | null,
-): MethodResolution | null {
+function findDeleteMethod(irService: string, manifest: Map<string, ManifestEntry> | null): MethodResolution | null {
   if (!manifest) return null;
   // Look for a DELETE method in the manifest that belongs to this service
   for (const [httpKey, entry] of manifest.entries()) {
     if (
-      httpKey.startsWith("DELETE ") &&
+      httpKey.startsWith('DELETE ') &&
       entry.service === (SERVICE_PROPERTY_MAP[irService] || toCamelCase(irService))
     ) {
       return {
         service: entry.service,
         method: entry.sdkMethod,
-        tier: "manifest",
+        tier: 'manifest',
         confidence: 1.0,
       };
     }
@@ -531,6 +511,6 @@ function findDeleteMethod(
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  console.error('Fatal error:', err);
   process.exit(1);
 });

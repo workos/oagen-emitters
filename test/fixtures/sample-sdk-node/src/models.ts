@@ -20,9 +20,9 @@ export interface ListResponse<T> {
   hasMore: boolean;
 }
 
-export type StatusType = "active" | "inactive";
+export type StatusType = 'active' | 'inactive';
 
 export enum Status {
-  Active = "active",
-  Inactive = "inactive",
+  Active = 'active',
+  Inactive = 'inactive',
 }

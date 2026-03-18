@@ -1,42 +1,42 @@
-import { describe, it, expect } from "vitest";
-import { generateEnums } from "../../src/node/enums.js";
-import type { EmitterContext, ApiSpec, Enum, Service } from "@workos/oagen";
+import { describe, it, expect } from 'vitest';
+import { generateEnums } from '../../src/node/enums.js';
+import type { EmitterContext, ApiSpec, Enum, Service } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
-  name: "Test",
-  version: "1.0.0",
-  baseUrl: "",
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
   services: [],
   models: [],
   enums: [],
 };
 
 const ctx: EmitterContext = {
-  namespace: "workos",
-  namespacePascal: "WorkOS",
+  namespace: 'workos',
+  namespacePascal: 'WorkOS',
   spec: emptySpec,
   irVersion: 6,
 };
 
-describe("generateEnums", () => {
-  it("returns empty for no enums", () => {
+describe('generateEnums', () => {
+  it('returns empty for no enums', () => {
     expect(generateEnums([], ctx)).toEqual([]);
   });
 
-  it("generates string literal union type", () => {
+  it('generates string literal union type', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
           response: {
-            kind: "model",
-            name: "Organization",
+            kind: 'model',
+            name: 'Organization',
           },
           errors: [],
           injectIdempotencyKey: false,
@@ -46,11 +46,11 @@ describe("generateEnums", () => {
 
     const enums: Enum[] = [
       {
-        name: "Status",
+        name: 'Status',
         values: [
-          { name: "ACTIVE", value: "active" },
-          { name: "INACTIVE", value: "inactive" },
-          { name: "PENDING", value: "pending" },
+          { name: 'ACTIVE', value: 'active' },
+          { name: 'INACTIVE', value: 'inactive' },
+          { name: 'PENDING', value: 'pending' },
         ],
       },
     ];
@@ -69,18 +69,18 @@ describe("generateEnums", () => {
     `);
   });
 
-  it("places enum in service directory when referenced", () => {
+  it('places enum in service directory when referenced', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          response: { kind: "enum", name: "OrgStatus" },
+          response: { kind: 'enum', name: 'OrgStatus' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -89,10 +89,10 @@ describe("generateEnums", () => {
 
     const enums: Enum[] = [
       {
-        name: "OrgStatus",
+        name: 'OrgStatus',
         values: [
-          { name: "ACTIVE", value: "active" },
-          { name: "INACTIVE", value: "inactive" },
+          { name: 'ACTIVE', value: 'active' },
+          { name: 'INACTIVE', value: 'inactive' },
         ],
       },
     ];
@@ -101,6 +101,6 @@ describe("generateEnums", () => {
       ...ctx,
       spec: { ...emptySpec, services: [service] },
     });
-    expect(files[0].path).toBe("src/organizations/interfaces/org-status.interface.ts");
+    expect(files[0].path).toBe('src/organizations/interfaces/org-status.interface.ts');
   });
 });

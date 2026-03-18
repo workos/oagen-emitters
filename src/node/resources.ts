@@ -1,7 +1,7 @@
-import type { Service, Operation, EmitterContext, GeneratedFile } from "@workos/oagen";
-import { planOperation, toPascalCase } from "@workos/oagen";
-import type { OperationPlan } from "@workos/oagen";
-import { mapTypeRef } from "./type-map.js";
+import type { Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { planOperation, toPascalCase } from '@workos/oagen';
+import type { OperationPlan } from '@workos/oagen';
+import { mapTypeRef } from './type-map.js';
 import {
   fieldName,
   fileName,
@@ -9,8 +9,8 @@ import {
   resolveMethodName,
   resolveClassName,
   resolveInterfaceName,
-} from "./naming.js";
-import { collectModelRefs, assignModelsToServices } from "./utils.js";
+} from './naming.js';
+import { collectModelRefs, assignModelsToServices } from './utils.js';
 
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
@@ -48,9 +48,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // Imports
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
-    lines.push(
-      "import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';",
-    );
+    lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
     lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
     lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
@@ -67,7 +65,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of allModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : "common";
+    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
     const relPath =
       modelServiceDir === serviceDir
         ? `./interfaces/${fileName(name)}.interface`
@@ -78,7 +76,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of responseModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : "common";
+    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
     const relPath =
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
@@ -89,7 +87,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of requestModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : "common";
+    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
     const relPath =
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
@@ -97,24 +95,22 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`import { serialize${resolved} } from '${relPath}';`);
   }
 
-  lines.push("");
+  lines.push('');
 
   // List options interfaces for paginated operations with extra query params
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
-      const extraParams = op.queryParams.filter(
-        (p) => !["limit", "before", "after", "order"].includes(p.name),
-      );
+      const extraParams = op.queryParams.filter((p) => !['limit', 'before', 'after', 'order'].includes(p.name));
       if (extraParams.length > 0) {
-        const optionsName = toPascalCase(method) + "Options";
+        const optionsName = toPascalCase(method) + 'Options';
         lines.push(`export interface ${optionsName} extends PaginationOptions {`);
         for (const param of extraParams) {
-          const opt = !param.required ? "?" : "";
+          const opt = !param.required ? '?' : '';
           if (param.description) lines.push(`  /** ${param.description} */`);
           lines.push(`  ${fieldName(param.name)}${opt}: ${mapTypeRef(param.type)};`);
         }
-        lines.push("}");
-        lines.push("");
+        lines.push('}');
+        lines.push('');
       }
     }
   }
@@ -124,16 +120,16 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`/** ${service.description} */`);
   }
   lines.push(`export class ${serviceClass} {`);
-  lines.push("  constructor(private readonly workos: WorkOS) {}");
+  lines.push('  constructor(private readonly workos: WorkOS) {}');
 
   for (const { op, plan, method } of plans) {
-    lines.push("");
+    lines.push('');
     lines.push(...renderMethod(op, plan, method, service, ctx));
   }
 
-  lines.push("}");
+  lines.push('}');
 
-  return { path: resourcePath, content: lines.join("\n"), skipIfExists: true };
+  return { path: resourcePath, content: lines.join('\n'), skipIfExists: true };
 }
 
 function renderMethod(
@@ -144,13 +140,11 @@ function renderMethod(
   ctx: EmitterContext,
 ): string[] {
   const lines: string[] = [];
-  const responseModel = plan.responseModelName
-    ? resolveInterfaceName(plan.responseModelName, ctx)
-    : null;
+  const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
 
   // Path interpolation: replace {param} with ${param}
   const interpolatedPath = op.path.replace(/\{(\w+)\}/g, (_, p) => `\${${fieldName(p)}}`);
-  const usesTemplate = interpolatedPath.includes("${");
+  const usesTemplate = interpolatedPath.includes('${');
   const pathStr = usesTemplate ? `\`${interpolatedPath}\`` : `'${op.path}'`;
 
   if (op.description) {
@@ -179,34 +173,29 @@ function renderPaginatedMethod(
   method: string,
   itemType: string,
 ): void {
-  const extraParams = op.queryParams.filter(
-    (p) => !["limit", "before", "after", "order"].includes(p.name),
-  );
-  const optionsType =
-    extraParams.length > 0 ? toPascalCase(method) + "Options" : "PaginationOptions";
+  const extraParams = op.queryParams.filter((p) => !['limit', 'before', 'after', 'order'].includes(p.name));
+  const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
 
   const pathStr = buildPathStr(op);
 
-  lines.push(
-    `  async ${method}(options?: ${optionsType}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`,
-  );
-  lines.push("    return new AutoPaginatable(");
+  lines.push(`  async ${method}(options?: ${optionsType}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
+  lines.push('    return new AutoPaginatable(');
   lines.push(`      await fetchAndDeserialize<${itemType}Response, ${itemType}>(`);
-  lines.push("        this.workos,");
+  lines.push('        this.workos,');
   lines.push(`        ${pathStr},`);
   lines.push(`        deserialize${itemType},`);
-  lines.push("        options,");
-  lines.push("      ),");
-  lines.push("      (params) =>");
+  lines.push('        options,');
+  lines.push('      ),');
+  lines.push('      (params) =>');
   lines.push(`        fetchAndDeserialize<${itemType}Response, ${itemType}>(`);
-  lines.push("          this.workos,");
+  lines.push('          this.workos,');
   lines.push(`          ${pathStr},`);
   lines.push(`          deserialize${itemType},`);
-  lines.push("          params,");
-  lines.push("        ),");
-  lines.push("      options,");
-  lines.push("    );");
-  lines.push("  }");
+  lines.push('          params,');
+  lines.push('        ),');
+  lines.push('      options,');
+  lines.push('    );');
+  lines.push('  }');
 }
 
 function renderDeleteMethod(
@@ -219,7 +208,7 @@ function renderDeleteMethod(
   const params = buildPathParams(op);
   lines.push(`  async ${method}(${params}): Promise<void> {`);
   lines.push(`    await this.workos.delete(${pathStr});`);
-  lines.push("  }");
+  lines.push('  }');
 }
 
 function renderBodyMethod(
@@ -232,7 +221,7 @@ function renderBodyMethod(
   ctx: EmitterContext,
 ): void {
   const requestBodyModel = extractRequestBodyModelName(op);
-  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : "any";
+  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'any';
 
   const paramParts: string[] = [];
 
@@ -244,32 +233,27 @@ function renderBodyMethod(
   paramParts.push(`payload: ${requestType}`);
 
   if (plan.isIdempotentPost) {
-    paramParts.push("requestOptions: PostOptions = {}");
+    paramParts.push('requestOptions: PostOptions = {}');
   }
 
-  const paramsStr = paramParts.join(", ");
-  const bodyExpr =
-    requestBodyModel && requestType !== "any" ? `serialize${requestType}(payload)` : "payload";
+  const paramsStr = paramParts.join(', ');
+  const bodyExpr = requestBodyModel && requestType !== 'any' ? `serialize${requestType}(payload)` : 'payload';
 
   lines.push(`  async ${method}(${paramsStr}): Promise<${responseModel}> {`);
   if (plan.isIdempotentPost) {
-    lines.push(
-      `    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`,
-    );
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`);
     lines.push(`      ${pathStr},`);
     lines.push(`      ${bodyExpr},`);
-    lines.push("      requestOptions,");
-    lines.push("    );");
+    lines.push('      requestOptions,');
+    lines.push('    );');
   } else {
-    lines.push(
-      `    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`,
-    );
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${responseModel}Response>(`);
     lines.push(`      ${pathStr},`);
     lines.push(`      ${bodyExpr},`);
-    lines.push("    );");
+    lines.push('    );');
   }
   lines.push(`    return deserialize${responseModel}(data);`);
-  lines.push("  }");
+  lines.push('  }');
 }
 
 function renderGetMethod(
@@ -286,32 +270,24 @@ function renderGetMethod(
   const allParams = hasQuery
     ? params
       ? `${params}, options?: Record<string, any>`
-      : "options?: Record<string, any>"
+      : 'options?: Record<string, any>'
     : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
-    lines.push(
-      `    const { data } = await this.workos.get<${responseModel}Response>(${pathStr}, {`,
-    );
-    lines.push("      query: options,");
-    lines.push("    });");
+    lines.push(`    const { data } = await this.workos.get<${responseModel}Response>(${pathStr}, {`);
+    lines.push('      query: options,');
+    lines.push('    });');
   } else {
     lines.push(`    const { data } = await this.workos.get<${responseModel}Response>(${pathStr});`);
   }
   lines.push(`    return deserialize${responseModel}(data);`);
-  lines.push("  }");
+  lines.push('  }');
 }
 
-function renderVoidMethod(
-  lines: string[],
-  op: Operation,
-  plan: OperationPlan,
-  method: string,
-  pathStr: string,
-): void {
+function renderVoidMethod(lines: string[], op: Operation, plan: OperationPlan, method: string, pathStr: string): void {
   const params = buildPathParams(op);
-  const allParams = plan.hasBody ? (params ? `${params}, payload: any` : "payload: any") : params;
+  const allParams = plan.hasBody ? (params ? `${params}, payload: any` : 'payload: any') : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<void> {`);
   if (plan.hasBody) {
@@ -319,20 +295,20 @@ function renderVoidMethod(
   } else {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr});`);
   }
-  lines.push("  }");
+  lines.push('  }');
 }
 
 function buildPathStr(op: Operation): string {
   const interpolated = op.path.replace(/\{(\w+)\}/g, (_, p) => `\${${fieldName(p)}}`);
-  return interpolated.includes("${") ? `\`${interpolated}\`` : `'${op.path}'`;
+  return interpolated.includes('${') ? `\`${interpolated}\`` : `'${op.path}'`;
 }
 
 function buildPathParams(op: Operation): string {
-  return op.pathParams.map((p) => `${fieldName(p.name)}: ${mapTypeRef(p.type)}`).join(", ");
+  return op.pathParams.map((p) => `${fieldName(p.name)}: ${mapTypeRef(p.type)}`).join(', ');
 }
 
 function extractRequestBodyModelName(op: Operation): string | null {
   if (!op.requestBody) return null;
-  if (op.requestBody.kind === "model") return op.requestBody.name;
+  if (op.requestBody.kind === 'model') return op.requestBody.name;
   return null;
 }

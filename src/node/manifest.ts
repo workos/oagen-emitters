@@ -1,5 +1,5 @@
-import type { ApiSpec, EmitterContext, GeneratedFile } from "@workos/oagen";
-import { resolveMethodName, servicePropertyName } from "./naming.js";
+import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { resolveMethodName, servicePropertyName } from './naming.js';
 
 export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const manifest: Record<string, { sdkMethod: string; service: string }> = {};
@@ -15,7 +15,7 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
   return [
     {
-      path: "smoke-manifest.json",
+      path: 'smoke-manifest.json',
       content: JSON.stringify(manifest, null, 2),
     },
   ];

@@ -1,9 +1,9 @@
-import type { GeneratedFile } from "@workos/oagen";
+import type { GeneratedFile } from '@workos/oagen';
 
 export function generateConfig(): GeneratedFile[] {
   return [
     {
-      path: "src/common/interfaces/workos-options.interface.ts",
+      path: 'src/common/interfaces/workos-options.interface.ts',
       content: `export interface WorkOSOptions {
   apiKey?: string;
   apiHostname?: string;
@@ -22,7 +22,7 @@ export interface AppInfo {
       skipIfExists: true,
     },
     {
-      path: "src/common/interfaces/post-options.interface.ts",
+      path: 'src/common/interfaces/post-options.interface.ts',
       content: `export interface PostOptions {
   query?: Record<string, any>;
   idempotencyKey?: string;
@@ -32,7 +32,7 @@ export interface AppInfo {
       skipIfExists: true,
     },
     {
-      path: "src/common/interfaces/get-options.interface.ts",
+      path: 'src/common/interfaces/get-options.interface.ts',
       content: `export interface GetOptions {
   query?: Record<string, any>;
   accessToken?: string;
@@ -42,7 +42,7 @@ export interface AppInfo {
       skipIfExists: true,
     },
     {
-      path: "src/common/interfaces/pagination-options.interface.ts",
+      path: 'src/common/interfaces/pagination-options.interface.ts',
       content: `export interface PaginationOptions {
   limit?: number;
   before?: string | null;
@@ -52,7 +52,7 @@ export interface AppInfo {
       skipIfExists: true,
     },
     {
-      path: "src/common/interfaces/request-exception.interface.ts",
+      path: 'src/common/interfaces/request-exception.interface.ts',
       content: `export interface RequestException {
   readonly status: number;
   readonly name: string;

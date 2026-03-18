@@ -1,12 +1,6 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from "@workos/oagen";
-import {
-  fieldName,
-  wireFieldName,
-  fileName,
-  serviceDirName,
-  resolveInterfaceName,
-} from "./naming.js";
-import { assignModelsToServices, relativeImport } from "./utils.js";
+import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from '@workos/oagen';
+import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName } from './naming.js';
+import { assignModelsToServices, relativeImport } from './utils.js';
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
@@ -16,7 +10,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
 
   for (const model of models) {
     const service = modelToService.get(model.name);
-    const dirName = service ? serviceDirName(service) : "common";
+    const dirName = service ? serviceDirName(service) : 'common';
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = `${domainName}Response`;
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
@@ -42,15 +36,13 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     // Import nested model deserializers/serializers
     for (const dep of nestedModelRefs) {
       const depService = modelToService.get(dep);
-      const depDir = depService ? serviceDirName(depService) : "common";
+      const depDir = depService ? serviceDirName(depService) : 'common';
       const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
       const depName = resolveInterfaceName(dep, ctx);
       const imports = [`deserialize${depName}`, `serialize${depName}`];
-      lines.push(
-        `import { ${imports.join(", ")} } from '${relativeImport(serializerPath, depSerializerPath)}';`,
-      );
+      lines.push(`import { ${imports.join(', ')} } from '${relativeImport(serializerPath, depSerializerPath)}';`);
     }
-    lines.push("");
+    lines.push('');
 
     // Deserialize function (wire → domain) — deduplicate by camelCase name
     const seenDeserFields = new Set<string>();
@@ -81,10 +73,10 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         lines.push(`  ${domain}: ${expr},`);
       }
     }
-    lines.push("});");
+    lines.push('});');
 
     // Serialize function (domain → wire)
-    lines.push("");
+    lines.push('');
     lines.push(`export const serialize${domainName} = (`);
     lines.push(`  model: ${domainName},`);
     lines.push(`): ${responseName} => ({`);
@@ -104,11 +96,11 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         lines.push(`  ${wire}: ${expr},`);
       }
     }
-    lines.push("});");
+    lines.push('});');
 
     files.push({
       path: serializerPath,
-      content: lines.join("\n"),
+      content: lines.join('\n'),
       skipIfExists: true,
     });
   }
@@ -123,44 +115,44 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
  */
 function collectSerializedModelRefs(ref: TypeRef): string[] {
   switch (ref.kind) {
-    case "model":
+    case 'model':
       return [ref.name];
-    case "array":
-      if (ref.items.kind === "model") return [ref.items.name];
+    case 'array':
+      if (ref.items.kind === 'model') return [ref.items.name];
       return collectSerializedModelRefs(ref.items);
-    case "nullable":
+    case 'nullable':
       return collectSerializedModelRefs(ref.inner);
-    case "union": {
+    case 'union': {
       const models = uniqueModelVariants(ref);
       // Only if exactly one unique model variant — that's when we call its serializer
       if (models.length === 1) return models;
       return [];
     }
-    case "map":
-    case "primitive":
-    case "literal":
-    case "enum":
+    case 'map':
+    case 'primitive':
+    case 'literal':
+    case 'enum':
       return [];
   }
 }
 
 function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterContext): string {
   switch (ref.kind) {
-    case "primitive":
-    case "literal":
-    case "enum":
+    case 'primitive':
+    case 'literal':
+    case 'enum':
       return wireExpr;
-    case "model": {
+    case 'model': {
       const name = resolveInterfaceName(ref.name, ctx);
       return `deserialize${name}(${wireExpr})`;
     }
-    case "array":
-      if (ref.items.kind === "model") {
+    case 'array':
+      if (ref.items.kind === 'model') {
         const name = resolveInterfaceName(ref.items.name, ctx);
         return `${wireExpr}.map(deserialize${name})`;
       }
       return wireExpr;
-    case "nullable": {
+    case 'nullable': {
       const innerExpr = deserializeExpression(ref.inner, wireExpr, ctx);
       // If the inner type involves a function call (model or array-of-model),
       // wrap with a null check to avoid passing null to the deserializer
@@ -169,7 +161,7 @@ function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterConte
       }
       return `${wireExpr} ?? null`;
     }
-    case "union": {
+    case 'union': {
       // If the union has exactly one unique model variant, deserialize using that model's deserializer
       const deserModelVariants = uniqueModelVariants(ref);
       if (deserModelVariants.length === 1) {
@@ -178,28 +170,28 @@ function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterConte
       }
       return wireExpr;
     }
-    case "map":
+    case 'map':
       return wireExpr;
   }
 }
 
 function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterContext): string {
   switch (ref.kind) {
-    case "primitive":
-    case "literal":
-    case "enum":
+    case 'primitive':
+    case 'literal':
+    case 'enum':
       return domainExpr;
-    case "model": {
+    case 'model': {
       const name = resolveInterfaceName(ref.name, ctx);
       return `serialize${name}(${domainExpr})`;
     }
-    case "array":
-      if (ref.items.kind === "model") {
+    case 'array':
+      if (ref.items.kind === 'model') {
         const name = resolveInterfaceName(ref.items.name, ctx);
         return `${domainExpr}.map(serialize${name})`;
       }
       return domainExpr;
-    case "nullable": {
+    case 'nullable': {
       const innerExpr = serializeExpression(ref.inner, domainExpr, ctx);
       // If the inner type involves a function call (model or array-of-model),
       // wrap with a null check to avoid passing null to the serializer
@@ -208,7 +200,7 @@ function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterConte
       }
       return domainExpr;
     }
-    case "union": {
+    case 'union': {
       // If the union has exactly one unique model variant, serialize using that model's serializer
       const serModelVariants = uniqueModelVariants(ref);
       if (serModelVariants.length === 1) {
@@ -217,7 +209,7 @@ function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterConte
       }
       return domainExpr;
     }
-    case "map":
+    case 'map':
       return domainExpr;
   }
 }
@@ -229,7 +221,7 @@ function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterConte
 function uniqueModelVariants(ref: UnionType): string[] {
   const modelNames = new Set<string>();
   for (const v of ref.variants) {
-    if (v.kind === "model") modelNames.add(v.name);
+    if (v.kind === 'model') modelNames.add(v.name);
   }
   return [...modelNames];
 }
@@ -241,13 +233,13 @@ function uniqueModelVariants(ref: UnionType): string[] {
  */
 function needsNullGuard(ref: TypeRef): boolean {
   switch (ref.kind) {
-    case "model":
+    case 'model':
       return true;
-    case "array":
-      return ref.items.kind === "model";
-    case "nullable":
+    case 'array':
+      return ref.items.kind === 'model';
+    case 'nullable':
       return needsNullGuard(ref.inner);
-    case "union":
+    case 'union':
       return uniqueModelVariants(ref).length === 1;
     default:
       return false;
@@ -261,22 +253,22 @@ function needsNullGuard(ref: TypeRef): boolean {
  */
 function defaultForType(ref: TypeRef): string | null {
   switch (ref.kind) {
-    case "map":
-      return "{}";
-    case "primitive":
+    case 'map':
+      return '{}';
+    case 'primitive':
       switch (ref.type) {
-        case "boolean":
-          return "false";
-        case "string":
+        case 'boolean':
+          return 'false';
+        case 'string':
           return "''";
-        case "integer":
-        case "number":
-          return "0";
+        case 'integer':
+        case 'number':
+          return '0';
         default:
           return null;
       }
-    case "array":
-      return "[]";
+    case 'array':
+      return '[]';
     default:
       return null;
   }

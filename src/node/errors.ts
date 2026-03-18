@@ -1,9 +1,9 @@
-import type { GeneratedFile } from "@workos/oagen";
+import type { GeneratedFile } from '@workos/oagen';
 
 export function generateErrors(): GeneratedFile[] {
   return [
     {
-      path: "src/common/exceptions/bad-request.exception.ts",
+      path: 'src/common/exceptions/bad-request.exception.ts',
       content: `export class BadRequestException extends Error {
   readonly status = 400;
   readonly name = 'BadRequestException';
@@ -28,7 +28,7 @@ export function generateErrors(): GeneratedFile[] {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/unauthorized.exception.ts",
+      path: 'src/common/exceptions/unauthorized.exception.ts',
       content: `export class UnauthorizedException extends Error {
   readonly status = 401;
   readonly name = 'UnauthorizedException';
@@ -43,7 +43,7 @@ export function generateErrors(): GeneratedFile[] {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/not-found.exception.ts",
+      path: 'src/common/exceptions/not-found.exception.ts',
       content: `export class NotFoundException extends Error {
   readonly status = 404;
   readonly name = 'NotFoundException';
@@ -71,7 +71,7 @@ export function generateErrors(): GeneratedFile[] {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/conflict.exception.ts",
+      path: 'src/common/exceptions/conflict.exception.ts',
       content: `export class ConflictException extends Error {
   readonly status = 409;
   readonly name = 'ConflictException';
@@ -93,7 +93,7 @@ export function generateErrors(): GeneratedFile[] {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/unprocessable-entity.exception.ts",
+      path: 'src/common/exceptions/unprocessable-entity.exception.ts',
       content: `export interface UnprocessableEntityError {
   code: string;
 }
@@ -132,7 +132,7 @@ export class UnprocessableEntityException extends Error {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/rate-limit-exceeded.exception.ts",
+      path: 'src/common/exceptions/rate-limit-exceeded.exception.ts',
       content: `export class RateLimitExceededException extends Error {
   readonly status = 429;
   readonly name = 'RateLimitExceededException';
@@ -149,7 +149,7 @@ export class UnprocessableEntityException extends Error {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/generic-server.exception.ts",
+      path: 'src/common/exceptions/generic-server.exception.ts',
       content: `export class GenericServerException extends Error {
   readonly status: number;
   readonly name = 'GenericServerException';
@@ -165,7 +165,7 @@ export class UnprocessableEntityException extends Error {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/no-api-key-provided.exception.ts",
+      path: 'src/common/exceptions/no-api-key-provided.exception.ts',
       content: `export class NoApiKeyProvidedException extends Error {
   readonly name = 'NoApiKeyProvidedException';
 
@@ -178,7 +178,7 @@ export class UnprocessableEntityException extends Error {
       skipIfExists: true,
     },
     {
-      path: "src/common/exceptions/index.ts",
+      path: 'src/common/exceptions/index.ts',
       content: `export { BadRequestException } from './bad-request.exception';
 export { UnauthorizedException } from './unauthorized.exception';
 export { NotFoundException } from './not-found.exception';

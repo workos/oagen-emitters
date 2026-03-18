@@ -1,24 +1,24 @@
-import type { GeneratedFile } from "@workos/oagen";
+import type { GeneratedFile } from '@workos/oagen';
 
 export function generateCommon(): GeneratedFile[] {
   return [
     {
-      path: "src/common/utils/pagination.ts",
+      path: 'src/common/utils/pagination.ts',
       content: paginationContent(),
       skipIfExists: true,
     },
     {
-      path: "src/common/utils/fetch-and-deserialize.ts",
+      path: 'src/common/utils/fetch-and-deserialize.ts',
       content: fetchAndDeserializeContent(),
       skipIfExists: true,
     },
     {
-      path: "src/common/serializers/list.serializer.ts",
+      path: 'src/common/serializers/list.serializer.ts',
       content: listSerializerContent(),
       skipIfExists: true,
     },
     {
-      path: "src/common/utils/test-utils.ts",
+      path: 'src/common/utils/test-utils.ts',
       content: testUtilsContent(),
       skipIfExists: true,
     },

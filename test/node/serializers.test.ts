@@ -1,40 +1,40 @@
-import { describe, it, expect } from "vitest";
-import { generateSerializers } from "../../src/node/serializers.js";
-import type { EmitterContext, ApiSpec, Model, Service } from "@workos/oagen";
+import { describe, it, expect } from 'vitest';
+import { generateSerializers } from '../../src/node/serializers.js';
+import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
-  name: "Test",
-  version: "1.0.0",
-  baseUrl: "",
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
   services: [],
   models: [],
   enums: [],
 };
 
 const ctx: EmitterContext = {
-  namespace: "workos",
-  namespacePascal: "WorkOS",
+  namespace: 'workos',
+  namespacePascal: 'WorkOS',
   spec: emptySpec,
   irVersion: 6,
 };
 
-describe("generateSerializers", () => {
-  it("returns empty for no models", () => {
+describe('generateSerializers', () => {
+  it('returns empty for no models', () => {
     expect(generateSerializers([], ctx)).toEqual([]);
   });
 
-  it("generates deserializer with camelCase→snake_case mapping", () => {
+  it('generates deserializer with camelCase→snake_case mapping', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          response: { kind: "model", name: "Organization" },
+          response: { kind: 'model', name: 'Organization' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -43,23 +43,23 @@ describe("generateSerializers", () => {
 
     const models: Model[] = [
       {
-        name: "Organization",
+        name: 'Organization',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "created_at",
-            type: { kind: "primitive", type: "string", format: "date-time" },
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
             required: true,
           },
           {
-            name: "external_id",
+            name: 'external_id',
             type: {
-              kind: "nullable",
-              inner: { kind: "primitive", type: "string" },
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
             },
             required: false,
           },
@@ -74,27 +74,27 @@ describe("generateSerializers", () => {
 
     const files = generateSerializers(models, ctxWithServices);
     expect(files.length).toBe(1);
-    expect(files[0].path).toBe("src/organizations/serializers/organization.serializer.ts");
+    expect(files[0].path).toBe('src/organizations/serializers/organization.serializer.ts');
 
     const content = files[0].content;
-    expect(content).toContain("export const deserializeOrganization");
+    expect(content).toContain('export const deserializeOrganization');
     expect(content).toContain("  id: response.id ?? '',");
     expect(content).toContain("  createdAt: response.created_at ?? '',");
-    expect(content).toContain("  externalId: response.external_id ?? null,");
+    expect(content).toContain('  externalId: response.external_id ?? null,');
   });
 
-  it("generates nested model deserialization", () => {
+  it('generates nested model deserialization', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "getOrganization",
-          httpMethod: "get",
-          path: "/organizations/{id}",
-          pathParams: [{ name: "id", type: { kind: "primitive", type: "string" }, required: true }],
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          response: { kind: "model", name: "Organization" },
+          response: { kind: 'model', name: 'Organization' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -103,29 +103,29 @@ describe("generateSerializers", () => {
 
     const models: Model[] = [
       {
-        name: "Organization",
+        name: 'Organization',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "domains",
+            name: 'domains',
             type: {
-              kind: "array",
-              items: { kind: "model", name: "OrganizationDomain" },
+              kind: 'array',
+              items: { kind: 'model', name: 'OrganizationDomain' },
             },
             required: true,
           },
         ],
       },
       {
-        name: "OrganizationDomain",
+        name: 'OrganizationDomain',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
         ],
@@ -138,29 +138,25 @@ describe("generateSerializers", () => {
     };
 
     const files = generateSerializers(models, ctxWithServices);
-    const orgSerializer = files.find((f) => f.path.includes("organization.serializer.ts"))!;
+    const orgSerializer = files.find((f) => f.path.includes('organization.serializer.ts'))!;
 
-    expect(orgSerializer.content).toContain(
-      "domains: response.domains.map(deserializeOrganizationDomain),",
-    );
-    expect(orgSerializer.content).toContain(
-      "import { deserializeOrganizationDomain, serializeOrganizationDomain }",
-    );
+    expect(orgSerializer.content).toContain('domains: response.domains.map(deserializeOrganizationDomain),');
+    expect(orgSerializer.content).toContain('import { deserializeOrganizationDomain, serializeOrganizationDomain }');
   });
 
-  it("generates serialize function for request body models", () => {
+  it('generates serialize function for request body models', () => {
     const service: Service = {
-      name: "Organizations",
+      name: 'Organizations',
       operations: [
         {
-          name: "createOrganization",
-          httpMethod: "post",
-          path: "/organizations",
+          name: 'createOrganization',
+          httpMethod: 'post',
+          path: '/organizations',
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          requestBody: { kind: "model", name: "CreateOrganizationInput" },
-          response: { kind: "model", name: "Organization" },
+          requestBody: { kind: 'model', name: 'CreateOrganizationInput' },
+          response: { kind: 'model', name: 'Organization' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -169,26 +165,26 @@ describe("generateSerializers", () => {
 
     const models: Model[] = [
       {
-        name: "Organization",
+        name: 'Organization',
         fields: [
           {
-            name: "id",
-            type: { kind: "primitive", type: "string" },
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
         ],
       },
       {
-        name: "CreateOrganizationInput",
+        name: 'CreateOrganizationInput',
         fields: [
           {
-            name: "name",
-            type: { kind: "primitive", type: "string" },
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
             required: true,
           },
           {
-            name: "external_id",
-            type: { kind: "primitive", type: "string" },
+            name: 'external_id',
+            type: { kind: 'primitive', type: 'string' },
             required: false,
           },
         ],
@@ -201,12 +197,10 @@ describe("generateSerializers", () => {
     };
 
     const files = generateSerializers(models, ctxWithServices);
-    const inputSerializer = files.find((f) =>
-      f.path.includes("create-organization-input.serializer.ts"),
-    )!;
+    const inputSerializer = files.find((f) => f.path.includes('create-organization-input.serializer.ts'))!;
 
     // Should have both deserialize AND serialize
-    expect(inputSerializer.content).toContain("export const deserializeCreateOrganizationInput");
-    expect(inputSerializer.content).toContain("export const serializeCreateOrganizationInput");
+    expect(inputSerializer.content).toContain('export const deserializeCreateOrganizationInput');
+    expect(inputSerializer.content).toContain('export const serializeCreateOrganizationInput');
   });
 });
