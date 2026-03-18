@@ -19,6 +19,7 @@ const config: OagenConfig = {
   smokeRunners: {
     node: './smoke/sdk-node.ts',
   },
+  docUrl: 'https://workos.com/docs',
   operationIdTransform: nestjsOperationIdTransform,
 };
 export default config;
