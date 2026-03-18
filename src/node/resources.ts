@@ -9,8 +9,10 @@ import {
   resolveMethodName,
   resolveClassName,
   resolveInterfaceName,
+  resolveServiceName,
+  buildServiceNameMap,
 } from './naming.js';
-import { collectModelRefs, assignModelsToServices } from './utils.js';
+import { collectModelRefs, assignModelsToServices, docComment } from './utils.js';
 
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
@@ -18,9 +20,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 }
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
-  const serviceDir = serviceDirName(service.name);
-  const serviceClass = resolveClassName(service, ctx);
-  const resourcePath = `src/${serviceDir}/${fileName(service.name)}.ts`;
+  const resolvedName = resolveServiceName(service, ctx);
+  const serviceDir = serviceDirName(resolvedName);
+  const serviceClass = resolvedName;
+  const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;
 
   const plans = service.operations.map((op) => ({
     op,
@@ -61,11 +64,14 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   // Compute model-to-service mapping for correct cross-service import paths
   const modelToService = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
   for (const name of allModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
+    const modelServiceDir = resolveDir(modelDir);
     const relPath =
       modelServiceDir === serviceDir
         ? `./interfaces/${fileName(name)}.interface`
@@ -76,7 +82,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of responseModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
+    const modelServiceDir = resolveDir(modelDir);
     const relPath =
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
@@ -87,7 +93,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of requestModels) {
     const resolved = resolveInterfaceName(name, ctx);
     const modelDir = modelToService.get(name);
-    const modelServiceDir = modelDir ? serviceDirName(modelDir) : 'common';
+    const modelServiceDir = resolveDir(modelDir);
     const relPath =
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
@@ -106,7 +112,12 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         lines.push(`export interface ${optionsName} extends PaginationOptions {`);
         for (const param of extraParams) {
           const opt = !param.required ? '?' : '';
-          if (param.description) lines.push(`  /** ${param.description} */`);
+          if (param.description || param.deprecated) {
+            const parts: string[] = [];
+            if (param.description) parts.push(param.description);
+            if (param.deprecated) parts.push('@deprecated');
+            lines.push(...docComment(parts.join('\n'), 2));
+          }
           lines.push(`  ${fieldName(param.name)}${opt}: ${mapTypeRef(param.type)};`);
         }
         lines.push('}');
@@ -117,7 +128,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   // Resource class
   if (service.description) {
-    lines.push(`/** ${service.description} */`);
+    lines.push(...docComment(service.description));
   }
   lines.push(`export class ${serviceClass} {`);
   lines.push('  constructor(private readonly workos: WorkOS) {}');
@@ -156,14 +167,23 @@ function renderMethod(
   }
   if (op.deprecated) docParts.push('@deprecated');
 
-  if (docParts.length === 1 && !docParts[0].includes('\n')) {
-    lines.push(`  /** ${docParts[0]} */`);
-  } else if (docParts.length > 1) {
-    lines.push('  /**');
+  if (docParts.length > 0) {
+    // Flatten all parts, splitting multiline descriptions into individual lines
+    const allLines: string[] = [];
     for (const part of docParts) {
-      lines.push(`   * ${part}`);
+      for (const line of part.split('\n')) {
+        allLines.push(line);
+      }
     }
-    lines.push('   */');
+    if (allLines.length === 1) {
+      lines.push(`  /** ${allLines[0]} */`);
+    } else {
+      lines.push('  /**');
+      for (const line of allLines) {
+        lines.push(line === '' ? '   *' : `   * ${line}`);
+      }
+      lines.push('   */');
+    }
   }
 
   if (plan.isPaginated) {

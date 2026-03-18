@@ -1,16 +1,20 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
-import { fileName, serviceDirName } from './naming.js';
+import { fileName, serviceDirName, buildServiceNameMap } from './naming.js';
+import { docComment } from './utils.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
-    const dirName = service ? serviceDirName(service) : 'common';
+    const dirName = resolveDir(service);
 
     // Check baseline surface for representation and values
     const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
@@ -35,8 +39,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       for (let i = 0; i < values.length; i++) {
         const v = values[i];
         const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
-        if (v.description) {
-          lines.push(`  /** ${v.description} */`);
+        if (v.description || v.deprecated) {
+          const parts: string[] = [];
+          if (v.description) parts.push(v.description);
+          if (v.deprecated) parts.push('@deprecated');
+          lines.push(...docComment(parts.join('\n'), 2));
         }
         const suffix = i === values.length - 1 ? ';' : '';
         lines.push(`  | ${valueStr}${suffix}`);

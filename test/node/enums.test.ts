@@ -103,4 +103,26 @@ describe('generateEnums', () => {
     });
     expect(files[0].path).toBe('src/organizations/interfaces/org-status.interface.ts');
   });
+
+  it('renders @deprecated on enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [
+          { name: 'ACTIVE', value: 'active' },
+          { name: 'LEGACY', value: 'legacy', description: 'No longer supported.', deprecated: true },
+          { name: 'OLD', value: 'old', deprecated: true },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    const content = files[0].content;
+
+    // Value with description + deprecated gets multiline JSDoc
+    expect(content).toContain('  /**\n   * No longer supported.\n   * @deprecated\n   */');
+
+    // Value with only deprecated gets single-line JSDoc
+    expect(content).toContain('  /** @deprecated */');
+  });
 });

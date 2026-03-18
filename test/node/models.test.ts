@@ -195,4 +195,63 @@ describe('generateModels', () => {
     expect(files[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>> {');
     expect(files[0].content).toContain('export interface DirectoryUserResponse<TCustom = Record<string, any>> {');
   });
+
+  it('renders @deprecated on fields', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'legacy_slug',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description: 'Use external_id instead.',
+            deprecated: true,
+          },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const content = files[0].content;
+
+    // Field with description + deprecated gets multiline JSDoc
+    expect(content).toContain('  /**\n   * Use external_id instead.\n   * @deprecated\n   */');
+
+    // Field with only deprecated gets single-line JSDoc
+    expect(content).toContain('  /** @deprecated */');
+  });
 });

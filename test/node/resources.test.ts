@@ -167,4 +167,46 @@ describe('generateResources', () => {
     expect(content).toContain('serializeCreateOrganizationInput(payload)');
     expect(content).toContain('requestOptions,');
   });
+
+  it('renders multiline description and @deprecated in method docstring', () => {
+    const services: Service[] = [
+      {
+        name: 'Radar',
+        operations: [
+          {
+            name: 'updateAttempt',
+            description: 'Update a Radar attempt\n\nYou may optionally inform Radar that an attempt was successful.',
+            httpMethod: 'put',
+            path: '/radar/attempts/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                description: 'The unique identifier of the attempt.',
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateAttemptInput' },
+            response: { kind: 'model', name: 'RadarAttempt' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    expect(content).toContain('  /**');
+    expect(content).toContain('   * Update a Radar attempt');
+    expect(content).toContain('   *');
+    expect(content).toContain('   * You may optionally inform Radar that an attempt was successful.');
+    expect(content).toContain('   * @param id - The unique identifier of the attempt.');
+    expect(content).toContain('   * @deprecated');
+    expect(content).toContain('   */');
+  });
 });

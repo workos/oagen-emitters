@@ -1,8 +1,8 @@
 import type { Model, Field, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName } from './naming.js';
-import { assignModelsToServices, collectFieldDependencies } from './utils.js';
+import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap } from './naming.js';
+import { assignModelsToServices, collectFieldDependencies, docComment } from './utils.js';
 
 /** Built-in TypeScript types that are always available (no import needed). */
 const BUILTINS = new Set([
@@ -29,11 +29,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   if (models.length === 0) return [];
 
   const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
     const service = modelToService.get(model.name);
-    const dirName = service ? serviceDirName(service) : 'common';
+    const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = `${domainName}Response`;
     const deps = collectFieldDependencies(model);
@@ -91,7 +94,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
           const irEnumName = resolvedEnumNames.get(name);
           if (irEnumName && !deps.enums.has(irEnumName)) {
             const eService = enumToService.get(irEnumName);
-            const eDir = eService ? serviceDirName(eService) : 'common';
+            const eDir = resolveDir(eService);
             const relPath =
               eDir === dirName
                 ? `./${fileName(irEnumName)}.interface`
@@ -122,14 +125,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const dep of deps.models) {
       const depName = resolveInterfaceName(dep, ctx);
       const depService = modelToService.get(dep);
-      const depDir = depService ? serviceDirName(depService) : 'common';
+      const depDir = resolveDir(depService);
       const relPath =
         depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
       lines.push(`import type { ${depName}, ${depName}Response } from '${relPath}';`);
     }
     for (const dep of deps.enums) {
       const depService = enumToService.get(dep);
-      const depDir = depService ? serviceDirName(depService) : 'common';
+      const depDir = resolveDir(depService);
       const relPath =
         depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
       lines.push(`import type { ${dep} } from '${relPath}';`);
@@ -152,15 +155,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Domain interface (camelCase fields) — deduplicate by camelCase name
     const seenDomainFields = new Set<string>();
     if (model.description) {
-      lines.push(`/** ${model.description} */`);
+      lines.push(...docComment(model.description));
     }
     lines.push(`export interface ${domainName}${typeParams} {`);
     for (const field of model.fields) {
       const domainFieldName = fieldName(field.name);
       if (seenDomainFields.has(domainFieldName)) continue;
       seenDomainFields.add(domainFieldName);
-      if (field.description) {
-        lines.push(`  /** ${field.description} */`);
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('@deprecated');
+        lines.push(...docComment(parts.join('\n'), 2));
       }
       const baselineField = baselineDomain?.fields?.[domainFieldName];
       // For the domain interface, also check that the response baseline's optionality
