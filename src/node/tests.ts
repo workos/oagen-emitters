@@ -1,6 +1,6 @@
-import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveMethodName, resolveServiceName } from './naming.js';
+import { fieldName, wireFieldName, fileName, serviceDirName, servicePropertyName, resolveMethodName, resolveServiceName } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -12,15 +12,23 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     files.push({ path: f.path, content: f.content, headerPlacement: 'skip' });
   }
 
+  // Build model lookup for response field assertions
+  const modelMap = new Map(spec.models.map((m) => [m.name, m]));
+
   // Generate test files per service
   for (const service of spec.services) {
-    files.push(generateServiceTest(service, spec, ctx));
+    files.push(generateServiceTest(service, spec, ctx, modelMap));
   }
 
   return files;
 }
 
-function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
+function generateServiceTest(
+  service: Service,
+  spec: ApiSpec,
+  ctx: EmitterContext,
+  modelMap: Map<string, Model>,
+): GeneratedFile {
   const resolvedName = resolveServiceName(service, ctx);
   const serviceDir = serviceDirName(resolvedName);
   const serviceClass = resolvedName;
@@ -74,15 +82,20 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push(`  describe('${method}', () => {`);
 
     if (plan.isPaginated) {
-      renderPaginatedTest(lines, op, plan, method, serviceProp);
+      renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.isDelete) {
       renderDeleteTest(lines, op, method, serviceProp);
     } else if (plan.hasBody && plan.responseModelName) {
-      renderBodyTest(lines, op, plan, method, serviceProp);
+      renderBodyTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.responseModelName) {
-      renderGetTest(lines, op, plan, method, serviceProp);
+      renderGetTest(lines, op, plan, method, serviceProp, modelMap);
     } else {
       renderVoidTest(lines, op, method, serviceProp);
+    }
+
+    // Error case test for all non-void operations
+    if (plan.responseModelName || plan.isPaginated) {
+      renderErrorTest(lines, op, plan, method, serviceProp);
     }
 
     lines.push('  });');
@@ -93,7 +106,14 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
   return { path: testPath, content: lines.join('\n'), skipIfExists: true, integrateTarget: false };
 }
 
-function renderPaginatedTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+function renderPaginatedTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
 
   lines.push("    it('returns paginated results', async () => {");
@@ -105,6 +125,19 @@ function renderPaginatedTest(lines: string[], op: Operation, plan: any, method: 
   lines.push("      expect(fetchSearchParams()).toHaveProperty('order');");
   lines.push('      expect(Array.isArray(data)).toBe(true);');
   lines.push('      expect(listMetadata).toBeDefined();');
+
+  // Assert on first item fields when item model is available
+  const itemModel = modelMap.get(itemModelName);
+  if (itemModel) {
+    const assertions = buildFieldAssertions(itemModel, 'data[0]');
+    if (assertions.length > 0) {
+      lines.push('      expect(data.length).toBeGreaterThan(0);');
+      for (const assertion of assertions) {
+        lines.push(`      ${assertion}`);
+      }
+    }
+  }
+
   lines.push('    });');
 }
 
@@ -118,10 +151,20 @@ function renderDeleteTest(lines: string[], op: Operation, method: string, servic
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  if (hasPathParam) {
+    lines.push("      expect(fetchURL()).toContain('test_id');");
+  }
   lines.push('    });');
 }
 
-function renderBodyTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+function renderBodyTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
   const hasPathParam = op.pathParams.length > 0;
@@ -133,11 +176,32 @@ function renderBodyTest(lines: string[], op: Operation, plan: any, method: strin
   lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArg}{});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  if (hasPathParam) {
+    lines.push("      expect(fetchURL()).toContain('test_id');");
+  }
+  lines.push('      expect(fetchBody()).toBeDefined();');
   lines.push('      expect(result).toBeDefined();');
+
+  // Response field assertions
+  const responseModel = modelMap.get(responseModelName);
+  if (responseModel) {
+    const assertions = buildFieldAssertions(responseModel, 'result');
+    for (const assertion of assertions) {
+      lines.push(`      ${assertion}`);
+    }
+  }
+
   lines.push('    });');
 }
 
-function renderGetTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+function renderGetTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
   const hasPathParam = op.pathParams.length > 0;
@@ -149,7 +213,20 @@ function renderGetTest(lines: string[], op: Operation, plan: any, method: string
   lines.push(`      const result = await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  if (hasPathParam) {
+    lines.push("      expect(fetchURL()).toContain('test_id');");
+  }
   lines.push('      expect(result).toBeDefined();');
+
+  // Response field assertions
+  const responseModel = modelMap.get(responseModelName);
+  if (responseModel) {
+    const assertions = buildFieldAssertions(responseModel, 'result');
+    for (const assertion of assertions) {
+      lines.push(`      ${assertion}`);
+    }
+  }
+
   lines.push('    });');
 }
 
@@ -163,5 +240,89 @@ function renderVoidTest(lines: string[], op: Operation, method: string, serviceP
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  if (hasPathParam) {
+    lines.push("      expect(fetchURL()).toContain('test_id');");
+  }
   lines.push('    });');
+}
+
+function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+  const hasPathParam = op.pathParams.length > 0;
+  const isPaginated = plan.isPaginated;
+  const hasBody = plan.hasBody;
+
+  let args: string;
+  if (isPaginated) {
+    args = '';
+  } else if (hasBody && hasPathParam) {
+    args = "'test_id', {}";
+  } else if (hasBody) {
+    args = '{}';
+  } else if (hasPathParam) {
+    args = "'test_id'";
+  } else {
+    args = '';
+  }
+
+  lines.push('');
+  lines.push("    it('throws on unauthorized', async () => {");
+  lines.push("      fetchOnce({ message: 'Unauthorized' }, { status: 401 });");
+  lines.push('');
+  lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
+  lines.push('    });');
+}
+
+/**
+ * Build field-level assertions for top-level primitive fields of a response model.
+ * Returns lines like: expect(result.fieldName).toBe(fixtureValue);
+ */
+function buildFieldAssertions(model: Model, accessor: string): string[] {
+  const assertions: string[] = [];
+
+  for (const field of model.fields) {
+    if (!field.required) continue;
+    const value = fixtureValueForType(field.type, field.name);
+    if (value === null) continue;
+    const domainField = fieldName(field.name);
+    assertions.push(`expect(${accessor}.${domainField}).toBe(${value});`);
+  }
+
+  return assertions;
+}
+
+/**
+ * Return a JS literal string for the expected fixture value of a primitive field.
+ * Returns null for non-primitive or complex types (arrays, models, etc.).
+ */
+function fixtureValueForType(ref: TypeRef, name: string): string | null {
+  switch (ref.kind) {
+    case 'primitive':
+      return fixtureValueForPrimitive(ref.type, ref.format, name);
+    case 'literal':
+      return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
+    default:
+      return null;
+  }
+}
+
+function fixtureValueForPrimitive(type: string, format: string | undefined, name: string): string | null {
+  switch (type) {
+    case 'string':
+      if (format === 'date-time') return "'2023-01-01T00:00:00.000Z'";
+      if (format === 'date') return "'2023-01-01'";
+      if (format === 'uuid') return "'00000000-0000-0000-0000-000000000000'";
+      if (name.includes('id')) return `'${wireFieldName(name)}_01234'`;
+      if (name.includes('email')) return "'test@example.com'";
+      if (name.includes('url') || name.includes('uri')) return "'https://example.com'";
+      if (name.includes('name')) return "'Test'";
+      return `'test_${wireFieldName(name)}'`;
+    case 'integer':
+      return '1';
+    case 'number':
+      return '1';
+    case 'boolean':
+      return 'true';
+    default:
+      return null;
+  }
 }
