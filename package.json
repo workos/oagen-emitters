@@ -1,0 +1,51 @@
+{
+  "name": "@workos/oagen-plugins",
+  "version": "0.0.1",
+  "description": "WorkOS' oagen plugins",
+  "license": "MIT",
+  "author": "WorkOS",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt --write .",
+    "format:md": "prettier --write '**/*.md'",
+    "lint:all": "oxlint --fix && oxfmt --write . && prettier --write '**/*.md'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "sdk:generate:node": "oagen generate --lang node --output ./sdk --namespace workos --spec ../openapi-spec/spec/open-api-spec.yaml --api-surface ./sdk-node-surface.json --target ../backend/workos-node",
+    "sdk:diff:node": "oagen diff --old ./sdk/spec-snapshot.yaml --new ../openapi-spec/spec/open-api-spec.yaml --lang node --output ./sdk --target ../backend/workos-node --api-surface ./sdk-node-surface.json",
+    "sdk:verify:node": "oagen verify --lang node --output ./sdk --spec ../openapi-spec/spec/open-api-spec.yaml --api-surface ./sdk-node-surface.json",
+    "sdk:extract:node": "oagen extract --lang node --sdk-path ../backend/workos-node --output ./sdk-node-surface.json",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@workos/oagen": "^0.0.1"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
+    "@types/node": "^25.3.3",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.36.0",
+    "oxlint": "^1.51.0",
+    "prettier": "^3.8.1",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=24.10.0"
+  }
+}
