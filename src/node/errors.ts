@@ -26,6 +26,7 @@ export function generateErrors(): GeneratedFile[] {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/unauthorized.exception.ts',
@@ -41,6 +42,7 @@ export function generateErrors(): GeneratedFile[] {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/not-found.exception.ts',
@@ -69,6 +71,7 @@ export function generateErrors(): GeneratedFile[] {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/conflict.exception.ts',
@@ -91,6 +94,7 @@ export function generateErrors(): GeneratedFile[] {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/unprocessable-entity.exception.ts',
@@ -130,6 +134,7 @@ export class UnprocessableEntityException extends Error {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/rate-limit-exceeded.exception.ts',
@@ -147,6 +152,7 @@ export class UnprocessableEntityException extends Error {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/generic-server.exception.ts',
@@ -163,6 +169,7 @@ export class UnprocessableEntityException extends Error {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/no-api-key-provided.exception.ts',
@@ -176,6 +183,7 @@ export class UnprocessableEntityException extends Error {
   }
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/exceptions/index.ts',
@@ -191,6 +199,7 @@ export { RateLimitExceededException } from './rate-limit-exceeded.exception';
 export { GenericServerException } from './generic-server.exception';
 export { NoApiKeyProvidedException } from './no-api-key-provided.exception';`,
       skipIfExists: true,
+      integrateTarget: false,
     },
   ];
 }

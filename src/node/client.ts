@@ -200,7 +200,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('}');
 
-  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
+  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true, integrateTarget: false };
 }
 
 // Names exported from common utilities that must not be re-exported from model interfaces
@@ -312,6 +312,7 @@ function generatePackageJson(ctx: EmitterContext): GeneratedFile {
     path: 'package.json',
     content: JSON.stringify(pkg, null, 2),
     skipIfExists: true,
+    integrateTarget: false,
   };
 }
 
@@ -338,5 +339,6 @@ function generateTsConfig(): GeneratedFile {
     path: 'tsconfig.json',
     content: JSON.stringify(config, null, 2),
     skipIfExists: true,
+    integrateTarget: false,
   };
 }

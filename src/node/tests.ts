@@ -89,7 +89,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
 
   lines.push('});');
 
-  return { path: testPath, content: lines.join('\n'), skipIfExists: true };
+  return { path: testPath, content: lines.join('\n'), skipIfExists: true, integrateTarget: false };
 }
 
 function renderPaginatedTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {

@@ -6,21 +6,25 @@ export function generateCommon(): GeneratedFile[] {
       path: 'src/common/utils/pagination.ts',
       content: paginationContent(),
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/utils/fetch-and-deserialize.ts',
       content: fetchAndDeserializeContent(),
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/serializers/list.serializer.ts',
       content: listSerializerContent(),
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/utils/test-utils.ts',
       content: testUtilsContent(),
       skipIfExists: true,
+      integrateTarget: false,
     },
   ];
 }

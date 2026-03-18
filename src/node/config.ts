@@ -20,6 +20,7 @@ export interface AppInfo {
   version?: string;
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/interfaces/post-options.interface.ts',
@@ -30,6 +31,7 @@ export interface AppInfo {
   skipApiKeyCheck?: boolean;
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/interfaces/get-options.interface.ts',
@@ -40,6 +42,7 @@ export interface AppInfo {
   skipApiKeyCheck?: boolean;
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/interfaces/pagination-options.interface.ts',
@@ -50,6 +53,7 @@ export interface AppInfo {
   order?: 'asc' | 'desc';
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
     {
       path: 'src/common/interfaces/request-exception.interface.ts',
@@ -60,6 +64,7 @@ export interface AppInfo {
   readonly code?: string;
 }`,
       skipIfExists: true,
+      integrateTarget: false,
     },
   ];
 }
