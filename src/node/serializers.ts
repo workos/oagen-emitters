@@ -1,5 +1,13 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from '@workos/oagen';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
+import {
+  fieldName,
+  wireFieldName,
+  fileName,
+  serviceDirName,
+  resolveInterfaceName,
+  buildServiceNameMap,
+  wireInterfaceName,
+} from './naming.js';
 import { assignModelsToServices, relativeImport } from './utils.js';
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {

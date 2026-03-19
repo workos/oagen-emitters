@@ -440,25 +440,21 @@ async function main(): Promise<void> {
     console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
     // Generate batched PHP script for this wave
-    const phpScript = buildBatchedPhpScript(
-      resolve(sdkPath),
-      namespace,
-      apiKey,
-      proxyPort,
-      plannedCalls,
-      spec,
-    );
+    const phpScript = buildBatchedPhpScript(resolve(sdkPath), namespace, apiKey, proxyPort, plannedCalls, spec);
 
     const scriptPath = join(tmpDir, `smoke_wave_${waveNumber}.php`);
     writeFileSync(scriptPath, phpScript, 'utf-8');
 
-    const callResults = new Map<number, {
-      captureIndexBefore: number;
-      captureIndexAfter: number;
-      error?: string;
-      startTime: number;
-      endTime: number;
-    }>();
+    const callResults = new Map<
+      number,
+      {
+        captureIndexBefore: number;
+        captureIndexAfter: number;
+        error?: string;
+        startTime: number;
+        endTime: number;
+      }
+    >();
 
     let currentCapturesBefore = 0;
     let currentCallStart = Date.now();
@@ -544,7 +540,11 @@ async function main(): Promise<void> {
       const result = callResults.get(index);
 
       if (!result) {
-        exchanges.push({ ...makeSkippedExchange(op, irService, 'Call did not execute'), outcome: 'api-error', durationMs: 0 });
+        exchanges.push({
+          ...makeSkippedExchange(op, irService, 'Call did not execute'),
+          outcome: 'api-error',
+          durationMs: 0,
+        });
         errorCount++;
         console.log(`  x ${op.name} -- did not execute`);
         continue;
@@ -554,7 +554,11 @@ async function main(): Promise<void> {
 
       if (result.captureIndexAfter <= result.captureIndexBefore) {
         if (result.error) {
-          exchanges.push({ ...makeSkippedExchange(op, irService, result.error), outcome: 'api-error', durationMs: elapsed });
+          exchanges.push({
+            ...makeSkippedExchange(op, irService, result.error),
+            outcome: 'api-error',
+            durationMs: elapsed,
+          });
           errorCount++;
           console.log(`  x ${op.name} -- ${result.error.split('\n')[0]}`);
         } else {

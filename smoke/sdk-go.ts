@@ -62,9 +62,33 @@ interface ProxyExchange {
 // ---------------------------------------------------------------------------
 
 const GO_ACRONYMS = new Set([
-  'ID', 'URL', 'API', 'HTTP', 'HTTPS', 'JSON', 'XML', 'SQL', 'HTML', 'CSS',
-  'URI', 'SSO', 'IP', 'TLS', 'SSL', 'DNS', 'TCP', 'UDP', 'SSH', 'JWT',
-  'OAuth', 'SDK', 'CLI', 'MFA', 'SAML', 'SCIM', 'DSYNC',
+  'ID',
+  'URL',
+  'API',
+  'HTTP',
+  'HTTPS',
+  'JSON',
+  'XML',
+  'SQL',
+  'HTML',
+  'CSS',
+  'URI',
+  'SSO',
+  'IP',
+  'TLS',
+  'SSL',
+  'DNS',
+  'TCP',
+  'UDP',
+  'SSH',
+  'JWT',
+  'OAuth',
+  'SDK',
+  'CLI',
+  'MFA',
+  'SAML',
+  'SCIM',
+  'DSYNC',
 ]);
 
 function goAcronyms(name: string): string {
@@ -344,11 +368,7 @@ function generateGoImports(
   return lines.join('\n');
 }
 
-function generateGoPayloadStruct(
-  payload: Record<string, unknown>,
-  optsType: string,
-  servicePackage: string,
-): string {
+function generateGoPayloadStruct(payload: Record<string, unknown>, optsType: string, servicePackage: string): string {
   const lines: string[] = [];
   lines.push(`${servicePackage}.${optsType}{`);
   for (const [key, value] of Object.entries(payload)) {
@@ -413,9 +433,7 @@ function generateGoCallBlock(
 
   // Paginated operations: pass opts with Limit=1
   if (op.pagination && !op.requestBody) {
-    const extraParams = op.queryParams.filter(
-      (p: any) => !['limit', 'before', 'after', 'order'].includes(p.name),
-    );
+    const extraParams = op.queryParams.filter((p: any) => !['limit', 'before', 'after', 'order'].includes(p.name));
     if (extraParams.length > 0) {
       // Match the emitter convention: List → ListFilterOpts, others → ${method}Opts
       const optsType = method === 'List' ? 'ListFilterOpts' : `${method}Opts`;
@@ -664,13 +682,16 @@ async function main(): Promise<void> {
 
       // Step 2: Run (async — proxy needs the event loop to handle HTTP)
       // Track per-call captures using stderr markers
-      const callResults = new Map<number, {
-        captureIndexBefore: number;
-        captureIndexAfter: number;
-        error?: string;
-        startTime: number;
-        endTime: number;
-      }>();
+      const callResults = new Map<
+        number,
+        {
+          captureIndexBefore: number;
+          captureIndexAfter: number;
+          error?: string;
+          startTime: number;
+          endTime: number;
+        }
+      >();
 
       let currentCallStart = Date.now();
       let currentCapturesBefore = 0;

@@ -151,7 +151,10 @@ function createProxyServer(
       const addr = server.address() as any;
       resolvePromise({
         port: addr.port,
-        close: () => new Promise<void>((r) => { server.close(() => r()); }),
+        close: () =>
+          new Promise<void>((r) => {
+            server.close(() => r());
+          }),
       });
     });
   });
@@ -236,7 +239,11 @@ function buildKotlinArgs(
   op: Operation,
   pathParams: Record<string, string>,
   spec: any,
-): { positionalArgs: string[]; bodyPayload: Record<string, unknown> | null; queryOpts: Record<string, unknown> | null } {
+): {
+  positionalArgs: string[];
+  bodyPayload: Record<string, unknown> | null;
+  queryOpts: Record<string, unknown> | null;
+} {
   const positionalArgs: string[] = [];
   let bodyPayload: Record<string, unknown> | null = null;
   let queryOpts: Record<string, unknown> | null = null;
@@ -523,24 +530,22 @@ async function main(): Promise<void> {
       console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
       // Generate batched Kotlin script for this wave
-      const mainKt = buildBatchedKotlinScript(
-        proxy.port,
-        plannedCalls,
-        spec,
-        clientClass,
-      );
+      const mainKt = buildBatchedKotlinScript(proxy.port, plannedCalls, spec, clientClass);
 
       // Write Gradle project with the batched Main.kt
       writeGradleProject(tmpDir, sdkPath, mainKt);
 
       // Execute the batched script using spawn for real-time stderr parsing
-      const callResults = new Map<number, {
-        captureIndexBefore: number;
-        captureIndexAfter: number;
-        error?: string;
-        startTime: number;
-        endTime: number;
-      }>();
+      const callResults = new Map<
+        number,
+        {
+          captureIndexBefore: number;
+          captureIndexAfter: number;
+          error?: string;
+          startTime: number;
+          endTime: number;
+        }
+      >();
 
       let currentCallIndex = -1;
       let currentCallStart = Date.now();

@@ -107,7 +107,7 @@ function startProxy(
 
         // Forward to real API
         const forwardHeaders: Record<string, string> = {
-          'authorization': `Bearer ${apiKey}`,
+          authorization: `Bearer ${apiKey}`,
           'content-type': req.headers['content-type'] || 'application/json',
           'user-agent': req.headers['user-agent'] || 'workos-elixir-smoke',
         };
@@ -248,7 +248,11 @@ function buildElixirArgs(
   op: Operation,
   pathParams: Record<string, string>,
   spec: any,
-): { positionalArgs: string[]; bodyPayload: Record<string, unknown> | null; queryOpts: Record<string, unknown> | null } {
+): {
+  positionalArgs: string[];
+  bodyPayload: Record<string, unknown> | null;
+  queryOpts: Record<string, unknown> | null;
+} {
   const positionalArgs: string[] = [];
   let bodyPayload: Record<string, unknown> | null = null;
   let queryOpts: Record<string, unknown> | null = null;
@@ -326,12 +330,7 @@ interface PlannedCall {
  * Build a single Elixir script that calls ALL planned operations sequentially.
  * Each call is wrapped with stderr markers for correlation.
  */
-function buildBatchedElixirScript(
-  sdkPath: string,
-  proxyPort: number,
-  calls: PlannedCall[],
-  spec: any,
-): string {
+function buildBatchedElixirScript(sdkPath: string, proxyPort: number, calls: PlannedCall[], spec: any): string {
   const lines: string[] = [];
 
   // Preamble -- loaded once
@@ -499,24 +498,22 @@ async function main(): Promise<void> {
     console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
     // Generate batched Elixir script for this wave
-    const elixirScript = buildBatchedElixirScript(
-      resolve(sdkPath),
-      proxy.port,
-      plannedCalls,
-      spec,
-    );
+    const elixirScript = buildBatchedElixirScript(resolve(sdkPath), proxy.port, plannedCalls, spec);
 
     const scriptPath = join(tmpDir, `smoke_wave_${waveNumber}.exs`);
     writeFileSync(scriptPath, elixirScript);
 
     // Execute the batched script
-    const callResults = new Map<number, {
-      captureIndexBefore: number;
-      captureIndexAfter: number;
-      error?: string;
-      startTime: number;
-      endTime: number;
-    }>();
+    const callResults = new Map<
+      number,
+      {
+        captureIndexBefore: number;
+        captureIndexAfter: number;
+        error?: string;
+        startTime: number;
+        endTime: number;
+      }
+    >();
 
     let currentCallIndex = -1;
     let currentCallStart = Date.now();

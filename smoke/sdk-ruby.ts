@@ -164,7 +164,7 @@ function startProxy(
 
         // Forward to real API
         const forwardHeaders: Record<string, string> = {
-          'authorization': `Bearer ${apiKey}`,
+          authorization: `Bearer ${apiKey}`,
           'content-type': req.headers['content-type'] || 'application/json',
           'user-agent': req.headers['user-agent'] || 'workos-ruby-smoke',
         };
@@ -280,12 +280,7 @@ interface PlannedCall {
  * Build a single Ruby script that calls ALL planned operations sequentially.
  * Each call is wrapped with JSONL markers on $stderr for correlation.
  */
-function buildBatchedRubyScript(
-  sdkPath: string,
-  proxyPort: number,
-  calls: PlannedCall[],
-  spec: any,
-): string {
+function buildBatchedRubyScript(sdkPath: string, proxyPort: number, calls: PlannedCall[], spec: any): string {
   const lines: string[] = [];
 
   // Preamble -- loaded once
@@ -456,24 +451,22 @@ async function main(): Promise<void> {
     console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
     // Generate batched Ruby script for this wave
-    const rubyScript = buildBatchedRubyScript(
-      resolve(sdkPath),
-      proxy.port,
-      plannedCalls,
-      spec,
-    );
+    const rubyScript = buildBatchedRubyScript(resolve(sdkPath), proxy.port, plannedCalls, spec);
 
     const scriptPath = join(tmpDir, `smoke_wave_${waveNumber}.rb`);
     writeFileSync(scriptPath, rubyScript);
 
     // Execute the batched script
-    const callResults = new Map<number, {
-      captureIndexBefore: number;
-      captureIndexAfter: number;
-      error?: string;
-      startTime: number;
-      endTime: number;
-    }>();
+    const callResults = new Map<
+      number,
+      {
+        captureIndexBefore: number;
+        captureIndexAfter: number;
+        error?: string;
+        startTime: number;
+        endTime: number;
+      }
+    >();
 
     let currentCallIndex = -1;
     let currentCallStart = Date.now();

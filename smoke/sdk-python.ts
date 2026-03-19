@@ -104,7 +104,7 @@ function createProxyServer(
 
       const forwardPath = url.pathname + url.search;
       const forwardHeaders: Record<string, string> = {
-        'Authorization': `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         'User-Agent': 'workos-python-smoke-test',
       };
@@ -480,24 +480,21 @@ async function main(): Promise<void> {
     console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
     // Generate batched Python script for this wave
-    const pythonScript = buildBatchedPythonScript(
-      sdkPath,
-      apiKey,
-      proxyPort,
-      plannedCalls,
-      spec,
-    );
+    const pythonScript = buildBatchedPythonScript(sdkPath, apiKey, proxyPort, plannedCalls, spec);
 
     const scriptPath = join(tmpDir, `smoke_wave_${waveNumber}.py`);
     writeFileSync(scriptPath, pythonScript);
 
-    const callResults = new Map<number, {
-      captureIndexBefore: number;
-      captureIndexAfter: number;
-      error?: string;
-      startTime: number;
-      endTime: number;
-    }>();
+    const callResults = new Map<
+      number,
+      {
+        captureIndexBefore: number;
+        captureIndexAfter: number;
+        error?: string;
+        startTime: number;
+        endTime: number;
+      }
+    >();
 
     let currentCapturesBefore = 0;
     let currentCallStart = Date.now();

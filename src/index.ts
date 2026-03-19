@@ -1,1 +1,9 @@
+export { dotnetEmitter } from './dotnet/index.js';
+export { elixirEmitter } from './elixir/index.js';
+export { goEmitter } from './go/index.js';
+export { kotlinEmitter } from './kotlin/index.js';
 export { nodeEmitter } from './node/index.js';
+export { phpEmitter } from './php/index.js';
+export { pythonEmitter } from './python/index.js';
+export { rubyEmitter } from './ruby/index.js';
+export { rustEmitter } from './rust/index.js';

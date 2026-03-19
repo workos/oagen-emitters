@@ -153,7 +153,10 @@ function createProxyServer(
       const addr = server.address() as any;
       resolvePromise({
         port: addr.port,
-        close: () => new Promise<void>((r) => { server.close(() => r()); }),
+        close: () =>
+          new Promise<void>((r) => {
+            server.close(() => r());
+          }),
       });
     });
   });
@@ -221,7 +224,11 @@ function buildRustArgs(
   op: Operation,
   pathParams: Record<string, string>,
   spec: any,
-): { positionalArgs: string[]; bodyPayload: Record<string, unknown> | null; queryOpts: Record<string, unknown> | null } {
+): {
+  positionalArgs: string[];
+  bodyPayload: Record<string, unknown> | null;
+  queryOpts: Record<string, unknown> | null;
+} {
   const positionalArgs: string[] = [];
   let bodyPayload: Record<string, unknown> | null = null;
   let queryOpts: Record<string, unknown> | null = null;
@@ -294,11 +301,7 @@ interface PlannedCall {
  * Build a single main.rs that calls ALL planned operations sequentially.
  * Each call is wrapped with stderr markers for correlation.
  */
-function generateBatchedRustSource(
-  port: number,
-  calls: PlannedCall[],
-  spec: any,
-): string {
+function generateBatchedRustSource(port: number, calls: PlannedCall[], spec: any): string {
   const callBlocks: string[] = [];
 
   for (const call of calls) {
@@ -513,28 +516,27 @@ serde_json = "1"
       }
 
       // Run binary asynchronously, parsing stderr markers for correlation
-      const callResults = new Map<number, {
-        captureIndexBefore: number;
-        captureIndexAfter: number;
-        error?: string;
-        startTime: number;
-        endTime: number;
-      }>();
+      const callResults = new Map<
+        number,
+        {
+          captureIndexBefore: number;
+          captureIndexAfter: number;
+          error?: string;
+          startTime: number;
+          endTime: number;
+        }
+      >();
 
       let currentCallStart = Date.now();
       let currentCapturesBefore = 0;
 
       try {
         await new Promise<void>((resolvePromise, rejectPromise) => {
-          const child = spawn(
-            join(tmpDir, 'target', 'debug', 'smoke-driver'),
-            [],
-            {
-              cwd: tmpDir,
-              env: { ...process.env, WORKOS_API_KEY: apiKey, WORKOS_BASE_URL: `http://localhost:${proxy.port}` },
-              stdio: ['pipe', 'pipe', 'pipe'],
-            },
-          );
+          const child = spawn(join(tmpDir, 'target', 'debug', 'smoke-driver'), [], {
+            cwd: tmpDir,
+            env: { ...process.env, WORKOS_API_KEY: apiKey, WORKOS_BASE_URL: `http://localhost:${proxy.port}` },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
 
           const timeout = setTimeout(() => {
             child.kill('SIGKILL');

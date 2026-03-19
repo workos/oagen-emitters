@@ -1,6 +1,14 @@
 import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
-import { fieldName, wireFieldName, fileName, serviceDirName, servicePropertyName, resolveMethodName, resolveServiceName } from './naming.js';
+import {
+  fieldName,
+  wireFieldName,
+  fileName,
+  serviceDirName,
+  servicePropertyName,
+  resolveMethodName,
+  resolveServiceName,
+} from './naming.js';
 import { generateFixtures } from './fixtures.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

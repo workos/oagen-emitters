@@ -1,7 +1,15 @@
 import type { Model, Field, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
-import { fieldName, wireFieldName, fileName, serviceDirName, resolveInterfaceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
+import {
+  fieldName,
+  wireFieldName,
+  fileName,
+  serviceDirName,
+  resolveInterfaceName,
+  buildServiceNameMap,
+  wireInterfaceName,
+} from './naming.js';
 import { assignModelsToServices, collectFieldDependencies, docComment } from './utils.js';
 
 /** Built-in TypeScript types that are always available (no import needed). */
@@ -177,14 +185,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const responseBaselineField = baselineResponse?.fields?.[domainWireField];
       const domainResponseOptionalMismatch =
         baselineField && !baselineField.optional && responseBaselineField && responseBaselineField.optional;
-      if (
-        domainResponseOptionalMismatch &&
-        (domainFieldName === 'metadata' || domainFieldName === 'directoryManaged')
-      ) {
-        console.log(
-          `[DEBUG] domainResponseOptionalMismatch for ${domainName}.${domainFieldName}: domain.optional=${baselineField?.optional}, response.optional=${responseBaselineField?.optional}, wireField=${domainWireField}`,
-        );
-      }
       if (
         baselineField &&
         !domainResponseOptionalMismatch &&

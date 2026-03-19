@@ -6,11 +6,14 @@ import { assignModelsToServices } from './utils.js';
  * Generate JSON fixture files for test data.
  * Each model that appears as a response gets a fixture in wire format (snake_case).
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}, ctx?: EmitterContext): { path: string; content: string }[] {
+export function generateFixtures(
+  spec: {
+    models: Model[];
+    enums: Enum[];
+    services: any[];
+  },
+  ctx?: EmitterContext,
+): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
   const modelToService = assignModelsToServices(spec.models, spec.services);

@@ -69,10 +69,7 @@ interface ProxyCapture {
   response: CapturedResponse;
 }
 
-function createProxyServer(
-  apiKey: string,
-  captures: ProxyCapture[],
-): Promise<{ port: number; close: () => void }> {
+function createProxyServer(apiKey: string, captures: ProxyCapture[]): Promise<{ port: number; close: () => void }> {
   return new Promise((resolve) => {
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const chunks: Buffer[] = [];
@@ -215,7 +212,11 @@ function buildDotnetArgs(
   op: Operation,
   pathParams: Record<string, string>,
   spec: any,
-): { positionalArgs: string[]; bodyPayload: Record<string, unknown> | null; queryOpts: Record<string, unknown> | null } {
+): {
+  positionalArgs: string[];
+  bodyPayload: Record<string, unknown> | null;
+  queryOpts: Record<string, unknown> | null;
+} {
   const positionalArgs: string[] = [];
   let bodyPayload: Record<string, unknown> | null = null;
   let queryOpts: Record<string, unknown> | null = null;
@@ -291,12 +292,7 @@ interface PlannedCall {
  * Build a single Program.cs that calls ALL planned operations sequentially.
  * Each call is wrapped with stderr markers for correlation with proxy captures.
  */
-function buildBatchedCSharpScript(
-  port: number,
-  ns: string,
-  calls: PlannedCall[],
-  spec: any,
-): string {
+function buildBatchedCSharpScript(port: number, ns: string, calls: PlannedCall[], spec: any): string {
   const lines: string[] = [];
 
   // Preamble — loaded once
@@ -345,14 +341,18 @@ function buildBatchedCSharpScript(
       const httpMethod = op.httpMethod.toUpperCase();
 
       lines.push(`    var payloadJson_${index} = @"${payloadJson}";`);
-      lines.push(`    var content_${index} = new StringContent(payloadJson_${index}, Encoding.UTF8, "application/json");`);
+      lines.push(
+        `    var content_${index} = new StringContent(payloadJson_${index}, Encoding.UTF8, "application/json");`,
+      );
 
       if (httpMethod === 'POST') {
         lines.push(`    var response_${index} = await httpClient.PostAsync("${urlPath}", content_${index});`);
       } else if (httpMethod === 'PUT') {
         lines.push(`    var response_${index} = await httpClient.PutAsync("${urlPath}", content_${index});`);
       } else if (httpMethod === 'PATCH') {
-        lines.push(`    var request_${index} = new HttpRequestMessage(new HttpMethod("PATCH"), "${urlPath}") { Content = content_${index} };`);
+        lines.push(
+          `    var request_${index} = new HttpRequestMessage(new HttpMethod("PATCH"), "${urlPath}") { Content = content_${index} };`,
+        );
         lines.push(`    var response_${index} = await httpClient.SendAsync(request_${index});`);
       } else {
         lines.push(`    var response_${index} = await httpClient.PostAsync("${urlPath}", content_${index});`);
@@ -445,21 +445,29 @@ function runDotnetWave(
   apiKey: string,
   proxyPort: number,
   captures: ProxyCapture[],
-): Promise<Map<number, {
-  captureIndexBefore: number;
-  captureIndexAfter: number;
-  error?: string;
-  startTime: number;
-  endTime: number;
-}>> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const callResults = new Map<number, {
+): Promise<
+  Map<
+    number,
+    {
       captureIndexBefore: number;
       captureIndexAfter: number;
       error?: string;
       startTime: number;
       endTime: number;
-    }>();
+    }
+  >
+> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const callResults = new Map<
+      number,
+      {
+        captureIndexBefore: number;
+        captureIndexAfter: number;
+        error?: string;
+        startTime: number;
+        endTime: number;
+      }
+    >();
 
     let currentCallIndex = -1;
     let currentCallStart = Date.now();
@@ -712,23 +720,21 @@ async function main(): Promise<void> {
       console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
       // Generate batched C# script for this wave
-      const programCs = buildBatchedCSharpScript(
-        proxy.port,
-        ns,
-        plannedCalls,
-        spec,
-      );
+      const programCs = buildBatchedCSharpScript(proxy.port, ns, plannedCalls, spec);
 
       writeDotnetProject(tmpDir, sdkPath, programCs);
 
       // Execute the batched script via spawn
-      let callResults: Map<number, {
-        captureIndexBefore: number;
-        captureIndexAfter: number;
-        error?: string;
-        startTime: number;
-        endTime: number;
-      }>;
+      let callResults: Map<
+        number,
+        {
+          captureIndexBefore: number;
+          captureIndexAfter: number;
+          error?: string;
+          startTime: number;
+          endTime: number;
+        }
+      >;
 
       try {
         callResults = await runDotnetWave(tmpDir, apiKey, proxy.port, captures);

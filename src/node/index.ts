@@ -1,5 +1,5 @@
 import type { Emitter, EmitterContext, GeneratedFile, ApiSpec, Model, Enum, Service } from '@workos/oagen';
-import { IR_VERSION } from '@workos/oagen';
+
 import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateSerializers } from './serializers.js';
@@ -13,7 +13,6 @@ import { generateManifest } from './manifest.js';
 
 export const nodeEmitter: Emitter = {
   language: 'node',
-  contractVersion: IR_VERSION,
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     return [...generateModels(models, ctx), ...generateSerializers(models, ctx)];

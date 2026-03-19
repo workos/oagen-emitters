@@ -316,11 +316,15 @@ function renderGetMethod(
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`);
+    lines.push(
+      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
+    );
     lines.push('      query: options,');
     lines.push('    });');
   } else {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr});`);
+    lines.push(
+      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr});`,
+    );
   }
   lines.push(`    return deserialize${responseModel}(data);`);
   lines.push('  }');

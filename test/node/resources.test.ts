@@ -194,7 +194,10 @@ describe('generateResources', () => {
       irVersion: 6,
       overlayLookup: {
         methodByOperation: new Map([
-          ['POST /auth/factors/enroll', { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' }],
+          [
+            'POST /auth/factors/enroll',
+            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),

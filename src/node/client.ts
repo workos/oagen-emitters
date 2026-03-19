@@ -1,5 +1,13 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, resolveServiceName, buildServiceNameMap, wireInterfaceName } from './naming.js';
+import {
+  fileName,
+  serviceDirName,
+  servicePropertyName,
+  resolveInterfaceName,
+  resolveServiceName,
+  buildServiceNameMap,
+  wireInterfaceName,
+} from './naming.js';
 import { assignModelsToServices } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -250,9 +258,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const name = resolveInterfaceName(model.name, ctx);
     const wireName = wireInterfaceName(name);
     if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(wireName)) continue;
-    lines.push(
-      `export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`,
-    );
+    lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
   }
 
   // Enum exports
