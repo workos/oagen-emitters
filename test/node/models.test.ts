@@ -297,4 +297,67 @@ describe('generateModels', () => {
     // Field with only deprecated gets single-line JSDoc
     expect(content).toContain('  /** @deprecated */');
   });
+
+  it('renders readOnly/writeOnly/default annotations', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            readOnly: true,
+          },
+          {
+            name: 'secret_key',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            writeOnly: true,
+          },
+          {
+            name: 'status',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            default: 'active',
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const content = files[0].content;
+
+    // readOnly field gets @readonly JSDoc and readonly TS modifier
+    expect(content).toContain('/** @readonly */');
+    expect(content).toContain('  readonly id: string;');
+
+    // writeOnly field gets @writeonly JSDoc
+    expect(content).toContain('/** @writeonly */');
+
+    // default field gets @default JSDoc
+    expect(content).toContain('@default "active"');
+  });
 });

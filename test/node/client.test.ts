@@ -160,4 +160,24 @@ describe('generateClient', () => {
     expect(content).toContain('case 429:');
     expect(content).toContain('throw new RateLimitExceededException');
   });
+
+  it('renders spec.description as JSDoc on WorkOS class', () => {
+    const specWithDesc: ApiSpec = {
+      ...spec,
+      description: 'The WorkOS API provides a unified interface for enterprise features.',
+    };
+
+    const descCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: specWithDesc,
+    };
+
+    const files = generateClient(specWithDesc, descCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    const content = workosFile.content;
+
+    expect(content).toContain('/** The WorkOS API provides a unified interface for enterprise features. */');
+    expect(content).toContain('export class WorkOS {');
+  });
 });

@@ -253,7 +253,176 @@ describe('generateResources', () => {
     expect(content).toContain('   *');
     expect(content).toContain('   * You may optionally inform Radar that an attempt was successful.');
     expect(content).toContain('   * @param id - The unique identifier of the attempt.');
+    expect(content).toContain('   * @returns {RadarAttempt}');
     expect(content).toContain('   * @deprecated');
     expect(content).toContain('   */');
+  });
+
+  it('renders @returns for response model', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [
+              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain('@returns {Organization}');
+  });
+
+  it('renders query param docs for non-paginated operations', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [
+              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [
+              {
+                name: 'include_fields',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Comma-separated list of fields to include.',
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain('@param options.includeFields - Comma-separated list of fields to include.');
+  });
+
+  it('renders header and cookie param docs', () => {
+    const services: Service[] = [
+      {
+        name: 'Sessions',
+        operations: [
+          {
+            name: 'getSession',
+            httpMethod: 'get',
+            path: '/sessions/{id}',
+            pathParams: [
+              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [],
+            headerParams: [
+              {
+                name: 'X-Request-Id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Unique request identifier.',
+              },
+            ],
+            cookieParams: [
+              {
+                name: 'session_token',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                description: 'The session cookie.',
+              },
+            ],
+            response: { kind: 'model', name: 'Session' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain('@param xRequestId - Unique request identifier.');
+    expect(content).toContain('@param sessionToken - The session cookie.');
+  });
+
+  it('renders successResponses documentation', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'createOrganization',
+            httpMethod: 'post',
+            path: '/organizations',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrganizationInput' },
+            response: { kind: 'model', name: 'Organization' },
+            successResponses: [
+              { statusCode: 200, type: { kind: 'model', name: 'Organization' } },
+              { statusCode: 201, type: { kind: 'model', name: 'Organization' } },
+            ],
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain('@returns {Organization} 200');
+    expect(content).toContain('@returns {Organization} 201');
+  });
+
+  it('renders deprecated path params', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{slug}',
+            pathParams: [
+              {
+                name: 'slug',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                description: 'The organization slug.',
+                deprecated: true,
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain('@param slug - (deprecated) The organization slug.');
   });
 });
