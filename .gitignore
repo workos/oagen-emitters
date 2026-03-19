@@ -3,5 +3,5 @@ dist/
 .env
 sdk-*-surface.json
 smoke-*.json
-/sdk-*
+/sdk*/
 verify-diagnostics.json
