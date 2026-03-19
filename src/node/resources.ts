@@ -187,7 +187,13 @@ function renderMethod(
   }
 
   if (plan.isPaginated) {
-    renderPaginatedMethod(lines, op, plan, method, responseModel!);
+    if (!responseModel) {
+      console.warn(
+        `[oagen] Warning: Skipping paginated method "${method}" (${op.httpMethod.toUpperCase()} ${op.path}) — response has no named model. Ensure the spec uses a $ref for paginated item types.`,
+      );
+      return lines;
+    }
+    renderPaginatedMethod(lines, op, plan, method, responseModel);
   } else if (plan.isDelete) {
     renderDeleteMethod(lines, op, plan, method, pathStr);
   } else if (plan.hasBody && responseModel) {
