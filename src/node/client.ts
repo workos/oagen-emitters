@@ -295,6 +295,7 @@ function generatePackageJson(ctx: EmitterContext): GeneratedFile {
   const pkg = {
     name: `@${ctx.namespace}/sdk`,
     version: '0.0.0',
+    type: 'module',
     main: 'src/index.ts',
     types: 'src/index.ts',
     exports: {
