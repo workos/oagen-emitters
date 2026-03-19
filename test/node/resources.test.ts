@@ -15,7 +15,6 @@ const ctx: EmitterContext = {
   namespace: 'workos',
   namespacePascal: 'WorkOS',
   spec: emptySpec,
-  irVersion: 6,
 };
 
 describe('generateResources', () => {
@@ -81,7 +80,8 @@ describe('generateResources', () => {
             response: { kind: 'model', name: 'Organization' },
             errors: [],
             pagination: {
-              cursorParam: 'after',
+              strategy: 'cursor',
+              param: 'after',
               dataPath: 'data',
               itemType: { kind: 'model', name: 'Organization' },
             },
@@ -191,7 +191,6 @@ describe('generateResources', () => {
       namespace: 'workos',
       namespacePascal: 'WorkOS',
       spec: { ...emptySpec, services: [mfaService], models: [] },
-      irVersion: 6,
       overlayLookup: {
         methodByOperation: new Map([
           [

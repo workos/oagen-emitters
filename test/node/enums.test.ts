@@ -15,7 +15,6 @@ const ctx: EmitterContext = {
   namespace: 'workos',
   namespacePascal: 'WorkOS',
   spec: emptySpec,
-  irVersion: 6,
 };
 
 describe('generateEnums', () => {

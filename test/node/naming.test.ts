@@ -112,7 +112,6 @@ describe('naming', () => {
         namespace: 'workos',
         namespacePascal: 'WorkOS',
         spec: emptySpec,
-        irVersion: 6,
         overlayLookup: {
           methodByOperation: new Map([
             [
@@ -142,7 +141,6 @@ describe('naming', () => {
         namespace: 'workos',
         namespacePascal: 'WorkOS',
         spec: emptySpec,
-        irVersion: 6,
       };
 
       expect(resolveServiceName(service, ctx)).toBe('MultiFactorAuth');
@@ -187,7 +185,6 @@ describe('naming', () => {
         namespace: 'workos',
         namespacePascal: 'WorkOS',
         spec: emptySpec,
-        irVersion: 6,
         overlayLookup: {
           methodByOperation: new Map([
             [

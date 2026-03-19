@@ -40,7 +40,6 @@ const ctx: EmitterContext = {
   namespace: 'workos',
   namespacePascal: 'WorkOS',
   spec,
-  irVersion: 6,
 };
 
 describe('generateClient', () => {
@@ -118,7 +117,6 @@ describe('generateClient', () => {
       namespace: 'workos',
       namespacePascal: 'WorkOS',
       spec: overlaySpec,
-      irVersion: 6,
       overlayLookup: {
         methodByOperation: new Map([
           [

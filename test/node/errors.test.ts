@@ -1,26 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { generateErrors } from '../../src/node/errors.js';
-import type { EmitterContext, ApiSpec } from '@workos/oagen';
-
-const emptySpec: ApiSpec = {
-  name: 'Test',
-  version: '1.0.0',
-  baseUrl: '',
-  services: [],
-  models: [],
-  enums: [],
-};
-
-const ctx: EmitterContext = {
-  namespace: 'workos',
-  namespacePascal: 'WorkOS',
-  spec: emptySpec,
-  irVersion: 6,
-};
 
 describe('generateErrors', () => {
   it('generates all exception classes', () => {
-    const files = generateErrors(ctx);
+    const files = generateErrors();
 
     const names = files.map((f) => f.path);
     expect(names).toContain('src/common/exceptions/bad-request.exception.ts');
@@ -35,7 +18,7 @@ describe('generateErrors', () => {
   });
 
   it('generates NotFoundException with correct status', () => {
-    const files = generateErrors(ctx);
+    const files = generateErrors();
     const notFoundFile = files.find((f) => f.path.includes('not-found.exception.ts'))!;
 
     expect(notFoundFile.content).toContain('export class NotFoundException extends Error');
@@ -44,7 +27,7 @@ describe('generateErrors', () => {
   });
 
   it('generates RateLimitExceededException with retryAfter', () => {
-    const files = generateErrors(ctx);
+    const files = generateErrors();
     const rateLimitFile = files.find((f) => f.path.includes('rate-limit-exceeded.exception.ts'))!;
 
     expect(rateLimitFile.content).toContain('export class RateLimitExceededException extends Error');
@@ -53,7 +36,7 @@ describe('generateErrors', () => {
   });
 
   it('generates exception barrel with all exports', () => {
-    const files = generateErrors(ctx);
+    const files = generateErrors();
     const barrel = files.find((f) => f.path === 'src/common/exceptions/index.ts')!;
 
     expect(barrel.content).toContain('export { BadRequestException }');
