@@ -166,6 +166,12 @@ function renderMethod(
     }
   }
   if (op.deprecated) docParts.push('@deprecated');
+  for (const err of op.errors) {
+    const exceptionName = statusToExceptionName(err.statusCode);
+    if (exceptionName) {
+      docParts.push(`@throws {${exceptionName}} ${err.statusCode}`);
+    }
+  }
 
   if (docParts.length > 0) {
     // Flatten all parts, splitting multiline descriptions into individual lines
@@ -355,5 +361,20 @@ function buildPathParams(op: Operation): string {
 function extractRequestBodyModelName(op: Operation): string | null {
   if (!op.requestBody) return null;
   if (op.requestBody.kind === 'model') return op.requestBody.name;
+  return null;
+}
+
+const STATUS_TO_EXCEPTION: Record<number, string> = {
+  400: 'BadRequestException',
+  401: 'UnauthorizedException',
+  404: 'NotFoundException',
+  409: 'ConflictException',
+  422: 'UnprocessableEntityException',
+  429: 'RateLimitExceededException',
+};
+
+function statusToExceptionName(statusCode: number): string | null {
+  if (STATUS_TO_EXCEPTION[statusCode]) return STATUS_TO_EXCEPTION[statusCode];
+  if (statusCode >= 500) return 'GenericServerException';
   return null;
 }
