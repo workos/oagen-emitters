@@ -1,6 +1,6 @@
-# oagen-plugins
+# oagen-emitters
 
-Language plugins for [oagen](../oagen); generates SDK code from OpenAPI specs.
+Language emitters for [oagen](../oagen); generates SDK code from OpenAPI specs.
 
 ## Supported languages
 
