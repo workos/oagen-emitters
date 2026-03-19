@@ -161,8 +161,53 @@ function renderMethod(
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
   for (const param of op.pathParams) {
+    const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
     if (param.description) {
-      docParts.push(`@param ${fieldName(param.name)} - ${param.description}`);
+      docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+    } else if (param.deprecated) {
+      docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
+    }
+  }
+  // Document query params for non-paginated operations
+  if (!plan.isPaginated) {
+    for (const param of op.queryParams) {
+      const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+      if (param.description) {
+        docParts.push(`@param options.${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+      } else if (param.deprecated) {
+        docParts.push(`@param options.${fieldName(param.name)} - (deprecated)`);
+      }
+    }
+  }
+  // Document header params
+  for (const param of op.headerParams) {
+    const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+    if (param.description) {
+      docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+    } else if (param.deprecated) {
+      docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
+    }
+  }
+  // Document cookie params
+  if (op.cookieParams) {
+    for (const param of op.cookieParams) {
+      const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+      if (param.description) {
+        docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+      } else if (param.deprecated) {
+        docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
+      }
+    }
+  }
+  // @returns for the primary response model
+  if (responseModel) {
+    docParts.push(`@returns {${responseModel}}`);
+  }
+  // Additional @returns for multiple success responses
+  if (op.successResponses && op.successResponses.length > 0) {
+    for (const sr of op.successResponses) {
+      const typeName = sr.type.kind === 'model' ? sr.type.name : mapTypeRef(sr.type);
+      docParts.push(`@returns {${typeName}} ${sr.statusCode}`);
     }
   }
   if (op.deprecated) docParts.push('@deprecated');

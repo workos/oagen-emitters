@@ -41,7 +41,7 @@ export function assignModelsToServices(models: Model[], services: Service[]): Ma
       for (const name of collectModelRefs(op.response)) {
         referencedModels.add(name);
       }
-      for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+      for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
         for (const name of collectModelRefs(param.type)) {
           referencedModels.add(name);
         }

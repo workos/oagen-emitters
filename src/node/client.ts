@@ -8,7 +8,7 @@ import {
   buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices } from './utils.js';
+import { assignModelsToServices, docComment } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -44,6 +44,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push("import { BadRequestException } from './common/exceptions/bad-request.exception';");
 
   lines.push('');
+  if (spec.description) {
+    lines.push(...docComment(spec.description));
+  }
   lines.push('export class WorkOS {');
   lines.push('  readonly baseURL: string;');
   lines.push('  readonly key: string;');

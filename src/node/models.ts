@@ -170,9 +170,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const domainFieldName = fieldName(field.name);
       if (seenDomainFields.has(domainFieldName)) continue;
       seenDomainFields.add(domainFieldName);
-      if (field.description || field.deprecated) {
+      if (field.description || field.deprecated || field.readOnly || field.writeOnly || field.default !== undefined) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
+        if (field.readOnly) parts.push('@readonly');
+        if (field.writeOnly) parts.push('@writeonly');
+        if (field.default !== undefined) parts.push(`@default ${JSON.stringify(field.default)}`);
         if (field.deprecated) parts.push('@deprecated');
         lines.push(...docComment(parts.join('\n'), 2));
       }
@@ -185,6 +188,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const responseBaselineField = baselineResponse?.fields?.[domainWireField];
       const domainResponseOptionalMismatch =
         baselineField && !baselineField.optional && responseBaselineField && responseBaselineField.optional;
+      const readonlyPrefix = field.readOnly ? 'readonly ' : '';
       if (
         baselineField &&
         !domainResponseOptionalMismatch &&
@@ -192,10 +196,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         baselineFieldCompatible(baselineField, field)
       ) {
         const opt = baselineField.optional ? '?' : '';
-        lines.push(`  ${domainFieldName}${opt}: ${baselineField.type};`);
+        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${baselineField.type};`);
       } else {
         const opt = !field.required ? '?' : '';
-        lines.push(`  ${domainFieldName}${opt}: ${mapTypeRef(field.type)};`);
+        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type)};`);
       }
     }
     lines.push('}');
@@ -309,7 +313,7 @@ function assignEnumsToServices(enums: { name: string }[], services: Service[]): 
       };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
         collect(p.type);
       }
       for (const name of refs) {
