@@ -15,6 +15,7 @@ import {
   wireInterfaceName,
 } from './naming.js';
 import { collectModelRefs, assignModelsToServices, docComment } from './utils.js';
+import { assignEnumsToServices } from './enums.js';
 
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
@@ -38,6 +39,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // Collect models for imports
   const responseModels = new Set<string>();
   const requestModels = new Set<string>();
+  const paramEnums = new Set<string>();
+  const paramModels = new Set<string>();
   for (const { op, plan } of plans) {
     if (plan.responseModelName) responseModels.add(plan.responseModelName);
     if (op.requestBody) {
@@ -45,8 +48,16 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         requestModels.add(name);
       }
     }
+    // Collect types referenced in query and path parameters
+    for (const param of [...op.queryParams, ...op.pathParams]) {
+      if (param.type.kind === 'enum') {
+        paramEnums.add(param.type.name);
+      } else if (param.type.kind === 'model') {
+        paramModels.add(param.type.name);
+      }
+    }
   }
-  const allModels = new Set([...responseModels, ...requestModels]);
+  const allModels = new Set([...responseModels, ...requestModels, ...paramModels]);
 
   const lines: string[] = [];
 
@@ -73,8 +84,12 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
+  // Track imported resolved names to prevent duplicate type name collisions
+  const importedTypeNames = new Set<string>();
   for (const name of allModels) {
     const resolved = resolveInterfaceName(name, ctx);
+    if (importedTypeNames.has(resolved)) continue; // Skip duplicate resolved names
+    importedTypeNames.add(resolved);
     const modelDir = modelToService.get(name);
     const modelServiceDir = resolveDir(modelDir);
     const relPath =
@@ -84,8 +99,11 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`import type { ${resolved}, ${wireInterfaceName(resolved)} } from '${relPath}';`);
   }
 
+  const importedDeserializers = new Set<string>();
   for (const name of responseModels) {
     const resolved = resolveInterfaceName(name, ctx);
+    if (importedDeserializers.has(resolved)) continue;
+    importedDeserializers.add(resolved);
     const modelDir = modelToService.get(name);
     const modelServiceDir = resolveDir(modelDir);
     const relPath =
@@ -95,8 +113,11 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`import { deserialize${resolved} } from '${relPath}';`);
   }
 
+  const importedSerializers = new Set<string>();
   for (const name of requestModels) {
     const resolved = resolveInterfaceName(name, ctx);
+    if (importedSerializers.has(resolved)) continue;
+    importedSerializers.add(resolved);
     const modelDir = modelToService.get(name);
     const modelServiceDir = resolveDir(modelDir);
     const relPath =
@@ -104,6 +125,21 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         ? `./serializers/${fileName(name)}.serializer`
         : `../${modelServiceDir}/serializers/${fileName(name)}.serializer`;
     lines.push(`import { serialize${resolved} } from '${relPath}';`);
+  }
+
+  // Import enum types referenced in query/path parameters
+  if (paramEnums.size > 0) {
+    const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+    for (const name of paramEnums) {
+      if (allModels.has(name)) continue; // Already imported as a model
+      const enumDir = enumToService.get(name);
+      const enumServiceDir = resolveDir(enumDir);
+      const relPath =
+        enumServiceDir === serviceDir
+          ? `./interfaces/${fileName(name)}.interface`
+          : `../${enumServiceDir}/interfaces/${fileName(name)}.interface`;
+      lines.push(`import type { ${name} } from '${relPath}';`);
+    }
   }
 
   lines.push('');
@@ -163,14 +199,25 @@ function renderMethod(
   const usesTemplate = interpolatedPath.includes('${');
   const pathStr = usesTemplate ? `\`${interpolatedPath}\`` : `'${op.path}'`;
 
+  // Build set of valid param names from the overlay (existing method signature)
+  // to filter out @param tags that don't match the actual method params
+  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+  const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey);
+  const validParamNames = overlayMethod
+    ? new Set(overlayMethod.params.map((p) => p.name))
+    : null;
+
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
   for (const param of op.pathParams) {
+    const paramName = fieldName(param.name);
+    // Skip @param if the overlay method exists and doesn't have this param
+    if (validParamNames && !validParamNames.has(paramName)) continue;
     const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
     if (param.description) {
-      docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+      docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
     } else if (param.deprecated) {
-      docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
+      docParts.push(`@param ${paramName} - (deprecated)`);
     }
     if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
     if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
@@ -178,11 +225,14 @@ function renderMethod(
   // Document query params for non-paginated operations
   if (!plan.isPaginated) {
     for (const param of op.queryParams) {
+      const paramName = `options.${fieldName(param.name)}`;
+      // Skip @param if the overlay method exists and doesn't have a matching param
+      if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name))) continue;
       const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
       if (param.description) {
-        docParts.push(`@param options.${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
+        docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
       } else if (param.deprecated) {
-        docParts.push(`@param options.${fieldName(param.name)} - (deprecated)`);
+        docParts.push(`@param ${paramName} - (deprecated)`);
       }
       if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
       if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
@@ -216,13 +266,6 @@ function renderMethod(
   if (responseModel) {
     docParts.push(`@returns {${responseModel}}`);
   }
-  // Additional @returns for multiple success responses
-  if (op.successResponses && op.successResponses.length > 0) {
-    for (const sr of op.successResponses) {
-      const typeName = sr.type.kind === 'model' ? sr.type.name : mapTypeRef(sr.type);
-      docParts.push(`@returns {${typeName}} ${sr.statusCode}`);
-    }
-  }
   if (op.deprecated) docParts.push('@deprecated');
 
   if (docParts.length > 0) {
@@ -253,7 +296,7 @@ function renderMethod(
   } else if (responseModel) {
     renderGetMethod(lines, op, plan, method, responseModel, pathStr);
   } else {
-    renderVoidMethod(lines, op, plan, method, pathStr);
+    renderVoidMethod(lines, op, plan, method, pathStr, ctx);
   }
 
   return lines;
@@ -270,8 +313,12 @@ function renderPaginatedMethod(
   const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
 
   const pathStr = buildPathStr(op);
+  const pathParams = buildPathParams(op);
+  const allParams = pathParams
+    ? `${pathParams}, options?: ${optionsType}`
+    : `options?: ${optionsType}`;
 
-  lines.push(`  async ${method}(options?: ${optionsType}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
+  lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
   lines.push('    return new AutoPaginatable(');
   lines.push(`      await fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(`);
   lines.push('        this.workos,');
@@ -314,7 +361,7 @@ function renderBodyMethod(
   ctx: EmitterContext,
 ): void {
   const requestBodyModel = extractRequestBodyModelName(op);
-  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'any';
+  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
 
   const paramParts: string[] = [];
 
@@ -330,7 +377,7 @@ function renderBodyMethod(
   }
 
   const paramsStr = paramParts.join(', ');
-  const bodyExpr = requestBodyModel && requestType !== 'any' ? `serialize${requestType}(payload)` : 'payload';
+  const bodyExpr = requestBodyModel ? `serialize${requestType}(payload)` : 'payload';
 
   // Fix 2: Pass encoding option when requestBodyEncoding is non-json
   const encoding = op.requestBodyEncoding;
@@ -383,8 +430,8 @@ function renderGetMethod(
 
   const allParams = hasQuery
     ? params
-      ? `${params}, options?: Record<string, any>`
-      : 'options?: Record<string, any>'
+      ? `${params}, options?: Record<string, unknown>`
+      : 'options?: Record<string, unknown>'
     : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
@@ -403,13 +450,35 @@ function renderGetMethod(
   lines.push('  }');
 }
 
-function renderVoidMethod(lines: string[], op: Operation, plan: OperationPlan, method: string, pathStr: string): void {
+function renderVoidMethod(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  pathStr: string,
+  ctx: EmitterContext,
+): void {
   const params = buildPathParams(op);
-  const allParams = plan.hasBody ? (params ? `${params}, payload: any` : 'payload: any') : params;
+
+  let bodyParam = '';
+  let bodyExpr = 'payload';
+  if (plan.hasBody) {
+    const requestBodyModel = extractRequestBodyModelName(op);
+    if (requestBodyModel) {
+      const requestType = resolveInterfaceName(requestBodyModel, ctx);
+      bodyParam = `payload: ${requestType}`;
+      bodyExpr = `serialize${requestType}(payload)`;
+    } else {
+      bodyParam = 'payload: Record<string, unknown>';
+      bodyExpr = 'payload';
+    }
+  }
+
+  const allParams = bodyParam ? (params ? `${params}, ${bodyParam}` : bodyParam) : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<void> {`);
   if (plan.hasBody) {
-    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, payload);`);
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
   } else {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr});`);
   }

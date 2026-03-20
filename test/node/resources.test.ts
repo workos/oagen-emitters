@@ -362,7 +362,7 @@ describe('generateResources', () => {
     expect(content).toContain('@param sessionToken - The session cookie.');
   });
 
-  it('renders successResponses documentation', () => {
+  it('renders single @returns without status-code duplicates', () => {
     const services: Service[] = [
       {
         name: 'Organizations',
@@ -389,8 +389,10 @@ describe('generateResources', () => {
 
     const files = generateResources(services, ctx);
     const content = files[0].content;
-    expect(content).toContain('@returns {Organization} 200');
-    expect(content).toContain('@returns {Organization} 201');
+    // Only emit a single @returns for the primary response model (no status-code variants)
+    expect(content).toContain('@returns {Organization}');
+    expect(content).not.toContain('@returns {Organization} 200');
+    expect(content).not.toContain('@returns {Organization} 201');
   });
 
   it('renders deprecated path params', () => {

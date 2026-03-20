@@ -60,7 +60,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   return files;
 }
 
-function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {
+export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {
   const enumToService = new Map<string, string>();
   const enumNames = new Set(enums.map((e) => e.name));
 
