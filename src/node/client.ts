@@ -1,4 +1,4 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import {
   fileName,
   serviceDirName,
@@ -48,6 +48,19 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(...docComment(spec.description));
   }
   lines.push('export class WorkOS {');
+
+  // Fix 7: Server URL constants from spec.servers
+  if (spec.servers && spec.servers.length > 0) {
+    for (const server of spec.servers) {
+      const constName = serverConstName(server.description ?? server.url);
+      if (server.description) {
+        lines.push(...docComment(server.description, 2));
+      }
+      lines.push(`  static readonly ${constName} = '${server.url}';`);
+    }
+    lines.push('');
+  }
+
   lines.push('  readonly baseURL: string;');
   lines.push('  readonly key: string;');
   lines.push('  private readonly options: WorkOSOptions;');
@@ -101,10 +114,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   );
   lines.push('    this.ensureApiKey(options);');
   lines.push('    const url = this.buildUrl(path, options.query);');
+  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
   lines.push('    const response = await fetch(url, {');
   lines.push("      method: 'POST',");
-  lines.push('      headers: this.buildHeaders(options),');
-  lines.push('      body: JSON.stringify(entity),');
+  lines.push('      headers: this.buildHeaders(options, contentType),');
+  lines.push('      body,');
   lines.push('    });');
   lines.push('    await this.handleHttpError(response, path);');
   lines.push('    const data = await response.json() as Result;');
@@ -117,10 +131,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   );
   lines.push('    this.ensureApiKey(options);');
   lines.push('    const url = this.buildUrl(path, options.query);');
+  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
   lines.push('    const response = await fetch(url, {');
   lines.push("      method: 'PUT',");
-  lines.push('      headers: this.buildHeaders(options),');
-  lines.push('      body: JSON.stringify(entity),');
+  lines.push('      headers: this.buildHeaders(options, contentType),');
+  lines.push('      body,');
   lines.push('    });');
   lines.push('    await this.handleHttpError(response, path);');
   lines.push('    const data = await response.json() as Result;');
@@ -133,10 +148,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   );
   lines.push('    this.ensureApiKey(options);');
   lines.push('    const url = this.buildUrl(path, options.query);');
+  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
   lines.push('    const response = await fetch(url, {');
   lines.push("      method: 'PATCH',");
-  lines.push('      headers: this.buildHeaders(options),');
-  lines.push('      body: JSON.stringify(entity),');
+  lines.push('      headers: this.buildHeaders(options, contentType),');
+  lines.push('      body,');
   lines.push('    });');
   lines.push('    await this.handleHttpError(response, path);');
   lines.push('    const data = await response.json() as Result;');
@@ -168,12 +184,40 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    return url.toString();');
   lines.push('  }');
 
+  // Fix 2: Body encoding support
   lines.push('');
-  lines.push('  private buildHeaders(options: any = {}): Record<string, string> {');
-  lines.push('    const headers: Record<string, string> = {');
-  lines.push("      'Content-Type': 'application/json',");
-  lines.push(`      Authorization: \`Bearer \${this.key}\`,`);
-  lines.push('    };');
+  lines.push("  private prepareBody(entity: any, encoding?: 'json' | 'form-data' | 'form-urlencoded' | 'binary' | 'text'): { body: any; contentType?: string } {");
+  lines.push("    switch (encoding) {");
+  lines.push("      case 'form-data': {");
+  lines.push('        const formData = new FormData();');
+  lines.push('        for (const [key, value] of Object.entries(entity)) {');
+  lines.push('          if (value instanceof Blob) formData.append(key, value);');
+  lines.push('          else if (value !== null && value !== undefined) formData.append(key, String(value));');
+  lines.push('        }');
+  lines.push("        return { body: formData };");
+  lines.push('      }');
+  lines.push("      case 'form-urlencoded': {");
+  lines.push('        const params = new URLSearchParams();');
+  lines.push('        for (const [key, value] of Object.entries(entity)) {');
+  lines.push('          if (value !== null && value !== undefined) params.set(key, String(value));');
+  lines.push('        }');
+  lines.push("        return { body: params.toString(), contentType: 'application/x-www-form-urlencoded' };");
+  lines.push('      }');
+  lines.push("      case 'binary':");
+  lines.push("        return { body: entity, contentType: 'application/octet-stream' };");
+  lines.push("      case 'text':");
+  lines.push("        return { body: String(entity), contentType: 'text/plain' };");
+  lines.push('      default:');
+  lines.push("        return { body: JSON.stringify(entity), contentType: 'application/json' };");
+  lines.push('    }');
+  lines.push('  }');
+
+  // Fix 1: Auth-aware headers
+  lines.push('');
+  lines.push('  private buildHeaders(options: any = {}, contentType?: string): Record<string, string> {');
+  lines.push('    const headers: Record<string, string> = {};');
+  lines.push("    if (contentType) headers['Content-Type'] = contentType;");
+  renderAuthHeaders(lines, spec.auth);
   lines.push("    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;");
   lines.push("    if (options.warrantToken) headers['Warrant-Token'] = options.warrantToken;");
   lines.push('    return headers;');
@@ -298,6 +342,55 @@ function findEnumService(enumName: string, services: Service[]): string | undefi
     }
   }
   return undefined;
+}
+
+/**
+ * Render auth header logic into the buildHeaders method body.
+ * Reads spec.auth to determine auth scheme (bearer, apiKey, oauth2).
+ * Falls back to bearer auth if no auth schemes are defined.
+ */
+function renderAuthHeaders(lines: string[], auth?: AuthScheme[]): void {
+  if (!auth || auth.length === 0) {
+    // Default: bearer auth
+    lines.push(`    headers['Authorization'] = \`Bearer \${this.key}\`;`);
+    return;
+  }
+
+  const scheme = auth[0];
+  switch (scheme.kind) {
+    case 'bearer':
+    case 'oauth2':
+      lines.push(`    headers['Authorization'] = \`Bearer \${this.key}\`;`);
+      break;
+    case 'apiKey':
+      switch (scheme.in) {
+        case 'header':
+          lines.push(`    headers['${scheme.name}'] = this.key;`);
+          break;
+        case 'query':
+          // API key in query is handled by buildUrl — store on the instance for access
+          lines.push(`    // Auth key sent as query parameter '${scheme.name}' (see buildUrl)`);
+          break;
+        case 'cookie':
+          lines.push(`    headers['Cookie'] = \`${scheme.name}=\${this.key}\`;`);
+          break;
+      }
+      break;
+  }
+}
+
+/**
+ * Convert a server description or URL into a SCREAMING_SNAKE_CASE constant name.
+ */
+function serverConstName(description: string): string {
+  return (
+    'SERVER_' +
+    description
+      .replace(/https?:\/\//g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_|_$/g, '')
+      .toUpperCase()
+  );
 }
 
 function generatePackageJson(ctx: EmitterContext): GeneratedFile {

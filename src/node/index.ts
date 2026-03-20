@@ -30,8 +30,8 @@ export const nodeEmitter: Emitter = {
     return generateClient(spec, ctx);
   },
 
-  generateErrors(_ctx: EmitterContext): GeneratedFile[] {
-    return generateErrors();
+  generateErrors(ctx: EmitterContext): GeneratedFile[] {
+    return generateErrors(ctx);
   },
 
   generateConfig(_ctx: EmitterContext): GeneratedFile[] {

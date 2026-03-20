@@ -29,6 +29,7 @@ export interface AppInfo {
   idempotencyKey?: string;
   warrantToken?: string;
   skipApiKeyCheck?: boolean;
+  encoding?: 'json' | 'form-data' | 'form-urlencoded' | 'binary' | 'text';
 }`,
       skipIfExists: true,
       integrateTarget: false,

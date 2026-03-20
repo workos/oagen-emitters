@@ -1,7 +1,8 @@
-import type { GeneratedFile } from '@workos/oagen';
+import type { EmitterContext, ErrorResponse, GeneratedFile } from '@workos/oagen';
+import { fileName } from './naming.js';
 
-export function generateErrors(): GeneratedFile[] {
-  return [
+export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [
     {
       path: 'src/common/exceptions/bad-request.exception.ts',
       content: `export class BadRequestException extends Error {
@@ -202,4 +203,75 @@ export { NoApiKeyProvidedException } from './no-api-key-provided.exception';`,
       integrateTarget: false,
     },
   ];
+
+  // Fix 6: Generate typed exception classes from ErrorResponse.type
+  if (ctx?.spec) {
+    const typedErrors = collectTypedErrors(ctx);
+    for (const { modelName, statusCode, baseException } of typedErrors) {
+      const exceptionClassName = `${modelName}Exception`;
+      const filePath = `src/common/exceptions/${fileName(modelName)}.exception.ts`;
+      const baseImport = baseException
+        ? `import { ${baseException} } from './${fileName(baseException.replace(/Exception$/, '')).replace(/^/, '')}.exception';\n\n`
+        : '';
+      const baseClass = baseException ?? 'Error';
+
+      files.push({
+        path: filePath,
+        content: `${baseImport}export class ${exceptionClassName} extends ${baseClass} {
+  readonly status = ${statusCode};
+  readonly name = '${exceptionClassName}';
+  readonly requestID: string;
+  readonly data?: any;
+
+  constructor({ message, requestID, data }: { message?: string; requestID: string; data?: any }) {
+    ${baseException ? `super(${baseException === 'UnauthorizedException' ? 'requestID' : `{ message: message ?? '${modelName} error', requestID }`});` : "super();"}
+    this.message = message ?? '${modelName} error';
+    this.requestID = requestID;
+    if (data) this.data = data;
+  }
+}`,
+        skipIfExists: true,
+        integrateTarget: false,
+      });
+
+      // Update the barrel index to export the new exception
+      const existingIndex = files.find((f) => f.path === 'src/common/exceptions/index.ts');
+      if (existingIndex) {
+        existingIndex.content += `\nexport { ${exceptionClassName} } from './${fileName(modelName)}.exception';`;
+      }
+    }
+  }
+
+  return files;
+}
+
+const STATUS_TO_BASE_EXCEPTION: Record<number, string> = {
+  400: 'BadRequestException',
+  401: 'UnauthorizedException',
+  404: 'NotFoundException',
+  409: 'ConflictException',
+  422: 'UnprocessableEntityException',
+  429: 'RateLimitExceededException',
+};
+
+function collectTypedErrors(ctx: EmitterContext): { modelName: string; statusCode: number; baseException: string | null }[] {
+  const seen = new Set<string>();
+  const results: { modelName: string; statusCode: number; baseException: string | null }[] = [];
+
+  for (const service of ctx.spec.services) {
+    for (const op of service.operations) {
+      for (const err of op.errors) {
+        if (err.type?.kind === 'model' && !seen.has(err.type.name)) {
+          seen.add(err.type.name);
+          results.push({
+            modelName: err.type.name,
+            statusCode: err.statusCode,
+            baseException: STATUS_TO_BASE_EXCEPTION[err.statusCode] ?? (err.statusCode >= 500 ? 'GenericServerException' : null),
+          });
+        }
+      }
+    }
+  }
+
+  return results;
 }

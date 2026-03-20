@@ -84,7 +84,7 @@ describe('generateModels', () => {
     expect(files[0].content).toContain('export interface Organization {');
     expect(files[0].content).toContain('  id: string;');
     expect(files[0].content).toContain('  name: string;');
-    expect(files[0].content).toContain('  createdAt: string;');
+    expect(files[0].content).toContain('  createdAt: Date;');
     expect(files[0].content).toContain('  externalId?: string | null;');
 
     // Response interface has snake_case fields

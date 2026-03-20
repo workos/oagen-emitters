@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType } from '@workos/oagen';
+import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
 import {
   fieldName,
   wireFieldName,
@@ -135,6 +135,9 @@ function collectSerializedModelRefs(ref: TypeRef): string[] {
       return collectSerializedModelRefs(ref.inner);
     case 'union': {
       const models = uniqueModelVariants(ref);
+      // Discriminated unions and allOf unions need serializers for all model variants
+      if (ref.discriminator && models.length > 0) return models;
+      if (ref.compositionKind === 'allOf' && models.length > 0) return models;
       // Only if exactly one unique model variant — that's when we call its serializer
       if (models.length === 1) return models;
       return [];
@@ -150,6 +153,7 @@ function collectSerializedModelRefs(ref: TypeRef): string[] {
 function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterContext): string {
   switch (ref.kind) {
     case 'primitive':
+      return deserializePrimitive(ref, wireExpr);
     case 'literal':
     case 'enum':
       return wireExpr;
@@ -173,6 +177,14 @@ function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterConte
       return `${wireExpr} ?? null`;
     }
     case 'union': {
+      // Discriminated union: switch on the discriminator property
+      if (ref.discriminator) {
+        return renderDiscriminatorSwitch(ref, wireExpr, 'deserialize', ctx);
+      }
+      // allOf union: merge all model variant fields via spread
+      if (ref.compositionKind === 'allOf') {
+        return renderAllOfMerge(ref, wireExpr, 'deserialize', ctx);
+      }
       // If the union has exactly one unique model variant, deserialize using that model's deserializer
       const deserModelVariants = uniqueModelVariants(ref);
       if (deserModelVariants.length === 1) {
@@ -189,6 +201,7 @@ function deserializeExpression(ref: TypeRef, wireExpr: string, ctx: EmitterConte
 function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterContext): string {
   switch (ref.kind) {
     case 'primitive':
+      return serializePrimitive(ref, domainExpr);
     case 'literal':
     case 'enum':
       return domainExpr;
@@ -212,6 +225,14 @@ function serializeExpression(ref: TypeRef, domainExpr: string, ctx: EmitterConte
       return domainExpr;
     }
     case 'union': {
+      // Discriminated union: switch on the discriminator property
+      if (ref.discriminator) {
+        return renderDiscriminatorSwitch(ref, domainExpr, 'serialize', ctx);
+      }
+      // allOf union: merge all model variant fields via spread
+      if (ref.compositionKind === 'allOf') {
+        return renderAllOfMerge(ref, domainExpr, 'serialize', ctx);
+      }
       // If the union has exactly one unique model variant, serialize using that model's serializer
       const serModelVariants = uniqueModelVariants(ref);
       if (serModelVariants.length === 1) {
@@ -238,23 +259,86 @@ function uniqueModelVariants(ref: UnionType): string[] {
 }
 
 /**
- * Check whether a TypeRef involves a model reference that would produce
- * a function call in serialization/deserialization. Used to determine
- * whether optional fields need a null guard wrapper.
+ * Check whether a TypeRef involves a model reference or format conversion
+ * that would produce a function call in serialization/deserialization.
+ * Used to determine whether optional fields need a null guard wrapper.
  */
 function needsNullGuard(ref: TypeRef): boolean {
   switch (ref.kind) {
     case 'model':
       return true;
+    case 'primitive':
+      return hasFormatConversion(ref);
     case 'array':
       return ref.items.kind === 'model';
     case 'nullable':
       return needsNullGuard(ref.inner);
     case 'union':
+      if (ref.discriminator) return true;
+      if (ref.compositionKind === 'allOf' && uniqueModelVariants(ref).length > 0) return true;
       return uniqueModelVariants(ref).length === 1;
     default:
       return false;
   }
+}
+
+/** Check if a primitive type has a format that requires conversion. */
+function hasFormatConversion(ref: PrimitiveType): boolean {
+  return ref.format === 'date-time' || ref.format === 'int64';
+}
+
+/** Deserialize a primitive value, applying format conversions when needed. */
+function deserializePrimitive(ref: PrimitiveType, wireExpr: string): string {
+  if (ref.format === 'date-time') return `new Date(${wireExpr})`;
+  if (ref.format === 'int64') return `BigInt(${wireExpr})`;
+  return wireExpr;
+}
+
+/** Serialize a primitive value, applying format conversions when needed. */
+function serializePrimitive(ref: PrimitiveType, domainExpr: string): string {
+  if (ref.format === 'date-time') return `${domainExpr}.toISOString()`;
+  if (ref.format === 'int64') return `String(${domainExpr})`;
+  return domainExpr;
+}
+
+/**
+ * Render a discriminated union switch expression.
+ * Produces an IIFE that switches on the discriminator property and calls
+ * the appropriate serializer/deserializer for each mapped model.
+ */
+function renderDiscriminatorSwitch(
+  ref: UnionType,
+  expr: string,
+  direction: 'deserialize' | 'serialize',
+  ctx: EmitterContext,
+): string {
+  const disc = ref.discriminator!;
+  const cases: string[] = [];
+  for (const [value, modelName] of Object.entries(disc.mapping)) {
+    const resolved = resolveInterfaceName(modelName, ctx);
+    const fn = `${direction}${resolved}`;
+    cases.push(`case '${value}': return ${fn}(${expr} as any)`);
+  }
+  return `(() => { switch ((${expr} as any).${disc.property}) { ${cases.join('; ')}; default: return ${expr} } })()`;
+}
+
+/**
+ * Render an allOf merge expression.
+ * Spreads the serialized/deserialized result of each model variant.
+ */
+function renderAllOfMerge(
+  ref: UnionType,
+  expr: string,
+  direction: 'deserialize' | 'serialize',
+  ctx: EmitterContext,
+): string {
+  const models = uniqueModelVariants(ref);
+  if (models.length === 0) return expr;
+  const spreads = models.map((name) => {
+    const resolved = resolveInterfaceName(name, ctx);
+    return `...${direction}${resolved}(${expr} as any)`;
+  });
+  return `({ ${spreads.join(', ')} })`;
 }
 
 /**

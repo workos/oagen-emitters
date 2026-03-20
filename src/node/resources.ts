@@ -1,3 +1,5 @@
+// @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
+
 import type { Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toPascalCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
@@ -56,9 +58,12 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
 
-  // Check if any operation is an idempotent POST
+  // Check if any operation needs PostOptions (idempotent POST or custom encoding)
   const hasIdempotentPost = plans.some((p) => p.plan.isIdempotentPost);
-  if (hasIdempotentPost) {
+  const hasCustomEncoding = plans.some(
+    (p) => p.op.requestBodyEncoding && p.op.requestBodyEncoding !== 'json' && p.plan.hasBody,
+  );
+  if (hasIdempotentPost || hasCustomEncoding) {
     lines.push("import type { PostOptions } from '../common/interfaces/post-options.interface';");
   }
 
@@ -167,6 +172,8 @@ function renderMethod(
     } else if (param.deprecated) {
       docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
     }
+    if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+    if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
   }
   // Document query params for non-paginated operations
   if (!plan.isPaginated) {
@@ -177,6 +184,8 @@ function renderMethod(
       } else if (param.deprecated) {
         docParts.push(`@param options.${fieldName(param.name)} - (deprecated)`);
       }
+      if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+      if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
     }
   }
   // Document header params
@@ -187,6 +196,8 @@ function renderMethod(
     } else if (param.deprecated) {
       docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
     }
+    if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+    if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
   }
   // Document cookie params
   if (op.cookieParams) {
@@ -197,6 +208,8 @@ function renderMethod(
       } else if (param.deprecated) {
         docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
       }
+      if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+      if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
     }
   }
   // @returns for the primary response model
@@ -211,12 +224,6 @@ function renderMethod(
     }
   }
   if (op.deprecated) docParts.push('@deprecated');
-  for (const err of op.errors) {
-    const exceptionName = statusToExceptionName(err.statusCode);
-    if (exceptionName) {
-      docParts.push(`@throws {${exceptionName}} ${err.statusCode}`);
-    }
-  }
 
   if (docParts.length > 0) {
     // Flatten all parts, splitting multiline descriptions into individual lines
@@ -237,13 +244,7 @@ function renderMethod(
     }
   }
 
-  if (plan.isPaginated) {
-    if (!responseModel) {
-      console.warn(
-        `[oagen] Warning: Skipping paginated method "${method}" (${op.httpMethod.toUpperCase()} ${op.path}) — response has no named model. Ensure the spec uses a $ref for paginated item types.`,
-      );
-      return lines;
-    }
+  if (plan.isPaginated && responseModel) {
     renderPaginatedMethod(lines, op, plan, method, responseModel);
   } else if (plan.isDelete) {
     renderDeleteMethod(lines, op, plan, method, pathStr);
@@ -331,18 +332,39 @@ function renderBodyMethod(
   const paramsStr = paramParts.join(', ');
   const bodyExpr = requestBodyModel && requestType !== 'any' ? `serialize${requestType}(payload)` : 'payload';
 
+  // Fix 2: Pass encoding option when requestBodyEncoding is non-json
+  const encoding = op.requestBodyEncoding;
+  const encodingOption = encoding && encoding !== 'json' ? `, encoding: '${encoding}' as const` : '';
+  const hasCustomEncoding = encodingOption !== '';
+
   lines.push(`  async ${method}(${paramsStr}): Promise<${responseModel}> {`);
   if (plan.isIdempotentPost) {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
-    lines.push(`      ${pathStr},`);
-    lines.push(`      ${bodyExpr},`);
-    lines.push('      requestOptions,');
-    lines.push('    );');
+    if (hasCustomEncoding) {
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`      ${pathStr},`);
+      lines.push(`      ${bodyExpr},`);
+      lines.push(`      { ...requestOptions${encodingOption} },`);
+      lines.push('    );');
+    } else {
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`      ${pathStr},`);
+      lines.push(`      ${bodyExpr},`);
+      lines.push('      requestOptions,');
+      lines.push('    );');
+    }
   } else {
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
-    lines.push(`      ${pathStr},`);
-    lines.push(`      ${bodyExpr},`);
-    lines.push('    );');
+    if (hasCustomEncoding) {
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`      ${pathStr},`);
+      lines.push(`      ${bodyExpr},`);
+      lines.push(`      { ${encodingOption.slice(2)} },`);
+      lines.push('    );');
+    } else {
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`      ${pathStr},`);
+      lines.push(`      ${bodyExpr},`);
+      lines.push('    );');
+    }
   }
   lines.push(`    return deserialize${responseModel}(data);`);
   lines.push('  }');
@@ -409,17 +431,4 @@ function extractRequestBodyModelName(op: Operation): string | null {
   return null;
 }
 
-const STATUS_TO_EXCEPTION: Record<number, string> = {
-  400: 'BadRequestException',
-  401: 'UnauthorizedException',
-  404: 'NotFoundException',
-  409: 'ConflictException',
-  422: 'UnprocessableEntityException',
-  429: 'RateLimitExceededException',
-};
 
-function statusToExceptionName(statusCode: number): string | null {
-  if (STATUS_TO_EXCEPTION[statusCode]) return STATUS_TO_EXCEPTION[statusCode];
-  if (statusCode >= 500) return 'GenericServerException';
-  return null;
-}
