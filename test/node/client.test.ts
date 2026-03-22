@@ -49,11 +49,16 @@ describe('generateClient', () => {
     expect(workosFile).toBeDefined();
 
     const content = workosFile!.content;
-    expect(content).toContain('export class WorkOS {');
+    expect(content).toContain('export class WorkOS extends WorkOSBase {');
     expect(content).toContain('readonly organizations = new Organizations(this);');
-    expect(content).toContain('async get<Result');
-    expect(content).toContain('async post<Result');
-    expect(content).toContain('async delete(');
+    expect(content).toContain("import { WorkOSBase } from './common/workos-base';");
+  });
+
+  it('allows workos.ts to participate in integration (no integrateTarget: false)', () => {
+    const files = generateClient(spec, ctx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts');
+    expect(workosFile).toBeDefined();
+    expect(workosFile!.integrateTarget).not.toBe(false);
   });
 
   it('generates barrel exports', () => {
@@ -149,16 +154,14 @@ describe('generateClient', () => {
     expect(barrel!.content).toContain("from './mfa/mfa'");
   });
 
-  it('generates error handling in WorkOS client', () => {
+  it('does not generate error handling in WorkOS client (lives in WorkOSBase)', () => {
     const files = generateClient(spec, ctx);
     const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
     const content = workosFile.content;
 
-    expect(content).toContain('case 401: throw new UnauthorizedException');
-    expect(content).toContain('case 404: throw new NotFoundException');
-    expect(content).toContain('case 422: throw new UnprocessableEntityException');
-    expect(content).toContain('case 429:');
-    expect(content).toContain('throw new RateLimitExceededException');
+    expect(content).not.toContain('handleHttpError');
+    expect(content).not.toContain('UnauthorizedException');
+    expect(content).not.toContain('NotFoundException');
   });
 
   it('renders spec.description as JSDoc on WorkOS class', () => {
@@ -178,6 +181,6 @@ describe('generateClient', () => {
     const content = workosFile.content;
 
     expect(content).toContain('/** The WorkOS API provides a unified interface for enterprise features. */');
-    expect(content).toContain('export class WorkOS {');
+    expect(content).toContain('export class WorkOS extends WorkOSBase {');
   });
 });

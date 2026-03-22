@@ -24,6 +24,9 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
 
+  // Import base class
+  lines.push("import { WorkOSBase } from './common/workos-base';");
+
   // Service imports
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
@@ -31,25 +34,13 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
 
-  lines.push("import type { WorkOSOptions } from './common/interfaces/workos-options.interface';");
-  lines.push("import type { PostOptions } from './common/interfaces/post-options.interface';");
-  lines.push("import type { GetOptions } from './common/interfaces/get-options.interface';");
-  lines.push("import { NoApiKeyProvidedException } from './common/exceptions/no-api-key-provided.exception';");
-  lines.push("import { UnauthorizedException } from './common/exceptions/unauthorized.exception';");
-  lines.push("import { NotFoundException } from './common/exceptions/not-found.exception';");
-  lines.push("import { ConflictException } from './common/exceptions/conflict.exception';");
-  lines.push("import { UnprocessableEntityException } from './common/exceptions/unprocessable-entity.exception';");
-  lines.push("import { RateLimitExceededException } from './common/exceptions/rate-limit-exceeded.exception';");
-  lines.push("import { GenericServerException } from './common/exceptions/generic-server.exception';");
-  lines.push("import { BadRequestException } from './common/exceptions/bad-request.exception';");
-
   lines.push('');
   if (spec.description) {
     lines.push(...docComment(spec.description));
   }
-  lines.push('export class WorkOS {');
+  lines.push('export class WorkOS extends WorkOSBase {');
 
-  // Fix 7: Server URL constants from spec.servers
+  // Server URL constants from spec.servers
   if (spec.servers && spec.servers.length > 0) {
     for (const server of spec.servers) {
       const constName = serverConstName(server.description ?? server.url);
@@ -61,11 +52,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push('');
   }
 
-  lines.push('  readonly baseURL: string;');
-  lines.push('  readonly key: string;');
-  lines.push('  private readonly options: WorkOSOptions;');
-  lines.push('');
-
   // Resource accessors
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
@@ -73,189 +59,17 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`  readonly ${propName} = new ${resolvedName}(this);`);
   }
 
-  lines.push('');
-  lines.push('  constructor(keyOrOptions?: string | WorkOSOptions, maybeOptions?: WorkOSOptions) {');
-  lines.push("    if (typeof keyOrOptions === 'object') {");
-  lines.push("      this.key = keyOrOptions.apiKey ?? '';");
-  lines.push('      this.options = keyOrOptions;');
-  lines.push('    } else {');
-  lines.push("      this.key = keyOrOptions ?? '';");
-  lines.push('      this.options = maybeOptions ?? {};');
-  lines.push('    }');
-  lines.push('');
-  lines.push('    if (!this.key) {');
-  lines.push("      const envKey = typeof process !== 'undefined' ? process.env?.WORKOS_API_KEY : undefined;");
-  lines.push('      if (envKey) this.key = envKey;');
-  lines.push('    }');
-  lines.push('');
-  lines.push("    const protocol = this.options.https === false ? 'http' : 'https';");
-  lines.push("    const hostname = this.options.apiHostname ?? 'api.workos.com';");
-  lines.push("    const port = this.options.port ? `:${this.options.port}` : '';");
-  lines.push('    this.baseURL = `${protocol}://${hostname}${port}`;');
-  lines.push('  }');
-
-  // HTTP methods
-  lines.push('');
-  lines.push('  async get<Result = any>(path: string, options: GetOptions = {}): Promise<{ data: Result }> {');
-  lines.push('    this.ensureApiKey(options);');
-  lines.push('    const url = this.buildUrl(path, options.query);');
-  lines.push('    const response = await fetch(url, {');
-  lines.push("      method: 'GET',");
-  lines.push('      headers: this.buildHeaders(options),');
-  lines.push('    });');
-  lines.push('    await this.handleHttpError(response, path);');
-  lines.push('    const data = await response.json() as Result;');
-  lines.push('    return { data };');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push(
-    '  async post<Result = any, Entity = any>(path: string, entity: Entity, options: PostOptions = {}): Promise<{ data: Result }> {',
-  );
-  lines.push('    this.ensureApiKey(options);');
-  lines.push('    const url = this.buildUrl(path, options.query);');
-  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
-  lines.push('    const response = await fetch(url, {');
-  lines.push("      method: 'POST',");
-  lines.push('      headers: this.buildHeaders(options, contentType),');
-  lines.push('      body,');
-  lines.push('    });');
-  lines.push('    await this.handleHttpError(response, path);');
-  lines.push('    const data = await response.json() as Result;');
-  lines.push('    return { data };');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push(
-    '  async put<Result = any, Entity = any>(path: string, entity: Entity, options: PostOptions = {}): Promise<{ data: Result }> {',
-  );
-  lines.push('    this.ensureApiKey(options);');
-  lines.push('    const url = this.buildUrl(path, options.query);');
-  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
-  lines.push('    const response = await fetch(url, {');
-  lines.push("      method: 'PUT',");
-  lines.push('      headers: this.buildHeaders(options, contentType),');
-  lines.push('      body,');
-  lines.push('    });');
-  lines.push('    await this.handleHttpError(response, path);');
-  lines.push('    const data = await response.json() as Result;');
-  lines.push('    return { data };');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push(
-    '  async patch<Result = any, Entity = any>(path: string, entity: Entity, options: PostOptions = {}): Promise<{ data: Result }> {',
-  );
-  lines.push('    this.ensureApiKey(options);');
-  lines.push('    const url = this.buildUrl(path, options.query);');
-  lines.push('    const { body, contentType } = this.prepareBody(entity, options.encoding);');
-  lines.push('    const response = await fetch(url, {');
-  lines.push("      method: 'PATCH',");
-  lines.push('      headers: this.buildHeaders(options, contentType),');
-  lines.push('      body,');
-  lines.push('    });');
-  lines.push('    await this.handleHttpError(response, path);');
-  lines.push('    const data = await response.json() as Result;');
-  lines.push('    return { data };');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push('  async delete(path: string, options: GetOptions = {}): Promise<void> {');
-  lines.push('    this.ensureApiKey(options);');
-  lines.push('    const url = this.buildUrl(path);');
-  lines.push('    const response = await fetch(url, {');
-  lines.push("      method: 'DELETE',");
-  lines.push('      headers: this.buildHeaders(options),');
-  lines.push('    });');
-  lines.push('    await this.handleHttpError(response, path);');
-  lines.push('  }');
-
-  // Private helpers
-  lines.push('');
-  lines.push('  private buildUrl(path: string, query?: Record<string, any>): string {');
-  lines.push('    const url = new URL(path, this.baseURL);');
-  lines.push('    if (query) {');
-  lines.push('      for (const [key, value] of Object.entries(query)) {');
-  lines.push("        if (value !== null && value !== undefined && value !== '') {");
-  lines.push('          url.searchParams.set(key, String(value));');
-  lines.push('        }');
-  lines.push('      }');
-  lines.push('    }');
-  lines.push('    return url.toString();');
-  lines.push('  }');
-
-  // Fix 2: Body encoding support
-  lines.push('');
-  lines.push("  private prepareBody(entity: any, encoding?: 'json' | 'form-data' | 'form-urlencoded' | 'binary' | 'text'): { body: any; contentType?: string } {");
-  lines.push("    switch (encoding) {");
-  lines.push("      case 'form-data': {");
-  lines.push('        const formData = new FormData();');
-  lines.push('        for (const [key, value] of Object.entries(entity)) {');
-  lines.push('          if (value instanceof Blob) formData.append(key, value);');
-  lines.push('          else if (value !== null && value !== undefined) formData.append(key, String(value));');
-  lines.push('        }');
-  lines.push("        return { body: formData };");
-  lines.push('      }');
-  lines.push("      case 'form-urlencoded': {");
-  lines.push('        const params = new URLSearchParams();');
-  lines.push('        for (const [key, value] of Object.entries(entity)) {');
-  lines.push('          if (value !== null && value !== undefined) params.set(key, String(value));');
-  lines.push('        }');
-  lines.push("        return { body: params.toString(), contentType: 'application/x-www-form-urlencoded' };");
-  lines.push('      }');
-  lines.push("      case 'binary':");
-  lines.push("        return { body: entity, contentType: 'application/octet-stream' };");
-  lines.push("      case 'text':");
-  lines.push("        return { body: String(entity), contentType: 'text/plain' };");
-  lines.push('      default:');
-  lines.push("        return { body: JSON.stringify(entity), contentType: 'application/json' };");
-  lines.push('    }');
-  lines.push('  }');
-
-  // Fix 1: Auth-aware headers
-  lines.push('');
-  lines.push('  private buildHeaders(options: any = {}, contentType?: string): Record<string, string> {');
-  lines.push('    const headers: Record<string, string> = {};');
-  lines.push("    if (contentType) headers['Content-Type'] = contentType;");
-  renderAuthHeaders(lines, spec.auth);
-  lines.push("    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;");
-  lines.push("    if (options.warrantToken) headers['Warrant-Token'] = options.warrantToken;");
-  lines.push('    return headers;');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push('  private ensureApiKey(options: any = {}): void {');
-  lines.push('    if (!this.key && !options.skipApiKeyCheck) {');
-  lines.push('      throw new NoApiKeyProvidedException();');
-  lines.push('    }');
-  lines.push('  }');
-
-  lines.push('');
-  lines.push('  private async handleHttpError(response: Response, path: string): Promise<void> {');
-  lines.push('    if (response.ok) return;');
-  lines.push('');
-  lines.push("    const requestID = response.headers.get('x-request-id') ?? '';");
-  lines.push('    let data: any = {};');
-  lines.push('    try { data = await response.json(); } catch {}');
-  lines.push('    const { message, code, errors } = data;');
-  lines.push('');
-  lines.push('    switch (response.status) {');
-  lines.push('      case 400: throw new BadRequestException({ code, message, requestID });');
-  lines.push('      case 401: throw new UnauthorizedException(requestID);');
-  lines.push('      case 404: throw new NotFoundException({ code, message, path, requestID });');
-  lines.push('      case 409: throw new ConflictException({ message, requestID });');
-  lines.push('      case 422: throw new UnprocessableEntityException({ code, errors, message, requestID });');
-  lines.push('      case 429: {');
-  lines.push("        const retryAfter = Number(response.headers.get('retry-after')) || undefined;");
-  lines.push("        throw new RateLimitExceededException(message ?? 'Too many requests', requestID, retryAfter);");
-  lines.push('      }');
-  lines.push("      default: throw new GenericServerException(response.status, message ?? 'Server error', requestID);");
-  lines.push('    }');
-  lines.push('  }');
+  // Auth override — only emit when auth is non-default (not bearer)
+  if (needsAuthOverride(spec.auth)) {
+    lines.push('');
+    lines.push('  protected override setAuthHeaders(headers: Record<string, string>): void {');
+    renderAuthOverride(lines, spec.auth!);
+    lines.push('  }');
+  }
 
   lines.push('}');
 
-  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true, integrateTarget: false };
+  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
 }
 
 // Names exported from common utilities that must not be re-exported from model interfaces
@@ -345,36 +159,32 @@ function findEnumService(enumName: string, services: Service[]): string | undefi
 }
 
 /**
- * Render auth header logic into the buildHeaders method body.
- * Reads spec.auth to determine auth scheme (bearer, apiKey, oauth2).
- * Falls back to bearer auth if no auth schemes are defined.
+ * Determine whether the spec's auth scheme requires overriding the
+ * default bearer auth in WorkOSBase.setAuthHeaders().
  */
-function renderAuthHeaders(lines: string[], auth?: AuthScheme[]): void {
-  if (!auth || auth.length === 0) {
-    // Default: bearer auth
-    lines.push(`    headers['Authorization'] = \`Bearer \${this.key}\`;`);
-    return;
-  }
-
+function needsAuthOverride(auth?: AuthScheme[]): boolean {
+  if (!auth || auth.length === 0) return false;
   const scheme = auth[0];
-  switch (scheme.kind) {
-    case 'bearer':
-    case 'oauth2':
-      lines.push(`    headers['Authorization'] = \`Bearer \${this.key}\`;`);
+  // bearer and oauth2 match the base class default — no override needed
+  return scheme.kind === 'apiKey';
+}
+
+/**
+ * Render the body of a setAuthHeaders override for non-default auth schemes.
+ * Only called when needsAuthOverride() returns true.
+ */
+function renderAuthOverride(lines: string[], auth: AuthScheme[]): void {
+  const scheme = auth[0];
+  if (scheme.kind !== 'apiKey') return;
+  switch (scheme.in) {
+    case 'header':
+      lines.push(`    headers['${scheme.name}'] = this.key;`);
       break;
-    case 'apiKey':
-      switch (scheme.in) {
-        case 'header':
-          lines.push(`    headers['${scheme.name}'] = this.key;`);
-          break;
-        case 'query':
-          // API key in query is handled by buildUrl — store on the instance for access
-          lines.push(`    // Auth key sent as query parameter '${scheme.name}' (see buildUrl)`);
-          break;
-        case 'cookie':
-          lines.push(`    headers['Cookie'] = \`${scheme.name}=\${this.key}\`;`);
-          break;
-      }
+    case 'query':
+      lines.push(`    // Auth key sent as query parameter '${scheme.name}' (see buildUrl)`);
+      break;
+    case 'cookie':
+      lines.push(`    headers['Cookie'] = \`${scheme.name}=\${this.key}\`;`);
       break;
   }
 }
