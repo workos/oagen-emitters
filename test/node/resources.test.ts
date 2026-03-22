@@ -267,9 +267,7 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [
-              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-            ],
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'Organization' },
@@ -294,9 +292,7 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [
-              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-            ],
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [
               {
                 name: 'include_fields',
@@ -328,9 +324,7 @@ describe('generateResources', () => {
             name: 'getSession',
             httpMethod: 'get',
             path: '/sessions/{id}',
-            pathParams: [
-              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-            ],
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
             headerParams: [
               {
@@ -393,6 +387,42 @@ describe('generateResources', () => {
     expect(content).toContain('@returns {Organization}');
     expect(content).not.toContain('@returns {Organization} 200');
     expect(content).not.toContain('@returns {Organization} 201');
+  });
+
+  it('generates DELETE-with-body method using deleteWithBody', () => {
+    const services: Service[] = [
+      {
+        name: 'Radar',
+        operations: [
+          {
+            name: 'deleteRadarListEntry',
+            httpMethod: 'delete',
+            path: '/radar/lists/{listId}/entries',
+            pathParams: [
+              {
+                name: 'listId',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'DeleteRadarListEntryInput' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+    expect(content).toContain(
+      'async deleteRadarListEntry(listId: string, payload: DeleteRadarListEntryInput): Promise<void>',
+    );
+    expect(content).toContain('await this.workos.deleteWithBody(');
+    expect(content).toContain('serializeDeleteRadarListEntryInput(payload)');
   });
 
   it('renders deprecated path params', () => {

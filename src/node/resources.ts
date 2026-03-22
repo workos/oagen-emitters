@@ -203,9 +203,7 @@ function renderMethod(
   // to filter out @param tags that don't match the actual method params
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  const validParamNames = overlayMethod
-    ? new Set(overlayMethod.params.map((p) => p.name))
-    : null;
+  const validParamNames = overlayMethod ? new Set(overlayMethod.params.map((p) => p.name)) : null;
 
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
@@ -287,8 +285,12 @@ function renderMethod(
     }
   }
 
+  const preDecisionCount = lines.length;
+
   if (plan.isPaginated && responseModel) {
     renderPaginatedMethod(lines, op, plan, method, responseModel);
+  } else if (plan.isDelete && plan.hasBody) {
+    renderDeleteWithBodyMethod(lines, op, plan, method, pathStr, ctx);
   } else if (plan.isDelete) {
     renderDeleteMethod(lines, op, plan, method, pathStr);
   } else if (plan.hasBody && responseModel) {
@@ -297,6 +299,14 @@ function renderMethod(
     renderGetMethod(lines, op, plan, method, responseModel, pathStr);
   } else {
     renderVoidMethod(lines, op, plan, method, pathStr, ctx);
+  }
+
+  // Defensive: if no render function produced a method body, emit a stub
+  if (lines.length === preDecisionCount) {
+    const params = buildPathParams(op);
+    lines.push(`  async ${method}(${params}): Promise<void> {`);
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr});`);
+    lines.push('  }');
   }
 
   return lines;
@@ -314,9 +324,7 @@ function renderPaginatedMethod(
 
   const pathStr = buildPathStr(op);
   const pathParams = buildPathParams(op);
-  const allParams = pathParams
-    ? `${pathParams}, options?: ${optionsType}`
-    : `options?: ${optionsType}`;
+  const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
   lines.push('    return new AutoPaginatable(');
@@ -348,6 +356,30 @@ function renderDeleteMethod(
   const params = buildPathParams(op);
   lines.push(`  async ${method}(${params}): Promise<void> {`);
   lines.push(`    await this.workos.delete(${pathStr});`);
+  lines.push('  }');
+}
+
+function renderDeleteWithBodyMethod(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  pathStr: string,
+  ctx: EmitterContext,
+): void {
+  const requestBodyModel = extractRequestBodyModelName(op);
+  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
+
+  const paramParts: string[] = [];
+  for (const param of op.pathParams) {
+    paramParts.push(`${fieldName(param.name)}: ${mapTypeRef(param.type)}`);
+  }
+  paramParts.push(`payload: ${requestType}`);
+
+  const bodyExpr = requestBodyModel ? `serialize${requestType}(payload)` : 'payload';
+
+  lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<void> {`);
+  lines.push(`    await this.workos.deleteWithBody(${pathStr}, ${bodyExpr});`);
   lines.push('  }');
 }
 
@@ -499,5 +531,3 @@ function extractRequestBodyModelName(op: Operation): string | null {
   if (op.requestBody.kind === 'model') return op.requestBody.name;
   return null;
 }
-
-
