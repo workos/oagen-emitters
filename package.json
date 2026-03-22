@@ -15,7 +15,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "lint": "oxlint",
+    "lint": "oxlint -D warnings",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --check .",
     "format:fix": "oxfmt --write .",
