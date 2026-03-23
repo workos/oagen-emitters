@@ -85,7 +85,13 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the deserializer
       if (!field.required && expr !== wireAccess && needsNullGuard(field.type)) {
-        lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : undefined,`);
+        // If the expression already starts with a null guard from nullable handling,
+        // don't wrap it again — just replace the inner null fallback with undefined
+        if (expr.startsWith(`${wireAccess} != null ?`)) {
+          lines.push(`  ${domain}: ${expr.replace(/: null$/, ': undefined')},`);
+        } else {
+          lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : undefined,`);
+        }
       } else if (field.required && expr === wireAccess) {
         // Required field with direct assignment — add fallback for cases where
         // the response interface makes the field optional (baseline override)
@@ -118,7 +124,13 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the serializer
       if (!field.required && expr !== domainAccess && needsNullGuard(field.type)) {
-        lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : undefined,`);
+        // If the expression already starts with a null guard from nullable handling,
+        // don't wrap it again — just replace the inner null fallback with undefined
+        if (expr.startsWith(`${domainAccess} != null ?`)) {
+          lines.push(`  ${wire}: ${expr.replace(/: null$/, ': undefined')},`);
+        } else {
+          lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : undefined,`);
+        }
       } else {
         lines.push(`  ${wire}: ${expr},`);
       }

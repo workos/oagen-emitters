@@ -1,4 +1,4 @@
-import type { Model, Field, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import type { Model, Field, TypeRef, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
 import {
@@ -71,9 +71,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Pre-pass: discover baseline type names that aren't directly importable.
     // For each unresolvable name we either:
     //   1. Import the real type from another service (if it exists as an enum/model there)
-    //   2. Create a local type declaration as a fallback
+    //   2. Create a local type alias from a suffix match
+    //   3. Mark as unresolvable — the field will fall back to the IR-generated type
     const typeDecls = new Map<string, string>(); // aliasName → type expression
     const crossServiceImports = new Map<string, { name: string; relPath: string }>(); // extra imports
+    const unresolvableNames = new Set<string>(); // names that can't be resolved — forces IR fallback
     const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
     // Build a lookup: resolved enum name → IR enum name
     const resolvedEnumNames = new Map<string, string>();
@@ -96,6 +98,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
           if (importableNames.has(name)) continue;
           if (typeDecls.has(name)) continue;
           if (crossServiceImports.has(name)) continue;
+          if (unresolvableNames.has(name)) continue;
 
           // Check if this name exists as an enum in another service —
           // import the actual type so the extractor sees the real name
@@ -119,11 +122,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
             typeDecls.set(name, candidates[0]);
             importableNames.add(name);
           } else {
-            // No suffix match — create a type alias using the IR-generated type
-            const innerType = field.type.kind === 'nullable' ? field.type.inner : field.type;
-            const typeExpr = mapTypeRef(innerType);
-            typeDecls.set(name, typeExpr);
-            importableNames.add(name);
+            // Cannot resolve this baseline type name — mark it so the field
+            // falls back to the IR-generated type instead of the baseline.
+            // This avoids creating type aliases that reference undefined types.
+            unresolvableNames.add(name);
           }
         }
       }
@@ -290,7 +292,29 @@ function baselineFieldCompatible(baselineField: { type: string; optional: boolea
   // the serializer produces a definite value but the interface is looser — that's OK
   // (the domain type is wider than the serializer output)
 
+  // If the baseline type is Record<string, unknown> but the IR field has a more specific
+  // type (model, enum, or union with named variants), prefer the IR type for better type safety
+  if (baselineField.type === 'Record<string, unknown>' && hasSpecificIRType(irField.type)) {
+    return false;
+  }
+
   return true;
+}
+
+/** Check if an IR type is more specific than Record<string, unknown>. */
+function hasSpecificIRType(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'model':
+    case 'enum':
+      return true;
+    case 'union':
+      // A union with named model/enum variants is more specific
+      return ref.variants.some((v) => v.kind === 'model' || v.kind === 'enum');
+    case 'nullable':
+      return hasSpecificIRType(ref.inner);
+    default:
+      return false;
+  }
 }
 
 function renderTypeParams(model: Model): string {

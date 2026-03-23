@@ -111,7 +111,7 @@ function generateServiceTest(
 
   lines.push('});');
 
-  return { path: testPath, content: lines.join('\n'), skipIfExists: true, integrateTarget: false };
+  return { path: testPath, content: lines.join('\n'), skipIfExists: true };
 }
 
 function renderPaginatedTest(

@@ -85,8 +85,20 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
-  // Track all exported names to prevent duplicates
+  // Track all exported names to prevent duplicates.
+  // Pre-seed with names already exported by the existing SDK to avoid generating
+  // duplicate exports that would conflict with existing `export *` statements.
   const exportedNames = new Set<string>();
+  if (ctx.apiSurface?.interfaces) {
+    for (const name of Object.keys(ctx.apiSurface.interfaces)) {
+      exportedNames.add(name);
+    }
+  }
+  if (ctx.apiSurface?.classes) {
+    for (const name of Object.keys(ctx.apiSurface.classes)) {
+      exportedNames.add(name);
+    }
+  }
 
   // Common exports
   lines.push("export * from './common/exceptions';");

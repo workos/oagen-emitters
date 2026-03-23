@@ -216,17 +216,32 @@ function renderMethod(
   const usesTemplate = interpolatedPath.includes('${');
   const pathStr = usesTemplate ? `\`${interpolatedPath}\`` : `'${op.path}'`;
 
-  // Build set of valid param names from the overlay (existing method signature)
-  // to filter out @param tags that don't match the actual method params
+  // Build set of valid param names to filter @param tags.
+  // Prefer the overlay (existing method signature) if available;
+  // otherwise compute from what the render path will actually include.
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  const validParamNames = overlayMethod ? new Set(overlayMethod.params.map((p) => p.name)) : null;
+  let validParamNames: Set<string> | null = null;
+  if (overlayMethod) {
+    validParamNames = new Set(overlayMethod.params.map((p) => p.name));
+  } else {
+    // Compute actual params based on render path to avoid documenting params
+    // that won't appear in the method signature
+    const actualParams = new Set<string>();
+    for (const p of op.pathParams) actualParams.add(fieldName(p.name));
+    if (plan.hasBody) actualParams.add('payload');
+    if (plan.isPaginated) actualParams.add('options');
+    // renderGetMethod adds options when there are non-paginated query params
+    if (!plan.isPaginated && op.queryParams.length > 0 && !plan.isDelete && responseModel) {
+      actualParams.add('options');
+    }
+    validParamNames = actualParams;
+  }
 
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
   for (const param of op.pathParams) {
     const paramName = fieldName(param.name);
-    // Skip @param if the overlay method exists and doesn't have this param
     if (validParamNames && !validParamNames.has(paramName)) continue;
     const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
     if (param.description) {
@@ -239,44 +254,24 @@ function renderMethod(
   }
   // Document query params for non-paginated operations
   if (!plan.isPaginated) {
-    for (const param of op.queryParams) {
-      const paramName = `options.${fieldName(param.name)}`;
-      // Skip @param if the overlay method exists and doesn't have a matching param
-      if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name))) continue;
-      const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
-      if (param.description) {
-        docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
-      } else if (param.deprecated) {
-        docParts.push(`@param ${paramName} - (deprecated)`);
+    // Only document query params if the method will have an options parameter
+    if (validParamNames && (validParamNames.has('options') || overlayMethod)) {
+      for (const param of op.queryParams) {
+        const paramName = `options.${fieldName(param.name)}`;
+        if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name))) continue;
+        const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+        if (param.description) {
+          docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
+        } else if (param.deprecated) {
+          docParts.push(`@param ${paramName} - (deprecated)`);
+        }
+        if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+        if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
       }
-      if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
-      if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
     }
   }
-  // Document header params
-  for (const param of op.headerParams) {
-    const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
-    if (param.description) {
-      docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
-    } else if (param.deprecated) {
-      docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
-    }
-    if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
-    if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
-  }
-  // Document cookie params
-  if (op.cookieParams) {
-    for (const param of op.cookieParams) {
-      const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
-      if (param.description) {
-        docParts.push(`@param ${fieldName(param.name)} - ${deprecatedPrefix}${param.description}`);
-      } else if (param.deprecated) {
-        docParts.push(`@param ${fieldName(param.name)} - (deprecated)`);
-      }
-      if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
-      if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
-    }
-  }
+  // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
+  // The SDK handles headers and cookies internally, so documenting them would be misleading.
   // @returns for the primary response model
   if (responseModel) {
     docParts.push(`@returns {${responseModel}}`);
@@ -304,8 +299,11 @@ function renderMethod(
 
   const preDecisionCount = lines.length;
 
-  if (plan.isPaginated && responseModel) {
+  if (plan.isPaginated && responseModel && op.httpMethod === 'get') {
     renderPaginatedMethod(lines, op, plan, method, responseModel);
+  } else if (plan.isPaginated && plan.hasBody && responseModel) {
+    // Non-GET paginated operation (e.g., PUT with list response) — treat as body method
+    renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx);
   } else if (plan.isDelete && plan.hasBody) {
     renderDeleteWithBodyMethod(lines, op, plan, method, pathStr, ctx);
   } else if (plan.isDelete) {
@@ -492,6 +490,11 @@ function renderGetMethod(
     );
     lines.push('      query: options,');
     lines.push('    });');
+  } else if (httpMethodNeedsBody(op.httpMethod)) {
+    // PUT/PATCH/POST require a body argument even when the spec has no request body
+    lines.push(
+      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {});`,
+    );
   } else {
     lines.push(
       `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr});`,
@@ -544,7 +547,20 @@ function buildPathStr(op: Operation): string {
 }
 
 function buildPathParams(op: Operation): string {
-  return op.pathParams.map((p) => `${fieldName(p.name)}: ${mapTypeRef(p.type)}`).join(', ');
+  // Start with declared path params
+  const declaredNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  const params = op.pathParams.map((p) => `${fieldName(p.name)}: ${mapTypeRef(p.type)}`);
+
+  // Detect path template variables not in declared pathParams and add them as string params.
+  // This handles cases where the spec path has {param} but pathParams is incomplete.
+  const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
+  for (const varName of templateVars) {
+    if (!declaredNames.has(varName)) {
+      params.push(`${varName}: string`);
+    }
+  }
+
+  return params.join(', ');
 }
 
 function extractRequestBodyModelName(op: Operation): string | null {
