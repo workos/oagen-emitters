@@ -58,7 +58,7 @@
     "sdk:extract:rust": "oagen extract --lang rust --sdk-path ../backend/workos-rust --output ./sdk-rust-surface.json"
   },
   "dependencies": {
-    "@workos/oagen": "^0.1.0"
+    "@workos/oagen": "^0.1.1"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
