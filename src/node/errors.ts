@@ -1,4 +1,4 @@
-import type { EmitterContext, ErrorResponse, GeneratedFile } from '@workos/oagen';
+import type { EmitterContext, GeneratedFile } from '@workos/oagen';
 import { fileName } from './naming.js';
 
 export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
@@ -224,7 +224,7 @@ export { NoApiKeyProvidedException } from './no-api-key-provided.exception';`,
   readonly data?: any;
 
   constructor({ message, requestID, data }: { message?: string; requestID: string; data?: any }) {
-    ${baseException ? `super(${baseException === 'UnauthorizedException' ? 'requestID' : `{ message: message ?? '${modelName} error', requestID }`});` : "super();"}
+    ${baseException ? `super(${baseException === 'UnauthorizedException' ? 'requestID' : `{ message: message ?? '${modelName} error', requestID }`});` : 'super();'}
     this.message = message ?? '${modelName} error';
     this.requestID = requestID;
     if (data) this.data = data;
@@ -254,7 +254,9 @@ const STATUS_TO_BASE_EXCEPTION: Record<number, string> = {
   429: 'RateLimitExceededException',
 };
 
-function collectTypedErrors(ctx: EmitterContext): { modelName: string; statusCode: number; baseException: string | null }[] {
+function collectTypedErrors(
+  ctx: EmitterContext,
+): { modelName: string; statusCode: number; baseException: string | null }[] {
   const seen = new Set<string>();
   const results: { modelName: string; statusCode: number; baseException: string | null }[] = [];
 
@@ -266,7 +268,8 @@ function collectTypedErrors(ctx: EmitterContext): { modelName: string; statusCod
           results.push({
             modelName: err.type.name,
             statusCode: err.statusCode,
-            baseException: STATUS_TO_BASE_EXCEPTION[err.statusCode] ?? (err.statusCode >= 500 ? 'GenericServerException' : null),
+            baseException:
+              STATUS_TO_BASE_EXCEPTION[err.statusCode] ?? (err.statusCode >= 500 ? 'GenericServerException' : null),
           });
         }
       }

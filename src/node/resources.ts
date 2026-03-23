@@ -17,6 +17,14 @@ import {
 import { collectModelRefs, assignModelsToServices, docComment } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
+/** Standard pagination query params handled by PaginationOptions — not imported individually. */
+const PAGINATION_PARAM_NAMES = new Set(['limit', 'before', 'after', 'order']);
+
+/** HTTP methods that require a body argument even when the spec has no request body. */
+function httpMethodNeedsBody(method: string): boolean {
+  return method === 'post' || method === 'put' || method === 'patch';
+}
+
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
   return services.map((service) => generateResourceClass(service, ctx));
@@ -48,8 +56,13 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         requestModels.add(name);
       }
     }
-    // Collect types referenced in query and path parameters
-    for (const param of [...op.queryParams, ...op.pathParams]) {
+    // Collect types referenced in query and path parameters.
+    // For paginated operations, skip standard pagination params (limit, before, after, order)
+    // since they're handled by PaginationOptions and don't need explicit imports.
+    const queryParams = plan.isPaginated
+      ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
+      : op.queryParams;
+    for (const param of [...queryParams, ...op.pathParams]) {
       if (param.type.kind === 'enum') {
         paramEnums.add(param.type.name);
       } else if (param.type.kind === 'model') {
@@ -127,11 +140,15 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`import { serialize${resolved} } from '${relPath}';`);
   }
 
-  // Import enum types referenced in query/path parameters
+  // Import enum types referenced in query/path parameters.
+  // Only import enums that actually exist in the spec's global enums list —
+  // inline string unions may have kind 'enum' but no corresponding file.
   if (paramEnums.size > 0) {
+    const specEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
     const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
     for (const name of paramEnums) {
       if (allModels.has(name)) continue; // Already imported as a model
+      if (!specEnumNames.has(name)) continue; // No file generated for this enum
       const enumDir = enumToService.get(name);
       const enumServiceDir = resolveDir(enumDir);
       const relPath =
@@ -147,7 +164,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // List options interfaces for paginated operations with extra query params
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
-      const extraParams = op.queryParams.filter((p) => !['limit', 'before', 'after', 'order'].includes(p.name));
+      const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
       if (extraParams.length > 0) {
         const optionsName = toPascalCase(method) + 'Options';
         lines.push(`export interface ${optionsName} extends PaginationOptions {`);
@@ -203,9 +220,7 @@ function renderMethod(
   // to filter out @param tags that don't match the actual method params
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  const validParamNames = overlayMethod
-    ? new Set(overlayMethod.params.map((p) => p.name))
-    : null;
+  const validParamNames = overlayMethod ? new Set(overlayMethod.params.map((p) => p.name)) : null;
 
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
@@ -287,8 +302,12 @@ function renderMethod(
     }
   }
 
+  const preDecisionCount = lines.length;
+
   if (plan.isPaginated && responseModel) {
     renderPaginatedMethod(lines, op, plan, method, responseModel);
+  } else if (plan.isDelete && plan.hasBody) {
+    renderDeleteWithBodyMethod(lines, op, plan, method, pathStr, ctx);
   } else if (plan.isDelete) {
     renderDeleteMethod(lines, op, plan, method, pathStr);
   } else if (plan.hasBody && responseModel) {
@@ -297,6 +316,16 @@ function renderMethod(
     renderGetMethod(lines, op, plan, method, responseModel, pathStr);
   } else {
     renderVoidMethod(lines, op, plan, method, pathStr, ctx);
+  }
+
+  // Defensive: if no render function produced a method body, emit a stub
+  if (lines.length === preDecisionCount) {
+    const params = buildPathParams(op);
+    lines.push(`  async ${method}(${params}): Promise<void> {`);
+    lines.push(
+      `    await this.workos.${op.httpMethod}(${pathStr}${httpMethodNeedsBody(op.httpMethod) ? ', {}' : ''});`,
+    );
+    lines.push('  }');
   }
 
   return lines;
@@ -309,14 +338,12 @@ function renderPaginatedMethod(
   method: string,
   itemType: string,
 ): void {
-  const extraParams = op.queryParams.filter((p) => !['limit', 'before', 'after', 'order'].includes(p.name));
+  const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
   const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
 
   const pathStr = buildPathStr(op);
   const pathParams = buildPathParams(op);
-  const allParams = pathParams
-    ? `${pathParams}, options?: ${optionsType}`
-    : `options?: ${optionsType}`;
+  const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
   lines.push('    return new AutoPaginatable(');
@@ -348,6 +375,30 @@ function renderDeleteMethod(
   const params = buildPathParams(op);
   lines.push(`  async ${method}(${params}): Promise<void> {`);
   lines.push(`    await this.workos.delete(${pathStr});`);
+  lines.push('  }');
+}
+
+function renderDeleteWithBodyMethod(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  pathStr: string,
+  ctx: EmitterContext,
+): void {
+  const requestBodyModel = extractRequestBodyModelName(op);
+  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
+
+  const paramParts: string[] = [];
+  for (const param of op.pathParams) {
+    paramParts.push(`${fieldName(param.name)}: ${mapTypeRef(param.type)}`);
+  }
+  paramParts.push(`payload: ${requestType}`);
+
+  const bodyExpr = requestBodyModel ? `serialize${requestType}(payload)` : 'payload';
+
+  lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<void> {`);
+  lines.push(`    await this.workos.deleteWithBody(${pathStr}, ${bodyExpr});`);
   lines.push('  }');
 }
 
@@ -479,6 +530,8 @@ function renderVoidMethod(
   lines.push(`  async ${method}(${allParams}): Promise<void> {`);
   if (plan.hasBody) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
+  } else if (httpMethodNeedsBody(op.httpMethod)) {
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {});`);
   } else {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr});`);
   }
@@ -499,5 +552,3 @@ function extractRequestBodyModelName(op: Operation): string | null {
   if (op.requestBody.kind === 'model') return op.requestBody.name;
   return null;
 }
-
-
