@@ -105,6 +105,17 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         lines.push(`  ${domain}: ${expr},`);
       }
     }
+    // Add passthrough assignments for baseline-required fields missing from the IR model.
+    // This handles cases where the baseline interface (from the existing SDK surface)
+    // has required fields that the OpenAPI spec doesn't define.
+    if (baselineDomain) {
+      for (const [bfName, bfDef] of Object.entries(baselineDomain.fields ?? {})) {
+        if (!(bfDef as { optional: boolean }).optional && !seenDeserFields.has(bfName)) {
+          const guessedWire = wireFieldName(bfName);
+          lines.push(`  ${bfName}: (response as any).${guessedWire},`);
+        }
+      }
+    }
     lines.push('});');
 
     // Serialize function (domain → wire)

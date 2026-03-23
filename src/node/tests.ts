@@ -43,22 +43,33 @@ function generateServiceTest(
   const serviceProp = servicePropertyName(resolvedName);
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
 
+  const plans = service.operations.map((op) => ({
+    op,
+    plan: planOperation(op),
+    method: resolveMethodName(op, service, ctx),
+  }));
+
   const lines: string[] = [];
 
   lines.push("import fetch from 'jest-fetch-mock';");
+
+  // Conditionally import test utilities based on what test types exist
+  const hasPaginated = plans.some((p) => p.plan.isPaginated);
+  const hasBody = plans.some((p) => p.plan.hasBody && p.plan.responseModelName);
+  const testUtils = ['fetchOnce', 'fetchURL'];
+  if (hasPaginated) testUtils.push('fetchSearchParams');
+  if (hasBody) testUtils.push('fetchBody');
   lines.push('import {');
-  lines.push('  fetchOnce,');
-  lines.push('  fetchURL,');
-  lines.push('  fetchSearchParams,');
-  lines.push('  fetchBody,');
+  for (const util of testUtils) {
+    lines.push(`  ${util},`);
+  }
   lines.push("} from '../common/utils/test-utils';");
   lines.push("import { WorkOS } from '../workos';");
   lines.push('');
 
   // Import fixtures
   const fixtureImports = new Set<string>();
-  for (const op of service.operations) {
-    const plan = planOperation(op);
+  for (const { op, plan } of plans) {
     if (plan.isPaginated && op.pagination) {
       const itemModelName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
       if (itemModelName) {
@@ -82,10 +93,7 @@ function generateServiceTest(
   lines.push(`describe('${serviceClass}', () => {`);
   lines.push('  beforeEach(() => fetch.resetMocks());');
 
-  for (const op of service.operations) {
-    const plan = planOperation(op);
-    const method = resolveMethodName(op, service, ctx);
-
+  for (const { op, plan, method } of plans) {
     lines.push('');
     lines.push(`  describe('${method}', () => {`);
 
@@ -114,6 +122,22 @@ function generateServiceTest(
   return { path: testPath, content: lines.join('\n'), skipIfExists: true };
 }
 
+/** Build test arguments for all path params (handles multiple path params). */
+function buildTestPathArgs(op: Operation): string {
+  // Detect path template variables (may be more than op.pathParams if spec is incomplete)
+  const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
+  const declaredNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  // Merge declared + template vars, deduplicate, preserve order
+  const allVars: string[] = [];
+  for (const p of op.pathParams) {
+    allVars.push(fieldName(p.name));
+  }
+  for (const v of templateVars) {
+    if (!declaredNames.has(v)) allVars.push(v);
+  }
+  return allVars.map(() => "'test_id'").join(', ');
+}
+
 function renderPaginatedTest(
   lines: string[],
   op: Operation,
@@ -123,11 +147,14 @@ function renderPaginatedTest(
   modelMap: Map<string, Model>,
 ): void {
   const itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
+  const pathArgs = buildTestPathArgs(op);
 
   lines.push("    it('returns paginated results', async () => {");
   lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
   lines.push('');
-  lines.push(`      const { data, listMetadata } = await workos.${serviceProp}.${method}();`);
+  lines.push(
+    `      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''});`,
+  );
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   lines.push("      expect(fetchSearchParams()).toHaveProperty('order');");
@@ -150,16 +177,15 @@ function renderPaginatedTest(
 }
 
 function renderDeleteTest(lines: string[], op: Operation, method: string, serviceProp: string): void {
-  const hasPathParam = op.pathParams.length > 0;
-  const args = hasPathParam ? "'test_id'" : '';
+  const pathArgs = buildTestPathArgs(op);
 
   lines.push("    it('sends a DELETE request', async () => {");
   lines.push('      fetchOnce({}, { status: 204 });');
   lines.push('');
-  lines.push(`      await workos.${serviceProp}.${method}(${args});`);
+  lines.push(`      await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
-  if (hasPathParam) {
+  if (pathArgs) {
     lines.push("      expect(fetchURL()).toContain('test_id');");
   }
   lines.push('    });');
@@ -175,16 +201,16 @@ function renderBodyTest(
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
-  const hasPathParam = op.pathParams.length > 0;
-  const pathArg = hasPathParam ? "'test_id', " : '';
+  const pathArgs = buildTestPathArgs(op);
+  const allArgs = pathArgs ? `${pathArgs}, {} as any` : '{} as any';
 
   lines.push("    it('sends the correct request and returns result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
   lines.push('');
-  lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArg}{});`);
+  lines.push(`      const result = await workos.${serviceProp}.${method}(${allArgs});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
-  if (hasPathParam) {
+  if (pathArgs) {
     lines.push("      expect(fetchURL()).toContain('test_id');");
   }
   lines.push('      expect(fetchBody()).toBeDefined();');
@@ -212,16 +238,15 @@ function renderGetTest(
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
-  const hasPathParam = op.pathParams.length > 0;
-  const args = hasPathParam ? "'test_id'" : '';
+  const pathArgs = buildTestPathArgs(op);
 
   lines.push("    it('returns the expected result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
   lines.push('');
-  lines.push(`      const result = await workos.${serviceProp}.${method}(${args});`);
+  lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
-  if (hasPathParam) {
+  if (pathArgs) {
     lines.push("      expect(fetchURL()).toContain('test_id');");
   }
   lines.push('      expect(result).toBeDefined();');
@@ -239,37 +264,32 @@ function renderGetTest(
 }
 
 function renderVoidTest(lines: string[], op: Operation, method: string, serviceProp: string): void {
-  const hasPathParam = op.pathParams.length > 0;
-  const args = hasPathParam ? "'test_id'" : '';
+  const pathArgs = buildTestPathArgs(op);
 
   lines.push("    it('sends the request', async () => {");
   lines.push('      fetchOnce({});');
   lines.push('');
-  lines.push(`      await workos.${serviceProp}.${method}(${args});`);
+  lines.push(`      await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
-  if (hasPathParam) {
+  if (pathArgs) {
     lines.push("      expect(fetchURL()).toContain('test_id');");
   }
   lines.push('    });');
 }
 
 function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
-  const hasPathParam = op.pathParams.length > 0;
+  const pathArgs = buildTestPathArgs(op);
   const isPaginated = plan.isPaginated;
   const hasBody = plan.hasBody;
 
   let args: string;
   if (isPaginated) {
-    args = '';
-  } else if (hasBody && hasPathParam) {
-    args = "'test_id', {}";
+    args = pathArgs || '';
   } else if (hasBody) {
-    args = '{}';
-  } else if (hasPathParam) {
-    args = "'test_id'";
+    args = pathArgs ? `${pathArgs}, {} as any` : '{} as any';
   } else {
-    args = '';
+    args = pathArgs || '';
   }
 
   lines.push('');

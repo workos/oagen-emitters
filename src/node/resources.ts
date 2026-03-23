@@ -14,7 +14,7 @@ import {
   buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { collectModelRefs, assignModelsToServices, docComment } from './utils.js';
+import { assignModelsToServices, docComment } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
@@ -44,17 +44,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
 
-  // Collect models for imports
+  // Collect models for imports — only include models that are actually used
+  // in method signatures (not all union variants from the spec)
   const responseModels = new Set<string>();
   const requestModels = new Set<string>();
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
   for (const { op, plan } of plans) {
     if (plan.responseModelName) responseModels.add(plan.responseModelName);
-    if (op.requestBody) {
-      for (const name of collectModelRefs(op.requestBody)) {
-        requestModels.add(name);
-      }
+    // Only import request body model if it's a direct model reference
+    // (not a union — unions fall back to Record<string, unknown>)
+    const requestBodyModel = extractRequestBodyModelName(op);
+    if (requestBodyModel) {
+      requestModels.add(requestBodyModel);
     }
     // Collect types referenced in query and path parameters.
     // For paginated operations, skip standard pagination params (limit, before, after, order)
@@ -97,6 +99,13 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
+  // Wire (Response) types are only needed for models used as response types in method signatures.
+  // Request models and param models only need the domain type.
+  const usedWireTypes = new Set<string>();
+  for (const name of responseModels) {
+    usedWireTypes.add(resolveInterfaceName(name, ctx));
+  }
+
   // Track imported resolved names to prevent duplicate type name collisions
   const importedTypeNames = new Set<string>();
   for (const name of allModels) {
@@ -109,7 +118,11 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       modelServiceDir === serviceDir
         ? `./interfaces/${fileName(name)}.interface`
         : `../${modelServiceDir}/interfaces/${fileName(name)}.interface`;
-    lines.push(`import type { ${resolved}, ${wireInterfaceName(resolved)} } from '${relPath}';`);
+    if (usedWireTypes.has(resolved)) {
+      lines.push(`import type { ${resolved}, ${wireInterfaceName(resolved)} } from '${relPath}';`);
+    } else {
+      lines.push(`import type { ${resolved} } from '${relPath}';`);
+    }
   }
 
   const importedDeserializers = new Set<string>();
