@@ -26,6 +26,20 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
 
+    // Build a set of field names where the baseline interface uses 'string' for a
+    // date-time IR field. When the baseline says 'string', the serializer must not
+    // apply new Date() / .toISOString() conversions — the types would mismatch.
+    const skipFormatFields = new Set<string>();
+    const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
+    if (baselineDomain) {
+      for (const field of model.fields) {
+        const baselineField = baselineDomain.fields?.[fieldName(field.name)];
+        if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
+          skipFormatFields.add(field.name);
+        }
+      }
+    }
+
     // Find nested model refs that need their own serializer imports.
     // Only collect models that will actually be called in serialize/deserialize expressions
     // (direct model refs, array-of-model items, nullable-wrapped models, single-model-variant unions).
@@ -66,7 +80,8 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       seenDeserFields.add(domain);
       const wire = wireFieldName(field.name);
       const wireAccess = `response.${wire}`;
-      const expr = deserializeExpression(field.type, wireAccess, ctx);
+      const skip = skipFormatFields.has(field.name);
+      const expr = skip ? wireAccess : deserializeExpression(field.type, wireAccess, ctx);
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the deserializer
       if (!field.required && expr !== wireAccess && needsNullGuard(field.type)) {
@@ -98,7 +113,8 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       seenSerFields.add(wire);
       const domain = fieldName(field.name);
       const domainAccess = `model.${domain}`;
-      const expr = serializeExpression(field.type, domainAccess, ctx);
+      const skip = skipFormatFields.has(field.name);
+      const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the serializer
       if (!field.required && expr !== domainAccess && needsNullGuard(field.type)) {
@@ -282,9 +298,16 @@ function needsNullGuard(ref: TypeRef): boolean {
   }
 }
 
-/** Check if a primitive type has a format that requires conversion. */
-function hasFormatConversion(ref: PrimitiveType): boolean {
-  return ref.format === 'date-time' || ref.format === 'int64';
+/** Check if a type has a format that requires conversion. */
+function hasFormatConversion(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'primitive':
+      return ref.format === 'date-time' || ref.format === 'int64';
+    case 'nullable':
+      return hasFormatConversion(ref.inner);
+    default:
+      return false;
+  }
 }
 
 /** Deserialize a primitive value, applying format conversions when needed. */

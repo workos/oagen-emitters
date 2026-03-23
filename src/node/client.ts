@@ -24,8 +24,13 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
 
-  // Import base class
-  lines.push("import { WorkOSBase } from './common/workos-base';");
+  // Only import WorkOSBase for fresh generation (no existing WorkOS class).
+  // When integrating into an existing SDK, the existing WorkOS already has its
+  // own base class and the WorkOSBase file may not exist.
+  const hasExistingWorkOS = !!ctx.apiSurface?.classes?.['WorkOS'];
+  if (!hasExistingWorkOS) {
+    lines.push("import { WorkOSBase } from './common/workos-base';");
+  }
 
   // Service imports
   for (const service of spec.services) {
@@ -38,7 +43,8 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   if (spec.description) {
     lines.push(...docComment(spec.description));
   }
-  lines.push('export class WorkOS extends WorkOSBase {');
+  const extendsClause = hasExistingWorkOS ? '' : ' extends WorkOSBase';
+  lines.push(`export class WorkOS${extendsClause} {`);
 
   // Server URL constants from spec.servers
   if (spec.servers && spec.servers.length > 0) {
@@ -72,15 +78,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
 }
 
-// Names exported from common utilities that must not be re-exported from model interfaces
-const RESERVED_BARREL_NAMES = new Set(['List', 'ListResponse', 'ListMetadata', 'AutoPaginatable', 'PaginationOptions']);
-
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
   const modelToService = assignModelsToServices(spec.models, spec.services);
   const serviceNameMap = buildServiceNameMap(spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+
+  // Track all exported names to prevent duplicates
+  const exportedNames = new Set<string>();
 
   // Common exports
   lines.push("export * from './common/exceptions';");
@@ -91,47 +97,70 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   lines.push("export type { PostOptions } from './common/interfaces/post-options.interface';");
   lines.push("export type { GetOptions } from './common/interfaces/get-options.interface';");
   lines.push('');
+  for (const name of [
+    'AutoPaginatable',
+    'List',
+    'ListMetadata',
+    'ListResponse',
+    'PaginationOptions',
+    'WorkOSOptions',
+    'PostOptions',
+    'GetOptions',
+  ]) {
+    exportedNames.add(name);
+  }
 
   // Per-service exports: interfaces + resource class
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
 
-    // Collect models that belong to this service, skipping reserved names
+    // Collect models that belong to this service, skipping already-exported names
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
     for (const model of serviceModels) {
       const name = resolveInterfaceName(model.name, ctx);
       const wireName = wireInterfaceName(name);
-      if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(wireName)) continue;
+      if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+      exportedNames.add(name);
+      exportedNames.add(wireName);
       lines.push(
         `export type { ${name}, ${wireName} } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
       );
     }
 
-    // Resource class
-    lines.push(`export { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
+    // Resource class — skip if already exported
+    if (!exportedNames.has(resolvedName)) {
+      exportedNames.add(resolvedName);
+      lines.push(`export { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
+    }
     lines.push('');
   }
 
-  // Unassigned models (common), skipping reserved names
+  // Unassigned models (common), skipping already-exported names
   const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name));
   for (const model of unassignedModels) {
     const name = resolveInterfaceName(model.name, ctx);
     const wireName = wireInterfaceName(name);
-    if (RESERVED_BARREL_NAMES.has(name) || RESERVED_BARREL_NAMES.has(wireName)) continue;
+    if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+    exportedNames.add(name);
+    exportedNames.add(wireName);
     lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
   }
 
-  // Enum exports
+  // Enum exports — skip duplicates
   for (const enumDef of spec.enums) {
-    // Find which service directory the enum landed in
+    if (exportedNames.has(enumDef.name)) continue;
+    exportedNames.add(enumDef.name);
     const enumService = findEnumService(enumDef.name, spec.services);
     const dir = resolveDir(enumService);
     lines.push(`export type { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`);
   }
 
   lines.push('');
-  lines.push("export { WorkOS } from './workos';");
+  if (!exportedNames.has('WorkOS')) {
+    exportedNames.add('WorkOS');
+    lines.push("export { WorkOS } from './workos';");
+  }
 
   return { path: 'src/index.ts', content: lines.join('\n'), skipIfExists: true };
 }
