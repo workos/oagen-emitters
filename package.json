@@ -4,6 +4,10 @@
   "description": "WorkOS' oagen emitters",
   "license": "MIT",
   "author": "WorkOS",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/workos/oagen-emitters"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
