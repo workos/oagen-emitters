@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/workos/oagen-emitters/compare/v0.1.0...v0.1.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* add repository url to package.json for npm provenance ([b6ecff3](https://github.com/workos/oagen-emitters/commit/b6ecff3684721e4340d0748ed19ea7ec31dcab4f))
+* force fixed oagen ([#4](https://github.com/workos/oagen-emitters/issues/4)) ([ede66c3](https://github.com/workos/oagen-emitters/commit/ede66c3e928c9e9c647755e47c741448bcfa7a2c))
+
 ## [0.1.0](https://github.com/workos/oagen-emitters/compare/v0.0.1...v0.1.0) (2026-03-23)
 
 
