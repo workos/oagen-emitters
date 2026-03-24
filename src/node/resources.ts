@@ -19,6 +19,16 @@ import { assignEnumsToServices } from './enums.js';
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
 const PAGINATION_PARAM_NAMES = new Set(['limit', 'before', 'after', 'order']);
 
+/** Map HTTP status codes to their corresponding exception class names for @throws docs. */
+const STATUS_TO_EXCEPTION_NAME: Record<number, string> = {
+  400: 'BadRequestException',
+  401: 'UnauthorizedException',
+  404: 'NotFoundException',
+  409: 'ConflictException',
+  422: 'UnprocessableEntityException',
+  429: 'RateLimitExceededException',
+};
+
 /** HTTP methods that require a body argument even when the spec has no request body. */
 function httpMethodNeedsBody(method: string): boolean {
   return method === 'post' || method === 'put' || method === 'patch';
@@ -327,12 +337,40 @@ function renderMethod(
   }
   // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
   // The SDK handles headers and cookies internally, so documenting them would be misleading.
+  // Document payload parameter when there is a request body
+  if (plan.hasBody) {
+    const bodyInfo = extractRequestBodyType(op, ctx);
+    if (bodyInfo?.kind === 'model') {
+      const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
+      const payloadDesc = bodyModel?.description
+        ? `@param payload - ${bodyModel.description}`
+        : `@param payload - The request body.`;
+      docParts.push(payloadDesc);
+    } else {
+      docParts.push('@param payload - The request body.');
+    }
+  }
+  // Document options parameter for paginated operations
+  if (plan.isPaginated) {
+    docParts.push('@param options - Pagination and filter options.');
+  } else if (op.queryParams.length > 0) {
+    docParts.push('@param options - Additional query options.');
+  }
   // @returns for the primary response model (use item type for paginated operations)
   if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
     const itemTypeName = resolveInterfaceName(op.pagination.itemType.name, ctx);
     docParts.push(`@returns {${itemTypeName}}`);
   } else if (responseModel) {
     docParts.push(`@returns {${responseModel}}`);
+  } else {
+    docParts.push('@returns {void}');
+  }
+  // @throws for error responses
+  for (const err of op.errors) {
+    const exceptionName = STATUS_TO_EXCEPTION_NAME[err.statusCode];
+    if (exceptionName) {
+      docParts.push(`@throws {${exceptionName}} ${err.statusCode}`);
+    }
   }
   if (op.deprecated) docParts.push('@deprecated');
 
