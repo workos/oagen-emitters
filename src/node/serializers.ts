@@ -9,7 +9,7 @@ import {
   buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices, relativeImport } from './utils.js';
+import { assignModelsToServices, relativeImport, pruneUnusedImports } from './utils.js';
 
 /**
  * Detect whether the existing SDK uses string (ISO 8601) representation for
@@ -41,14 +41,91 @@ function detectStringDateConvention(models: Model[], ctx: EmitterContext): boole
  * E.g., `<CustomAttributesType = Record<string, unknown>>`.
  * Returns empty string for non-generic models.
  */
-function renderSerializerTypeParams(model: Model): { decl: string; usage: string } {
-  if (!model.typeParams?.length) return { decl: '', usage: '' };
-  const params = model.typeParams.map((tp) => {
-    const def = tp.default ? ` = ${tsMapTypeRef(tp.default)}` : '';
-    return `${tp.name}${def}`;
-  });
-  const names = model.typeParams.map((tp) => tp.name);
-  return { decl: `<${params.join(', ')}>`, usage: `<${names.join(', ')}>` };
+function renderSerializerTypeParams(model: Model, ctx?: EmitterContext): { decl: string; usage: string } {
+  if (model.typeParams?.length) {
+    const params = model.typeParams.map((tp) => {
+      const def = tp.default ? ` = ${tsMapTypeRef(tp.default)}` : '';
+      return `${tp.name}${def}`;
+    });
+    const names = model.typeParams.map((tp) => tp.name);
+    return { decl: `<${params.join(', ')}>`, usage: `<${names.join(', ')}>` };
+  }
+  // Fallback: check if the baseline interface is generic (hand-written generics
+  // not captured in the IR).  Only apply if the baseline file path matches the
+  // generated path — meaning the existing generic file will be preserved via
+  // skipIfExists.  If paths differ, the interface is newly generated and non-generic.
+  if (ctx?.apiSurface?.interfaces) {
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (baseline?.fields) {
+      const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
+      const modelToService = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+      const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+      const sDir = modelToService.get(model.name);
+      const resolvedDir = sDir ? serviceDirName(serviceNameMap.get(sDir) ?? sDir) : 'common';
+      const generatedPath = `src/${resolvedDir}/interfaces/${fileName(model.name)}.interface.ts`;
+      const pathMatches = !baselineSourceFile || baselineSourceFile === generatedPath;
+      if (pathMatches && baselineAppearsGeneric(baseline.fields, ctx)) {
+        return {
+          decl: '<GenericType extends Record<string, unknown> = Record<string, unknown>>',
+          usage: '<GenericType>',
+        };
+      }
+    }
+  }
+  return { decl: '', usage: '' };
+}
+
+/** Built-in TypeScript types that don't indicate a generic type parameter. */
+const SERIALIZER_BUILTINS = new Set([
+  'Record',
+  'Promise',
+  'Array',
+  'Map',
+  'Set',
+  'Date',
+  'string',
+  'number',
+  'boolean',
+  'void',
+  'null',
+  'undefined',
+  'any',
+  'never',
+  'unknown',
+  'true',
+  'false',
+]);
+
+/**
+ * Check if a baseline interface appears to be generic by looking for
+ * PascalCase type names in field types that aren't known models/enums/builtins.
+ */
+function baselineAppearsGeneric(fields: Record<string, unknown>, ctx: EmitterContext): boolean {
+  const knownNames = new Set<string>();
+  for (const m of ctx.spec.models) knownNames.add(resolveInterfaceName(m.name, ctx));
+  for (const e of ctx.spec.enums) knownNames.add(e.name);
+  // Include all baseline interface/enum/typeAlias names
+  if (ctx.apiSurface?.interfaces) {
+    for (const name of Object.keys(ctx.apiSurface.interfaces)) knownNames.add(name);
+  }
+  if (ctx.apiSurface?.typeAliases) {
+    for (const name of Object.keys(ctx.apiSurface.typeAliases)) knownNames.add(name);
+  }
+  if (ctx.apiSurface?.enums) {
+    for (const name of Object.keys(ctx.apiSurface.enums)) knownNames.add(name);
+  }
+  for (const [, bf] of Object.entries(fields)) {
+    const fieldType = (bf as { type: string }).type;
+    const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+    if (!typeNames) continue;
+    for (const tn of typeNames) {
+      if (SERIALIZER_BUILTINS.has(tn)) continue;
+      if (knownNames.has(tn)) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
@@ -67,7 +144,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
-    const typeParams = renderSerializerTypeParams(model);
+    const typeParams = renderSerializerTypeParams(model, ctx);
 
     // Build a set of field names where format conversion (new Date / BigInt) should
     // be skipped.  When the SDK-wide convention is string dates, ALL date-time fields
@@ -129,8 +206,10 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
 
     // Deserialize function (wire → domain) — deduplicate by camelCase name
     const seenDeserFields = new Set<string>();
+    // Prefix param with _ when model has no fields to avoid unused-param warnings
+    const deserParamPrefix = model.fields.length === 0 ? '_' : '';
     lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
-    lines.push(`  response: ${responseName}${typeParams.usage},`);
+    lines.push(`  ${deserParamPrefix}response: ${responseName}${typeParams.usage},`);
     lines.push(`): ${domainName}${typeParams.usage} => ({`);
     for (const field of model.fields) {
       const domain = fieldName(field.name);
@@ -168,23 +247,18 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         lines.push(`  ${domain}: ${expr},`);
       }
     }
-    // Add passthrough assignments for baseline-required fields missing from the IR model.
-    // This handles cases where the baseline interface (from the existing SDK surface)
-    // has required fields that the OpenAPI spec doesn't define.
-    if (baselineDomain) {
-      for (const [bfName, bfDef] of Object.entries(baselineDomain.fields ?? {})) {
-        if (!(bfDef as { optional: boolean }).optional && !seenDeserFields.has(bfName)) {
-          const guessedWire = wireFieldName(bfName);
-          lines.push(`  ${bfName}: (response as any).${guessedWire},`);
-        }
-      }
-    }
+    // NOTE: Previously we added passthrough assignments for baseline-required fields
+    // missing from the IR model.  This was removed because it creates type errors:
+    // the serializer would output fields that don't exist on the generated interface
+    // (e.g., Connection.type, AuditLogSchema.createdAt).  If a baseline field is
+    // truly needed, the merger will preserve the existing serializer for that field.
     lines.push('});');
 
     // Serialize function (domain → wire)
+    const serParamPrefix = model.fields.length === 0 ? '_' : '';
     lines.push('');
     lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
-    lines.push(`  model: ${domainName}${typeParams.usage},`);
+    lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
     lines.push(`) => ({`);
     const seenSerFields = new Set<string>();
     for (const field of model.fields) {
@@ -198,15 +272,18 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       // Treat new fields (not in baseline) as effectively optional — see deserializer comment above.
       const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
       const effectivelyOptionalSer = !field.required || isNewSerField;
-      // If the field is optional and the expression involves a function call,
-      // wrap with a null check to avoid passing undefined to the serializer
-      if (effectivelyOptionalSer && expr !== domainAccess && needsNullGuard(field.type)) {
+      // If the expression involves a function call (nested model/array serializer),
+      // wrap with a null check to prevent crashes when tests pass `{} as any`.
+      // This applies to both optional and required fields in the serialize direction,
+      // since serialize is called with user-provided data that may be incomplete.
+      if (expr !== domainAccess && needsNullGuard(field.type)) {
+        const fallback = effectivelyOptionalSer ? 'undefined' : 'undefined';
         // If the expression already starts with a null guard from nullable handling,
         // don't wrap it again — just replace the inner null fallback with undefined
         if (expr.startsWith(`${domainAccess} != null ?`)) {
           lines.push(`  ${wire}: ${expr.replace(/: null$/, ': undefined')},`);
         } else {
-          lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : undefined,`);
+          lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : ${fallback},`);
         }
       } else {
         lines.push(`  ${wire}: ${expr},`);
@@ -216,7 +293,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
 
     files.push({
       path: serializerPath,
-      content: lines.join('\n'),
+      content: pruneUnusedImports(lines).join('\n'),
     });
   }
 
@@ -471,6 +548,16 @@ function renderAllOfMerge(
  */
 function defaultForType(ref: TypeRef): string | null {
   switch (ref.kind) {
+    case 'literal':
+      // Use the literal value itself as the fallback (e.g., 'role' for object: 'role')
+      return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
+    case 'enum':
+      // Use the first enum value as a safe fallback when the response may omit the field
+      if (ref.values && ref.values.length > 0) {
+        const first = ref.values[0];
+        return typeof first === 'string' ? `'${first}'` : String(first);
+      }
+      return null;
     case 'map':
       return '{}';
     case 'primitive':
