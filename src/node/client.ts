@@ -165,13 +165,18 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
   }
 
-  // Enum exports — skip duplicates
+  // Enum exports — skip duplicates.
+  // Use value export (`export { ... }`) for actual TS enums so consumers
+  // can use them as runtime values (e.g., ConnectionType.GoogleOAuth).
+  // Use type-only export (`export type { ... }`) for string literal unions.
   for (const enumDef of spec.enums) {
     if (exportedNames.has(enumDef.name)) continue;
     exportedNames.add(enumDef.name);
     const enumService = findEnumService(enumDef.name, spec.services);
     const dir = resolveDir(enumService);
-    lines.push(`export type { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`);
+    const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
+    const exportKeyword = baselineEnum?.members ? 'export' : 'export type';
+    lines.push(`${exportKeyword} { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`);
   }
 
   lines.push('');

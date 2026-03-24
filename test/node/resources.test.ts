@@ -555,7 +555,7 @@ describe('generateResources', () => {
     expect(content).toContain('query: options');
   });
 
-  it('generates union type for request body with union variants', () => {
+  it('generates union type for non-discriminated request body (pass-through)', () => {
     const services: Service[] = [
       {
         name: 'Auth',
@@ -600,5 +600,107 @@ describe('generateResources', () => {
     expect(content).toContain('AuthByPassword');
     expect(content).toContain('AuthByCode');
     expect(content).toContain('AuthByMagicAuth');
+  });
+
+  it('generates discriminated union serializer dispatch for request body', () => {
+    const services: Service[] = [
+      {
+        name: 'Auth',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'AuthByPassword' },
+                { kind: 'model', name: 'AuthByCode' },
+                { kind: 'model', name: 'AuthByMagicAuth' },
+              ],
+              discriminator: {
+                property: 'grant_type',
+                mapping: {
+                  password: 'AuthByPassword',
+                  authorization_code: 'AuthByCode',
+                  'urn:workos:oauth:grant-type:magic-auth:code': 'AuthByMagicAuth',
+                },
+              },
+            },
+            response: { kind: 'model', name: 'AuthenticateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should use the union type for the payload parameter
+    expect(content).toContain('payload: AuthByPassword | AuthByCode | AuthByMagicAuth');
+
+    // Should dispatch to the correct serializer based on the discriminator
+    expect(content).toContain('switch ((payload as any).grantType)');
+    expect(content).toContain("case 'password': return serializeAuthByPassword(payload as any)");
+    expect(content).toContain("case 'authorization_code': return serializeAuthByCode(payload as any)");
+    expect(content).toContain(
+      "case 'urn:workos:oauth:grant-type:magic-auth:code': return serializeAuthByMagicAuth(payload as any)",
+    );
+
+    // Should import serializers for all union variants
+    expect(content).toContain('serializeAuthByPassword');
+    expect(content).toContain('serializeAuthByCode');
+    expect(content).toContain('serializeAuthByMagicAuth');
+
+    // Should NOT pass payload directly without serialization
+    expect(content).not.toMatch(/,\n\s+payload,\n/);
+  });
+
+  it('generates discriminated union serializer dispatch for void method', () => {
+    const services: Service[] = [
+      {
+        name: 'Auth',
+        operations: [
+          {
+            name: 'sendToken',
+            httpMethod: 'post',
+            path: '/auth/token',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'TokenByCode' },
+                { kind: 'model', name: 'TokenByRefresh' },
+              ],
+              discriminator: {
+                property: 'grant_type',
+                mapping: {
+                  authorization_code: 'TokenByCode',
+                  refresh_token: 'TokenByRefresh',
+                },
+              },
+            },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should dispatch to the correct serializer
+    expect(content).toContain('switch ((payload as any).grantType)');
+    expect(content).toContain("case 'authorization_code': return serializeTokenByCode(payload as any)");
+    expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload as any)");
   });
 });

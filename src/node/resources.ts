@@ -56,11 +56,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     if (bodyInfo?.kind === 'model') {
       requestModels.add(bodyInfo.name);
     } else if (bodyInfo?.kind === 'union') {
-      // Union request bodies: import all variant models as domain types (no serializers)
-      for (const name of bodyInfo.modelNames) {
-        // Add to paramModels (import type only, no serializer) rather than requestModels
-        // since we can't statically dispatch serialization for unions.
-        paramModels.add(name);
+      if (bodyInfo.discriminator) {
+        // Discriminated union: import variant models with serializers so we can
+        // dispatch to the correct serializer at runtime based on the discriminator.
+        for (const name of bodyInfo.modelNames) {
+          requestModels.add(name);
+        }
+      } else {
+        // Non-discriminated union: import variant models as domain types only.
+        // Without a discriminator we can't statically dispatch serialization,
+        // so the payload is passed through as-is.
+        for (const name of bodyInfo.modelNames) {
+          paramModels.add(name);
+        }
       }
     }
     // Collect types referenced in query and path parameters.
@@ -431,7 +439,11 @@ function renderDeleteWithBodyMethod(
     bodyExpr = `serialize${requestType}(payload)`;
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
-    bodyExpr = 'payload';
+    if (bodyInfo.discriminator) {
+      bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
+    } else {
+      bodyExpr = 'payload';
+    }
   } else {
     requestType = 'Record<string, unknown>';
     bodyExpr = 'payload';
@@ -468,9 +480,14 @@ function renderBodyMethod(
     bodyExpr = `serialize${requestType}(payload)`;
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
-    // Cannot statically dispatch to a single serializer for union types —
-    // pass the payload directly (caller provides the correct shape).
-    bodyExpr = 'payload';
+    if (bodyInfo.discriminator) {
+      // Discriminated union: dispatch to the correct serializer at runtime.
+      bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
+    } else {
+      // Non-discriminated union: cannot statically dispatch —
+      // pass the payload directly (caller provides the correct shape).
+      bodyExpr = 'payload';
+    }
   } else {
     requestType = 'Record<string, unknown>';
     bodyExpr = 'payload';
@@ -590,7 +607,11 @@ function renderVoidMethod(
       bodyExpr = `serialize${requestType}(payload)`;
     } else if (bodyInfo?.kind === 'union') {
       bodyParam = `payload: ${bodyInfo.typeStr}`;
-      bodyExpr = 'payload';
+      if (bodyInfo.discriminator) {
+        bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
+      } else {
+        bodyExpr = 'payload';
+      }
     } else {
       bodyParam = 'payload: Record<string, unknown>';
       bodyExpr = 'payload';
@@ -668,10 +689,37 @@ function collectParamTypeRefs(type: TypeRef, enums: Set<string>, models: Set<str
  * Extract request body type info, supporting both single models and union types.
  * Returns structured info so callers can handle imports and serialization appropriately.
  */
+/**
+ * Generate an IIFE expression that dispatches to the correct serializer for a
+ * discriminated union request body.  Switches on the camelCase discriminator
+ * property of the domain object and calls the appropriate serialize function
+ * for each mapped model variant.
+ */
+function renderUnionBodySerializer(
+  disc: { property: string; mapping: Record<string, string> },
+  ctx: EmitterContext,
+): string {
+  const prop = fieldName(disc.property);
+  const cases: string[] = [];
+  for (const [value, modelName] of Object.entries(disc.mapping)) {
+    const resolved = resolveInterfaceName(modelName, ctx);
+    cases.push(`case '${value}': return serialize${resolved}(payload as any)`);
+  }
+  return `(() => { switch ((payload as any).${prop}) { ${cases.join('; ')}; default: return payload } })()`;
+}
+
+/** Return type for extractRequestBodyType when the body is a union. */
+interface UnionBodyInfo {
+  kind: 'union';
+  typeStr: string;
+  modelNames: string[];
+  discriminator?: { property: string; mapping: Record<string, string> };
+}
+
 function extractRequestBodyType(
   op: Operation,
   ctx: EmitterContext,
-): { kind: 'model'; name: string } | { kind: 'union'; typeStr: string; modelNames: string[] } | null {
+): { kind: 'model'; name: string } | UnionBodyInfo | null {
   if (!op.requestBody) return null;
   if (op.requestBody.kind === 'model') return { kind: 'model', name: op.requestBody.name };
   if (op.requestBody.kind === 'union') {
@@ -681,7 +729,7 @@ function extractRequestBodyType(
     }
     if (modelNames.length > 0) {
       const typeStr = modelNames.map((n) => resolveInterfaceName(n, ctx)).join(' | ');
-      return { kind: 'union', typeStr, modelNames };
+      return { kind: 'union', typeStr, modelNames, discriminator: op.requestBody.discriminator };
     }
   }
   return null;

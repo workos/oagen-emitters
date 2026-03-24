@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/node/client.js';
-import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Service, Model, Enum } from '@workos/oagen';
 
 const service: Service = {
   name: 'Organizations',
@@ -182,5 +182,106 @@ describe('generateClient', () => {
 
     expect(content).toContain('/** The WorkOS API provides a unified interface for enterprise features. */');
     expect(content).toContain('export class WorkOS extends WorkOSBase {');
+  });
+
+  it('uses value export for baseline TS enums and type export for type aliases', () => {
+    const enumDef: Enum = {
+      name: 'ConnectionType',
+      values: [
+        { name: 'ADFSSAML', value: 'ADFSSAML' },
+        { name: 'GoogleOAuth', value: 'GoogleOAuth' },
+      ],
+    };
+    const aliasEnumDef: Enum = {
+      name: 'DirectoryState',
+      values: [
+        { name: 'active', value: 'active' },
+        { name: 'inactive', value: 'inactive' },
+      ],
+    };
+    const enumService: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [
+            {
+              name: 'type',
+              type: { kind: 'enum', name: 'ConnectionType', values: ['ADFSSAML', 'GoogleOAuth'] },
+              required: false,
+            },
+          ],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const dirService: Service = {
+      name: 'Directories',
+      operations: [
+        {
+          name: 'listDirectories',
+          httpMethod: 'get',
+          path: '/directories',
+          pathParams: [],
+          queryParams: [
+            {
+              name: 'state',
+              type: { kind: 'enum', name: 'DirectoryState', values: ['active', 'inactive'] },
+              required: false,
+            },
+          ],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const enumSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [service, enumService, dirService],
+      models: [model],
+      enums: [enumDef, aliasEnumDef],
+    };
+    const enumCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: enumSpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {},
+        enums: {
+          ConnectionType: {
+            name: 'ConnectionType',
+            members: { ADFSSAML: 'ADFSSAML', GoogleOAuth: 'GoogleOAuth' },
+          },
+        },
+        typeAliases: {},
+        exports: {},
+      },
+    };
+
+    const files = generateClient(enumSpec, enumCtx);
+    const barrel = files.find((f) => f.path === 'src/index.ts');
+    expect(barrel).toBeDefined();
+
+    const content = barrel!.content;
+    // TS enum should use value export (no 'type' keyword)
+    expect(content).toContain("export { ConnectionType } from './connections/interfaces/connection-type.interface';");
+    // Type alias enum should use type-only export
+    expect(content).toContain(
+      "export type { DirectoryState } from './directories/interfaces/directory-state.interface';",
+    );
   });
 });
