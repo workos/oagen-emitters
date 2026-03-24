@@ -65,11 +65,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
       : op.queryParams;
     for (const param of [...queryParams, ...op.pathParams]) {
-      if (param.type.kind === 'enum') {
-        paramEnums.add(param.type.name);
-      } else if (param.type.kind === 'model') {
-        paramModels.add(param.type.name);
-      }
+      collectParamTypeRefs(param.type, paramEnums, paramModels);
     }
   }
   const allModels = new Set([...responseModels, ...requestModels, ...paramModels]);
@@ -178,25 +174,18 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push('');
 
   // List options interfaces for paginated operations with extra query params.
-  // Skip generation when the baseline already has an interface with a matching
-  // name (e.g., ListEventOptions already exists for listEvents).
-  const baselineInterfaces = ctx.apiSurface?.interfaces ?? {};
+  // List options interfaces for paginated operations with extra query params.
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
       const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
       if (extraParams.length > 0) {
         const optionsName = toPascalCase(method) + 'Options';
-        // Check if an existing interface already covers this operation's options.
-        // Match against both the exact generated name and common naming variants
-        // (e.g., ListEventOptions vs ListEventsOptions).
-        const hasBaseline =
-          optionsName in baselineInterfaces ||
-          Object.keys(baselineInterfaces).some(
-            (name) =>
-              name.endsWith('Options') &&
-              name.toLowerCase().replace(/s?options$/, '') === optionsName.toLowerCase().replace(/s?options$/, ''),
-          );
-        if (hasBaseline) continue;
+        // Always generate the options interface locally in the resource file.
+        // Previously we skipped generation when a baseline interface with a matching
+        // name existed, but the baseline interface may live in a different module
+        // (e.g., `user-management/` vs `user-management-users/`) and would not be
+        // available without an import.  Generating locally is safe and avoids
+        // cross-module import resolution issues.
         lines.push(`export interface ${optionsName} extends PaginationOptions {`);
         for (const param of extraParams) {
           const opt = !param.required ? '?' : '';
@@ -607,6 +596,27 @@ function buildPathParams(op: Operation, specEnumNames?: Set<string>): string {
   return params.join(', ');
 }
 
+/**
+ * Walk a parameter's type tree and collect enum/model names for imports.
+ * Handles arrays and nullable wrappers that may contain nested enums/models.
+ */
+function collectParamTypeRefs(type: TypeRef, enums: Set<string>, models: Set<string>): void {
+  switch (type.kind) {
+    case 'enum':
+      enums.add(type.name);
+      break;
+    case 'model':
+      models.add(type.name);
+      break;
+    case 'array':
+      collectParamTypeRefs(type.items, enums, models);
+      break;
+    case 'nullable':
+      collectParamTypeRefs(type.inner, enums, models);
+      break;
+  }
+}
+
 function extractRequestBodyModelName(op: Operation): string | null {
   if (!op.requestBody) return null;
   if (op.requestBody.kind === 'model') return op.requestBody.name;
@@ -617,6 +627,9 @@ function extractRequestBodyModelName(op: Operation): string | null {
  * Map a parameter type to a TypeScript type string, handling inline enums
  * that don't have corresponding global enum definitions.  These would
  * otherwise emit bare names like `Type` or `Action` that are never imported.
+ *
+ * Recursively handles container types (arrays, nullable) so that inline
+ * enums nested inside e.g. `array<enum>` are also inlined as string literal unions.
  */
 function mapParamType(type: TypeRef, specEnumNames: Set<string>): string {
   if (type.kind === 'enum' && !specEnumNames.has(type.name)) {
@@ -625,6 +638,14 @@ function mapParamType(type: TypeRef, specEnumNames: Set<string>): string {
       return type.values.map((v: string | number) => (typeof v === 'string' ? `'${v}'` : String(v))).join(' | ');
     }
     return 'string';
+  }
+  if (type.kind === 'array') {
+    const inner = mapParamType(type.items, specEnumNames);
+    // Parenthesize union types when used as array element type
+    return inner.includes(' | ') ? `(${inner})[]` : `${inner}[]`;
+  }
+  if (type.kind === 'nullable') {
+    return `${mapParamType(type.inner, specEnumNames)} | null`;
   }
   return mapTypeRef(type);
 }
