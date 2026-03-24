@@ -67,3 +67,70 @@ export function buildGenericModelDefaults(models: Model[]): Map<string, string> 
   }
   return result;
 }
+
+/**
+ * Remove unused imports from generated source code.
+ * Scans the non-import body for each imported identifier and drops
+ * individual names that are never referenced.  Removes entire import
+ * statements when no names are used.
+ */
+export function pruneUnusedImports(lines: string[]): string[] {
+  // Split lines into imports and body
+  const importLines: string[] = [];
+  const bodyLines: string[] = [];
+  let inBody = false;
+  for (const line of lines) {
+    if (!inBody && (line.startsWith('import ') || line === '')) {
+      importLines.push(line);
+    } else {
+      inBody = true;
+      bodyLines.push(line);
+    }
+  }
+
+  const body = bodyLines.join('\n');
+  const kept: string[] = [];
+
+  for (const line of importLines) {
+    if (line === '') {
+      kept.push(line);
+      continue;
+    }
+    // Extract imported names from the import statement
+    const match = line.match(/\{([^}]+)\}/);
+    if (!match) {
+      // Non-destructured import (e.g., import X from '...') — keep
+      kept.push(line);
+      continue;
+    }
+    const names = match[1]
+      .split(',')
+      .map((n) => n.trim())
+      .filter(Boolean);
+    // Filter to only names that appear in the body
+    const usedNames = names.filter((name) => {
+      const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      return re.test(body);
+    });
+    if (usedNames.length === 0) {
+      // No names used — drop entire import
+      continue;
+    }
+    if (usedNames.length === names.length) {
+      // All names used — keep original line
+      kept.push(line);
+    } else {
+      // Some names unused — reconstruct import with only used names
+      const isTypeImport = line.startsWith('import type');
+      const fromMatch = line.match(/from\s+['"]([^'"]+)['"]/);
+      if (fromMatch) {
+        const prefix = isTypeImport ? 'import type' : 'import';
+        kept.push(`${prefix} { ${usedNames.join(', ')} } from '${fromMatch[1]}';`);
+      } else {
+        kept.push(line);
+      }
+    }
+  }
+
+  return [...kept, ...bodyLines];
+}

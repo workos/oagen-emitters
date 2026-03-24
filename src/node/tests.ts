@@ -101,6 +101,9 @@ function generateServiceTest(
           : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.fixture.json`;
       fixtureImports.add(`import ${toCamelCase(plan.responseModelName)}Fixture from '${fixturePath}';`);
     }
+    // NOTE: Request body fixtures are not imported for body tests because
+    // fixtures use wire format (snake_case) but methods expect domain types
+    // (camelCase).  Body tests use `{} as any` instead.
   }
   for (const imp of fixtureImports) {
     lines.push(imp);
@@ -141,20 +144,39 @@ function generateServiceTest(
   return { path: testPath, content: lines.join('\n'), skipIfExists: true };
 }
 
+/** Compute the test value for a single path parameter. */
+function pathParamTestValue(param: { type: TypeRef } | undefined): string {
+  if (param?.type.kind === 'enum' && param.type.values?.length) {
+    const first = param.type.values[0];
+    return typeof first === 'string' ? first : String(first);
+  }
+  return 'test_id';
+}
+
 /** Build test arguments for all path params (handles multiple path params). */
 function buildTestPathArgs(op: Operation): string {
   // Detect path template variables (may be more than op.pathParams if spec is incomplete)
   const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
   const declaredNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  const paramByName = new Map(op.pathParams.map((p) => [fieldName(p.name), p]));
   // Merge declared + template vars, deduplicate, preserve order
   const allVars: string[] = [];
-  for (const p of op.pathParams) {
-    allVars.push(fieldName(p.name));
-  }
+  for (const p of op.pathParams) allVars.push(fieldName(p.name));
   for (const v of templateVars) {
     if (!declaredNames.has(v)) allVars.push(v);
   }
-  return allVars.map(() => "'test_id'").join(', ');
+  return allVars.map((varName) => `'${pathParamTestValue(paramByName.get(varName))}'`).join(', ');
+}
+
+/** Get a URL-safe string that should appear in the path for assertions. */
+function buildTestPathAssertionValue(op: Operation): string {
+  const paramByName = new Map(op.pathParams.map((p) => [fieldName(p.name), p]));
+  // Use the first path param's test value for the assertion
+  if (op.pathParams.length > 0) {
+    return pathParamTestValue(paramByName.get(fieldName(op.pathParams[0].name)));
+  }
+  const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
+  return templateVars.length > 0 ? 'test_id' : '';
 }
 
 function renderPaginatedTest(
@@ -208,7 +230,8 @@ function renderDeleteTest(lines: string[], op: Operation, plan: any, method: str
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
-    lines.push("      expect(fetchURL()).toContain('test_id');");
+    const urlAssertValue = buildTestPathAssertionValue(op);
+    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
   }
   lines.push('    });');
 }
@@ -233,7 +256,8 @@ function renderBodyTest(
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
-    lines.push("      expect(fetchURL()).toContain('test_id');");
+    const urlAssertValue = buildTestPathAssertionValue(op);
+    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
   }
   lines.push('      expect(fetchBody()).toBeDefined();');
   lines.push('      expect(result).toBeDefined();');
@@ -269,7 +293,8 @@ function renderGetTest(
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
-    lines.push("      expect(fetchURL()).toContain('test_id');");
+    const urlAssertValue = buildTestPathAssertionValue(op);
+    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
   }
   lines.push('      expect(result).toBeDefined();');
 
@@ -298,7 +323,8 @@ function renderVoidTest(lines: string[], op: Operation, plan: any, method: strin
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
-    lines.push("      expect(fetchURL()).toContain('test_id');");
+    const urlAssertValue = buildTestPathAssertionValue(op);
+    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
   }
   lines.push('    });');
 }
