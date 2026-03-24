@@ -485,14 +485,17 @@ function defaultForType(ref: TypeRef): string | null {
       // Use the literal value itself as the fallback (e.g., 'role' for object: 'role')
       return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
     case 'enum':
-      // Use the first enum value as a safe fallback when the response may omit the field
-      if (ref.values && ref.values.length > 0) {
-        const first = ref.values[0];
-        return typeof first === 'string' ? `'${first}'` : String(first);
-      }
+      // Don't provide enum fallbacks — the first enum value may not be a valid
+      // member of the target type (e.g., 'Pending' is not a member of ConnectionType).
+      // If the field is required, the API always sends it; if the response baseline
+      // says optional, null/undefined is safer than guessing a value.
       return null;
     case 'map':
       return '{}';
+    case 'nullable':
+      // Nullable fields should fall back to null, not the inner type's default.
+      // This prevents incorrect conversions like nullable<string> → '' instead of null.
+      return 'null';
     case 'primitive':
       switch (ref.type) {
         case 'boolean':
