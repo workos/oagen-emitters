@@ -1,4 +1,4 @@
-import type { Model } from '@workos/oagen';
+import type { Model, EmitterContext, Service } from '@workos/oagen';
 export {
   collectModelRefs,
   collectEnumRefs,
@@ -7,6 +7,8 @@ export {
   collectRequestBodyModels,
 } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
+import { resolveInterfaceName, fieldName, serviceDirName, buildServiceNameMap } from './naming.js';
+import { assignModelsToServices } from '@workos/oagen';
 
 /**
  * Compute a relative import path between two files within the generated SDK.
@@ -133,4 +135,107 @@ export function pruneUnusedImports(lines: string[]): string[] {
   }
 
   return [...kept, ...bodyLines];
+}
+
+/** Built-in TypeScript types that are always available (no import needed). */
+export const TS_BUILTINS = new Set([
+  'Record',
+  'Promise',
+  'Array',
+  'Map',
+  'Set',
+  'Date',
+  'string',
+  'number',
+  'boolean',
+  'void',
+  'null',
+  'undefined',
+  'any',
+  'never',
+  'unknown',
+  'true',
+  'false',
+]);
+
+/**
+ * Detect whether the existing SDK uses string (ISO 8601) representation for
+ * date-time fields.  Checks if any baseline interface has a date-time IR field
+ * typed as plain `string` (not `Date`).
+ */
+export function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
+  if (!ctx.apiSurface?.interfaces) return false;
+  for (const model of models) {
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (!baseline?.fields) continue;
+    for (const field of model.fields) {
+      if (field.type.kind !== 'primitive' || field.type.format !== 'date-time') continue;
+      const baselineField = baseline.fields[fieldName(field.name)];
+      if (baselineField && !baselineField.type.includes('Date')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Build a comprehensive set of all known type names from the IR and baseline.
+ * Used to identify type parameters by elimination — any PascalCase name not in
+ * this set is likely a generic type parameter.
+ */
+export function buildKnownTypeNames(models: Model[], ctx: EmitterContext): Set<string> {
+  const knownNames = new Set<string>();
+  for (const m of models) knownNames.add(resolveInterfaceName(m.name, ctx));
+  for (const e of ctx.spec.enums) knownNames.add(e.name);
+  if (ctx.apiSurface?.interfaces) {
+    for (const name of Object.keys(ctx.apiSurface.interfaces)) knownNames.add(name);
+  }
+  if (ctx.apiSurface?.typeAliases) {
+    for (const name of Object.keys(ctx.apiSurface.typeAliases)) knownNames.add(name);
+  }
+  if (ctx.apiSurface?.enums) {
+    for (const name of Object.keys(ctx.apiSurface.enums)) knownNames.add(name);
+  }
+  return knownNames;
+}
+
+/**
+ * Create a service directory resolver bundle.
+ * Encapsulates the common pattern of mapping models to services and resolving
+ * the output directory for a given IR service name.
+ */
+export function createServiceDirResolver(
+  models: Model[],
+  services: Service[],
+  ctx: EmitterContext,
+): {
+  modelToService: Map<string, string>;
+  serviceNameMap: Map<string, string>;
+  resolveDir: (irService: string | undefined) => string;
+} {
+  const modelToService = assignModelsToServices(models, services);
+  const serviceNameMap = buildServiceNameMap(services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  return { modelToService, serviceNameMap, resolveDir };
+}
+
+/**
+ * Check if a set of baseline interface fields appears to contain generic type
+ * parameters — PascalCase names that aren't known models, enums, or builtins.
+ */
+export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: Set<string>): boolean {
+  for (const [, bf] of Object.entries(fields)) {
+    const fieldType = (bf as { type: string }).type;
+    const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+    if (!typeNames) continue;
+    for (const tn of typeNames) {
+      if (TS_BUILTINS.has(tn)) continue;
+      if (knownNames.has(tn)) continue;
+      return true;
+    }
+  }
+  return false;
 }

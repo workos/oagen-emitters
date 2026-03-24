@@ -1,65 +1,18 @@
-import type { Model, Field, TypeRef, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { walkTypeRef } from '@workos/oagen';
+import type { Model, Field, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
+import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
-  fieldName,
-  wireFieldName,
-  fileName,
-  serviceDirName,
-  resolveInterfaceName,
-  buildServiceNameMap,
-  wireInterfaceName,
-} from './naming.js';
-import {
-  assignModelsToServices,
   collectFieldDependencies,
   docComment,
   buildGenericModelDefaults,
   pruneUnusedImports,
+  TS_BUILTINS,
+  detectStringDateConvention,
+  buildKnownTypeNames,
+  isBaselineGeneric,
+  createServiceDirResolver,
 } from './utils.js';
-
-/** Built-in TypeScript types that are always available (no import needed). */
-const BUILTINS = new Set([
-  'Record',
-  'Promise',
-  'Array',
-  'Map',
-  'Set',
-  'Date',
-  'string',
-  'number',
-  'boolean',
-  'void',
-  'null',
-  'undefined',
-  'any',
-  'never',
-  'unknown',
-  'true',
-  'false',
-]);
-
-/**
- * Detect whether the existing SDK uses string (ISO 8601) representation for
- * date-time fields.  Checks if any baseline interface has a date-time IR field
- * typed as plain `string` (not `Date`).
- */
-function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
-  if (!ctx.apiSurface?.interfaces) return false;
-  for (const model of models) {
-    const domainName = resolveInterfaceName(model.name, ctx);
-    const baseline = ctx.apiSurface.interfaces[domainName];
-    if (!baseline?.fields) continue;
-    for (const field of model.fields) {
-      if (field.type.kind !== 'primitive' || field.type.format !== 'date-time') continue;
-      const baselineField = baseline.fields[fieldName(field.name)];
-      if (baselineField && !baselineField.type.includes('Date')) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
+import { assignEnumsToServices } from './enums.js';
 
 /**
  * Detect baseline interfaces that are generic (have type parameters) even though
@@ -76,28 +29,11 @@ function enrichGenericDefaultsFromBaseline(
   genericDefaults: Map<string, string>,
   models: Model[],
   ctx: EmitterContext,
+  resolveDir: (irService: string | undefined) => string,
+  modelToService: Map<string, string>,
 ): void {
   if (!ctx.apiSurface?.interfaces) return;
-  // Build comprehensive set of all known type names — anything in this set
-  // is NOT a type parameter.
-  const knownNames = new Set<string>();
-  for (const m of models) knownNames.add(resolveInterfaceName(m.name, ctx));
-  for (const e of ctx.spec.enums) knownNames.add(e.name);
-  // Include all baseline interface names (e.g., ConnectionState, SlimRole, etc.)
-  for (const name of Object.keys(ctx.apiSurface.interfaces)) knownNames.add(name);
-  // Include all baseline type aliases
-  if (ctx.apiSurface.typeAliases) {
-    for (const name of Object.keys(ctx.apiSurface.typeAliases)) knownNames.add(name);
-  }
-  // Include all baseline enums
-  if (ctx.apiSurface.enums) {
-    for (const name of Object.keys(ctx.apiSurface.enums)) knownNames.add(name);
-  }
-
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir2 = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const knownNames = buildKnownTypeNames(models, ctx);
 
   for (const model of models) {
     if (genericDefaults.has(model.name)) continue; // IR already handles it
@@ -109,25 +45,11 @@ function enrichGenericDefaultsFromBaseline(
     // preserved via skipIfExists (paths match).  If the file is generated
     // fresh in a new directory, it won't have generics, so references
     // to it don't need type args.
-    const generatedPath = `src/${resolveDir2(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
+    const generatedPath = `src/${resolveDir(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
     const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
     if (baselineSourceFile && baselineSourceFile !== generatedPath) continue;
 
-    let isGeneric = false;
-    for (const [, bf] of Object.entries(baseline.fields)) {
-      const fieldType = (bf as { type: string }).type;
-      const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
-      if (!typeNames) continue;
-      for (const tn of typeNames) {
-        if (BUILTINS.has(tn)) continue;
-        if (knownNames.has(tn)) continue;
-        // Unrecognized PascalCase name — likely a type parameter
-        isGeneric = true;
-        break;
-      }
-      if (isGeneric) break;
-    }
-    if (isGeneric) {
+    if (isBaselineGeneric(baseline.fields, knownNames)) {
       genericDefaults.set(model.name, '<Record<string, unknown>>');
     }
   }
@@ -136,10 +58,7 @@ function enrichGenericDefaultsFromBaseline(
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
   // Detect whether the existing SDK uses string dates (ISO 8601) rather than Date objects.
   // When detected, newly generated models also use string to maintain consistency.
   const useStringDates = detectStringDateConvention(models, ctx);
@@ -149,7 +68,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // generics), but the existing SDK may have hand-written generic interfaces
   // (e.g., Profile<CustomAttributesType>).  Detect these by checking if any
   // field type contains a PascalCase name that isn't a known model, enum, or builtin.
-  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx);
+  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
   const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
@@ -217,7 +136,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (!names) continue;
 
         for (const name of names) {
-          if (BUILTINS.has(name)) continue;
+          if (TS_BUILTINS.has(name)) continue;
           if (importableNames.has(name)) continue;
           if (typeDecls.has(name)) continue;
           if (crossServiceImports.has(name)) continue;
@@ -388,7 +307,7 @@ function baselineTypeResolvable(typeStr: string, importableNames: Set<string>): 
   if (!matches) return true;
 
   for (const name of matches) {
-    if (BUILTINS.has(name)) continue;
+    if (TS_BUILTINS.has(name)) continue;
     if (importableNames.has(name)) continue;
     return false;
   }
@@ -467,28 +386,4 @@ function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): 
     return `${tp.name}${def}`;
   });
   return `<${params.join(', ')}>`;
-}
-
-function assignEnumsToServices(enums: { name: string }[], services: Service[]): Map<string, string> {
-  const enumToService = new Map<string, string>();
-  const enumNames = new Set(enums.map((e) => e.name));
-  for (const service of services) {
-    for (const op of service.operations) {
-      const refs = new Set<string>();
-      const collect = (ref: any) => {
-        walkTypeRef(ref, { enum: (r: any) => refs.add(r.name) });
-      };
-      if (op.requestBody) collect(op.requestBody);
-      collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
-        collect(p.type);
-      }
-      for (const name of refs) {
-        if (enumNames.has(name) && !enumToService.has(name)) {
-          enumToService.set(name, service.name);
-        }
-      }
-    }
-  }
-  return enumToService;
 }

@@ -72,7 +72,7 @@ export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<s
       };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
         collect(p.type);
       }
       for (const name of refs) {

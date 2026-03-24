@@ -8,10 +8,9 @@ import {
   servicePropertyName,
   resolveMethodName,
   resolveServiceName,
-  buildServiceNameMap,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
-import { assignModelsToServices } from './utils.js';
+import { createServiceDirResolver } from './utils.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -54,10 +53,7 @@ function generateServiceTest(
   // Compute model-to-service mapping so fixture imports use the correct cross-service path.
   // A test for service A may reference a response model owned by service B — the fixture
   // lives in service B's fixtures directory, not service A's.
-  const modelToService = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
 
   const lines: string[] = [];
 

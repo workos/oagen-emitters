@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
-import { wireFieldName, fileName, serviceDirName, buildServiceNameMap, resolveServiceName } from './naming.js';
-import { assignModelsToServices } from './utils.js';
+import { wireFieldName, fileName, serviceDirName, resolveServiceName } from './naming.js';
+import { createServiceDirResolver, assignModelsToServices } from './utils.js';
 
 /**
  * Generate JSON fixture files for test data.
@@ -16,10 +16,12 @@ export function generateFixtures(
 ): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = ctx ? buildServiceNameMap(ctx.spec.services, ctx) : new Map<string, string>();
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = ctx
+    ? createServiceDirResolver(spec.models, ctx.spec.services, ctx)
+    : {
+        modelToService: assignModelsToServices(spec.models, spec.services),
+        resolveDir: (irService: string | undefined) => (irService ? serviceDirName(irService) : 'common'),
+      };
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];

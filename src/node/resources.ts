@@ -11,10 +11,9 @@ import {
   resolveMethodName,
   resolveInterfaceName,
   resolveServiceName,
-  buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices, docComment } from './utils.js';
+import { docComment, createServiceDirResolver } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
@@ -90,10 +89,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   }
 
   // Compute model-to-service mapping for correct cross-service import paths
-  const modelToService = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
 
   // Wire (Response) types are only needed for models used as response types in method signatures.
   // Request models and param models only need the domain type.
@@ -231,10 +227,7 @@ function renderMethod(
   const lines: string[] = [];
   const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
 
-  // Path interpolation: replace {param} with ${param}
-  const interpolatedPath = op.path.replace(/\{(\w+)\}/g, (_, p) => `\${${fieldName(p)}}`);
-  const usesTemplate = interpolatedPath.includes('${');
-  const pathStr = usesTemplate ? `\`${interpolatedPath}\`` : `'${op.path}'`;
+  const pathStr = buildPathStr(op);
 
   // Build set of valid param names to filter @param tags.
   // Prefer the overlay (existing method signature) if available;
@@ -320,7 +313,7 @@ function renderMethod(
   const preDecisionCount = lines.length;
 
   if (plan.isPaginated && responseModel && op.httpMethod === 'get') {
-    renderPaginatedMethod(lines, op, plan, method, responseModel, specEnumNames);
+    renderPaginatedMethod(lines, op, plan, method, responseModel, pathStr, specEnumNames);
   } else if (plan.isPaginated && plan.hasBody && responseModel) {
     // Non-GET paginated operation (e.g., PUT with list response) — treat as body method
     renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx, specEnumNames);
@@ -355,12 +348,12 @@ function renderPaginatedMethod(
   plan: OperationPlan,
   method: string,
   itemType: string,
+  pathStr: string,
   specEnumNames?: Set<string>,
 ): void {
   const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
   const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
 
-  const pathStr = buildPathStr(op);
   const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 

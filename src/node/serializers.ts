@@ -1,40 +1,14 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
 import { mapTypeRef as tsMapTypeRef } from './type-map.js';
+import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
-  fieldName,
-  wireFieldName,
-  fileName,
-  serviceDirName,
-  resolveInterfaceName,
-  buildServiceNameMap,
-  wireInterfaceName,
-} from './naming.js';
-import { assignModelsToServices, relativeImport, pruneUnusedImports } from './utils.js';
-
-/**
- * Detect whether the existing SDK uses string (ISO 8601) representation for
- * date-time fields rather than Date objects.  When any baseline interface has
- * a date-time IR field typed as plain `string` (not `Date`), the entire SDK
- * is assumed to follow that convention and ALL generated serializers will skip
- * the `new Date()` / `.toISOString()` conversion — not just those for models
- * that have a baseline interface.
- */
-function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
-  if (!ctx.apiSurface?.interfaces) return false;
-  for (const model of models) {
-    const domainName = resolveInterfaceName(model.name, ctx);
-    const baseline = ctx.apiSurface.interfaces[domainName];
-    if (!baseline?.fields) continue;
-    for (const field of model.fields) {
-      if (!hasFormatConversion(field.type)) continue;
-      const baselineField = baseline.fields[fieldName(field.name)];
-      if (baselineField && !baselineField.type.includes('Date')) {
-        return true; // Found a date-time field stored as string — convention is strings
-      }
-    }
-  }
-  return false;
-}
+  relativeImport,
+  pruneUnusedImports,
+  detectStringDateConvention,
+  buildKnownTypeNames,
+  isBaselineGeneric,
+  createServiceDirResolver,
+} from './utils.js';
 
 /**
  * Render generic type parameter declarations for a model.
@@ -59,13 +33,11 @@ function renderSerializerTypeParams(model: Model, ctx?: EmitterContext): { decl:
     const baseline = ctx.apiSurface.interfaces[domainName];
     if (baseline?.fields) {
       const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
-      const modelToService = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-      const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-      const sDir = modelToService.get(model.name);
-      const resolvedDir = sDir ? serviceDirName(serviceNameMap.get(sDir) ?? sDir) : 'common';
-      const generatedPath = `src/${resolvedDir}/interfaces/${fileName(model.name)}.interface.ts`;
+      const { modelToService, resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
+      const generatedPath = `src/${resolveDir(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
       const pathMatches = !baselineSourceFile || baselineSourceFile === generatedPath;
-      if (pathMatches && baselineAppearsGeneric(baseline.fields, ctx)) {
+      const knownNames = buildKnownTypeNames(ctx.spec.models, ctx);
+      if (pathMatches && isBaselineGeneric(baseline.fields, knownNames)) {
         return {
           decl: '<GenericType extends Record<string, unknown> = Record<string, unknown>>',
           usage: '<GenericType>',
@@ -76,65 +48,10 @@ function renderSerializerTypeParams(model: Model, ctx?: EmitterContext): { decl:
   return { decl: '', usage: '' };
 }
 
-/** Built-in TypeScript types that don't indicate a generic type parameter. */
-const SERIALIZER_BUILTINS = new Set([
-  'Record',
-  'Promise',
-  'Array',
-  'Map',
-  'Set',
-  'Date',
-  'string',
-  'number',
-  'boolean',
-  'void',
-  'null',
-  'undefined',
-  'any',
-  'never',
-  'unknown',
-  'true',
-  'false',
-]);
-
-/**
- * Check if a baseline interface appears to be generic by looking for
- * PascalCase type names in field types that aren't known models/enums/builtins.
- */
-function baselineAppearsGeneric(fields: Record<string, unknown>, ctx: EmitterContext): boolean {
-  const knownNames = new Set<string>();
-  for (const m of ctx.spec.models) knownNames.add(resolveInterfaceName(m.name, ctx));
-  for (const e of ctx.spec.enums) knownNames.add(e.name);
-  // Include all baseline interface/enum/typeAlias names
-  if (ctx.apiSurface?.interfaces) {
-    for (const name of Object.keys(ctx.apiSurface.interfaces)) knownNames.add(name);
-  }
-  if (ctx.apiSurface?.typeAliases) {
-    for (const name of Object.keys(ctx.apiSurface.typeAliases)) knownNames.add(name);
-  }
-  if (ctx.apiSurface?.enums) {
-    for (const name of Object.keys(ctx.apiSurface.enums)) knownNames.add(name);
-  }
-  for (const [, bf] of Object.entries(fields)) {
-    const fieldType = (bf as { type: string }).type;
-    const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
-    if (!typeNames) continue;
-    for (const tn of typeNames) {
-      if (SERIALIZER_BUILTINS.has(tn)) continue;
-      if (knownNames.has(tn)) continue;
-      return true;
-    }
-  }
-  return false;
-}
-
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
   const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
 

@@ -5,10 +5,9 @@ import {
   servicePropertyName,
   resolveInterfaceName,
   resolveServiceName,
-  buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices, docComment } from './utils.js';
+import { docComment, createServiceDirResolver } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -90,10 +89,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
-  const modelToService = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
 
   // Track all exported names to prevent duplicates.
   // Pre-seed with names already exported by the existing SDK to avoid generating
