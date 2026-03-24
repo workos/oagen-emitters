@@ -1,5 +1,6 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
-import { wireFieldName, fileName, serviceDirName, resolveServiceName } from './naming.js';
+import { wireFieldName, fileName, serviceDirName } from './naming.js';
+import { resolveResourceClassName } from './resources.js';
 import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
 /**
@@ -64,7 +65,7 @@ export function generateFixtures(
 
   // Generate list fixtures for models that appear in paginated responses
   for (const service of spec.services) {
-    const resolvedName = ctx ? resolveServiceName(service, ctx) : service.name;
+    const resolvedName = ctx ? resolveResourceClassName(service, ctx) : service.name;
     const serviceDir = serviceDirName(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {

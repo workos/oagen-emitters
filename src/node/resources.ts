@@ -16,6 +16,42 @@ import {
 import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
+/**
+ * Check whether the baseline (hand-written) class has a constructor compatible
+ * with the generated pattern `constructor(private readonly workos: WorkOS)`.
+ * Returns true when no baseline exists (fresh generation) or when compatible.
+ */
+export function hasCompatibleConstructor(className: string, ctx: EmitterContext): boolean {
+  const baselineClass = ctx.apiSurface?.classes?.[className];
+  if (!baselineClass) return true; // No baseline — fresh generation
+  const params = baselineClass.constructorParams;
+  if (!params || params.length === 0) return true; // No-arg constructor is compatible
+  // Compatible if there is a single `workos` param whose type contains "WorkOS"
+  return params.some((p) => p.name === 'workos' && p.type.includes('WorkOS'));
+}
+
+/**
+ * Resolve the resource class name for a service, accounting for constructor
+ * compatibility with the baseline class.
+ *
+ * When the overlay-resolved class has an incompatible constructor (e.g., a
+ * hand-written `Webhooks` class that takes `CryptoProvider` instead of `WorkOS`),
+ * falls back to the IR name (`toPascalCase(service.name)`). If the IR name
+ * collides with the overlay name, appends an `Endpoints` suffix.
+ */
+export function resolveResourceClassName(service: Service, ctx: EmitterContext): string {
+  const overlayName = resolveServiceName(service, ctx);
+  if (hasCompatibleConstructor(overlayName, ctx)) {
+    return overlayName;
+  }
+  // Incompatible constructor — fall back to IR name
+  const irName = toPascalCase(service.name);
+  if (irName === overlayName) {
+    return irName + 'Endpoints';
+  }
+  return irName;
+}
+
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
 const PAGINATION_PARAM_NAMES = new Set(['limit', 'before', 'after', 'order']);
 
@@ -57,7 +93,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 }
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
-  const resolvedName = resolveServiceName(service, ctx);
+  const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = serviceDirName(resolvedName);
   const serviceClass = resolvedName;
   const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;

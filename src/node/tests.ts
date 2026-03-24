@@ -8,10 +8,10 @@ import {
   serviceDirName,
   servicePropertyName,
   resolveMethodName,
-  resolveServiceName,
   resolveInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
+import { resolveResourceClassName } from './resources.js';
 import { createServiceDirResolver, isServiceCoveredByExisting, relativeImport } from './utils.js';
 import { assignModelsToServices } from '@workos/oagen';
 
@@ -49,7 +49,7 @@ function generateServiceTest(
   ctx: EmitterContext,
   modelMap: Map<string, Model>,
 ): GeneratedFile {
-  const resolvedName = resolveServiceName(service, ctx);
+  const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = serviceDirName(resolvedName);
   const serviceClass = resolvedName;
   const serviceProp = servicePropertyName(resolvedName);
@@ -594,7 +594,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const modelToService = assignModelsToServices(spec.models, spec.services);
   const serviceNameMap = new Map<string, string>();
   for (const service of spec.services) {
-    serviceNameMap.set(service.name, resolveServiceName(service, ctx));
+    serviceNameMap.set(service.name, resolveResourceClassName(service, ctx));
   }
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';

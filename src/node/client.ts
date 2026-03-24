@@ -8,6 +8,7 @@ import {
   wireInterfaceName,
 } from './naming.js';
 import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
+import { resolveResourceClassName } from './resources.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -44,7 +45,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Service imports — skip covered services
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
-    const resolvedName = resolveServiceName(service, ctx);
+    const resolvedName = resolveResourceClassName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
@@ -82,7 +83,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // by existing hand-written services.
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
-    const resolvedName = resolveServiceName(service, ctx);
+    const resolvedName = resolveResourceClassName(service, ctx);
     const propName = servicePropertyName(resolvedName);
     if (existingProps.has(propName)) continue;
     lines.push(`  readonly ${propName} = new ${resolvedName}(this);`);
@@ -212,7 +213,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
 
   // Per-service exports: service barrel + resource class
   for (const service of spec.services) {
-    const resolvedName = resolveServiceName(service, ctx);
+    const resolvedName = resolveResourceClassName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
 
     // Check if this service has any models or enums (i.e., a barrel was generated)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateResources } from '../../src/node/resources.js';
+import { generateResources, resolveResourceClassName, hasCompatibleConstructor } from '../../src/node/resources.js';
 import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
@@ -887,5 +887,247 @@ describe('generateResources', () => {
 
     // Method is "listOrganizations", not "list", so options name should be normal
     expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
+  });
+});
+
+describe('resolveResourceClassName', () => {
+  const webhooksService: Service = {
+    name: 'WebhookEvents',
+    operations: [
+      {
+        name: 'listWebhookEvents',
+        httpMethod: 'get',
+        path: '/webhook_events',
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model', name: 'WebhookEvent' },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+
+  it('generates separate class when baseline has incompatible constructor', () => {
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services: [webhooksService] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /webhook_events',
+            { className: 'Webhooks', methodName: 'listWebhookEvents', params: [], returnType: 'void' },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Webhooks: {
+            name: 'Webhooks',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const result = resolveResourceClassName(webhooksService, overlayCtx);
+    // Falls back to IR name since overlay name has incompatible constructor
+    expect(result).toBe('WebhookEvents');
+  });
+
+  it('uses overlay name when baseline has compatible constructor', () => {
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services: [webhooksService] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /webhook_events',
+            { className: 'Webhooks', methodName: 'listWebhookEvents', params: [], returnType: 'void' },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Webhooks: {
+            name: 'Webhooks',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const result = resolveResourceClassName(webhooksService, overlayCtx);
+    expect(result).toBe('Webhooks');
+  });
+
+  it('appends Endpoints suffix when IR name collides with overlay name', () => {
+    const collisionService: Service = {
+      name: 'Webhooks',
+      operations: [
+        {
+          name: 'listWebhooks',
+          httpMethod: 'get',
+          path: '/webhooks',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Webhook' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services: [collisionService] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          ['GET /webhooks', { className: 'Webhooks', methodName: 'listWebhooks', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Webhooks: {
+            name: 'Webhooks',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const result = resolveResourceClassName(collisionService, overlayCtx);
+    // IR name "Webhooks" collides with overlay name "Webhooks", so append Endpoints
+    expect(result).toBe('WebhooksEndpoints');
+  });
+});
+
+describe('hasCompatibleConstructor', () => {
+  it('returns true when no baseline exists', () => {
+    expect(hasCompatibleConstructor('NewService', ctx)).toBe(true);
+  });
+
+  it('returns true when baseline has workos: WorkOS param', () => {
+    const ctxWithSurface: EmitterContext = {
+      ...ctx,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Organizations: {
+            name: 'Organizations',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    expect(hasCompatibleConstructor('Organizations', ctxWithSurface)).toBe(true);
+  });
+
+  it('returns false when baseline has incompatible constructor', () => {
+    const ctxWithSurface: EmitterContext = {
+      ...ctx,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Webhooks: {
+            name: 'Webhooks',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    expect(hasCompatibleConstructor('Webhooks', ctxWithSurface)).toBe(false);
+  });
+
+  it('returns true when baseline has no constructor params', () => {
+    const ctxWithSurface: EmitterContext = {
+      ...ctx,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          EmptyService: {
+            name: 'EmptyService',
+            methods: {},
+            properties: {},
+            constructorParams: [],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    expect(hasCompatibleConstructor('EmptyService', ctxWithSurface)).toBe(true);
   });
 });
