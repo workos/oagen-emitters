@@ -212,5 +212,34 @@ export function fetchBody({ raw = false } = {}): any {
   if (body instanceof URLSearchParams) return body.toString();
   if (raw) return body;
   return JSON.parse(String(body));
+}
+
+/**
+ * Shared test helper: asserts that the given async function throws when the
+ * server responds with 401 Unauthorized.
+ */
+export function testUnauthorized(fn: () => Promise<any>) {
+  it('throws on unauthorized', async () => {
+    fetchOnce({ message: 'Unauthorized' }, { status: 401 });
+    await expect(fn()).rejects.toThrow();
+  });
+}
+
+/**
+ * Shared test helper: asserts that a paginated list call returns the expected
+ * shape (data array + listMetadata) and hits the correct endpoint.
+ */
+export function testPaginatedList(
+  fn: () => Promise<any>,
+  pathContains: string,
+) {
+  it('returns paginated results', async () => {
+    // Caller must have called fetchOnce with the list fixture before invoking fn
+    const { data, listMetadata } = await fn();
+    expect(fetchURL()).toContain(pathContains);
+    expect(fetchSearchParams()).toHaveProperty('order');
+    expect(Array.isArray(data)).toBe(true);
+    expect(listMetadata).toBeDefined();
+  });
 }`;
 }

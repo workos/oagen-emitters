@@ -76,6 +76,7 @@ function generateServiceTest(
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
+  testUtils.push('testUnauthorized', 'testPaginatedList');
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -409,25 +410,24 @@ function renderVoidTest(lines: string[], op: Operation, plan: any, method: strin
 }
 
 function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+  const args = buildCallArgs(op, plan);
+
+  lines.push('');
+  lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
+}
+
+/**
+ * Build the argument string for a method call in tests.
+ * Shared by renderErrorTest and other test renderers.
+ */
+function buildCallArgs(op: Operation, plan: any): string {
   const pathArgs = buildTestPathArgs(op);
   const isPaginated = plan.isPaginated;
   const hasBody = plan.hasBody;
 
-  let args: string;
-  if (isPaginated) {
-    args = pathArgs || '';
-  } else if (hasBody) {
-    args = pathArgs ? `${pathArgs}, {} as any` : '{} as any';
-  } else {
-    args = pathArgs || '';
-  }
-
-  lines.push('');
-  lines.push("    it('throws on unauthorized', async () => {");
-  lines.push("      fetchOnce({ message: 'Unauthorized' }, { status: 401 });");
-  lines.push('');
-  lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
-  lines.push('    });');
+  if (isPaginated) return pathArgs || '';
+  if (hasBody) return pathArgs ? `${pathArgs}, {} as any` : '{} as any';
+  return pathArgs || '';
 }
 
 /**
