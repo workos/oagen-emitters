@@ -170,12 +170,17 @@ function staticPathSegments(path: string): string[] {
   return path.split(/\{[^}]+\}/).filter((s) => s.length > 0);
 }
 
-/** Compute the test value for a single path parameter. */
-function pathParamTestValue(param: { type: TypeRef } | undefined): string {
+/** Compute the test value for a single path parameter.
+ *  Uses distinct values per param name so multi-param paths don't all get 'test_id'.
+ */
+function pathParamTestValue(param: { type: TypeRef; name?: string } | undefined, paramName?: string): string {
   if (param?.type.kind === 'enum' && param.type.values?.length) {
     const first = param.type.values[0];
     return typeof first === 'string' ? first : String(first);
   }
+  // Use distinct values for different path params to detect ordering bugs
+  const name = paramName ?? (param as any)?.name;
+  if (name) return `test_${fieldName(name)}`;
   return 'test_id';
 }
 
@@ -191,7 +196,7 @@ function buildTestPathArgs(op: Operation): string {
   for (const v of templateVars) {
     if (!declaredNames.has(v)) allVars.push(v);
   }
-  return allVars.map((varName) => `'${pathParamTestValue(paramByName.get(varName))}'`).join(', ');
+  return allVars.map((varName) => `'${pathParamTestValue(paramByName.get(varName), varName)}'`).join(', ');
 }
 
 /** Get a URL-safe string that should appear in the path for assertions. */
@@ -199,7 +204,8 @@ function buildTestPathAssertionValue(op: Operation): string {
   const paramByName = new Map(op.pathParams.map((p) => [fieldName(p.name), p]));
   // Use the first path param's test value for the assertion
   if (op.pathParams.length > 0) {
-    return pathParamTestValue(paramByName.get(fieldName(op.pathParams[0].name)));
+    const name = fieldName(op.pathParams[0].name);
+    return pathParamTestValue(paramByName.get(name), name);
   }
   const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
   return templateVars.length > 0 ? 'test_id' : '';
@@ -272,8 +278,8 @@ function renderPaginatedTest(
     `      await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}{ limit: 10, after: 'cursor_abc' });`,
   );
   lines.push('');
-  lines.push("      expect(fetchSearchParams().get('limit')).toBe('10');");
-  lines.push("      expect(fetchSearchParams().get('after')).toBe('cursor_abc');");
+  lines.push("      expect(fetchSearchParams()['limit']).toBe('10');");
+  lines.push("      expect(fetchSearchParams()['after']).toBe('cursor_abc');");
   lines.push('    });');
 }
 
@@ -309,11 +315,11 @@ function renderBodyTest(
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
   const pathArgs = buildTestPathArgs(op);
-  const allArgs = pathArgs ? `${pathArgs}, {} as any` : '{} as any';
 
-  // Fix #10: Build realistic payload from request body model fields
+  // Build realistic payload from request body model fields
   const payload = buildTestPayload(op, modelMap);
-  const payloadArg = payload ? payload.camelCaseObj : '{}';
+  const payloadArg = payload ? payload.camelCaseObj : '{} as any';
+  const allArgs = pathArgs ? `${pathArgs}, ${payloadArg}` : payloadArg;
 
   lines.push("    it('sends the correct request and returns result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
@@ -442,8 +448,13 @@ function buildFieldAssertions(model: Model, accessor: string): string[] {
     // When a field has an example value, use it as the expected assertion value
     if (field.example !== undefined) {
       const domainField = fieldName(field.name);
-      const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);
-      assertions.push(`expect(${accessor}.${domainField}).toBe(${exampleLiteral});`);
+      if (Array.isArray(field.example)) {
+        // Arrays need toEqual with proper quoting
+        assertions.push(`expect(${accessor}.${domainField}).toEqual(${JSON.stringify(field.example)});`);
+      } else {
+        const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);
+        assertions.push(`expect(${accessor}.${domainField}).toBe(${exampleLiteral});`);
+      }
       continue;
     }
     const value = fixtureValueForType(field.type, field.name, model.name);
@@ -508,7 +519,7 @@ function fixtureValueForPrimitive(
 function buildExpectedPath(op: Operation): string {
   let path = op.path;
   for (const param of op.pathParams) {
-    path = path.replace(`{${param.name}}`, 'test_id');
+    path = path.replace(`{${param.name}}`, pathParamTestValue(param, fieldName(param.name)));
   }
   return path;
 }
@@ -532,7 +543,7 @@ function buildTestPayload(
 
   const fields = model.fields.filter((f) => f.required);
   // Only use primitive/literal fields that we can generate deterministic values for
-  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name) !== null);
+  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name, model.name) !== null);
 
   if (usableFields.length === 0) return null;
 
@@ -540,7 +551,7 @@ function buildTestPayload(
   const snakeEntries: string[] = [];
 
   for (const field of usableFields) {
-    const value = fixtureValueForType(field.type, field.name)!;
+    const value = fixtureValueForType(field.type, field.name, model.name)!;
     const camelKey = fieldName(field.name);
     const snakeKey = wireFieldName(field.name);
     camelEntries.push(`${camelKey}: ${value}`);

@@ -6,6 +6,7 @@ import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import {
   fieldName,
+  wireFieldName,
   fileName,
   serviceDirName,
   resolveMethodName,
@@ -683,10 +684,11 @@ function renderGetMethod(
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
+    const queryExpr = renderQueryExpr(op.queryParams);
     lines.push(
       `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
     );
-    lines.push('      query: options,');
+    lines.push(`      query: ${queryExpr},`);
     lines.push('    });');
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     // PUT/PATCH/POST require a body argument even when the spec has no request body
@@ -746,8 +748,9 @@ function renderVoidMethod(
   if (plan.hasBody) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
   } else if (hasQuery) {
+    const queryExpr = renderQueryExpr(op.queryParams);
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
-    lines.push('      query: options,');
+    lines.push(`      query: ${queryExpr},`);
     lines.push('    });');
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {});`);
@@ -755,6 +758,29 @@ function renderVoidMethod(
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr});`);
   }
   lines.push('  }');
+}
+
+/**
+ * Generate an inline query serialization expression that maps camelCase option
+ * keys to their snake_case wire equivalents.  When all keys already match
+ * (camel === snake), returns 'options' as-is for brevity.
+ */
+function renderQueryExpr(queryParams: { name: string; required: boolean }[]): string {
+  // Check if any key actually needs conversion
+  const needsConversion = queryParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
+  if (!needsConversion) return 'options';
+
+  const parts: string[] = [];
+  for (const param of queryParams) {
+    const camel = fieldName(param.name);
+    const snake = wireFieldName(param.name);
+    if (param.required) {
+      parts.push(`${snake}: options.${camel}`);
+    } else {
+      parts.push(`...(options.${camel} !== undefined && { ${snake}: options.${camel} })`);
+    }
+  }
+  return `options ? { ${parts.join(', ')} } : undefined`;
 }
 
 function buildPathStr(op: Operation): string {

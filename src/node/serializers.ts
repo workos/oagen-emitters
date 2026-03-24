@@ -70,6 +70,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
     const typeParams = renderSerializerTypeParams(model, ctx);
+    const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
 
     // Build a set of field names where format conversion (new Date / BigInt) should
     // be skipped.  When the SDK-wide convention is string dates, ALL date-time fields
@@ -163,9 +164,16 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
           lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : ${fallback},`);
         }
       } else if (field.required && expr === wireAccess) {
-        // Required field with direct assignment — add fallback for cases where
-        // the response interface makes the field optional (baseline override)
-        const fallback = defaultForType(field.type);
+        // Required field with direct assignment — only add a fallback when the
+        // response interface makes the field optional (baseline override mismatch)
+        // or the field is newly added. When the field is required on BOTH
+        // interfaces, the response always contains it — no fallback is needed.
+        // This prevents incorrect fallbacks like ?? '' on string|null fields
+        // and invalid enum fallbacks like ?? 'Pending'.
+        const responseFieldInfo = baselineResponse?.fields?.[wire];
+        const responseFieldOptional = responseFieldInfo?.optional ?? false;
+        const needsFallback = responseFieldOptional || isNewField;
+        const fallback = needsFallback ? defaultForType(field.type) : null;
         if (fallback) {
           lines.push(`  ${domain}: ${expr} ?? ${fallback},`);
         } else {
@@ -187,7 +195,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     lines.push('');
     lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
     lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
-    lines.push(`) => ({`);
+    lines.push(`): ${responseName}${typeParams.usage} => ({`);
     const seenSerFields = new Set<string>();
     for (const field of model.fields) {
       const wire = wireFieldName(field.name);

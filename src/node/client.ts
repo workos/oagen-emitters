@@ -7,7 +7,7 @@ import {
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
+import { docComment, createServiceDirResolver, isServiceCoveredByExisting, isListMetadataModel, isListWrapperModel } from './utils.js';
 import { resolveResourceClassName } from './resources.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -116,7 +116,10 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   const dirExports = new Map<string, string[]>();
 
   // Models -> service directories
+  // Skip list wrapper and list metadata models — they use shared List<T>/ListMetadata
+  // from common utils, so no per-resource interface file is generated.
   for (const model of spec.models) {
+    if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     if (!dirExports.has(dirName)) dirExports.set(dirName, []);

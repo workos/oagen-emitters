@@ -77,7 +77,7 @@ describe('generateSerializers', () => {
 
     const content = files[0].content;
     expect(content).toContain('export const deserializeOrganization');
-    expect(content).toContain("  id: response.id ?? '',");
+    expect(content).toContain('  id: response.id,');
     expect(content).toContain('  createdAt: new Date(response.created_at),');
     expect(content).toContain('  externalId: response.external_id ?? null,');
   });
