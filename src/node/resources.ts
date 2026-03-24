@@ -165,6 +165,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     }
   }
 
+  // Collect serializer imports by module path so we can merge deserialize and
+  // serialize imports from the same module into a single import statement.
+  const serializerImportsByPath = new Map<string, string[]>();
+
   const importedDeserializers = new Set<string>();
   for (const name of responseModels) {
     const resolved = resolveInterfaceName(name, ctx);
@@ -176,7 +180,9 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
         : `../${modelServiceDir}/serializers/${fileName(name)}.serializer`;
-    lines.push(`import { deserialize${resolved} } from '${relPath}';`);
+    const existing = serializerImportsByPath.get(relPath) ?? [];
+    existing.push(`deserialize${resolved}`);
+    serializerImportsByPath.set(relPath, existing);
   }
 
   const importedSerializers = new Set<string>();
@@ -190,7 +196,14 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       modelServiceDir === serviceDir
         ? `./serializers/${fileName(name)}.serializer`
         : `../${modelServiceDir}/serializers/${fileName(name)}.serializer`;
-    lines.push(`import { serialize${resolved} } from '${relPath}';`);
+    const existing = serializerImportsByPath.get(relPath) ?? [];
+    existing.push(`serialize${resolved}`);
+    serializerImportsByPath.set(relPath, existing);
+  }
+
+  // Emit merged serializer imports
+  for (const [relPath, specifiers] of serializerImportsByPath) {
+    lines.push(`import { ${specifiers.join(', ')} } from '${relPath}';`);
   }
 
   // Build a set of global enum names — used to distinguish named enums (with files)

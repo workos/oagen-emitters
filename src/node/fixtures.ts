@@ -3,6 +3,27 @@ import { wireFieldName, fileName, serviceDirName, resolveServiceName } from './n
 import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
 /**
+ * Prefix mapping for generating realistic ID fixture values.
+ * When a field named "id" belongs to a model whose name matches a key here,
+ * the generated ID will be prefixed accordingly (e.g. "conn_01234").
+ */
+export const ID_PREFIXES: Record<string, string> = {
+  Connection: 'conn_',
+  Organization: 'org_',
+  OrganizationMembership: 'om_',
+  User: 'user_',
+  Directory: 'directory_',
+  DirectoryGroup: 'dir_grp_',
+  DirectoryUser: 'dir_usr_',
+  Invitation: 'inv_',
+  Session: 'session_',
+  AuthenticationFactor: 'auth_factor_',
+  EmailVerification: 'email_verification_',
+  MagicAuth: 'magic_auth_',
+  PasswordReset: 'password_reset_',
+};
+
+/**
  * Generate JSON fixture files for test data.
  * Each model that appears as a response gets a fixture in wire format (snake_case).
  */
@@ -102,7 +123,12 @@ function generateModelFixture(
 
   for (const field of model.fields) {
     const wireName = wireFieldName(field.name);
-    fixture[wireName] = generateFieldValue(field.type, field.name, modelMap, enumMap);
+    // Prefer the OpenAPI example value when available on the field
+    if (field.example !== undefined) {
+      fixture[wireName] = field.example;
+    } else {
+      fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
+    }
   }
 
   return fixture;
@@ -111,12 +137,13 @@ function generateModelFixture(
 function generateFieldValue(
   ref: TypeRef,
   fieldName: string,
+  modelName: string,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
 ): any {
   switch (ref.kind) {
     case 'primitive':
-      return generatePrimitiveValue(ref.type, ref.format, fieldName);
+      return generatePrimitiveValue(ref.type, ref.format, fieldName, modelName);
     case 'literal':
       return ref.value;
     case 'enum': {
@@ -129,27 +156,38 @@ function generateFieldValue(
       return {};
     }
     case 'array': {
-      const item = generateFieldValue(ref.items, fieldName, modelMap, enumMap);
+      // For array<enum>, use actual enum values instead of a single generated item
+      if (ref.items.kind === 'enum') {
+        const e = enumMap.get(ref.items.name);
+        if (e && e.values.length > 0) {
+          return e.values.map((v) => v.value);
+        }
+      }
+      const item = generateFieldValue(ref.items, fieldName, modelName, modelMap, enumMap);
       return [item];
     }
     case 'nullable':
-      return generateFieldValue(ref.inner, fieldName, modelMap, enumMap);
+      return generateFieldValue(ref.inner, fieldName, modelName, modelMap, enumMap);
     case 'union':
       if (ref.variants.length > 0) {
-        return generateFieldValue(ref.variants[0], fieldName, modelMap, enumMap);
+        return generateFieldValue(ref.variants[0], fieldName, modelName, modelMap, enumMap);
       }
       return null;
     case 'map':
-      return { key: generateFieldValue(ref.valueType, 'value', modelMap, enumMap) };
+      return { key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap) };
   }
 }
 
-function generatePrimitiveValue(type: string, format: string | undefined, name: string): any {
+function generatePrimitiveValue(type: string, format: string | undefined, name: string, modelName: string): any {
   switch (type) {
     case 'string':
       if (format === 'date-time') return '2023-01-01T00:00:00.000Z';
       if (format === 'date') return '2023-01-01';
       if (format === 'uuid') return '00000000-0000-0000-0000-000000000000';
+      if (name === 'id') {
+        const prefix = ID_PREFIXES[modelName] ?? '';
+        return `${prefix}01234`;
+      }
       if (name.includes('id')) return `${name}_01234`;
       if (name.includes('email')) return 'test@example.com';
       if (name.includes('url') || name.includes('uri')) return 'https://example.com';

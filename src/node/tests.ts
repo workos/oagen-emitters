@@ -1,6 +1,6 @@
 import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
-import { unwrapListModel } from './fixtures.js';
+import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
   wireFieldName,
@@ -439,7 +439,14 @@ function buildFieldAssertions(model: Model, accessor: string): string[] {
 
   for (const field of model.fields) {
     if (!field.required) continue;
-    const value = fixtureValueForType(field.type, field.name);
+    // When a field has an example value, use it as the expected assertion value
+    if (field.example !== undefined) {
+      const domainField = fieldName(field.name);
+      const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);
+      assertions.push(`expect(${accessor}.${domainField}).toBe(${exampleLiteral});`);
+      continue;
+    }
+    const value = fixtureValueForType(field.type, field.name, model.name);
     if (value === null) continue;
     const domainField = fieldName(field.name);
     assertions.push(`expect(${accessor}.${domainField}).toBe(${value});`);
@@ -452,10 +459,10 @@ function buildFieldAssertions(model: Model, accessor: string): string[] {
  * Return a JS literal string for the expected fixture value of a primitive field.
  * Returns null for non-primitive or complex types (arrays, models, etc.).
  */
-function fixtureValueForType(ref: TypeRef, name: string): string | null {
+function fixtureValueForType(ref: TypeRef, name: string, modelName: string): string | null {
   switch (ref.kind) {
     case 'primitive':
-      return fixtureValueForPrimitive(ref.type, ref.format, name);
+      return fixtureValueForPrimitive(ref.type, ref.format, name, modelName);
     case 'literal':
       return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
     default:
@@ -463,12 +470,21 @@ function fixtureValueForType(ref: TypeRef, name: string): string | null {
   }
 }
 
-function fixtureValueForPrimitive(type: string, format: string | undefined, name: string): string | null {
+function fixtureValueForPrimitive(
+  type: string,
+  format: string | undefined,
+  name: string,
+  modelName: string,
+): string | null {
   switch (type) {
     case 'string':
       if (format === 'date-time') return "'2023-01-01T00:00:00.000Z'";
       if (format === 'date') return "'2023-01-01'";
       if (format === 'uuid') return "'00000000-0000-0000-0000-000000000000'";
+      if (name === 'id') {
+        const prefix = ID_PREFIXES[modelName] ?? '';
+        return `'${prefix}01234'`;
+      }
       if (name.includes('id')) return `'${wireFieldName(name)}_01234'`;
       if (name.includes('email')) return "'test@example.com'";
       if (name.includes('url') || name.includes('uri')) return "'https://example.com'";
