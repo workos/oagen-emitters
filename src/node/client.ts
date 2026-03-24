@@ -13,6 +13,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   const files: GeneratedFile[] = [];
 
   files.push(generateWorkOSClient(spec, ctx));
+  files.push(...generateServiceBarrels(spec, ctx));
   files.push(generateBarrel(spec, ctx));
   files.push(generatePackageJson(ctx));
   files.push(generateTsConfig());
@@ -100,6 +101,49 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
 }
 
+/**
+ * Generate per-service barrel files (interfaces/index.ts) that re-export
+ * all interface and enum files for each service directory. This reduces
+ * the root barrel from ~200+ individual type exports to one wildcard
+ * re-export per service.
+ */
+function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
+
+  // Group interface files by directory
+  const dirExports = new Map<string, string[]>();
+
+  // Models -> service directories
+  for (const model of spec.models) {
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    if (!dirExports.has(dirName)) dirExports.set(dirName, []);
+    dirExports.get(dirName)!.push(`export * from './${fileName(model.name)}.interface';`);
+  }
+
+  // Enums -> service directories
+  for (const enumDef of spec.enums) {
+    const enumService = findEnumService(enumDef.name, spec.services);
+    const dirName = resolveDir(enumService);
+    if (!dirExports.has(dirName)) dirExports.set(dirName, []);
+    dirExports.get(dirName)!.push(`export * from './${fileName(enumDef.name)}.interface';`);
+  }
+
+  for (const [dirName, exports] of dirExports) {
+    // Deduplicate (an enum and model could theoretically share a file name)
+    const uniqueExports = [...new Set(exports)];
+    uniqueExports.sort();
+    files.push({
+      path: `src/${dirName}/interfaces/index.ts`,
+      content: uniqueExports.join('\n'),
+      skipIfExists: true,
+    });
+  }
+
+  return files;
+}
+
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
   const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
@@ -163,25 +207,51 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     }
   }
 
-  // Per-service exports: interfaces + resource class
+  // Track directories that have already been wildcard-exported
+  const exportedDirs = new Set<string>();
+
+  // Per-service exports: service barrel + resource class
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
 
-    // Collect models that belong to this service, skipping already-exported names.
-    // Model/type exports are still emitted even for covered services — the types
-    // (e.g., Connection, ConnectionResponse) may be used by the hand-written code.
+    // Check if this service has any models or enums (i.e., a barrel was generated)
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
-    for (const model of serviceModels) {
-      const name = resolveInterfaceName(model.name, ctx);
-      const wireName = wireInterfaceName(name);
-      if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
-      if (existingSdkExports.has(name)) continue;
-      exportedNames.add(name);
-      exportedNames.add(wireName);
-      lines.push(
-        `export type { ${name}, ${wireName} } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
-      );
+    const serviceEnums = spec.enums.filter((e) => {
+      const enumService = findEnumService(e.name, spec.services);
+      return enumService === service.name;
+    });
+
+    // Check whether any model or enum in this service conflicts with existingSdkExports.
+    // If so, fall back to individual exports to avoid shadowing hand-written types.
+    const hasConflict =
+      serviceModels.some((m) => existingSdkExports.has(resolveInterfaceName(m.name, ctx))) ||
+      serviceEnums.some((e) => existingSdkExports.has(e.name));
+
+    if ((serviceModels.length > 0 || serviceEnums.length > 0) && !exportedDirs.has(serviceDir) && !hasConflict) {
+      exportedDirs.add(serviceDir);
+      lines.push(`export * from './${serviceDir}/interfaces';`);
+      // Track the individual names so they don't get re-exported below
+      for (const model of serviceModels) {
+        exportedNames.add(resolveInterfaceName(model.name, ctx));
+        exportedNames.add(wireInterfaceName(resolveInterfaceName(model.name, ctx)));
+      }
+      for (const enumDef of serviceEnums) {
+        exportedNames.add(enumDef.name);
+      }
+    } else if (!hasConflict) {
+      // Fallback: emit individual model exports (e.g., when no models/enums exist)
+      for (const model of serviceModels) {
+        const name = resolveInterfaceName(model.name, ctx);
+        const wireName = wireInterfaceName(name);
+        if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+        if (existingSdkExports.has(name)) continue;
+        exportedNames.add(name);
+        exportedNames.add(wireName);
+        lines.push(
+          `export type { ${name}, ${wireName} } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
+        );
+      }
     }
 
     // Resource class — skip if already exported or if service is fully covered
@@ -193,20 +263,42 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push('');
   }
 
-  // Unassigned models (common), skipping already-exported names
-  // and names already covered by the existing SDK's wildcard re-exports
+  // Unassigned models (common) — use barrel if any exist
   const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name));
-  for (const model of unassignedModels) {
-    const name = resolveInterfaceName(model.name, ctx);
-    const wireName = wireInterfaceName(name);
-    if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
-    if (existingSdkExports.has(name)) continue;
-    exportedNames.add(name);
-    exportedNames.add(wireName);
-    lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
+  const commonEnums = spec.enums.filter((e) => {
+    const enumService = findEnumService(e.name, spec.services);
+    return !enumService;
+  });
+
+  const commonHasConflict =
+    unassignedModels.some((m) => existingSdkExports.has(resolveInterfaceName(m.name, ctx))) ||
+    commonEnums.some((e) => existingSdkExports.has(e.name));
+
+  if ((unassignedModels.length > 0 || commonEnums.length > 0) && !exportedDirs.has('common') && !commonHasConflict) {
+    exportedDirs.add('common');
+    lines.push("export * from './common/interfaces';");
+    for (const model of unassignedModels) {
+      exportedNames.add(resolveInterfaceName(model.name, ctx));
+      exportedNames.add(wireInterfaceName(resolveInterfaceName(model.name, ctx)));
+    }
+    for (const enumDef of commonEnums) {
+      exportedNames.add(enumDef.name);
+    }
+  } else {
+    // Fallback: individual model exports
+    for (const model of unassignedModels) {
+      const name = resolveInterfaceName(model.name, ctx);
+      const wireName = wireInterfaceName(name);
+      if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+      if (existingSdkExports.has(name)) continue;
+      exportedNames.add(name);
+      exportedNames.add(wireName);
+      lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
+    }
   }
 
-  // Enum exports — skip duplicates and names already covered by existing SDK wildcards.
+  // Enum exports — only for enums not already covered by a service/common barrel.
+  // Skip duplicates and names already covered by existing SDK wildcards.
   // Use value export (`export { ... }`) for actual TS enums so consumers
   // can use them as runtime values (e.g., ConnectionType.GoogleOAuth).
   // Use type-only export (`export type { ... }`) for string literal unions.
@@ -216,9 +308,13 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     exportedNames.add(enumDef.name);
     const enumService = findEnumService(enumDef.name, spec.services);
     const dir = resolveDir(enumService);
-    const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
-    const exportKeyword = baselineEnum?.members ? 'export' : 'export type';
-    lines.push(`${exportKeyword} { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`);
+    if (!exportedDirs.has(dir)) {
+      const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
+      const exportKeyword = baselineEnum?.members ? 'export' : 'export type';
+      lines.push(
+        `${exportKeyword} { ${enumDef.name} } from './${dir}/interfaces/${fileName(enumDef.name)}.interface';`,
+      );
+    }
   }
 
   lines.push('');

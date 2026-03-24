@@ -71,8 +71,20 @@ describe('generateClient', () => {
     expect(content).toContain("export * from './common/exceptions';");
     expect(content).toContain("export { AutoPaginatable } from './common/utils/pagination';");
     expect(content).toContain("export { WorkOS } from './workos';");
-    expect(content).toContain('export type { Organization, OrganizationResponse }');
+    // Service types are now re-exported via the service barrel
+    expect(content).toContain("export * from './organizations/interfaces';");
+    expect(content).not.toContain('export type { Organization, OrganizationResponse }');
     expect(content).toContain("export { Organizations } from './organizations/organizations';");
+  });
+
+  it('generates per-service barrel files', () => {
+    const files = generateClient(spec, ctx);
+    const serviceBarrel = files.find((f) => f.path === 'src/organizations/interfaces/index.ts');
+    expect(serviceBarrel).toBeDefined();
+
+    const content = serviceBarrel!.content;
+    expect(content).toContain("export * from './organization.interface';");
+    expect(serviceBarrel!.skipIfExists).toBe(true);
   });
 
   it('generates package.json and tsconfig.json', () => {
@@ -151,8 +163,15 @@ describe('generateClient', () => {
 
     const barrel = files.find((f) => f.path === 'src/index.ts');
     expect(barrel).toBeDefined();
-    // Barrel export uses resolved name
+    // Barrel export uses resolved name for resource class
     expect(barrel!.content).toContain("from './mfa/mfa'");
+    // Service barrel uses resolved directory name
+    expect(barrel!.content).toContain("export * from './mfa/interfaces'");
+
+    // Per-service barrel is generated with resolved directory
+    const serviceBarrel = files.find((f) => f.path === 'src/mfa/interfaces/index.ts');
+    expect(serviceBarrel).toBeDefined();
+    expect(serviceBarrel!.content).toContain("export * from './authentication-factor.interface';");
   });
 
   it('does not generate error handling in WorkOS client (lives in WorkOSBase)', () => {
@@ -245,8 +264,9 @@ describe('generateClient', () => {
     expect(content).not.toContain('export type { Event,');
     expect(content).not.toContain('export type { Event }');
 
-    // EventCursor is NOT in apiSurface.exports, so it should still be emitted
-    expect(content).toContain('export type { EventCursor, EventCursorResponse }');
+    // EventCursor is NOT in apiSurface.exports, so it should still be exported
+    // (via common barrel wildcard since it's unassigned to any service)
+    expect(content).toContain("export * from './common/interfaces'");
 
     // The resource class export should still be present
     expect(content).toContain("export { Events } from './events/events'");
@@ -290,10 +310,10 @@ describe('generateClient', () => {
   });
 
   it('emits model exports normally when no apiSurface is present', () => {
-    // Without apiSurface, all models should be exported (backward compatible)
+    // Without apiSurface, all models should be exported via service barrel
     const files = generateClient(spec, ctx);
     const barrel = files.find((f) => f.path === 'src/index.ts')!;
-    expect(barrel.content).toContain('export type { Organization, OrganizationResponse }');
+    expect(barrel.content).toContain("export * from './organizations/interfaces'");
   });
 
   it('renders spec.description as JSDoc on WorkOS class', () => {
@@ -409,12 +429,12 @@ describe('generateClient', () => {
     expect(barrel).toBeDefined();
 
     const content = barrel!.content;
-    // TS enum should use value export (no 'type' keyword)
-    expect(content).toContain("export { ConnectionType } from './connections/interfaces/connection-type.interface';");
-    // Type alias enum should use type-only export
-    expect(content).toContain(
-      "export type { DirectoryState } from './directories/interfaces/directory-state.interface';",
-    );
+    // Both enums are now re-exported via per-service barrel wildcards
+    expect(content).toContain("export * from './connections/interfaces'");
+    expect(content).toContain("export * from './directories/interfaces'");
+    // Individual enum exports should NOT appear (covered by wildcard)
+    expect(content).not.toContain('export { ConnectionType }');
+    expect(content).not.toContain('export type { DirectoryState }');
   });
 
   it('skips services whose endpoints are fully covered by existing hand-written services', () => {
@@ -572,8 +592,8 @@ describe('generateClient', () => {
     expect(barrelContent).not.toContain('export { Connections }');
 
     // But model types from the Connections service should still be exported
-    expect(barrelContent).toContain('Connection');
-    expect(barrelContent).toContain('ConnectionResponse');
+    // (via the service barrel wildcard for the resolved directory)
+    expect(barrelContent).toContain("export * from './sso/interfaces'");
   });
 
   it('does not skip services when only some operations are covered', () => {
