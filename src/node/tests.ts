@@ -1,5 +1,6 @@
 import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
+import { unwrapListModel } from './fixtures.js';
 import {
   fieldName,
   wireFieldName,
@@ -78,8 +79,16 @@ function generateServiceTest(
   const fixtureImports = new Set<string>();
   for (const { op, plan } of plans) {
     if (plan.isPaginated && op.pagination) {
-      const itemModelName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
+      let itemModelName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
       if (itemModelName) {
+        // Unwrap list wrapper models to match the fixture file naming in fixtures.ts
+        const rawModel = modelMap.get(itemModelName);
+        if (rawModel) {
+          const unwrapped = unwrapListModel(rawModel, modelMap);
+          if (unwrapped) {
+            itemModelName = unwrapped.name;
+          }
+        }
         const itemService = modelToService.get(itemModelName);
         const itemDir = resolveDir(itemService);
         const fixturePath =
@@ -193,7 +202,15 @@ function renderPaginatedTest(
   serviceProp: string,
   modelMap: Map<string, Model>,
 ): void {
-  const itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
+  let itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
+  // Unwrap list wrapper models to match the fixture file naming in fixtures.ts
+  const rawModel = itemModelName !== 'Item' ? modelMap.get(itemModelName) : null;
+  if (rawModel) {
+    const unwrapped = unwrapListModel(rawModel, modelMap);
+    if (unwrapped) {
+      itemModelName = unwrapped.name;
+    }
+  }
   const pathArgs = buildTestPathArgs(op);
 
   lines.push("    it('returns paginated results', async () => {");
@@ -306,7 +323,7 @@ function renderGetTest(
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
-  lines.push("      expect(fetchMethod()).toBe('GET');");
+  lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
   for (const seg of staticPathSegments(op.path)) {
     lines.push(`      expect(fetchURL()).toContain('${seg}');`);
   }

@@ -77,7 +77,7 @@ export function generateFixtures(
  * This prevents double-nesting when the pagination itemType points to a list wrapper
  * instead of the actual item model.
  */
-function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
+export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
   const dataField = model.fields.find((f) => f.name === 'data');
   const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
   if (dataField && hasListMetadata && dataField.type.kind === 'array') {
