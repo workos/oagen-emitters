@@ -198,6 +198,10 @@ export function fetchURL(): string {
   return String(fetch.mock.calls[0][0]);
 }
 
+export function fetchMethod(): string {
+  return String(fetch.mock.calls[0][1]?.method ?? 'GET');
+}
+
 export function fetchSearchParams(): Record<string, string> {
   return Object.fromEntries(new URL(fetchURL()).searchParams);
 }

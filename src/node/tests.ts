@@ -76,7 +76,9 @@ function generateServiceTest(
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
-  testUtils.push('testUnauthorized', 'testPaginatedList');
+  // Note: testUnauthorized/testPaginatedList are NOT imported — they are inlined
+  // in the generated test body to avoid relying on symbols that may not exist
+  // in the target SDK's test-utils.ts (which uses skipIfExists).
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -138,13 +140,13 @@ function generateServiceTest(
     if (plan.isPaginated) {
       renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.isDelete) {
-      renderDeleteTest(lines, op, plan, method, serviceProp);
+      renderDeleteTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.hasBody && plan.responseModelName) {
       renderBodyTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.responseModelName) {
       renderGetTest(lines, op, plan, method, serviceProp, modelMap);
     } else {
-      renderVoidTest(lines, op, plan, method, serviceProp);
+      renderVoidTest(lines, op, plan, method, serviceProp, modelMap);
     }
 
     // Error case test for all non-void operations
@@ -283,11 +285,19 @@ function renderPaginatedTest(
   lines.push('    });');
 }
 
-function renderDeleteTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+function renderDeleteTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const pathArgs = buildTestPathArgs(op);
-  // Include body argument when the delete operation has a request body,
-  // matching the generated method signature from renderDeleteWithBodyMethod
-  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, {} as any` : '{} as any') : pathArgs;
+  // Build realistic payload for body-bearing delete operations
+  const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
+  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : '{} as any') : '';
+  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
 
   lines.push("    it('sends a DELETE request', async () => {");
   lines.push('      fetchOnce({}, { status: 204 });');
@@ -299,7 +309,11 @@ function renderDeleteTest(lines: string[], op: Operation, plan: any, method: str
   const expectedPathDel = buildExpectedPath(op);
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathDel}');`);
   if (plan.hasBody) {
-    lines.push('      expect(fetchBody()).toBeDefined();');
+    if (payload) {
+      lines.push(`      expect(fetchBody()).toEqual(expect.objectContaining(${payload.snakeCaseObj}));`);
+    } else {
+      lines.push('      expect(fetchBody()).toBeDefined();');
+    }
   }
   lines.push('    });');
 }
@@ -397,11 +411,19 @@ function renderGetTest(
   lines.push('    });');
 }
 
-function renderVoidTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
+function renderVoidTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const pathArgs = buildTestPathArgs(op);
-  // Include body argument when the operation has a request body,
-  // matching the generated method signature from renderVoidMethod
-  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, {} as any` : '{} as any') : pathArgs;
+  // Build realistic payload for body-bearing void operations
+  const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
+  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : '{} as any') : '';
+  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
 
   lines.push("    it('sends the request', async () => {");
   lines.push('      fetchOnce({});');
@@ -412,6 +434,9 @@ function renderVoidTest(lines: string[], op: Operation, plan: any, method: strin
   // Fix #12: Full URL path assertion instead of toContain()
   const expectedPathVoid = buildExpectedPath(op);
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathVoid}');`);
+  if (plan.hasBody && payload) {
+    lines.push(`      expect(fetchBody()).toEqual(expect.objectContaining(${payload.snakeCaseObj}));`);
+  }
   lines.push('    });');
 }
 
@@ -419,7 +444,10 @@ function renderErrorTest(lines: string[], op: Operation, plan: any, method: stri
   const args = buildCallArgs(op, plan);
 
   lines.push('');
-  lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
+  lines.push("    it('throws on unauthorized', async () => {");
+  lines.push("      fetchOnce({ message: 'Unauthorized' }, { status: 401 });");
+  lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
+  lines.push('    });');
 }
 
 /**

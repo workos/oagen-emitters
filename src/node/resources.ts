@@ -160,8 +160,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
-    lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
-    lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
+    lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
+    lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
 
   // Check if any operation needs PostOptions (idempotent POST or custom encoding)
@@ -521,8 +521,10 @@ function renderPaginatedMethod(
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push(`    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(`);
-  lines.push(`      this.workos, ${pathStr}, deserialize${itemType}, options,`);
+  lines.push(`    return new AutoPaginatable(`);
+  lines.push(`      await fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(this.workos, ${pathStr}, deserialize${itemType}, options),`);
+  lines.push(`      (params) => fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(this.workos, ${pathStr}, deserialize${itemType}, params),`);
+  lines.push('      options,');
   lines.push('    );');
   lines.push('  }');
 }

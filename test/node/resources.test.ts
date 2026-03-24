@@ -94,9 +94,9 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should have AutoPaginatable imports
-    expect(content).toContain('import type { AutoPaginatable }');
-    expect(content).toContain('import { createPaginatedList }');
+    // Should have AutoPaginatable and fetchAndDeserialize imports
+    expect(content).toContain("import { AutoPaginatable } from '../common/utils/pagination'");
+    expect(content).toContain("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize'");
 
     // Should generate options interface
     expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
@@ -145,8 +145,9 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use item type (Connection) not list wrapper (ConnectionList)
-    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
-    expect(content).toContain('deserializeConnection, options,');
+    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
+    expect(content).toContain('deserializeConnection');
+    expect(content).toContain('new AutoPaginatable(');
     expect(content).toContain('Promise<AutoPaginatable<Connection,');
 
     // Should NOT reference the list wrapper type
@@ -781,13 +782,13 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should use createPaginatedList instead of inline AutoPaginatable construction
-    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection, PaginationOptions>(');
+    // Should use fetchAndDeserialize + new AutoPaginatable (existing SDK-compatible pattern)
+    expect(content).toContain('new AutoPaginatable(');
+    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
     expect(content).toContain('this.workos,');
-    expect(content).toContain('deserializeConnection, options,');
-    // Should NOT contain the old inline pattern
-    expect(content).not.toContain('new AutoPaginatable(');
-    expect(content).not.toContain('fetchAndDeserialize');
+    expect(content).toContain('deserializeConnection');
+    // Should NOT contain the createPaginatedList helper (may not exist in target SDK)
+    expect(content).not.toContain('createPaginatedList');
   });
 
   it('prefixes ListOptions with service name when method is "list"', () => {
