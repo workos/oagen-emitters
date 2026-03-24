@@ -298,6 +298,86 @@ describe('generateModels', () => {
     expect(content).toContain('  /** @deprecated */');
   });
 
+  it('renders field-level JSDoc from OpenAPI descriptions', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        description: 'An organization in the WorkOS system.',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'Unique identifier for the organization.',
+          },
+          {
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'The display name of the organization.',
+          },
+          {
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
+            required: true,
+            // No description — should not get JSDoc
+          },
+          {
+            name: 'allow_profiles_outside_organization',
+            type: { kind: 'primitive', type: 'boolean' },
+            required: false,
+            description:
+              'Whether connections within the organization allow profiles\nthat do not have a domain that is verified by the organization.',
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const content = files[0].content;
+
+    // Model-level JSDoc is emitted
+    expect(content).toContain('/** An organization in the WorkOS system. */');
+
+    // Fields with description get per-field JSDoc
+    expect(content).toContain('/** Unique identifier for the organization. */');
+    expect(content).toContain('/** The display name of the organization. */');
+
+    // Multiline description renders correctly
+    expect(content).toContain(
+      '  /**\n   * Whether connections within the organization allow profiles\n   * that do not have a domain that is verified by the organization.\n   */',
+    );
+
+    // Field without description does NOT get JSDoc
+    const lines = content.split('\n');
+    const createdAtIdx = lines.findIndex((l) => l.includes('createdAt'));
+    expect(createdAtIdx).toBeGreaterThan(0);
+    // The line before createdAt should not be a JSDoc closing tag
+    expect(lines[createdAtIdx - 1].trim()).not.toBe('*/');
+  });
+
   it('renders readOnly/writeOnly/default annotations', () => {
     const service: Service = {
       name: 'Organizations',
