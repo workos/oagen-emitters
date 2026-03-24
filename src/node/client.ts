@@ -112,8 +112,12 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   const files: GeneratedFile[] = [];
   const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
 
-  // Group interface files by directory
+  // Group interface files by directory, tracking exported symbol names
+  // to prevent TS2308 duplicate export errors when two files in the same
+  // directory export the same symbol (e.g., FooResponse as a wire type
+  // from one file and a domain type from another).
   const dirExports = new Map<string, string[]>();
+  const dirSymbols = new Map<string, Set<string>>();
 
   // Models -> service directories
   // Skip list wrapper and list metadata models — they use shared List<T>/ListMetadata
@@ -122,7 +126,24 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
-    if (!dirExports.has(dirName)) dirExports.set(dirName, []);
+    if (!dirExports.has(dirName)) {
+      dirExports.set(dirName, []);
+      dirSymbols.set(dirName, new Set());
+    }
+
+    // Each model file exports a domain interface and a wire interface.
+    // Track these symbols to detect cross-file collisions.
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const wireName = wireInterfaceName(domainName);
+    const symbols = dirSymbols.get(dirName)!;
+
+    if (symbols.has(domainName) || symbols.has(wireName)) {
+      // Skip this model's export to avoid duplicate symbol in the barrel
+      continue;
+    }
+
+    symbols.add(domainName);
+    symbols.add(wireName);
     dirExports.get(dirName)!.push(`export * from './${fileName(model.name)}.interface';`);
   }
 
@@ -130,7 +151,15 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   for (const enumDef of spec.enums) {
     const enumService = findEnumService(enumDef.name, spec.services);
     const dirName = resolveDir(enumService);
-    if (!dirExports.has(dirName)) dirExports.set(dirName, []);
+    if (!dirExports.has(dirName)) {
+      dirExports.set(dirName, []);
+      dirSymbols.set(dirName, new Set());
+    }
+
+    const symbols = dirSymbols.get(dirName)!;
+    if (symbols.has(enumDef.name)) continue;
+
+    symbols.add(enumDef.name);
     dirExports.get(dirName)!.push(`export * from './${fileName(enumDef.name)}.interface';`);
   }
 
@@ -219,8 +248,15 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const resolvedName = resolveResourceClassName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
 
-    // Check if this service has any models or enums (i.e., a barrel was generated)
-    const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
+    // Check if this service has any models or enums (i.e., a barrel was generated).
+    // Exclude list wrapper and list metadata models — these are skipped during
+    // interface generation (they use shared List<T>/ListMetadata), so they don't
+    // have corresponding .interface.ts files in the output.
+    const serviceModels = spec.models.filter((m) => {
+      if (modelToService.get(m.name) !== service.name) return false;
+      if (isListMetadataModel(m) || isListWrapperModel(m)) return false;
+      return true;
+    });
     const serviceEnums = spec.enums.filter((e) => {
       const enumService = findEnumService(e.name, spec.services);
       return enumService === service.name;
