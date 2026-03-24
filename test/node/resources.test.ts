@@ -95,8 +95,8 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should have AutoPaginatable imports
-    expect(content).toContain('import { AutoPaginatable }');
-    expect(content).toContain('import { fetchAndDeserialize }');
+    expect(content).toContain('import type { AutoPaginatable }');
+    expect(content).toContain('import { createPaginatedList }');
 
     // Should generate options interface
     expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
@@ -145,8 +145,8 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use item type (Connection) not list wrapper (ConnectionList)
-    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
-    expect(content).toContain('deserializeConnection,');
+    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
+    expect(content).toContain('deserializeConnection, options,');
     expect(content).toContain('Promise<AutoPaginatable<Connection,');
 
     // Should NOT reference the list wrapper type
@@ -750,5 +750,142 @@ describe('generateResources', () => {
     expect(content).toContain('switch ((payload as any).grantType)');
     expect(content).toContain("case 'authorization_code': return serializeTokenByCode(payload as any)");
     expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload as any)");
+  });
+
+  it('uses createPaginatedList helper in paginated methods', () => {
+    const services: Service[] = [
+      {
+        name: 'Connections',
+        operations: [
+          {
+            name: 'listConnections',
+            httpMethod: 'get',
+            path: '/connections',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Connection' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Connection' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should use createPaginatedList instead of inline AutoPaginatable construction
+    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection, PaginationOptions>(');
+    expect(content).toContain('this.workos,');
+    expect(content).toContain('deserializeConnection, options,');
+    // Should NOT contain the old inline pattern
+    expect(content).not.toContain('new AutoPaginatable(');
+    expect(content).not.toContain('fetchAndDeserialize');
+  });
+
+  it('prefixes ListOptions with service name when method is "list"', () => {
+    const services: Service[] = [
+      {
+        name: 'Connections',
+        operations: [
+          {
+            name: 'list',
+            httpMethod: 'get',
+            path: '/connections',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'connection_type',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Connection' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Connection' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    // Use overlay to resolve method name to "list"
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          ['GET /connections', { className: 'Connections', methodName: 'list', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+
+    // Should use service-prefixed options name instead of generic "ListOptions"
+    expect(content).toContain('export interface ConnectionsListOptions extends PaginationOptions {');
+    expect(content).toContain('Promise<AutoPaginatable<Connection, ConnectionsListOptions>>');
+    // Should NOT use the generic "ListOptions"
+    expect(content).not.toContain('export interface ListOptions ');
+  });
+
+  it('does not prefix ListOptions when method is not "list"', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'listOrganizations',
+            httpMethod: 'get',
+            path: '/organizations',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'domains',
+                type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Organization' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Method is "listOrganizations", not "list", so options name should be normal
+    expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
   });
 });

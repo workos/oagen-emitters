@@ -29,6 +29,19 @@ const STATUS_TO_EXCEPTION_NAME: Record<number, string> = {
   429: 'RateLimitExceededException',
 };
 
+/**
+ * Compute the options interface name for a paginated method.
+ * When the method name is simply "list", prefix with the service name to avoid
+ * naming collisions at barrel-export level (e.g. "ConnectionsListOptions"
+ * instead of the generic "ListOptions").
+ */
+function paginatedOptionsName(method: string, resolvedServiceName: string): string {
+  if (method === 'list') {
+    return `${toPascalCase(resolvedServiceName)}ListOptions`;
+  }
+  return toPascalCase(method) + 'Options';
+}
+
 /** HTTP methods that require a body argument even when the spec has no request body. */
 function httpMethodNeedsBody(method: string): boolean {
   return method === 'post' || method === 'put' || method === 'patch';
@@ -110,8 +123,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
-    lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
-    lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
+    lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
+    lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
   }
 
   // Check if any operation needs PostOptions (idempotent POST or custom encoding)
@@ -210,7 +223,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     if (plan.isPaginated) {
       const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
       if (extraParams.length > 0) {
-        const optionsName = toPascalCase(method) + 'Options';
+        const optionsName = paginatedOptionsName(method, resolvedName);
         // Always generate the options interface locally in the resource file.
         // Previously we skipped generation when a baseline interface with a matching
         // name existed, but the baseline interface may live in a different module
@@ -401,7 +414,17 @@ function renderMethod(
     const paginatedItemType =
       op.pagination.itemType.kind === 'model' ? resolveInterfaceName(op.pagination.itemType.name, ctx) : responseModel;
     if (paginatedItemType) {
-      renderPaginatedMethod(lines, op, plan, method, paginatedItemType, pathStr, specEnumNames);
+      const resolvedServiceNameForPaginated = resolveServiceName(service, ctx);
+      renderPaginatedMethod(
+        lines,
+        op,
+        plan,
+        method,
+        paginatedItemType,
+        pathStr,
+        resolvedServiceNameForPaginated,
+        specEnumNames,
+      );
     }
   } else if (plan.isPaginated && plan.hasBody && responseModel) {
     // Non-GET paginated operation (e.g., PUT with list response) — treat as body method
@@ -438,30 +461,18 @@ function renderPaginatedMethod(
   method: string,
   itemType: string,
   pathStr: string,
+  resolvedServiceName: string,
   specEnumNames?: Set<string>,
 ): void {
   const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
-  const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
+  const optionsType = extraParams.length > 0 ? paginatedOptionsName(method, resolvedServiceName) : 'PaginationOptions';
 
   const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push('    return new AutoPaginatable(');
-  lines.push(`      await fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(`);
-  lines.push('        this.workos,');
-  lines.push(`        ${pathStr},`);
-  lines.push(`        deserialize${itemType},`);
-  lines.push('        options,');
-  lines.push('      ),');
-  lines.push('      (params) =>');
-  lines.push(`        fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(`);
-  lines.push('          this.workos,');
-  lines.push(`          ${pathStr},`);
-  lines.push(`          deserialize${itemType},`);
-  lines.push('          params,');
-  lines.push('        ),');
-  lines.push('      options,');
+  lines.push(`    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(`);
+  lines.push(`      this.workos, ${pathStr}, deserialize${itemType}, options,`);
   lines.push('    );');
   lines.push('  }');
 }

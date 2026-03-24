@@ -108,7 +108,7 @@ export class AutoPaginatable<
 function fetchAndDeserializeContent(): string {
   return `import type { WorkOS } from '../../workos';
 import type { PaginationOptions } from '../interfaces/pagination-options.interface';
-import type { List, ListResponse } from './pagination';
+import { AutoPaginatable, type List, type ListResponse } from './pagination';
 
 function setDefaultOptions(
   options?: PaginationOptions,
@@ -142,7 +142,20 @@ export const fetchAndDeserialize = async <T, U>(
     query: setDefaultOptions(options),
   });
   return deserializeList(data, deserializeFn);
-};`;
+};
+
+export async function createPaginatedList<TResponse, TModel, TOptions extends PaginationOptions>(
+  workos: WorkOS,
+  endpoint: string,
+  deserializeFn: (r: TResponse) => TModel,
+  options?: TOptions,
+): Promise<AutoPaginatable<TModel, TOptions>> {
+  return new AutoPaginatable(
+    await fetchAndDeserialize<TResponse, TModel>(workos, endpoint, deserializeFn, options),
+    (params) => fetchAndDeserialize<TResponse, TModel>(workos, endpoint, deserializeFn, params),
+    options,
+  );
+}`;
 }
 
 function listSerializerContent(): string {
