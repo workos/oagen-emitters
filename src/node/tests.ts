@@ -9,9 +9,11 @@ import {
   servicePropertyName,
   resolveMethodName,
   resolveServiceName,
+  resolveInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
-import { createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
+import { createServiceDirResolver, isServiceCoveredByExisting, relativeImport } from './utils.js';
+import { assignModelsToServices } from '@workos/oagen';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -30,6 +32,12 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const service of spec.services) {
     if (isServiceCoveredByExisting(service, ctx)) continue;
     files.push(generateServiceTest(service, spec, ctx, modelMap));
+  }
+
+  // Generate serializer round-trip tests
+  const serializerTests = generateSerializerTests(spec, ctx);
+  for (const f of serializerTests) {
+    files.push(f);
   }
 
   return files;
@@ -64,7 +72,7 @@ function generateServiceTest(
 
   // Conditionally import test utilities based on what test types exist
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
-  const hasBody = plans.some((p) => p.plan.hasBody && p.plan.responseModelName);
+  const hasBody = plans.some((p) => p.plan.hasBody);
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
@@ -243,6 +251,29 @@ function renderPaginatedTest(
   }
 
   lines.push('    });');
+
+  // Edge case: handles empty results
+  lines.push('');
+  lines.push("    it('handles empty results', async () => {");
+  lines.push('      fetchOnce({ data: [], list_metadata: { before: null, after: null } });');
+  lines.push('');
+  lines.push(`      const { data } = await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''});`);
+  lines.push('');
+  lines.push('      expect(data).toEqual([]);');
+  lines.push('    });');
+
+  // Edge case: forwards pagination params
+  lines.push('');
+  lines.push("    it('forwards pagination params', async () => {");
+  lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
+  lines.push('');
+  lines.push(
+    `      await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}{ limit: 10, after: 'cursor_abc' });`,
+  );
+  lines.push('');
+  lines.push("      expect(fetchSearchParams().get('limit')).toBe('10');");
+  lines.push("      expect(fetchSearchParams().get('after')).toBe('cursor_abc');");
+  lines.push('    });');
 }
 
 function renderDeleteTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
@@ -260,6 +291,9 @@ function renderDeleteTest(lines: string[], op: Operation, plan: any, method: str
   // Fix #12: Full URL path assertion instead of toContain()
   const expectedPathDel = buildExpectedPath(op);
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathDel}');`);
+  if (plan.hasBody) {
+    lines.push('      expect(fetchBody()).toBeDefined();');
+  }
   lines.push('    });');
 }
 
@@ -501,4 +535,123 @@ function buildTestPayload(
     camelCaseObj: `{ ${camelEntries.join(', ')} }`,
     snakeCaseObj: `{ ${snakeEntries.join(', ')} }`,
   };
+}
+
+/**
+ * Check whether a TypeRef involves nested serialization (model refs, arrays of models,
+ * date-time formats, etc.) that would require non-trivial serialize/deserialize logic.
+ */
+function hasNestedSerialization(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'model':
+      return true;
+    case 'array':
+      return hasNestedSerialization(ref.items);
+    case 'nullable':
+      return hasNestedSerialization(ref.inner);
+    case 'union':
+      return ref.variants.some(hasNestedSerialization);
+    case 'primitive':
+      return ref.format === 'date-time' || ref.format === 'int64';
+    case 'map':
+      return hasNestedSerialization(ref.valueType);
+    case 'literal':
+    case 'enum':
+      return false;
+  }
+}
+
+/**
+ * Determine whether a model has any fields that require non-trivial serialization.
+ * Simple flat models (all primitives without special formats) are excluded.
+ */
+function modelNeedsRoundTripTest(model: Model): boolean {
+  return model.fields.some((field) => hasNestedSerialization(field.type));
+}
+
+/**
+ * Generate serializer round-trip tests for models that have both serialize and
+ * deserialize functions and have nested types requiring non-trivial serialization.
+ */
+function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const modelToService = assignModelsToServices(spec.models, spec.services);
+  const serviceNameMap = new Map<string, string>();
+  for (const service of spec.services) {
+    serviceNameMap.set(service.name, resolveServiceName(service, ctx));
+  }
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+
+  // Only generate round-trip tests for models with nested serialization
+  const eligibleModels = spec.models.filter(modelNeedsRoundTripTest);
+
+  if (eligibleModels.length === 0) return files;
+
+  // Group eligible models by service directory for one test file per service
+  const modelsByDir = new Map<string, Model[]>();
+  for (const model of eligibleModels) {
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    if (!modelsByDir.has(dirName)) {
+      modelsByDir.set(dirName, []);
+    }
+    modelsByDir.get(dirName)!.push(model);
+  }
+
+  for (const [dirName, models] of modelsByDir) {
+    const testPath = `src/${dirName}/serializers.spec.ts`;
+    const lines: string[] = [];
+
+    // Collect imports
+    const serializerImports: string[] = [];
+    const fixtureImports: string[] = [];
+
+    for (const model of models) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const service = modelToService.get(model.name);
+      const modelDir = resolveDir(service);
+      const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
+      const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.fixture.json`;
+
+      serializerImports.push(
+        `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
+      );
+      fixtureImports.push(
+        `import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}.json';`,
+      );
+    }
+
+    for (const imp of serializerImports) {
+      lines.push(imp);
+    }
+    for (const imp of fixtureImports) {
+      lines.push(imp);
+    }
+    lines.push('');
+
+    for (const model of models) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const fixtureName = `${toCamelCase(model.name)}Fixture`;
+
+      lines.push(`describe('${domainName}Serializer', () => {`);
+      lines.push("  it('round-trips through serialize/deserialize', () => {");
+      lines.push(`    const fixture = ${fixtureName};`);
+      lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
+      lines.push(`    const reserialized = serialize${domainName}(deserialized);`);
+      lines.push('    expect(reserialized).toEqual(fixture);');
+      lines.push('  });');
+      lines.push('});');
+      lines.push('');
+    }
+
+    files.push({
+      path: testPath,
+      content: lines.join('\n'),
+      skipIfExists: true,
+      integrateTarget: false,
+    });
+  }
+
+  return files;
 }
