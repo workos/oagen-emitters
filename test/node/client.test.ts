@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/node/client.js';
-import type { EmitterContext, ApiSpec, Service, Model, Enum } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, ApiSurface, Service, Model, Enum } from '@workos/oagen';
 
 const service: Service = {
   name: 'Organizations',
@@ -162,6 +162,137 @@ describe('generateClient', () => {
     expect(content).not.toContain('handleHttpError');
     expect(content).not.toContain('UnauthorizedException');
     expect(content).not.toContain('NotFoundException');
+  });
+
+  it('skips explicit model export when name is already in apiSurface.exports', () => {
+    // Simulates the Event shadowing bug: the existing SDK already exports "Event"
+    // via a wildcard re-export (e.g., a hand-written 60+ member discriminated union).
+    // The barrel must not emit an explicit `export type { Event }` that would shadow it.
+    const eventService: Service = {
+      name: 'Events',
+      operations: [
+        {
+          name: 'listEvents',
+          httpMethod: 'get',
+          path: '/events',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Event' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const eventModel: Model = {
+      name: 'Event',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    };
+
+    const otherModel: Model = {
+      name: 'EventCursor',
+      fields: [{ name: 'cursor', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+
+    const eventSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [eventService],
+      models: [eventModel, otherModel],
+      enums: [],
+    };
+
+    const surface: ApiSurface = {
+      language: 'node',
+      extractedFrom: '/tmp/test-sdk',
+      extractedAt: '2025-01-01T00:00:00Z',
+      classes: {},
+      interfaces: {
+        Event: {
+          name: 'Event',
+          sourceFile: 'src/common/interfaces/event.interface.ts',
+          fields: {},
+          extends: [],
+        },
+      },
+      typeAliases: {},
+      enums: {},
+      // The existing SDK's barrel re-exports "Event" via a wildcard chain
+      exports: {
+        'src/common/interfaces/event.interface.ts': ['Event'],
+        'src/index.ts': ['Event', 'WorkOS', 'Events'],
+      },
+    };
+
+    const eventCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: eventSpec,
+      apiSurface: surface,
+    };
+
+    const files = generateClient(eventSpec, eventCtx);
+    const barrel = files.find((f) => f.path === 'src/index.ts')!;
+    const content = barrel.content;
+
+    // Event must NOT appear as an explicit named export — it would shadow the wildcard
+    expect(content).not.toContain('export type { Event,');
+    expect(content).not.toContain('export type { Event }');
+
+    // EventCursor is NOT in apiSurface.exports, so it should still be emitted
+    expect(content).toContain('export type { EventCursor, EventCursorResponse }');
+
+    // The resource class export should still be present
+    expect(content).toContain("export { Events } from './events/events'");
+  });
+
+  it('skips explicit enum export when name is already in apiSurface.exports', () => {
+    const enumSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [service],
+      models: [model],
+      enums: [{ name: 'EventType', values: ['connection.activated', 'connection.deleted'] }],
+    };
+
+    const surface: ApiSurface = {
+      language: 'node',
+      extractedFrom: '/tmp/test-sdk',
+      extractedAt: '2025-01-01T00:00:00Z',
+      classes: {},
+      interfaces: {},
+      typeAliases: {},
+      enums: {},
+      exports: {
+        'src/common/interfaces/event-type.interface.ts': ['EventType'],
+      },
+    };
+
+    const enumCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: enumSpec,
+      apiSurface: surface,
+    };
+
+    const files = generateClient(enumSpec, enumCtx);
+    const barrel = files.find((f) => f.path === 'src/index.ts')!;
+
+    // EventType should NOT appear as an explicit export — already covered by wildcard
+    expect(barrel.content).not.toContain('export type { EventType }');
+  });
+
+  it('emits model exports normally when no apiSurface is present', () => {
+    // Without apiSurface, all models should be exported (backward compatible)
+    const files = generateClient(spec, ctx);
+    const barrel = files.find((f) => f.path === 'src/index.ts')!;
+    expect(barrel.content).toContain('export type { Organization, OrganizationResponse }');
   });
 
   it('renders spec.description as JSDoc on WorkOS class', () => {

@@ -106,6 +106,19 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     }
   }
 
+  // Collect names already exported by the existing SDK (via export * or named exports).
+  // When an explicit `export type { Foo }` would shadow a wildcard re-export that
+  // already provides a hand-written version of Foo (e.g., a discriminated union),
+  // we must skip the explicit export so the wildcard wins.
+  const existingSdkExports = new Set<string>();
+  if (ctx.apiSurface?.exports) {
+    for (const names of Object.values(ctx.apiSurface.exports)) {
+      for (const name of names) {
+        existingSdkExports.add(name);
+      }
+    }
+  }
+
   // Common exports
   lines.push("export * from './common/exceptions';");
   lines.push("export { AutoPaginatable } from './common/utils/pagination';");
@@ -134,11 +147,13 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceDir = serviceDirName(resolvedName);
 
     // Collect models that belong to this service, skipping already-exported names
+    // and names already covered by the existing SDK's wildcard re-exports
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
     for (const model of serviceModels) {
       const name = resolveInterfaceName(model.name, ctx);
       const wireName = wireInterfaceName(name);
       if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+      if (existingSdkExports.has(name)) continue;
       exportedNames.add(name);
       exportedNames.add(wireName);
       lines.push(
@@ -155,22 +170,25 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   }
 
   // Unassigned models (common), skipping already-exported names
+  // and names already covered by the existing SDK's wildcard re-exports
   const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name));
   for (const model of unassignedModels) {
     const name = resolveInterfaceName(model.name, ctx);
     const wireName = wireInterfaceName(name);
     if (exportedNames.has(name) || exportedNames.has(wireName)) continue;
+    if (existingSdkExports.has(name)) continue;
     exportedNames.add(name);
     exportedNames.add(wireName);
     lines.push(`export type { ${name}, ${wireName} } from './common/interfaces/${fileName(model.name)}.interface';`);
   }
 
-  // Enum exports — skip duplicates.
+  // Enum exports — skip duplicates and names already covered by existing SDK wildcards.
   // Use value export (`export { ... }`) for actual TS enums so consumers
   // can use them as runtime values (e.g., ConnectionType.GoogleOAuth).
   // Use type-only export (`export type { ... }`) for string literal unions.
   for (const enumDef of spec.enums) {
     if (exportedNames.has(enumDef.name)) continue;
+    if (existingSdkExports.has(enumDef.name)) continue;
     exportedNames.add(enumDef.name);
     const enumService = findEnumService(enumDef.name, spec.services);
     const dir = resolveDir(enumService);
