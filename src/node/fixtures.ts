@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { wireFieldName, fileName, serviceDirName, resolveServiceName } from './naming.js';
-import { createServiceDirResolver, assignModelsToServices } from './utils.js';
+import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
 /**
  * Generate JSON fixture files for test data.
@@ -27,6 +27,10 @@ export function generateFixtures(
   const files: { path: string; content: string }[] = [];
 
   for (const model of spec.models) {
+    // Skip redundant list-metadata and list-wrapper models (handled by shared types)
+    if (isListMetadataModel(model)) continue;
+    if (isListWrapperModel(model)) continue;
+
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const fixture = generateModelFixture(model, modelMap, enumMap);

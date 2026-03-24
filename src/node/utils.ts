@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, Service } from '@workos/oagen';
+import type { Model, EmitterContext, Service, Field } from '@workos/oagen';
 export {
   collectModelRefs,
   collectEnumRefs,
@@ -236,6 +236,68 @@ export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: S
       if (knownNames.has(tn)) continue;
       return true;
     }
+  }
+  return false;
+}
+
+/**
+ * Detect whether a model matches the standard list-metadata shape:
+ * exactly 2 fields named `before` and `after`, both nullable string.
+ *
+ * These models are redundant because the SDK already has a shared
+ * `ListMetadata` type in `src/common/utils/pagination.ts`.
+ */
+export function isListMetadataModel(model: Model): boolean {
+  if (model.fields.length !== 2) return false;
+
+  const fieldsByName = new Map(model.fields.map((f) => [f.name, f]));
+  const before = fieldsByName.get('before');
+  const after = fieldsByName.get('after');
+
+  if (!before || !after) return false;
+
+  return isNullableString(before) && isNullableString(after);
+}
+
+/**
+ * Detect whether a model is a list wrapper — the standard paginated
+ * list envelope with `data` (array), `list_metadata`, and `object: 'list'`.
+ *
+ * These models are redundant because the SDK already has `List<T>` and
+ * `ListResponse<T>` in `src/common/utils/pagination.ts`, and the shared
+ * `deserializeList` handles deserialization.
+ */
+export function isListWrapperModel(model: Model): boolean {
+  const fieldsByName = new Map(model.fields.map((f) => [f.name, f]));
+
+  // Must have a `data` field that is an array type
+  const dataField = fieldsByName.get('data');
+  if (!dataField) return false;
+  if (dataField.type.kind !== 'array') return false;
+
+  // Must have a `list_metadata` field (the IR uses snake_case names)
+  const listMetadataField = fieldsByName.get('list_metadata');
+  if (!listMetadataField) return false;
+
+  // Optionally has an `object` field with literal value 'list'
+  const objectField = fieldsByName.get('object');
+  if (objectField) {
+    if (objectField.type.kind !== 'literal' || objectField.type.value !== 'list') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** Check if a field type is nullable string (nullable<string> or just string). */
+function isNullableString(field: Field): boolean {
+  const { type } = field;
+  if (type.kind === 'nullable') {
+    return type.inner.kind === 'primitive' && type.inner.type === 'string';
+  }
+  if (type.kind === 'primitive') {
+    return type.type === 'string';
   }
   return false;
 }

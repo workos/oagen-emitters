@@ -203,4 +203,143 @@ describe('generateSerializers', () => {
     expect(inputSerializer.content).toContain('export const deserializeCreateOrganizationInput');
     expect(inputSerializer.content).toContain('export const serializeCreateOrganizationInput');
   });
+
+  it('skips per-domain ListMetadata serializers (Fix #5)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionListListMetadata',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateSerializers(models, ctxWithServices);
+
+    // The ListMetadata serializer should be skipped
+    const listMetadataSerializer = files.find((f) => f.path.includes('list-metadata'));
+    expect(listMetadataSerializer).toBeUndefined();
+
+    // The Connection serializer should still be generated
+    const connectionSerializer = files.find((f) => f.path.includes('connection.serializer.ts'));
+    expect(connectionSerializer).toBeDefined();
+  });
+
+  it('skips per-domain list wrapper serializers (Fix #7)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionList',
+        fields: [
+          {
+            name: 'object',
+            type: { kind: 'literal', value: 'list' },
+            required: true,
+          },
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Connection' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ConnectionListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateSerializers(models, ctxWithServices);
+
+    // The list wrapper serializer should be skipped
+    const listSerializer = files.find((f) => f.path.includes('connection-list.serializer.ts'));
+    expect(listSerializer).toBeUndefined();
+
+    // The Connection serializer should still be generated
+    const connectionSerializer = files.find((f) => f.path.includes('connection.serializer.ts'));
+    expect(connectionSerializer).toBeDefined();
+  });
 });

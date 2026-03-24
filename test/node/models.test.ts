@@ -360,4 +360,214 @@ describe('generateModels', () => {
     // default field gets @default JSDoc
     expect(content).toContain('@default "active"');
   });
+
+  it('skips per-domain ListMetadata models (Fix #4)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionListListMetadata',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // The ListMetadata model should be skipped entirely
+    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
+    expect(listMetadataFile).toBeUndefined();
+
+    // The Connection model should still be generated
+    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
+    expect(connectionFile).toBeDefined();
+  });
+
+  it('skips per-domain list wrapper models (Fix #6)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionList',
+        fields: [
+          {
+            name: 'object',
+            type: { kind: 'literal', value: 'list' },
+            required: true,
+          },
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Connection' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ConnectionListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ConnectionListListMetadata',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // The list wrapper model should be skipped
+    const listFile = files.find((f) => f.path.includes('connection-list.interface.ts'));
+    expect(listFile).toBeUndefined();
+
+    // The ListMetadata model should also be skipped
+    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
+    expect(listMetadataFile).toBeUndefined();
+
+    // The Connection model should still be generated
+    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
+    expect(connectionFile).toBeDefined();
+  });
+
+  it('does not skip models that only partially match list-metadata shape', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Pagination' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Pagination',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'total',
+            type: { kind: 'primitive', type: 'integer' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    // Model with 3 fields should NOT be skipped even if it has before/after
+    expect(files.length).toBe(1);
+    expect(files[0].path).toContain('pagination.interface.ts');
+  });
 });

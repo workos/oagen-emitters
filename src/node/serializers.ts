@@ -8,6 +8,8 @@ import {
   buildKnownTypeNames,
   isBaselineGeneric,
   createServiceDirResolver,
+  isListMetadataModel,
+  isListWrapperModel,
 } from './utils.js';
 
 /**
@@ -56,6 +58,12 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
+    // Fix #5: Skip per-domain ListMetadata serializers — the shared deserializeListMetadata covers these
+    if (isListMetadataModel(model)) continue;
+
+    // Fix #7: Skip per-domain list wrapper serializers — the shared deserializeList covers these
+    if (isListWrapperModel(model)) continue;
+
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);

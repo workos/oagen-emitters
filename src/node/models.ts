@@ -11,6 +11,8 @@ import {
   buildKnownTypeNames,
   isBaselineGeneric,
   createServiceDirResolver,
+  isListMetadataModel,
+  isListWrapperModel,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
@@ -74,6 +76,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
+    // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
+    if (isListMetadataModel(model)) continue;
+
+    // Fix #6: Skip per-domain list wrapper interfaces — the shared List<T>/ListResponse<T> covers these
+    if (isListWrapperModel(model)) continue;
+
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
