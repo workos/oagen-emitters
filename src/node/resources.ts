@@ -1,6 +1,6 @@
 // @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
 
-import type { Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { Service, Operation, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { planOperation, toPascalCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -153,11 +153,14 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push(`import { serialize${resolved} } from '${relPath}';`);
   }
 
+  // Build a set of global enum names — used to distinguish named enums (with files)
+  // from inline enums (no file, must be rendered as string literal unions).
+  const specEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
+
   // Import enum types referenced in query/path parameters.
   // Only import enums that actually exist in the spec's global enums list —
   // inline string unions may have kind 'enum' but no corresponding file.
   if (paramEnums.size > 0) {
-    const specEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
     const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
     for (const name of paramEnums) {
       if (allModels.has(name)) continue; // Already imported as a model
@@ -174,12 +177,26 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   lines.push('');
 
-  // List options interfaces for paginated operations with extra query params
+  // List options interfaces for paginated operations with extra query params.
+  // Skip generation when the baseline already has an interface with a matching
+  // name (e.g., ListEventOptions already exists for listEvents).
+  const baselineInterfaces = ctx.apiSurface?.interfaces ?? {};
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
       const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
       if (extraParams.length > 0) {
         const optionsName = toPascalCase(method) + 'Options';
+        // Check if an existing interface already covers this operation's options.
+        // Match against both the exact generated name and common naming variants
+        // (e.g., ListEventOptions vs ListEventsOptions).
+        const hasBaseline =
+          optionsName in baselineInterfaces ||
+          Object.keys(baselineInterfaces).some(
+            (name) =>
+              name.endsWith('Options') &&
+              name.toLowerCase().replace(/s?options$/, '') === optionsName.toLowerCase().replace(/s?options$/, ''),
+          );
+        if (hasBaseline) continue;
         lines.push(`export interface ${optionsName} extends PaginationOptions {`);
         for (const param of extraParams) {
           const opt = !param.required ? '?' : '';
@@ -189,7 +206,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
             if (param.deprecated) parts.push('@deprecated');
             lines.push(...docComment(parts.join('\n'), 2));
           }
-          lines.push(`  ${fieldName(param.name)}${opt}: ${mapTypeRef(param.type)};`);
+          lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
         }
         lines.push('}');
         lines.push('');
@@ -206,7 +223,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   for (const { op, plan, method } of plans) {
     lines.push('');
-    lines.push(...renderMethod(op, plan, method, service, ctx));
+    lines.push(...renderMethod(op, plan, method, service, ctx, specEnumNames));
   }
 
   lines.push('}');
@@ -220,6 +237,7 @@ function renderMethod(
   method: string,
   service: Service,
   ctx: EmitterContext,
+  specEnumNames?: Set<string>,
 ): string[] {
   const lines: string[] = [];
   const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
@@ -313,25 +331,25 @@ function renderMethod(
   const preDecisionCount = lines.length;
 
   if (plan.isPaginated && responseModel && op.httpMethod === 'get') {
-    renderPaginatedMethod(lines, op, plan, method, responseModel);
+    renderPaginatedMethod(lines, op, plan, method, responseModel, specEnumNames);
   } else if (plan.isPaginated && plan.hasBody && responseModel) {
     // Non-GET paginated operation (e.g., PUT with list response) — treat as body method
-    renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx);
+    renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx, specEnumNames);
   } else if (plan.isDelete && plan.hasBody) {
-    renderDeleteWithBodyMethod(lines, op, plan, method, pathStr, ctx);
+    renderDeleteWithBodyMethod(lines, op, plan, method, pathStr, ctx, specEnumNames);
   } else if (plan.isDelete) {
-    renderDeleteMethod(lines, op, plan, method, pathStr);
+    renderDeleteMethod(lines, op, plan, method, pathStr, specEnumNames);
   } else if (plan.hasBody && responseModel) {
-    renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx);
+    renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx, specEnumNames);
   } else if (responseModel) {
-    renderGetMethod(lines, op, plan, method, responseModel, pathStr);
+    renderGetMethod(lines, op, plan, method, responseModel, pathStr, specEnumNames);
   } else {
-    renderVoidMethod(lines, op, plan, method, pathStr, ctx);
+    renderVoidMethod(lines, op, plan, method, pathStr, ctx, specEnumNames);
   }
 
   // Defensive: if no render function produced a method body, emit a stub
   if (lines.length === preDecisionCount) {
-    const params = buildPathParams(op);
+    const params = buildPathParams(op, specEnumNames);
     lines.push(`  async ${method}(${params}): Promise<void> {`);
     lines.push(
       `    await this.workos.${op.httpMethod}(${pathStr}${httpMethodNeedsBody(op.httpMethod) ? ', {}' : ''});`,
@@ -348,12 +366,13 @@ function renderPaginatedMethod(
   plan: OperationPlan,
   method: string,
   itemType: string,
+  specEnumNames?: Set<string>,
 ): void {
   const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
   const optionsType = extraParams.length > 0 ? toPascalCase(method) + 'Options' : 'PaginationOptions';
 
   const pathStr = buildPathStr(op);
-  const pathParams = buildPathParams(op);
+  const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
@@ -382,8 +401,9 @@ function renderDeleteMethod(
   plan: OperationPlan,
   method: string,
   pathStr: string,
+  specEnumNames?: Set<string>,
 ): void {
-  const params = buildPathParams(op);
+  const params = buildPathParams(op, specEnumNames);
   lines.push(`  async ${method}(${params}): Promise<void> {`);
   lines.push(`    await this.workos.delete(${pathStr});`);
   lines.push('  }');
@@ -396,13 +416,16 @@ function renderDeleteWithBodyMethod(
   method: string,
   pathStr: string,
   ctx: EmitterContext,
+  specEnumNames?: Set<string>,
 ): void {
   const requestBodyModel = extractRequestBodyModelName(op);
   const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
 
   const paramParts: string[] = [];
   for (const param of op.pathParams) {
-    paramParts.push(`${fieldName(param.name)}: ${mapTypeRef(param.type)}`);
+    paramParts.push(
+      `${fieldName(param.name)}: ${specEnumNames ? mapParamType(param.type, specEnumNames) : mapTypeRef(param.type)}`,
+    );
   }
   paramParts.push(`payload: ${requestType}`);
 
@@ -421,6 +444,7 @@ function renderBodyMethod(
   responseModel: string,
   pathStr: string,
   ctx: EmitterContext,
+  specEnumNames?: Set<string>,
 ): void {
   const requestBodyModel = extractRequestBodyModelName(op);
   const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
@@ -429,7 +453,9 @@ function renderBodyMethod(
 
   // Always pass path params as individual parameters (matches existing SDK pattern)
   for (const param of op.pathParams) {
-    paramParts.push(`${fieldName(param.name)}: ${mapTypeRef(param.type)}`);
+    paramParts.push(
+      `${fieldName(param.name)}: ${specEnumNames ? mapParamType(param.type, specEnumNames) : mapTypeRef(param.type)}`,
+    );
   }
 
   paramParts.push(`payload: ${requestType}`);
@@ -486,8 +512,9 @@ function renderGetMethod(
   method: string,
   responseModel: string,
   pathStr: string,
+  specEnumNames?: Set<string>,
 ): void {
-  const params = buildPathParams(op);
+  const params = buildPathParams(op, specEnumNames);
   const hasQuery = op.queryParams.length > 0 && !plan.isPaginated;
 
   const allParams = hasQuery
@@ -524,8 +551,9 @@ function renderVoidMethod(
   method: string,
   pathStr: string,
   ctx: EmitterContext,
+  specEnumNames?: Set<string>,
 ): void {
-  const params = buildPathParams(op);
+  const params = buildPathParams(op, specEnumNames);
 
   let bodyParam = '';
   let bodyExpr = 'payload';
@@ -559,10 +587,13 @@ function buildPathStr(op: Operation): string {
   return interpolated.includes('${') ? `\`${interpolated}\`` : `'${op.path}'`;
 }
 
-function buildPathParams(op: Operation): string {
+function buildPathParams(op: Operation, specEnumNames?: Set<string>): string {
   // Start with declared path params
   const declaredNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-  const params = op.pathParams.map((p) => `${fieldName(p.name)}: ${mapTypeRef(p.type)}`);
+  const params = op.pathParams.map((p) => {
+    const type = specEnumNames ? mapParamType(p.type, specEnumNames) : mapTypeRef(p.type);
+    return `${fieldName(p.name)}: ${type}`;
+  });
 
   // Detect path template variables not in declared pathParams and add them as string params.
   // This handles cases where the spec path has {param} but pathParams is incomplete.
@@ -580,4 +611,20 @@ function extractRequestBodyModelName(op: Operation): string | null {
   if (!op.requestBody) return null;
   if (op.requestBody.kind === 'model') return op.requestBody.name;
   return null;
+}
+
+/**
+ * Map a parameter type to a TypeScript type string, handling inline enums
+ * that don't have corresponding global enum definitions.  These would
+ * otherwise emit bare names like `Type` or `Action` that are never imported.
+ */
+function mapParamType(type: TypeRef, specEnumNames: Set<string>): string {
+  if (type.kind === 'enum' && !specEnumNames.has(type.name)) {
+    // Inline enum with no generated file — render values as string literal union
+    if (type.values && type.values.length > 0) {
+      return type.values.map((v: string | number) => (typeof v === 'string' ? `'${v}'` : String(v))).join(' | ');
+    }
+    return 'string';
+  }
+  return mapTypeRef(type);
 }

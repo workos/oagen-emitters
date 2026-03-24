@@ -1,4 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
+import { mapTypeRef as tsMapTypeRef } from './type-map.js';
 import {
   fieldName,
   wireFieldName,
@@ -10,6 +11,46 @@ import {
 } from './naming.js';
 import { assignModelsToServices, relativeImport } from './utils.js';
 
+/**
+ * Detect whether the existing SDK uses string (ISO 8601) representation for
+ * date-time fields rather than Date objects.  When any baseline interface has
+ * a date-time IR field typed as plain `string` (not `Date`), the entire SDK
+ * is assumed to follow that convention and ALL generated serializers will skip
+ * the `new Date()` / `.toISOString()` conversion — not just those for models
+ * that have a baseline interface.
+ */
+function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
+  if (!ctx.apiSurface?.interfaces) return false;
+  for (const model of models) {
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (!baseline?.fields) continue;
+    for (const field of model.fields) {
+      if (!hasFormatConversion(field.type)) continue;
+      const baselineField = baseline.fields[fieldName(field.name)];
+      if (baselineField && !baselineField.type.includes('Date')) {
+        return true; // Found a date-time field stored as string — convention is strings
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Render generic type parameter declarations for a model.
+ * E.g., `<CustomAttributesType = Record<string, unknown>>`.
+ * Returns empty string for non-generic models.
+ */
+function renderSerializerTypeParams(model: Model): { decl: string; usage: string } {
+  if (!model.typeParams?.length) return { decl: '', usage: '' };
+  const params = model.typeParams.map((tp) => {
+    const def = tp.default ? ` = ${tsMapTypeRef(tp.default)}` : '';
+    return `${tp.name}${def}`;
+  });
+  const names = model.typeParams.map((tp) => tp.name);
+  return { decl: `<${params.join(', ')}>`, usage: `<${names.join(', ')}>` };
+}
+
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
@@ -17,6 +58,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
   const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
@@ -25,14 +67,26 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+    const typeParams = renderSerializerTypeParams(model);
 
-    // Build a set of field names where the baseline interface uses 'string' for a
-    // date-time IR field. When the baseline says 'string', the serializer must not
-    // apply new Date() / .toISOString() conversions — the types would mismatch.
+    // Build a set of field names where format conversion (new Date / BigInt) should
+    // be skipped.  When the SDK-wide convention is string dates, ALL date-time fields
+    // in ALL models skip conversion — not just those with a baseline interface.
     const skipFormatFields = new Set<string>();
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
-    if (baselineDomain) {
+    if (useStringDates) {
+      // Global convention: skip date-time conversion for every date field
       for (const field of model.fields) {
+        if (hasDateTimeConversion(field.type)) {
+          skipFormatFields.add(field.name);
+        }
+      }
+    }
+    if (baselineDomain) {
+      // Per-field baseline check: also skip any other format conversions
+      // (e.g., int64 → BigInt) when the baseline uses a simpler type
+      for (const field of model.fields) {
+        if (skipFormatFields.has(field.name)) continue;
         const baselineField = baselineDomain.fields?.[fieldName(field.name)];
         if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
           skipFormatFields.add(field.name);
@@ -58,22 +112,26 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       `import type { ${domainName}, ${responseName} } from '${relativeImport(serializerPath, interfacePath)}';`,
     );
 
-    // Import nested model deserializers/serializers
+    // Import nested model deserializers/serializers as separate statements.
+    // Splitting ensures the merger's identifier-level filter can drop unused
+    // imports independently (e.g., keeping only serialize* when deserialize*
+    // already exists in the file from a prior import).
     for (const dep of nestedModelRefs) {
       const depService = modelToService.get(dep);
       const depDir = resolveDir(depService);
       const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
       const depName = resolveInterfaceName(dep, ctx);
-      const imports = [`deserialize${depName}`, `serialize${depName}`];
-      lines.push(`import { ${imports.join(', ')} } from '${relativeImport(serializerPath, depSerializerPath)}';`);
+      const rel = relativeImport(serializerPath, depSerializerPath);
+      lines.push(`import { deserialize${depName} } from '${rel}';`);
+      lines.push(`import { serialize${depName} } from '${rel}';`);
     }
     lines.push('');
 
     // Deserialize function (wire → domain) — deduplicate by camelCase name
     const seenDeserFields = new Set<string>();
-    lines.push(`export const deserialize${domainName} = (`);
-    lines.push(`  response: ${responseName},`);
-    lines.push(`): ${domainName} => ({`);
+    lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
+    lines.push(`  response: ${responseName}${typeParams.usage},`);
+    lines.push(`): ${domainName}${typeParams.usage} => ({`);
     for (const field of model.fields) {
       const domain = fieldName(field.name);
       if (seenDeserFields.has(domain)) continue;
@@ -82,9 +140,14 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       const wireAccess = `response.${wire}`;
       const skip = skipFormatFields.has(field.name);
       const expr = skip ? wireAccess : deserializeExpression(field.type, wireAccess, ctx);
+      // Treat new fields (not in baseline) as effectively optional: the merger
+      // can deep-merge them into existing interfaces but cannot update existing
+      // deserializer bodies, so the wire response may not contain them.
+      const isNewField = baselineDomain && !baselineDomain.fields?.[domain];
+      const effectivelyOptional = !field.required || isNewField;
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the deserializer
-      if (!field.required && expr !== wireAccess && needsNullGuard(field.type)) {
+      if (effectivelyOptional && expr !== wireAccess && needsNullGuard(field.type)) {
         // If the expression already starts with a null guard from nullable handling,
         // don't wrap it again — just replace the inner null fallback with undefined
         if (expr.startsWith(`${wireAccess} != null ?`)) {
@@ -120,9 +183,9 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
 
     // Serialize function (domain → wire)
     lines.push('');
-    lines.push(`export const serialize${domainName} = (`);
-    lines.push(`  model: ${domainName},`);
-    lines.push(`): ${responseName} => ({`);
+    lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
+    lines.push(`  model: ${domainName}${typeParams.usage},`);
+    lines.push(`) => ({`);
     const seenSerFields = new Set<string>();
     for (const field of model.fields) {
       const wire = wireFieldName(field.name);
@@ -132,9 +195,12 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       const domainAccess = `model.${domain}`;
       const skip = skipFormatFields.has(field.name);
       const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
+      // Treat new fields (not in baseline) as effectively optional — see deserializer comment above.
+      const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
+      const effectivelyOptionalSer = !field.required || isNewSerField;
       // If the field is optional and the expression involves a function call,
       // wrap with a null check to avoid passing undefined to the serializer
-      if (!field.required && expr !== domainAccess && needsNullGuard(field.type)) {
+      if (effectivelyOptionalSer && expr !== domainAccess && needsNullGuard(field.type)) {
         // If the expression already starts with a null guard from nullable handling,
         // don't wrap it again — just replace the inner null fallback with undefined
         if (expr.startsWith(`${domainAccess} != null ?`)) {
@@ -151,7 +217,6 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     files.push({
       path: serializerPath,
       content: lines.join('\n'),
-      skipIfExists: true,
     });
   }
 
@@ -328,6 +393,18 @@ function hasFormatConversion(ref: TypeRef): boolean {
       return ref.format === 'date-time' || ref.format === 'int64';
     case 'nullable':
       return hasFormatConversion(ref.inner);
+    default:
+      return false;
+  }
+}
+
+/** Check if a type specifically has a date-time format conversion. */
+function hasDateTimeConversion(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'primitive':
+      return ref.format === 'date-time';
+    case 'nullable':
+      return hasDateTimeConversion(ref.inner);
     default:
       return false;
   }

@@ -8,8 +8,10 @@ import {
   servicePropertyName,
   resolveMethodName,
   resolveServiceName,
+  buildServiceNameMap,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
+import { assignModelsToServices } from './utils.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -49,6 +51,14 @@ function generateServiceTest(
     method: resolveMethodName(op, service, ctx),
   }));
 
+  // Compute model-to-service mapping so fixture imports use the correct cross-service path.
+  // A test for service A may reference a response model owned by service B — the fixture
+  // lives in service B's fixtures directory, not service A's.
+  const modelToService = assignModelsToServices(spec.models, spec.services);
+  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+
   const lines: string[] = [];
 
   lines.push("import fetch from 'jest-fetch-mock';");
@@ -67,20 +77,29 @@ function generateServiceTest(
   lines.push("import { WorkOS } from '../workos';");
   lines.push('');
 
-  // Import fixtures
+  // Import fixtures — use correct cross-service paths when the response model
+  // is owned by a different service than the current test file.
   const fixtureImports = new Set<string>();
   for (const { op, plan } of plans) {
     if (plan.isPaginated && op.pagination) {
       const itemModelName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
       if (itemModelName) {
-        fixtureImports.add(
-          `import list${itemModelName}Fixture from './fixtures/list-${fileName(itemModelName)}.fixture.json';`,
-        );
+        const itemService = modelToService.get(itemModelName);
+        const itemDir = resolveDir(itemService);
+        const fixturePath =
+          itemDir === serviceDir
+            ? `./fixtures/list-${fileName(itemModelName)}.fixture.json`
+            : `../${itemDir}/fixtures/list-${fileName(itemModelName)}.fixture.json`;
+        fixtureImports.add(`import list${itemModelName}Fixture from '${fixturePath}';`);
       }
     } else if (plan.responseModelName) {
-      fixtureImports.add(
-        `import ${toCamelCase(plan.responseModelName)}Fixture from './fixtures/${fileName(plan.responseModelName)}.fixture.json';`,
-      );
+      const respService = modelToService.get(plan.responseModelName);
+      const respDir = resolveDir(respService);
+      const fixturePath =
+        respDir === serviceDir
+          ? `./fixtures/${fileName(plan.responseModelName)}.fixture.json`
+          : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.fixture.json`;
+      fixtureImports.add(`import ${toCamelCase(plan.responseModelName)}Fixture from '${fixturePath}';`);
     }
   }
   for (const imp of fixtureImports) {
@@ -100,13 +119,13 @@ function generateServiceTest(
     if (plan.isPaginated) {
       renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.isDelete) {
-      renderDeleteTest(lines, op, method, serviceProp);
+      renderDeleteTest(lines, op, plan, method, serviceProp);
     } else if (plan.hasBody && plan.responseModelName) {
       renderBodyTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.responseModelName) {
       renderGetTest(lines, op, plan, method, serviceProp, modelMap);
     } else {
-      renderVoidTest(lines, op, method, serviceProp);
+      renderVoidTest(lines, op, plan, method, serviceProp);
     }
 
     // Error case test for all non-void operations
@@ -176,13 +195,16 @@ function renderPaginatedTest(
   lines.push('    });');
 }
 
-function renderDeleteTest(lines: string[], op: Operation, method: string, serviceProp: string): void {
+function renderDeleteTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
   const pathArgs = buildTestPathArgs(op);
+  // Include body argument when the delete operation has a request body,
+  // matching the generated method signature from renderDeleteWithBodyMethod
+  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, {} as any` : '{} as any') : pathArgs;
 
   lines.push("    it('sends a DELETE request', async () => {");
   lines.push('      fetchOnce({}, { status: 204 });');
   lines.push('');
-  lines.push(`      await workos.${serviceProp}.${method}(${pathArgs});`);
+  lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
@@ -263,13 +285,16 @@ function renderGetTest(
   lines.push('    });');
 }
 
-function renderVoidTest(lines: string[], op: Operation, method: string, serviceProp: string): void {
+function renderVoidTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
   const pathArgs = buildTestPathArgs(op);
+  // Include body argument when the operation has a request body,
+  // matching the generated method signature from renderVoidMethod
+  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, {} as any` : '{} as any') : pathArgs;
 
   lines.push("    it('sends the request', async () => {");
   lines.push('      fetchOnce({});');
   lines.push('');
-  lines.push(`      await workos.${serviceProp}.${method}(${pathArgs});`);
+  lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
   if (pathArgs) {
