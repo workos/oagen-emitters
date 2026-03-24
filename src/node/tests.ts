@@ -11,7 +11,7 @@ import {
   resolveServiceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
-import { createServiceDirResolver } from './utils.js';
+import { createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -25,8 +25,10 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Build model lookup for response field assertions
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
 
-  // Generate test files per service
+  // Generate test files per service — skip services whose endpoints are fully
+  // covered by existing hand-written service classes.
   for (const service of spec.services) {
+    if (isServiceCoveredByExisting(service, ctx)) continue;
     files.push(generateServiceTest(service, spec, ctx, modelMap));
   }
 

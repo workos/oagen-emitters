@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/node/client.js';
+import { isServiceCoveredByExisting } from '../../src/node/utils.js';
 import type { EmitterContext, ApiSpec, ApiSurface, Service, Model, Enum } from '@workos/oagen';
 
 const service: Service = {
@@ -414,5 +415,686 @@ describe('generateClient', () => {
     expect(content).toContain(
       "export type { DirectoryState } from './directories/interfaces/directory-state.interface';",
     );
+  });
+
+  it('skips services whose endpoints are fully covered by existing hand-written services', () => {
+    const connectionsService: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+        {
+          name: 'getConnection',
+          httpMethod: 'get',
+          path: '/connections/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Connection' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const connectionModel: Model = {
+      name: 'Connection',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    };
+
+    const radarService: Service = {
+      name: 'Radar',
+      operations: [
+        {
+          name: 'assess',
+          httpMethod: 'post',
+          path: '/radar/assess',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'RadarResult' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const radarModel: Model = {
+      name: 'RadarResult',
+      fields: [{ name: 'score', type: { kind: 'primitive', type: 'number' }, required: true }],
+    };
+
+    const coveredSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [connectionsService, radarService],
+      models: [connectionModel, radarModel],
+      enums: [],
+    };
+
+    const coveredCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: coveredSpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {
+          Sso: {
+            name: 'Sso',
+            methods: {
+              listConnections: [
+                {
+                  name: 'listConnections',
+                  params: [],
+                  returnType: 'Promise<AutoPaginatable<Connection>>',
+                  async: true,
+                },
+              ],
+              getConnection: [
+                {
+                  name: 'getConnection',
+                  params: [{ name: 'id', type: 'string', optional: false }],
+                  returnType: 'Promise<Connection>',
+                  async: true,
+                },
+              ],
+            },
+            properties: {},
+            constructorParams: [],
+          },
+        },
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /connections',
+            {
+              className: 'Sso',
+              methodName: 'listConnections',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Connection>>',
+            },
+          ],
+          [
+            'GET /connections/{id}',
+            {
+              className: 'Sso',
+              methodName: 'getConnection',
+              params: [{ name: 'id', type: 'string', optional: false }],
+              returnType: 'Promise<Connection>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateClient(coveredSpec, coveredCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    const content = workosFile.content;
+
+    // Connections service should NOT appear (fully covered by Sso in baseline)
+    expect(content).not.toContain('Connections');
+    expect(content).not.toContain("from './sso/sso'");
+
+    // Radar service should still appear (not covered)
+    expect(content).toContain('readonly radar = new Radar(this);');
+    expect(content).toContain("import { Radar } from './radar/radar';");
+
+    // Barrel should also skip the Connections resource class export
+    const barrel = files.find((f) => f.path === 'src/index.ts')!;
+    const barrelContent = barrel.content;
+    expect(barrelContent).not.toContain('export { Sso }');
+    expect(barrelContent).not.toContain('export { Connections }');
+
+    // But model types from the Connections service should still be exported
+    expect(barrelContent).toContain('Connection');
+    expect(barrelContent).toContain('ConnectionResponse');
+  });
+
+  it('does not skip services when only some operations are covered', () => {
+    const partialService: Service = {
+      name: 'Directories',
+      operations: [
+        {
+          name: 'listDirectories',
+          httpMethod: 'get',
+          path: '/directories',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'DirectoryList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+        {
+          name: 'createDirectory',
+          httpMethod: 'post',
+          path: '/directories',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Directory' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const dirModel: Model = {
+      name: 'Directory',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+
+    const partialSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [partialService],
+      models: [dirModel],
+      enums: [],
+    };
+
+    const partialCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: partialSpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {
+          DirectorySync: {
+            name: 'DirectorySync',
+            methods: {
+              listDirectories: [
+                {
+                  name: 'listDirectories',
+                  params: [],
+                  returnType: 'Promise<AutoPaginatable<Directory>>',
+                  async: true,
+                },
+              ],
+            },
+            properties: {},
+            constructorParams: [],
+          },
+        },
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /directories',
+            {
+              className: 'DirectorySync',
+              methodName: 'listDirectories',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Directory>>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateClient(partialSpec, partialCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    const content = workosFile.content;
+
+    // Service should still be generated because it has an uncovered operation
+    expect(content).toContain('DirectorySync');
+  });
+
+  it('does not skip services when no overlay is provided', () => {
+    const files = generateClient(spec, ctx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    expect(workosFile.content).toContain('readonly organizations = new Organizations(this);');
+  });
+
+  it('does not skip services when overlay exists but no apiSurface baseline', () => {
+    const mfaService: Service = {
+      name: 'MultiFactorAuth',
+      operations: [
+        {
+          name: 'enrollFactor',
+          httpMethod: 'post',
+          path: '/auth/factors/enroll',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuthenticationFactor' },
+          errors: [],
+          injectIdempotencyKey: true,
+        },
+      ],
+    };
+
+    const mfaModel: Model = {
+      name: 'AuthenticationFactor',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+
+    const mfaSpec: ApiSpec = {
+      name: 'Test',
+      version: '1.0.0',
+      baseUrl: 'https://api.example.com',
+      services: [mfaService],
+      models: [mfaModel],
+      enums: [],
+    };
+
+    const namingOnlyCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: mfaSpec,
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /auth/factors/enroll',
+            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateClient(mfaSpec, namingOnlyCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    expect(workosFile.content).toContain('readonly mfa = new Mfa(this);');
+  });
+});
+
+describe('isServiceCoveredByExisting', () => {
+  const emptySpec: ApiSpec = {
+    name: 'Test',
+    version: '1.0.0',
+    baseUrl: '',
+    services: [],
+    models: [],
+    enums: [],
+  };
+
+  it('returns false when no overlay is provided', () => {
+    const svc: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const noOverlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+    };
+    expect(isServiceCoveredByExisting(svc, noOverlayCtx)).toBe(false);
+  });
+
+  it('returns false when overlay is empty', () => {
+    const svc: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const emptyOverlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      overlayLookup: {
+        methodByOperation: new Map(),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(svc, emptyOverlayCtx)).toBe(false);
+  });
+
+  it('returns true when all operations are covered by overlay and class exists in baseline', () => {
+    const svc: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+        {
+          name: 'getConnection',
+          httpMethod: 'get',
+          path: '/connections/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Connection' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const fullCoverageCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {
+          Sso: {
+            name: 'Sso',
+            methods: {},
+            properties: {},
+            constructorParams: [],
+          },
+        },
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /connections',
+            {
+              className: 'Sso',
+              methodName: 'listConnections',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Connection>>',
+            },
+          ],
+          [
+            'GET /connections/{id}',
+            {
+              className: 'Sso',
+              methodName: 'getConnection',
+              params: [{ name: 'id', type: 'string', optional: false }],
+              returnType: 'Promise<Connection>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(svc, fullCoverageCtx)).toBe(true);
+  });
+
+  it('returns false when only some operations are covered', () => {
+    const svc: Service = {
+      name: 'Directories',
+      operations: [
+        {
+          name: 'listDirectories',
+          httpMethod: 'get',
+          path: '/directories',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'DirectoryList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+        {
+          name: 'createDirectory',
+          httpMethod: 'post',
+          path: '/directories',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Directory' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const partialCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {
+          DirectorySync: {
+            name: 'DirectorySync',
+            methods: {},
+            properties: {},
+            constructorParams: [],
+          },
+        },
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /directories',
+            {
+              className: 'DirectorySync',
+              methodName: 'listDirectories',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Directory>>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(svc, partialCtx)).toBe(false);
+  });
+
+  it('returns false for services with zero operations', () => {
+    const emptySvc: Service = {
+      name: 'Empty',
+      operations: [],
+    };
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {
+          Other: { name: 'Other', methods: {}, properties: {}, constructorParams: [] },
+        },
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          ['GET /something', { className: 'Other', methodName: 'doSomething', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(emptySvc, overlayCtx)).toBe(false);
+  });
+
+  it('returns false when overlay covers operations but target class is not in baseline', () => {
+    const svc: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const missingClassCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        interfaces: {},
+        classes: {},
+        enums: {},
+        typeAliases: {},
+        exports: {},
+      },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /connections',
+            {
+              className: 'Sso',
+              methodName: 'listConnections',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Connection>>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(svc, missingClassCtx)).toBe(false);
+  });
+
+  it('returns false when no apiSurface is provided', () => {
+    const svc: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const noSurfaceCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: emptySpec,
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /connections',
+            {
+              className: 'Sso',
+              methodName: 'listConnections',
+              params: [],
+              returnType: 'Promise<AutoPaginatable<Connection>>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+    expect(isServiceCoveredByExisting(svc, noSurfaceCtx)).toBe(false);
   });
 });

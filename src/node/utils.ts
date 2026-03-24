@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, Service, Field } from '@workos/oagen';
+import type { Model, EmitterContext, Service, Operation, Field } from '@workos/oagen';
 export {
   collectModelRefs,
   collectEnumRefs,
@@ -300,4 +300,43 @@ function isNullableString(field: Field): boolean {
     return type.type === 'string';
   }
   return false;
+}
+
+/**
+ * Check whether a service's endpoints are already fully covered by existing
+ * hand-written service classes.
+ *
+ * A service is considered "covered" when:
+ * 1. **Every** operation in it appears in `overlayLookup.methodByOperation`
+ * 2. The overlay maps those operations to a class that exists in the baseline
+ *    `apiSurface` (confirming the hand-written class is actually present)
+ *
+ * Services with zero operations are never considered covered (nothing to
+ * deduplicate).  When no `apiSurface` is available, the overlay alone is
+ * used as the coverage signal (the overlay is only built from existing code).
+ *
+ * This prevents the emitter from generating resource classes like `Connections`
+ * that would duplicate hand-written modules like `SSO` for the same API
+ * endpoints (e.g., `GET /connections`).
+ */
+export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext): boolean {
+  const overlay = ctx.overlayLookup?.methodByOperation;
+  if (!overlay || overlay.size === 0) return false;
+  if (service.operations.length === 0) return false;
+
+  // Collect the set of existing class names from the baseline surface.
+  // When no apiSurface is available, the overlay alone cannot confirm that
+  // a hand-written class exists — it may only carry naming hints.
+  const baselineClasses = ctx.apiSurface?.classes;
+  if (!baselineClasses) return false;
+  const existingClassNames = new Set(Object.keys(baselineClasses));
+
+  // Check that every operation is in the overlay AND the overlay's target class
+  // exists in the baseline.
+  return service.operations.every((op: Operation) => {
+    const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+    const match = overlay.get(httpKey);
+    if (!match) return false;
+    return existingClassNames.has(match.className);
+  });
 }

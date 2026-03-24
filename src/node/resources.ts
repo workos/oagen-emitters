@@ -13,7 +13,7 @@ import {
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver } from './utils.js';
+import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
@@ -26,7 +26,11 @@ function httpMethodNeedsBody(method: string): boolean {
 
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
-  return services.map((service) => generateResourceClass(service, ctx));
+  // Skip services whose endpoints are fully covered by existing hand-written
+  // service classes to avoid generating duplicate resource classes.
+  return services
+    .filter((service) => !isServiceCoveredByExisting(service, ctx))
+    .map((service) => generateResourceClass(service, ctx));
 }
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {

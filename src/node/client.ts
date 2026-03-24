@@ -7,7 +7,7 @@ import {
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver } from './utils.js';
+import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -31,8 +31,18 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push("import { WorkOSBase } from './common/workos-base';");
   }
 
-  // Service imports
+  // Filter out services whose endpoints are already covered by existing
+  // hand-written service classes (e.g., Connections covered by SSO).
+  const coveredServices = new Set<string>();
   for (const service of spec.services) {
+    if (isServiceCoveredByExisting(service, ctx)) {
+      coveredServices.add(service.name);
+    }
+  }
+
+  // Service imports — skip covered services
+  for (const service of spec.services) {
+    if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveServiceName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
@@ -67,7 +77,10 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       existingProps.add(name);
     }
   }
+  // Resource accessors — skip services whose endpoints are fully covered
+  // by existing hand-written services.
   for (const service of spec.services) {
+    if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveServiceName(service, ctx);
     const propName = servicePropertyName(resolvedName);
     if (existingProps.has(propName)) continue;
@@ -141,13 +154,23 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     exportedNames.add(name);
   }
 
+  // Identify services whose endpoints are fully covered by existing hand-written
+  // classes — their resource class should not be re-exported from the barrel.
+  const coveredServicesBarrel = new Set<string>();
+  for (const service of spec.services) {
+    if (isServiceCoveredByExisting(service, ctx)) {
+      coveredServicesBarrel.add(service.name);
+    }
+  }
+
   // Per-service exports: interfaces + resource class
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
 
-    // Collect models that belong to this service, skipping already-exported names
-    // and names already covered by the existing SDK's wildcard re-exports
+    // Collect models that belong to this service, skipping already-exported names.
+    // Model/type exports are still emitted even for covered services — the types
+    // (e.g., Connection, ConnectionResponse) may be used by the hand-written code.
     const serviceModels = spec.models.filter((m) => modelToService.get(m.name) === service.name);
     for (const model of serviceModels) {
       const name = resolveInterfaceName(model.name, ctx);
@@ -161,8 +184,9 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
       );
     }
 
-    // Resource class — skip if already exported
-    if (!exportedNames.has(resolvedName)) {
+    // Resource class — skip if already exported or if service is fully covered
+    // by existing hand-written classes
+    if (!coveredServicesBarrel.has(service.name) && !exportedNames.has(resolvedName)) {
       exportedNames.add(resolvedName);
       lines.push(`export { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
     }
