@@ -50,7 +50,14 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
   for (const { op, plan } of plans) {
-    if (plan.responseModelName) responseModels.add(plan.responseModelName);
+    if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+      // For paginated operations, import the item type (e.g., Connection)
+      // rather than the list wrapper type (e.g., ConnectionList).
+      // fetchAndDeserialize handles the list envelope internally.
+      responseModels.add(op.pagination.itemType.name);
+    } else if (plan.responseModelName) {
+      responseModels.add(plan.responseModelName);
+    }
     // Import request body model(s) — handles both single models and union variants.
     const bodyInfo = extractRequestBodyType(op, ctx);
     if (bodyInfo?.kind === 'model') {
@@ -316,8 +323,11 @@ function renderMethod(
   }
   // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
   // The SDK handles headers and cookies internally, so documenting them would be misleading.
-  // @returns for the primary response model
-  if (responseModel) {
+  // @returns for the primary response model (use item type for paginated operations)
+  if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+    const itemTypeName = resolveInterfaceName(op.pagination.itemType.name, ctx);
+    docParts.push(`@returns {${itemTypeName}}`);
+  } else if (responseModel) {
     docParts.push(`@returns {${responseModel}}`);
   }
   if (op.deprecated) docParts.push('@deprecated');
@@ -343,8 +353,14 @@ function renderMethod(
 
   const preDecisionCount = lines.length;
 
-  if (plan.isPaginated && responseModel && op.httpMethod === 'get') {
-    renderPaginatedMethod(lines, op, plan, method, responseModel, pathStr, specEnumNames);
+  if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
+    // For paginated operations, use the item type from pagination metadata
+    // (e.g., Connection) rather than the list wrapper type (e.g., ConnectionList).
+    const paginatedItemType =
+      op.pagination.itemType.kind === 'model' ? resolveInterfaceName(op.pagination.itemType.name, ctx) : responseModel;
+    if (paginatedItemType) {
+      renderPaginatedMethod(lines, op, plan, method, paginatedItemType, pathStr, specEnumNames);
+    }
   } else if (plan.isPaginated && plan.hasBody && responseModel) {
     // Non-GET paginated operation (e.g., PUT with list response) — treat as body method
     renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx, specEnumNames);

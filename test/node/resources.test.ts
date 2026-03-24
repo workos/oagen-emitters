@@ -106,6 +106,54 @@ describe('generateResources', () => {
     expect(content).toContain('Promise<AutoPaginatable<Organization, ListOrganizationsOptions>>');
   });
 
+  it('uses item type not list wrapper type for paginated methods', () => {
+    // The response model is the list wrapper (ConnectionList), but the pagination
+    // itemType is the actual item (Connection). The generated code should use the
+    // item type for fetchAndDeserialize, not the list wrapper.
+    const services: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'listConnections',
+            httpMethod: 'get',
+            path: '/connections',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'ConnectionList' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Connection' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const testCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+    };
+
+    const files = generateResources(services, testCtx);
+    const content = files[0].content;
+
+    // Should use item type (Connection) not list wrapper (ConnectionList)
+    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
+    expect(content).toContain('deserializeConnection,');
+    expect(content).toContain('Promise<AutoPaginatable<Connection,');
+
+    // Should NOT reference the list wrapper type
+    expect(content).not.toContain('ConnectionList');
+    expect(content).not.toContain('deserializeConnectionList');
+  });
+
   it('generates DELETE method returning void', () => {
     const services: Service[] = [
       {
