@@ -150,14 +150,17 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       const isNewField = baselineDomain && !baselineDomain.fields?.[domain];
       const effectivelyOptional = !field.required || isNewField;
       // If the field is optional and the expression involves a function call,
-      // wrap with a null check to avoid passing undefined to the deserializer
+      // wrap with a null check to avoid passing undefined to the deserializer.
+      // When the field type is nullable, preserve null on the wire instead of
+      // converting it to undefined (APIs distinguish null from absent).
       if (effectivelyOptional && expr !== wireAccess && needsNullGuard(field.type)) {
+        const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
         // If the expression already starts with a null guard from nullable handling,
-        // don't wrap it again — just replace the inner null fallback with undefined
+        // don't wrap it again — just replace the inner null fallback
         if (expr.startsWith(`${wireAccess} != null ?`)) {
-          lines.push(`  ${domain}: ${expr.replace(/: null$/, ': undefined')},`);
+          lines.push(`  ${domain}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
         } else {
-          lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : undefined,`);
+          lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : ${fallback},`);
         }
       } else if (field.required && expr === wireAccess) {
         // Required field with direct assignment — add fallback for cases where
@@ -199,14 +202,11 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       const effectivelyOptionalSer = !field.required || isNewSerField;
       // If the expression involves a function call (nested model/array serializer),
       // wrap with a null check to prevent crashes when tests pass `{} as any`.
-      // This applies to both optional and required fields in the serialize direction,
-      // since serialize is called with user-provided data that may be incomplete.
+      // When the field type is nullable, preserve null instead of undefined.
       if (expr !== domainAccess && needsNullGuard(field.type)) {
-        const fallback = effectivelyOptionalSer ? 'undefined' : 'undefined';
-        // If the expression already starts with a null guard from nullable handling,
-        // don't wrap it again — just replace the inner null fallback with undefined
+        const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : 'undefined';
         if (expr.startsWith(`${domainAccess} != null ?`)) {
-          lines.push(`  ${wire}: ${expr.replace(/: null$/, ': undefined')},`);
+          lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
         } else {
           lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : ${fallback},`);
         }

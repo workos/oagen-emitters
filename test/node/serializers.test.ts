@@ -144,6 +144,77 @@ describe('generateSerializers', () => {
     expect(orgSerializer.content).toContain('import { serializeOrganizationDomain }');
   });
 
+  it('preserves null fallback for optional nullable model fields', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'parent',
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'model', name: 'ParentOrg' },
+            },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'ParentOrg',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateSerializers(models, ctxWithServices);
+    const orgSerializer = files.find((f) => f.path.includes('organization.serializer.ts'))!;
+    const content = orgSerializer.content;
+
+    // Deserialize: optional nullable model field should fall back to null, not undefined
+    expect(content).toContain('parent: response.parent != null ?');
+    expect(content).toContain(': null,');
+    expect(content).not.toMatch(/parent:.*: undefined,/);
+
+    // Serialize: optional nullable model field should fall back to null, not undefined
+    expect(content).toContain('parent: model.parent != null ?');
+    // Ensure the serialize side also uses null fallback
+    const serializeSection = content.split('serializeOrganization')[1];
+    expect(serializeSection).toContain(': null,');
+    expect(serializeSection).not.toMatch(/parent:.*: undefined/);
+  });
+
   it('generates serialize function for request body models', () => {
     const service: Service = {
       name: 'Organizations',
