@@ -10,7 +10,13 @@ import {
   buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices, collectFieldDependencies, docComment, buildGenericModelDefaults } from './utils.js';
+import {
+  assignModelsToServices,
+  collectFieldDependencies,
+  docComment,
+  buildGenericModelDefaults,
+  pruneUnusedImports,
+} from './utils.js';
 
 /** Built-in TypeScript types that are always available (no import needed). */
 const BUILTINS = new Set([
@@ -55,6 +61,78 @@ function detectStringDateConvention(models: Model[], ctx: EmitterContext): boole
   return false;
 }
 
+/**
+ * Detect baseline interfaces that are generic (have type parameters) even though
+ * the IR model has no typeParams (OpenAPI doesn't support generics).
+ *
+ * Heuristic: if any field type in the baseline interface contains a PascalCase
+ * name that isn't a known model, enum, or builtin, it's likely a type parameter
+ * (e.g., `CustomAttributesType`), indicating the interface is generic.
+ *
+ * When detected, adds a default generic type arg so references like `Profile`
+ * become `Profile<Record<string, unknown>>`.
+ */
+function enrichGenericDefaultsFromBaseline(
+  genericDefaults: Map<string, string>,
+  models: Model[],
+  ctx: EmitterContext,
+): void {
+  if (!ctx.apiSurface?.interfaces) return;
+  // Build comprehensive set of all known type names — anything in this set
+  // is NOT a type parameter.
+  const knownNames = new Set<string>();
+  for (const m of models) knownNames.add(resolveInterfaceName(m.name, ctx));
+  for (const e of ctx.spec.enums) knownNames.add(e.name);
+  // Include all baseline interface names (e.g., ConnectionState, SlimRole, etc.)
+  for (const name of Object.keys(ctx.apiSurface.interfaces)) knownNames.add(name);
+  // Include all baseline type aliases
+  if (ctx.apiSurface.typeAliases) {
+    for (const name of Object.keys(ctx.apiSurface.typeAliases)) knownNames.add(name);
+  }
+  // Include all baseline enums
+  if (ctx.apiSurface.enums) {
+    for (const name of Object.keys(ctx.apiSurface.enums)) knownNames.add(name);
+  }
+
+  const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveDir2 = (irService: string | undefined) =>
+    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+
+  for (const model of models) {
+    if (genericDefaults.has(model.name)) continue; // IR already handles it
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (!baseline?.fields) continue;
+
+    // Only enrich generic defaults for models whose baseline file will be
+    // preserved via skipIfExists (paths match).  If the file is generated
+    // fresh in a new directory, it won't have generics, so references
+    // to it don't need type args.
+    const generatedPath = `src/${resolveDir2(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
+    const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
+    if (baselineSourceFile && baselineSourceFile !== generatedPath) continue;
+
+    let isGeneric = false;
+    for (const [, bf] of Object.entries(baseline.fields)) {
+      const fieldType = (bf as { type: string }).type;
+      const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+      if (!typeNames) continue;
+      for (const tn of typeNames) {
+        if (BUILTINS.has(tn)) continue;
+        if (knownNames.has(tn)) continue;
+        // Unrecognized PascalCase name — likely a type parameter
+        isGeneric = true;
+        break;
+      }
+      if (isGeneric) break;
+    }
+    if (isGeneric) {
+      genericDefaults.set(model.name, '<Record<string, unknown>>');
+    }
+  }
+}
+
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
@@ -66,6 +144,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // When detected, newly generated models also use string to maintain consistency.
   const useStringDates = detectStringDateConvention(models, ctx);
   const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
+  // Enrich genericDefaults from baseline interfaces that appear to be generic.
+  // The IR doesn't carry typeParams for models parsed from OpenAPI (which has no
+  // generics), but the existing SDK may have hand-written generic interfaces
+  // (e.g., Profile<CustomAttributesType>).  Detect these by checking if any
+  // field type contains a PascalCase name that isn't a known model, enum, or builtin.
+  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx);
   const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
@@ -198,8 +282,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     if (typeDecls.size > 0) lines.push('');
 
-    // Type params (generics)
-    const typeParams = renderTypeParams(model);
+    // Type params (generics) — pass genericDefaults so baseline-detected generics
+    // also get type parameter declarations on the interface itself.
+    const typeParams = renderTypeParams(model, genericDefaults);
 
     // Domain interface (camelCase fields) — deduplicate by camelCase name
     const seenDomainFields = new Set<string>();
@@ -246,7 +331,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         // type error where the interface requires a field that the preserved
         // deserializer never populates.
         const isNewFieldOnExistingModel = baselineDomain && !baselineField;
-        const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+        // Also make the field optional when the response baseline has it as optional
+        // but the domain baseline has it as required — the deserializer reads from
+        // the response type, so if the response field is optional, the domain value
+        // may be undefined.
+        const opt = !field.required || isNewFieldOnExistingModel || domainResponseOptionalMismatch ? '?' : '';
         lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
       }
     }
@@ -278,7 +367,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     files.push({
       path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
-      content: lines.join('\n'),
+      content: pruneUnusedImports(lines).join('\n'),
       skipIfExists: true,
     });
   }
@@ -364,8 +453,15 @@ function hasSpecificIRType(ref: TypeRef): boolean {
   }
 }
 
-function renderTypeParams(model: Model): string {
-  if (!model.typeParams?.length) return '';
+function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): string {
+  if (!model.typeParams?.length) {
+    // Fallback: if genericDefaults indicates this model is generic (detected
+    // from the baseline), generate a default generic type parameter declaration.
+    if (genericDefaults?.has(model.name)) {
+      return '<GenericType extends Record<string, unknown> = Record<string, unknown>>';
+    }
+    return '';
+  }
   const params = model.typeParams.map((tp) => {
     const def = tp.default ? ` = ${mapTypeRef(tp.default)}` : '';
     return `${tp.name}${def}`;
