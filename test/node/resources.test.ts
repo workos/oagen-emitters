@@ -459,4 +459,146 @@ describe('generateResources', () => {
     const content = files[0].content;
     expect(content).toContain('@param slug - (deprecated) The organization slug.');
   });
+
+  it('generates typed options interface for non-paginated GET with query params', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [
+              {
+                name: 'include_fields',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Comma-separated list of fields to include.',
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should generate a typed options interface
+    expect(content).toContain('export interface GetOrganizationOptions {');
+    expect(content).toContain('includeFields?: string;');
+
+    // Should use the typed options in the method signature
+    expect(content).toContain(
+      'async getOrganization(id: string, options?: GetOrganizationOptions): Promise<Organization>',
+    );
+
+    // Should NOT use Record<string, unknown>
+    expect(content).not.toContain('Record<string, unknown>');
+  });
+
+  it('generates typed options interface for void GET with query params', () => {
+    const services: Service[] = [
+      {
+        name: 'Auth',
+        operations: [
+          {
+            name: 'authorize',
+            httpMethod: 'get',
+            path: '/user_management/authorize',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'client_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+              {
+                name: 'redirect_uri',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+              {
+                name: 'response_type',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should generate a typed options interface
+    expect(content).toContain('export interface AuthorizeOptions {');
+    expect(content).toContain('clientId: string;');
+    expect(content).toContain('redirectUri: string;');
+    expect(content).toContain('responseType: string;');
+
+    // Should use the typed options in the method signature
+    expect(content).toContain('async authorize(options?: AuthorizeOptions): Promise<void>');
+
+    // Should pass options as query params
+    expect(content).toContain('query: options');
+  });
+
+  it('generates union type for request body with union variants', () => {
+    const services: Service[] = [
+      {
+        name: 'Auth',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'AuthByPassword' },
+                { kind: 'model', name: 'AuthByCode' },
+                { kind: 'model', name: 'AuthByMagicAuth' },
+              ],
+            },
+            response: { kind: 'model', name: 'AuthenticateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should use the union type for the payload parameter
+    expect(content).toContain('payload: AuthByPassword | AuthByCode | AuthByMagicAuth');
+
+    // Should NOT use Record<string, unknown>
+    expect(content).not.toContain('Record<string, unknown>');
+
+    // Should pass payload directly (no serializer for unions)
+    expect(content).toContain("'/user_management/authenticate',");
+    expect(content).toContain('payload,');
+
+    // Should import all union variant types
+    expect(content).toContain('AuthByPassword');
+    expect(content).toContain('AuthByCode');
+    expect(content).toContain('AuthByMagicAuth');
+  });
 });

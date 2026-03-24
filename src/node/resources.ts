@@ -51,11 +51,17 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const paramModels = new Set<string>();
   for (const { op, plan } of plans) {
     if (plan.responseModelName) responseModels.add(plan.responseModelName);
-    // Only import request body model if it's a direct model reference
-    // (not a union — unions fall back to Record<string, unknown>)
-    const requestBodyModel = extractRequestBodyModelName(op);
-    if (requestBodyModel) {
-      requestModels.add(requestBodyModel);
+    // Import request body model(s) — handles both single models and union variants.
+    const bodyInfo = extractRequestBodyType(op, ctx);
+    if (bodyInfo?.kind === 'model') {
+      requestModels.add(bodyInfo.name);
+    } else if (bodyInfo?.kind === 'union') {
+      // Union request bodies: import all variant models as domain types (no serializers)
+      for (const name of bodyInfo.modelNames) {
+        // Add to paramModels (import type only, no serializer) rather than requestModels
+        // since we can't statically dispatch serialization for unions.
+        paramModels.add(name);
+      }
     }
     // Collect types referenced in query and path parameters.
     // For paginated operations, skip standard pagination params (limit, before, after, order)
@@ -169,8 +175,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   lines.push('');
 
-  // List options interfaces for paginated operations with extra query params.
-  // List options interfaces for paginated operations with extra query params.
+  // Options interfaces for operations with query params.
+  // Paginated operations extend PaginationOptions; non-paginated operations get standalone interfaces.
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
       const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
@@ -196,6 +202,23 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         lines.push('}');
         lines.push('');
       }
+    } else if (!plan.isPaginated && !plan.hasBody && !plan.isDelete && op.queryParams.length > 0) {
+      // Non-paginated GET or void methods with query params get a typed options interface
+      // instead of falling back to Record<string, unknown>.
+      const optionsName = toPascalCase(method) + 'Options';
+      lines.push(`export interface ${optionsName} {`);
+      for (const param of op.queryParams) {
+        const opt = !param.required ? '?' : '';
+        if (param.description || param.deprecated) {
+          const parts: string[] = [];
+          if (param.description) parts.push(param.description);
+          if (param.deprecated) parts.push('@deprecated');
+          lines.push(...docComment(parts.join('\n'), 2));
+        }
+        lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
+      }
+      lines.push('}');
+      lines.push('');
     }
   }
 
@@ -400,8 +423,19 @@ function renderDeleteWithBodyMethod(
   ctx: EmitterContext,
   specEnumNames?: Set<string>,
 ): void {
-  const requestBodyModel = extractRequestBodyModelName(op);
-  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
+  const bodyInfo = extractRequestBodyType(op, ctx);
+  let requestType: string;
+  let bodyExpr: string;
+  if (bodyInfo?.kind === 'model') {
+    requestType = resolveInterfaceName(bodyInfo.name, ctx);
+    bodyExpr = `serialize${requestType}(payload)`;
+  } else if (bodyInfo?.kind === 'union') {
+    requestType = bodyInfo.typeStr;
+    bodyExpr = 'payload';
+  } else {
+    requestType = 'Record<string, unknown>';
+    bodyExpr = 'payload';
+  }
 
   const paramParts: string[] = [];
   for (const param of op.pathParams) {
@@ -410,8 +444,6 @@ function renderDeleteWithBodyMethod(
     );
   }
   paramParts.push(`payload: ${requestType}`);
-
-  const bodyExpr = requestBodyModel ? `serialize${requestType}(payload)` : 'payload';
 
   lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<void> {`);
   lines.push(`    await this.workos.deleteWithBody(${pathStr}, ${bodyExpr});`);
@@ -428,8 +460,21 @@ function renderBodyMethod(
   ctx: EmitterContext,
   specEnumNames?: Set<string>,
 ): void {
-  const requestBodyModel = extractRequestBodyModelName(op);
-  const requestType = requestBodyModel ? resolveInterfaceName(requestBodyModel, ctx) : 'Record<string, unknown>';
+  const bodyInfo = extractRequestBodyType(op, ctx);
+  let requestType: string;
+  let bodyExpr: string;
+  if (bodyInfo?.kind === 'model') {
+    requestType = resolveInterfaceName(bodyInfo.name, ctx);
+    bodyExpr = `serialize${requestType}(payload)`;
+  } else if (bodyInfo?.kind === 'union') {
+    requestType = bodyInfo.typeStr;
+    // Cannot statically dispatch to a single serializer for union types —
+    // pass the payload directly (caller provides the correct shape).
+    bodyExpr = 'payload';
+  } else {
+    requestType = 'Record<string, unknown>';
+    bodyExpr = 'payload';
+  }
 
   const paramParts: string[] = [];
 
@@ -447,7 +492,6 @@ function renderBodyMethod(
   }
 
   const paramsStr = paramParts.join(', ');
-  const bodyExpr = requestBodyModel ? `serialize${requestType}(payload)` : 'payload';
 
   // Fix 2: Pass encoding option when requestBodyEncoding is non-json
   const encoding = op.requestBodyEncoding;
@@ -498,12 +542,9 @@ function renderGetMethod(
 ): void {
   const params = buildPathParams(op, specEnumNames);
   const hasQuery = op.queryParams.length > 0 && !plan.isPaginated;
+  const optionsType = hasQuery ? toPascalCase(method) + 'Options' : null;
 
-  const allParams = hasQuery
-    ? params
-      ? `${params}, options?: Record<string, unknown>`
-      : 'options?: Record<string, unknown>'
-    : params;
+  const allParams = hasQuery ? (params ? `${params}, options?: ${optionsType}` : `options?: ${optionsType}`) : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
@@ -536,26 +577,39 @@ function renderVoidMethod(
   specEnumNames?: Set<string>,
 ): void {
   const params = buildPathParams(op, specEnumNames);
+  const hasQuery = op.queryParams.length > 0 && !plan.hasBody;
+  const optionsType = hasQuery ? toPascalCase(method) + 'Options' : null;
 
   let bodyParam = '';
   let bodyExpr = 'payload';
   if (plan.hasBody) {
-    const requestBodyModel = extractRequestBodyModelName(op);
-    if (requestBodyModel) {
-      const requestType = resolveInterfaceName(requestBodyModel, ctx);
+    const bodyInfo = extractRequestBodyType(op, ctx);
+    if (bodyInfo?.kind === 'model') {
+      const requestType = resolveInterfaceName(bodyInfo.name, ctx);
       bodyParam = `payload: ${requestType}`;
       bodyExpr = `serialize${requestType}(payload)`;
+    } else if (bodyInfo?.kind === 'union') {
+      bodyParam = `payload: ${bodyInfo.typeStr}`;
+      bodyExpr = 'payload';
     } else {
       bodyParam = 'payload: Record<string, unknown>';
       bodyExpr = 'payload';
     }
   }
 
-  const allParams = bodyParam ? (params ? `${params}, ${bodyParam}` : bodyParam) : params;
+  const paramParts: string[] = [];
+  if (params) paramParts.push(params);
+  if (bodyParam) paramParts.push(bodyParam);
+  if (optionsType) paramParts.push(`options?: ${optionsType}`);
+  const allParams = paramParts.join(', ');
 
   lines.push(`  async ${method}(${allParams}): Promise<void> {`);
   if (plan.hasBody) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
+  } else if (hasQuery) {
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
+    lines.push('      query: options,');
+    lines.push('    });');
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {});`);
   } else {
@@ -610,9 +664,26 @@ function collectParamTypeRefs(type: TypeRef, enums: Set<string>, models: Set<str
   }
 }
 
-function extractRequestBodyModelName(op: Operation): string | null {
+/**
+ * Extract request body type info, supporting both single models and union types.
+ * Returns structured info so callers can handle imports and serialization appropriately.
+ */
+function extractRequestBodyType(
+  op: Operation,
+  ctx: EmitterContext,
+): { kind: 'model'; name: string } | { kind: 'union'; typeStr: string; modelNames: string[] } | null {
   if (!op.requestBody) return null;
-  if (op.requestBody.kind === 'model') return op.requestBody.name;
+  if (op.requestBody.kind === 'model') return { kind: 'model', name: op.requestBody.name };
+  if (op.requestBody.kind === 'union') {
+    const modelNames: string[] = [];
+    for (const variant of op.requestBody.variants) {
+      if (variant.kind === 'model') modelNames.push(variant.name);
+    }
+    if (modelNames.length > 0) {
+      const typeStr = modelNames.map((n) => resolveInterfaceName(n, ctx)).join(' | ');
+      return { kind: 'union', typeStr, modelNames };
+    }
+  }
   return null;
 }
 

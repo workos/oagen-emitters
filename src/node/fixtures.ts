@@ -43,8 +43,14 @@ export function generateFixtures(
     const serviceDir = serviceDirName(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {
-        const itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;
+        let itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;
         if (itemModel) {
+          // Detect if the "item" model is actually a list wrapper (has `data` array + `list_metadata`).
+          // If so, unwrap to the actual item type to avoid double-nesting in fixtures.
+          const unwrapped = unwrapListModel(itemModel, modelMap);
+          if (unwrapped) {
+            itemModel = unwrapped;
+          }
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],
@@ -63,6 +69,24 @@ export function generateFixtures(
   }
 
   return files;
+}
+
+/**
+ * Detect if a model is a list wrapper (has a `data` array field and a `list_metadata` field).
+ * If so, return the inner item model from the `data` array. Otherwise return null.
+ * This prevents double-nesting when the pagination itemType points to a list wrapper
+ * instead of the actual item model.
+ */
+function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
+  const dataField = model.fields.find((f) => f.name === 'data');
+  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+  if (dataField && hasListMetadata && dataField.type.kind === 'array') {
+    const itemType = dataField.type.items;
+    if (itemType.kind === 'model') {
+      return modelMap.get(itemType.name) ?? null;
+    }
+  }
+  return null;
 }
 
 function generateModelFixture(

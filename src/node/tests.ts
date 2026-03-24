@@ -62,7 +62,7 @@ function generateServiceTest(
   // Conditionally import test utilities based on what test types exist
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
   const hasBody = plans.some((p) => p.plan.hasBody && p.plan.responseModelName);
-  const testUtils = ['fetchOnce', 'fetchURL'];
+  const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
   lines.push('import {');
@@ -140,6 +140,16 @@ function generateServiceTest(
   return { path: testPath, content: lines.join('\n'), skipIfExists: true };
 }
 
+/**
+ * Extract static path segments for URL assertions.
+ * For a path like `/users/{id}/email_verification/send`, returns
+ * ['/users/', '/email_verification/send'] so tests assert all distinct segments.
+ */
+function staticPathSegments(path: string): string[] {
+  // Split on `{...}` placeholders and filter out empty strings
+  return path.split(/\{[^}]+\}/).filter((s) => s.length > 0);
+}
+
 /** Compute the test value for a single path parameter. */
 function pathParamTestValue(param: { type: TypeRef } | undefined): string {
   if (param?.type.kind === 'enum' && param.type.values?.length) {
@@ -193,7 +203,10 @@ function renderPaginatedTest(
     `      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''});`,
   );
   lines.push('');
-  lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  lines.push("      expect(fetchMethod()).toBe('GET');");
+  for (const seg of staticPathSegments(op.path)) {
+    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
+  }
   lines.push("      expect(fetchSearchParams()).toHaveProperty('order');");
   lines.push('      expect(Array.isArray(data)).toBe(true);');
   lines.push('      expect(listMetadata).toBeDefined();');
@@ -224,7 +237,10 @@ function renderDeleteTest(lines: string[], op: Operation, plan: any, method: str
   lines.push('');
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
-  lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  lines.push("      expect(fetchMethod()).toBe('DELETE');");
+  for (const seg of staticPathSegments(op.path)) {
+    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
+  }
   if (pathArgs) {
     const urlAssertValue = buildTestPathAssertionValue(op);
     if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
@@ -250,7 +266,10 @@ function renderBodyTest(
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${allArgs});`);
   lines.push('');
-  lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
+  for (const seg of staticPathSegments(op.path)) {
+    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
+  }
   if (pathArgs) {
     const urlAssertValue = buildTestPathAssertionValue(op);
     if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
@@ -287,7 +306,10 @@ function renderGetTest(
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
-  lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  lines.push("      expect(fetchMethod()).toBe('GET');");
+  for (const seg of staticPathSegments(op.path)) {
+    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
+  }
   if (pathArgs) {
     const urlAssertValue = buildTestPathAssertionValue(op);
     if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
@@ -317,7 +339,10 @@ function renderVoidTest(lines: string[], op: Operation, plan: any, method: strin
   lines.push('');
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
-  lines.push(`      expect(fetchURL()).toContain('${op.path.split('{')[0]}');`);
+  lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
+  for (const seg of staticPathSegments(op.path)) {
+    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
+  }
   if (pathArgs) {
     const urlAssertValue = buildTestPathAssertionValue(op);
     if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
