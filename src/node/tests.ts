@@ -221,9 +221,9 @@ function renderPaginatedTest(
   );
   lines.push('');
   lines.push("      expect(fetchMethod()).toBe('GET');");
-  for (const seg of staticPathSegments(op.path)) {
-    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
-  }
+  // Fix #12: Full URL path assertion instead of toContain()
+  const expectedPath = buildExpectedPath(op);
+  lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPath}');`);
   lines.push("      expect(fetchSearchParams()).toHaveProperty('order');");
   lines.push('      expect(Array.isArray(data)).toBe(true);');
   lines.push('      expect(listMetadata).toBeDefined();');
@@ -255,13 +255,9 @@ function renderDeleteTest(lines: string[], op: Operation, plan: any, method: str
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push("      expect(fetchMethod()).toBe('DELETE');");
-  for (const seg of staticPathSegments(op.path)) {
-    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
-  }
-  if (pathArgs) {
-    const urlAssertValue = buildTestPathAssertionValue(op);
-    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
-  }
+  // Fix #12: Full URL path assertion instead of toContain()
+  const expectedPathDel = buildExpectedPath(op);
+  lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathDel}');`);
   lines.push('    });');
 }
 
@@ -278,29 +274,41 @@ function renderBodyTest(
   const pathArgs = buildTestPathArgs(op);
   const allArgs = pathArgs ? `${pathArgs}, {} as any` : '{} as any';
 
+  // Fix #10: Build realistic payload from request body model fields
+  const payload = buildTestPayload(op, modelMap);
+  const payloadArg = payload ? payload.camelCaseObj : '{}';
+
   lines.push("    it('sends the correct request and returns result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${allArgs});`);
   lines.push('');
   lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
-  for (const seg of staticPathSegments(op.path)) {
-    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
-  }
-  if (pathArgs) {
-    const urlAssertValue = buildTestPathAssertionValue(op);
-    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
-  }
-  lines.push('      expect(fetchBody()).toBeDefined();');
-  lines.push('      expect(result).toBeDefined();');
 
-  // Response field assertions
+  // Fix #12: Full URL path assertion instead of toContain()
+  const expectedPath = buildExpectedPath(op);
+  lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPath}');`);
+
+  // Fix #10: Assert serialized wire format of request body
+  if (payload) {
+    lines.push(`      expect(fetchBody()).toEqual(expect.objectContaining(${payload.snakeCaseObj}));`);
+  } else {
+    lines.push('      expect(fetchBody()).toBeDefined();');
+  }
+
+  // Fix #11: Response field assertions (no redundant toBeDefined())
   const responseModel = modelMap.get(responseModelName);
   if (responseModel) {
     const assertions = buildFieldAssertions(responseModel, 'result');
-    for (const assertion of assertions) {
-      lines.push(`      ${assertion}`);
+    if (assertions.length > 0) {
+      for (const assertion of assertions) {
+        lines.push(`      ${assertion}`);
+      }
+    } else {
+      lines.push('      expect(result).toBeDefined();');
     }
+  } else {
+    lines.push('      expect(result).toBeDefined();');
   }
 
   lines.push('    });');
@@ -324,22 +332,23 @@ function renderGetTest(
   lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
   lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
-  for (const seg of staticPathSegments(op.path)) {
-    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
-  }
-  if (pathArgs) {
-    const urlAssertValue = buildTestPathAssertionValue(op);
-    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
-  }
-  lines.push('      expect(result).toBeDefined();');
+  // Fix #12: Full URL path assertion instead of toContain()
+  const expectedPathGet = buildExpectedPath(op);
+  lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathGet}');`);
 
-  // Response field assertions
+  // Fix #11: Response field assertions (no redundant toBeDefined())
   const responseModel = modelMap.get(responseModelName);
   if (responseModel) {
     const assertions = buildFieldAssertions(responseModel, 'result');
-    for (const assertion of assertions) {
-      lines.push(`      ${assertion}`);
+    if (assertions.length > 0) {
+      for (const assertion of assertions) {
+        lines.push(`      ${assertion}`);
+      }
+    } else {
+      lines.push('      expect(result).toBeDefined();');
     }
+  } else {
+    lines.push('      expect(result).toBeDefined();');
   }
 
   lines.push('    });');
@@ -357,13 +366,9 @@ function renderVoidTest(lines: string[], op: Operation, plan: any, method: strin
   lines.push(`      await workos.${serviceProp}.${method}(${args});`);
   lines.push('');
   lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
-  for (const seg of staticPathSegments(op.path)) {
-    lines.push(`      expect(fetchURL()).toContain('${seg}');`);
-  }
-  if (pathArgs) {
-    const urlAssertValue = buildTestPathAssertionValue(op);
-    if (urlAssertValue) lines.push(`      expect(fetchURL()).toContain('${urlAssertValue}');`);
-  }
+  // Fix #12: Full URL path assertion instead of toContain()
+  const expectedPathVoid = buildExpectedPath(op);
+  lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathVoid}');`);
   lines.push('    });');
 }
 
@@ -442,4 +447,56 @@ function fixtureValueForPrimitive(type: string, format: string | undefined, name
     default:
       return null;
   }
+}
+
+/**
+ * Build the expected full URL path for an operation, substituting path params
+ * with their test values. Returns a string like '/organizations/test_id'.
+ */
+function buildExpectedPath(op: Operation): string {
+  let path = op.path;
+  for (const param of op.pathParams) {
+    path = path.replace(`{${param.name}}`, 'test_id');
+  }
+  return path;
+}
+
+/**
+ * Build a realistic test payload for a request body model.
+ * Returns { camelCaseObj, snakeCaseObj } as inline JS object literal strings,
+ * or null if the request body is not a named model.
+ *
+ * camelCaseObj is what the SDK consumer passes (e.g. { organizationName: 'Test' })
+ * snakeCaseObj is the expected wire format (e.g. { organization_name: 'Test' })
+ */
+function buildTestPayload(
+  op: Operation,
+  modelMap: Map<string, Model>,
+): { camelCaseObj: string; snakeCaseObj: string } | null {
+  if (!op.requestBody || op.requestBody.kind !== 'model') return null;
+
+  const model = modelMap.get(op.requestBody.name);
+  if (!model) return null;
+
+  const fields = model.fields.filter((f) => f.required);
+  // Only use primitive/literal fields that we can generate deterministic values for
+  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name) !== null);
+
+  if (usableFields.length === 0) return null;
+
+  const camelEntries: string[] = [];
+  const snakeEntries: string[] = [];
+
+  for (const field of usableFields) {
+    const value = fixtureValueForType(field.type, field.name)!;
+    const camelKey = fieldName(field.name);
+    const snakeKey = wireFieldName(field.name);
+    camelEntries.push(`${camelKey}: ${value}`);
+    snakeEntries.push(`${snakeKey}: ${value}`);
+  }
+
+  return {
+    camelCaseObj: `{ ${camelEntries.join(', ')} }`,
+    snakeCaseObj: `{ ${snakeEntries.join(', ')} }`,
+  };
 }
