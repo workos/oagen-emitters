@@ -1,3 +1,4 @@
+import type { Model } from '@workos/oagen';
 export {
   collectModelRefs,
   collectEnumRefs,
@@ -5,6 +6,7 @@ export {
   collectFieldDependencies,
   collectRequestBodyModels,
 } from '@workos/oagen';
+import { mapTypeRef } from './type-map.js';
 
 /**
  * Compute a relative import path between two files within the generated SDK.
@@ -47,4 +49,21 @@ export function docComment(description: string, indent = 0): string[] {
   }
   lines.push(`${pad} */`);
   return lines;
+}
+
+/**
+ * Build a map from model name → default type args string for generic models.
+ * E.g., Profile<CustomAttributesType = Record<string, unknown>>
+ *   → Map { 'Profile' → '<Record<string, unknown>>' }
+ *
+ * Non-generic models are not included in the map.
+ */
+export function buildGenericModelDefaults(models: Model[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const model of models) {
+    if (!model.typeParams?.length) continue;
+    const defaults = model.typeParams.map((tp) => (tp.default ? mapTypeRef(tp.default) : 'unknown'));
+    result.set(model.name, `<${defaults.join(', ')}>`);
+  }
+  return result;
 }

@@ -10,7 +10,7 @@ import {
   buildServiceNameMap,
   wireInterfaceName,
 } from './naming.js';
-import { assignModelsToServices, collectFieldDependencies, docComment } from './utils.js';
+import { assignModelsToServices, collectFieldDependencies, docComment, buildGenericModelDefaults } from './utils.js';
 
 /** Built-in TypeScript types that are always available (no import needed). */
 const BUILTINS = new Set([
@@ -33,6 +33,28 @@ const BUILTINS = new Set([
   'false',
 ]);
 
+/**
+ * Detect whether the existing SDK uses string (ISO 8601) representation for
+ * date-time fields.  Checks if any baseline interface has a date-time IR field
+ * typed as plain `string` (not `Date`).
+ */
+function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
+  if (!ctx.apiSurface?.interfaces) return false;
+  for (const model of models) {
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (!baseline?.fields) continue;
+    for (const field of model.fields) {
+      if (field.type.kind !== 'primitive' || field.type.format !== 'date-time') continue;
+      const baselineField = baseline.fields[fieldName(field.name)];
+      if (baselineField && !baselineField.type.includes('Date')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
@@ -40,6 +62,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  // Detect whether the existing SDK uses string dates (ISO 8601) rather than Date objects.
+  // When detected, newly generated models also use string to maintain consistency.
+  const useStringDates = detectStringDateConvention(models, ctx);
+  const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
+  const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
+  const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
@@ -49,6 +77,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const responseName = wireInterfaceName(domainName);
     const deps = collectFieldDependencies(model);
     const lines: string[] = [];
+
+    // Exclude the current model from generic defaults to avoid self-referencing
+    // (e.g., Profile's own fields should use TCustom, not Profile<Record<...>>)
+    let modelTypeRefOpts = typeRefOpts;
+    let modelWireTypeRefOpts = wireTypeRefOpts;
+    if (genericDefaults.has(model.name)) {
+      const filteredDefaults = new Map(genericDefaults);
+      filteredDefaults.delete(model.name);
+      modelTypeRefOpts = { ...typeRefOpts, genericDefaults: filteredDefaults };
+      modelWireTypeRefOpts = { genericDefaults: filteredDefaults };
+    }
 
     // Baseline interface data (for compat field type matching)
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
@@ -200,8 +239,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         const opt = baselineField.optional ? '?' : '';
         lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${baselineField.type};`);
       } else {
-        const opt = !field.required ? '?' : '';
-        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type)};`);
+        // When a baseline exists for this model, new fields (not present in the
+        // baseline) are generated as optional.  The merger can deep-merge new
+        // fields into existing interfaces, but it cannot update existing
+        // deserializer function bodies.  Making the field optional prevents a
+        // type error where the interface requires a field that the preserved
+        // deserializer never populates.
+        const isNewFieldOnExistingModel = baselineDomain && !baselineField;
+        const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
       }
     }
     lines.push('}');
@@ -223,8 +269,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         const opt = baselineField.optional ? '?' : '';
         lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
       } else {
-        const opt = !field.required ? '?' : '';
-        lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type)};`);
+        const isNewFieldOnExistingModel = baselineResponse && !baselineField;
+        const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+        lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
       }
     }
     lines.push('}');

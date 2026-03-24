@@ -352,8 +352,10 @@ describe('generateResources', () => {
 
     const files = generateResources(services, ctx);
     const content = files[0].content;
-    expect(content).toContain('@param xRequestId - Unique request identifier.');
-    expect(content).toContain('@param sessionToken - The session cookie.');
+    // Header and cookie params are intentionally NOT documented in JSDoc —
+    // they are not exposed in the method signature (handled internally by the SDK).
+    expect(content).not.toContain('@param xRequestId');
+    expect(content).not.toContain('@param sessionToken');
   });
 
   it('renders single @returns without status-code duplicates', () => {

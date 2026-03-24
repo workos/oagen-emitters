@@ -58,10 +58,20 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push('');
   }
 
-  // Resource accessors
+  // Resource accessors — skip services whose property already exists
+  // in the baseline WorkOS class (e.g., `portal` covers AdminPortal,
+  // `mfa` covers MultiFactorAuth).
+  const existingProps = new Set<string>();
+  const baselineWorkOS = ctx.apiSurface?.classes?.['WorkOS'] ?? ctx.apiSurface?.classes?.['WorkOSNode'];
+  if (baselineWorkOS?.properties) {
+    for (const name of Object.keys(baselineWorkOS.properties)) {
+      existingProps.add(name);
+    }
+  }
   for (const service of spec.services) {
     const resolvedName = resolveServiceName(service, ctx);
     const propName = servicePropertyName(resolvedName);
+    if (existingProps.has(propName)) continue;
     lines.push(`  readonly ${propName} = new ${resolvedName}(this);`);
   }
 
@@ -169,7 +179,11 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   }
 
   lines.push('');
-  if (!exportedNames.has('WorkOS')) {
+  // Only emit the WorkOS re-export for standalone generation (no existing SDK).
+  // When integrating into an existing SDK, the existing barrel already exports
+  // WorkOS (often as a subclass alias like `export { WorkOSNode as WorkOS }`),
+  // and adding a second export with the same name causes a duplicate identifier error.
+  if (!ctx.apiSurface && !exportedNames.has('WorkOS')) {
     exportedNames.add('WorkOS');
     lines.push("export { WorkOS } from './workos';");
   }
