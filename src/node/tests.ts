@@ -476,8 +476,8 @@ function buildFieldAssertions(model: Model, accessor: string): string[] {
     // When a field has an example value, use it as the expected assertion value
     if (field.example !== undefined) {
       const domainField = fieldName(field.name);
-      if (Array.isArray(field.example)) {
-        // Arrays need toEqual with proper quoting
+      if (typeof field.example === 'object' && field.example !== null) {
+        // Objects and arrays need toEqual with JSON serialization
         assertions.push(`expect(${accessor}.${domainField}).toEqual(${JSON.stringify(field.example)});`);
       } else {
         const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);

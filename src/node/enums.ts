@@ -30,8 +30,18 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       }
       lines.push('}');
     } else if (baselineAlias?.value) {
-      // Use the exact baseline type alias value for guaranteed compat match
-      lines.push(`export type ${enumDef.name} = ${baselineAlias.value};`);
+      // Use the baseline type alias value, but merge in any new IR values the baseline is missing.
+      const baselineValues = extractLiteralUnionValues(baselineAlias.value);
+      const irValues = enumDef.values.map((v) => String(v.value));
+      const missing = irValues.filter((v) => !baselineValues.has(v));
+      if (missing.length > 0) {
+        // Baseline is missing values from the spec — regenerate with all values merged
+        const allValues = [...baselineValues, ...missing];
+        const parts = allValues.map((v) => `'${v}'`);
+        lines.push(`export type ${enumDef.name} = ${parts.join(' | ')};`);
+      } else {
+        lines.push(`export type ${enumDef.name} = ${baselineAlias.value};`);
+      }
     } else {
       // No baseline — generate string literal union from IR values
       const values = enumDef.values;
@@ -58,6 +68,21 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   }
 
   return files;
+}
+
+/**
+ * Parse a TypeScript string literal union type alias value (e.g., "'a' | 'b' | 'c'")
+ * into a set of its string values.
+ */
+function extractLiteralUnionValues(aliasValue: string): Set<string> {
+  const values = new Set<string>();
+  // Match all single-quoted string literals in the union
+  const regex = /'([^']+)'/g;
+  let match;
+  while ((match = regex.exec(aliasValue)) !== null) {
+    values.add(match[1]);
+  }
+  return values;
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

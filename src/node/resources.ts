@@ -1,6 +1,6 @@
 // @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
 
-import type { Service, Operation, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
+import type { Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
 import { planOperation, toPascalCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -16,6 +16,7 @@ import {
 } from './naming.js';
 import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
+import { unwrapListModel } from './fixtures.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -106,6 +107,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   }));
 
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
   // Collect models for imports — only include models that are actually used
   // in method signatures (not all union variants from the spec)
@@ -118,7 +120,16 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       // For paginated operations, import the item type (e.g., Connection)
       // rather than the list wrapper type (e.g., ConnectionList).
       // fetchAndDeserialize handles the list envelope internally.
-      responseModels.add(op.pagination.itemType.name);
+      // The IR's itemType may point to a list wrapper model — unwrap to the actual item.
+      let itemName = op.pagination.itemType.name;
+      const itemModel = modelMap.get(itemName);
+      if (itemModel) {
+        const unwrapped = unwrapListModel(itemModel, modelMap);
+        if (unwrapped) {
+          itemName = unwrapped.name;
+        }
+      }
+      responseModels.add(itemName);
     } else if (plan.responseModelName) {
       responseModels.add(plan.responseModelName);
     }
@@ -323,7 +334,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   for (const { op, plan, method } of plans) {
     lines.push('');
-    lines.push(...renderMethod(op, plan, method, service, ctx, specEnumNames));
+    lines.push(...renderMethod(op, plan, method, service, ctx, modelMap, specEnumNames));
   }
 
   lines.push('}');
@@ -337,6 +348,7 @@ function renderMethod(
   method: string,
   service: Service,
   ctx: EmitterContext,
+  modelMap: Map<string, Model>,
   specEnumNames?: Set<string>,
 ): string[] {
   const lines: string[] = [];
@@ -461,8 +473,18 @@ function renderMethod(
   if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
     // For paginated operations, use the item type from pagination metadata
     // (e.g., Connection) rather than the list wrapper type (e.g., ConnectionList).
-    const paginatedItemType =
-      op.pagination.itemType.kind === 'model' ? resolveInterfaceName(op.pagination.itemType.name, ctx) : responseModel;
+    // Unwrap list wrapper models to get the actual item type name.
+    let paginatedItemRawName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
+    if (paginatedItemRawName) {
+      const pModel = modelMap.get(paginatedItemRawName);
+      if (pModel) {
+        const unwrapped = unwrapListModel(pModel, modelMap);
+        if (unwrapped) {
+          paginatedItemRawName = unwrapped.name;
+        }
+      }
+    }
+    const paginatedItemType = paginatedItemRawName ? resolveInterfaceName(paginatedItemRawName, ctx) : responseModel;
     if (paginatedItemType) {
       const resolvedServiceNameForPaginated = resolveServiceName(service, ctx);
       renderPaginatedMethod(
