@@ -313,12 +313,18 @@ function modelFingerprint(model: Model): string {
 
 /**
  * Find structurally identical models and build a deduplication map.
+ * Also deduplicates models that resolve to the same interface name across
+ * services — when a `$ref` schema is used by multiple tags, the IR may
+ * produce per-tag copies that diverge slightly.  The version with the most
+ * fields is chosen as canonical.
+ *
  * Returns a Map from duplicate model name → canonical model name.
  */
-export function buildDeduplicationMap(models: Model[]): Map<string, string> {
+export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Map<string, string> {
   const dedup = new Map<string, string>();
-  const fingerprints = new Map<string, string>();
 
+  // Pass 1: structural fingerprint dedup (exact match)
+  const fingerprints = new Map<string, string>();
   for (const model of models) {
     if (model.fields.length === 0) continue;
     const fp = modelFingerprint(model);
@@ -327,6 +333,33 @@ export function buildDeduplicationMap(models: Model[]): Map<string, string> {
       dedup.set(model.name, existing);
     } else {
       fingerprints.set(fp, model.name);
+    }
+  }
+
+  // Pass 2: name-based dedup for models that resolve to the same interface
+  // name across services.  Only applies when context with name resolution is
+  // available.  Picks the model with the most fields as canonical.
+  if (ctx) {
+    const byDomainName = new Map<string, Model[]>();
+    for (const model of models) {
+      if (model.fields.length === 0) continue;
+      if (dedup.has(model.name)) continue; // already deduped in pass 1
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const group = byDomainName.get(domainName);
+      if (group) {
+        group.push(model);
+      } else {
+        byDomainName.set(domainName, [model]);
+      }
+    }
+    for (const [, group] of byDomainName) {
+      if (group.length < 2) continue;
+      // Choose canonical: most fields, then alphabetically by name
+      group.sort((a, b) => b.fields.length - a.fields.length || a.name.localeCompare(b.name));
+      const canonical = group[0];
+      for (let i = 1; i < group.length; i++) {
+        dedup.set(group[i].name, canonical.name);
+      }
     }
   }
 

@@ -76,8 +76,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
 
-  // Detect structurally identical models — emit type aliases for duplicates
-  const dedup = buildDeduplicationMap(models);
+  // Detect structurally identical or same-name models — emit type aliases for duplicates
+  const dedup = buildDeduplicationMap(models, ctx);
 
   for (const model of models) {
     // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
