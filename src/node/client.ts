@@ -120,6 +120,67 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   const dirExports = new Map<string, string[]>();
   const dirSymbols = new Map<string, Set<string>>();
 
+  // Pre-seed dirSymbols with names already exported by existing interface files.
+  // When the existing SDK has an interface file in a directory that already
+  // exports a name (e.g., AuditLogSchema from create-audit-log-schema-options),
+  // the generated model with the same name must be skipped to prevent the
+  // merger from adding a duplicate `export *` that causes TS2308.
+  if (ctx.apiSurface?.interfaces) {
+    for (const [name, iface] of Object.entries(ctx.apiSurface.interfaces)) {
+      const sourceFile = (iface as any).sourceFile as string | undefined;
+      if (!sourceFile) continue;
+      // Match paths like "src/audit-logs/interfaces/foo.interface.ts" to directory "audit-logs"
+      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
+      if (match) {
+        const dirName = match[1];
+        if (!dirSymbols.has(dirName)) {
+          dirSymbols.set(dirName, new Set());
+        }
+        dirSymbols.get(dirName)!.add(name);
+      }
+    }
+  }
+  if (ctx.apiSurface?.enums) {
+    for (const [name, enumDef] of Object.entries(ctx.apiSurface.enums)) {
+      const sourceFile = (enumDef as any).sourceFile as string | undefined;
+      if (!sourceFile) continue;
+      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
+      if (match) {
+        const dirName = match[1];
+        if (!dirSymbols.has(dirName)) {
+          dirSymbols.set(dirName, new Set());
+        }
+        dirSymbols.get(dirName)!.add(name);
+      }
+    }
+  }
+  if (ctx.apiSurface?.typeAliases) {
+    for (const [name, alias] of Object.entries(ctx.apiSurface.typeAliases)) {
+      const sourceFile = (alias as any).sourceFile as string | undefined;
+      if (!sourceFile) continue;
+      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
+      if (match) {
+        const dirName = match[1];
+        if (!dirSymbols.has(dirName)) {
+          dirSymbols.set(dirName, new Set());
+        }
+        dirSymbols.get(dirName)!.add(name);
+      }
+    }
+  }
+
+  // Build a global set of all symbols across all directories for
+  // cross-directory deduplication.  This prevents adding a model to one
+  // directory's barrel when the same symbol already exists in another
+  // directory's barrel (e.g., Event in common vs events, DirectoryState
+  // in directory-sync vs common).
+  const globalExistingSymbols = new Set<string>();
+  for (const symbols of dirSymbols.values()) {
+    for (const sym of symbols) {
+      globalExistingSymbols.add(sym);
+    }
+  }
+
   // Models -> service directories
   // Skip list wrapper and list metadata models — they use shared List<T>/ListMetadata
   // from common utils, so no per-resource interface file is generated.
@@ -129,7 +190,10 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     const dirName = resolveDir(service);
     if (!dirExports.has(dirName)) {
       dirExports.set(dirName, []);
-      dirSymbols.set(dirName, new Set());
+      // Only initialize dirSymbols if not already pre-seeded from baseline
+      if (!dirSymbols.has(dirName)) {
+        dirSymbols.set(dirName, new Set());
+      }
     }
 
     // Each model file exports a domain interface and a wire interface.
@@ -138,13 +202,18 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     const wireName = wireInterfaceName(domainName);
     const symbols = dirSymbols.get(dirName)!;
 
-    if (symbols.has(domainName) || symbols.has(wireName)) {
+    if (globalExistingSymbols.has(domainName) || globalExistingSymbols.has(wireName)) {
       // Skip this model's export to avoid duplicate symbol in the barrel
+      // (checks across ALL directories, not just the target one)
       continue;
     }
 
     symbols.add(domainName);
     symbols.add(wireName);
+    // Also track in the global set so subsequent models in other directories
+    // don't re-export the same symbol (intra-generation cross-directory dedup).
+    globalExistingSymbols.add(domainName);
+    globalExistingSymbols.add(wireName);
     dirExports.get(dirName)!.push(`export * from './${fileName(model.name)}.interface';`);
   }
 
@@ -154,13 +223,16 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     const dirName = resolveDir(enumService);
     if (!dirExports.has(dirName)) {
       dirExports.set(dirName, []);
-      dirSymbols.set(dirName, new Set());
+      if (!dirSymbols.has(dirName)) {
+        dirSymbols.set(dirName, new Set());
+      }
     }
 
     const symbols = dirSymbols.get(dirName)!;
-    if (symbols.has(enumDef.name)) continue;
+    if (globalExistingSymbols.has(enumDef.name)) continue;
 
     symbols.add(enumDef.name);
+    globalExistingSymbols.add(enumDef.name);
     dirExports.get(dirName)!.push(`export * from './${fileName(enumDef.name)}.interface';`);
   }
 
@@ -248,6 +320,10 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
     const serviceDir = serviceDirName(resolvedName);
+    // The interfaces directory may differ from the resource class directory when
+    // a service's class name is remapped (e.g., WebhooksEndpoints class lives in
+    // webhooks-endpoints/ but its model interfaces live in webhooks/).
+    const interfacesDir = resolveDir(service.name);
 
     // Check if this service has any models or enums (i.e., a barrel was generated).
     // Exclude list wrapper and list metadata models — these are skipped during
@@ -269,9 +345,9 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
       serviceModels.some((m) => existingSdkExports.has(resolveInterfaceName(m.name, ctx))) ||
       serviceEnums.some((e) => existingSdkExports.has(e.name));
 
-    if ((serviceModels.length > 0 || serviceEnums.length > 0) && !exportedDirs.has(serviceDir) && !hasConflict) {
-      exportedDirs.add(serviceDir);
-      lines.push(`export * from './${serviceDir}/interfaces';`);
+    if ((serviceModels.length > 0 || serviceEnums.length > 0) && !exportedDirs.has(interfacesDir) && !hasConflict) {
+      exportedDirs.add(interfacesDir);
+      lines.push(`export * from './${interfacesDir}/interfaces';`);
       // Track the individual names so they don't get re-exported below
       for (const model of serviceModels) {
         exportedNames.add(resolveInterfaceName(model.name, ctx));
@@ -290,7 +366,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
         exportedNames.add(name);
         exportedNames.add(wireName);
         lines.push(
-          `export type { ${name}, ${wireName} } from './${serviceDir}/interfaces/${fileName(model.name)}.interface';`,
+          `export type { ${name}, ${wireName} } from './${interfacesDir}/interfaces/${fileName(model.name)}.interface';`,
         );
       }
     }
