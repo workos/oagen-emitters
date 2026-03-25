@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/workos/oagen-emitters/compare/v0.1.1...v0.2.0) (2026-03-25)
+
+
+### Features
+
+* **node:** resolve Node emitter generation correctness, typing, and test coverage gapsCorrections ([#5](https://github.com/workos/oagen-emitters/issues/5)) ([8061bb4](https://github.com/workos/oagen-emitters/commit/8061bb41c993d4a4db6df91e35721f87e476010a))
+
 ## [0.1.1](https://github.com/workos/oagen-emitters/compare/v0.1.0...v0.1.1) (2026-03-23)
 
 
