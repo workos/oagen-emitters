@@ -57,7 +57,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
   const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
   const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
-  const dedup = buildDeduplicationMap(models);
+  const dedup = buildDeduplicationMap(models, ctx);
   // Track model names whose serialize function was skipped due to baseline incompatibility.
   // Dependent serializers that import a skipped serialize function must also skip.
   const skippedSerializeModels = new Set<string>();
@@ -171,18 +171,16 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       `import type { ${domainName}, ${responseName} } from '${relativeImport(serializerPath, interfacePath)}';`,
     );
 
-    // Import nested model deserializers/serializers as separate statements.
-    // Splitting ensures the merger's identifier-level filter can drop unused
-    // imports independently (e.g., keeping only serialize* when deserialize*
-    // already exists in the file from a prior import).
+    // Import nested model deserializers/serializers as a single merged import.
+    // pruneUnusedImports will strip any unused identifiers (e.g., serialize*
+    // when shouldSkipSerialize is true).
     for (const dep of nestedModelRefs) {
       const depService = modelToService.get(dep);
       const depDir = resolveDir(depService);
       const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
       const depName = resolveInterfaceName(dep, ctx);
       const rel = relativeImport(serializerPath, depSerializerPath);
-      lines.push(`import { deserialize${depName} } from '${rel}';`);
-      lines.push(`import { serialize${depName} } from '${rel}';`);
+      lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
     }
     lines.push('');
 
@@ -287,16 +285,12 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         // wrap with a null check to prevent crashes when callers pass partial objects
         // (e.g., `{} as any` in tests).
         // When the field type is nullable, preserve null instead of undefined.
-        // Guard all nested model/array-of-model fields, including required ones,
-        // as a defensive measure against runtime undefined values.
-        const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable' || needsNullGuard(field.type);
+        // Guard nullable and optional nested model/array-of-model fields.
+        // Required non-nullable fields are not guarded — the caller must provide them.
+        const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
         if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
           // For nullable fields, fallback to null.  For optional fields, fallback to undefined.
-          // For required non-nullable fields (guarded defensively), pass through the raw value
-          // with `as any` to avoid type errors — the guard only triggers when callers violate
-          // the type contract (e.g., `{} as any` in tests).
-          const fallback =
-            field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : `${domainAccess} as any`;
+          const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
           if (expr.startsWith(`${domainAccess} != null ?`)) {
             lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
           } else {

@@ -140,8 +140,7 @@ describe('generateSerializers', () => {
     const orgSerializer = files.find((f) => f.path.includes('organization.serializer.ts'))!;
 
     expect(orgSerializer.content).toContain('domains: response.domains.map(deserializeOrganizationDomain),');
-    expect(orgSerializer.content).toContain('import { deserializeOrganizationDomain }');
-    expect(orgSerializer.content).toContain('import { serializeOrganizationDomain }');
+    expect(orgSerializer.content).toContain('import { deserializeOrganizationDomain, serializeOrganizationDomain }');
   });
 
   it('preserves null fallback for optional nullable model fields', () => {
