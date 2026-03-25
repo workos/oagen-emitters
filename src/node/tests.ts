@@ -13,6 +13,7 @@ import {
 import { generateFixtures } from './fixtures.js';
 import { resolveResourceClassName } from './resources.js';
 import {
+  assignModelsToServices,
   createServiceDirResolver,
   isServiceCoveredByExisting,
   uncoveredOperations,
@@ -20,7 +21,6 @@ import {
   isListMetadataModel,
   isListWrapperModel,
 } from './utils.js';
-import { assignModelsToServices } from '@workos/oagen';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];

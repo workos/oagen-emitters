@@ -713,7 +713,7 @@ function serializerHasBaselineIncompatibility(
       // that is different from what the generated serializer would produce.
       // e.g., baseline has `role: RoleResponse` but the deduped serializer returns
       // `AddRolePermissionResponse`.
-      const baselineTypeNames = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*Response\b/g) || [];
+      const baselineTypeNames: string[] = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*Response\b/g) || [];
       if (baselineTypeNames.length > 0 && !baselineTypeNames.includes(nestedWireName)) {
         // The baseline expects a different Response type than the serializer produces
         return true;
@@ -722,7 +722,7 @@ function serializerHasBaselineIncompatibility(
       // Check if the baseline wire field type includes the nested wire type name
       if (baselineWireField2.type.includes(nestedWireName) || baselineWireField2.type.match(/\b[A-Z]\w*Response\b/)) {
         // Extract type names from the baseline field type
-        const typeNames = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
+        const typeNames: string[] = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
         for (const typeName of typeNames) {
           if (typeName === 'Record' || typeName === 'Array') continue;
           const nestedIface = ctx.apiSurface.interfaces[typeName];

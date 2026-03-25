@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/node/client.js';
 import { isServiceCoveredByExisting } from '../../src/node/utils.js';
-import type { EmitterContext, ApiSpec, ApiSurface, Service, Model, Enum } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Service, Model, Enum } from '@workos/oagen';
+import type { ApiSurface } from '@workos/oagen/compat';
 
 const service: Service = {
   name: 'Organizations',
@@ -279,7 +280,15 @@ describe('generateClient', () => {
       baseUrl: 'https://api.example.com',
       services: [service],
       models: [model],
-      enums: [{ name: 'EventType', values: ['connection.activated', 'connection.deleted'] }],
+      enums: [
+        {
+          name: 'EventType',
+          values: [
+            { name: 'CONNECTION_ACTIVATED', value: 'connection.activated' },
+            { name: 'CONNECTION_DELETED', value: 'connection.deleted' },
+          ],
+        },
+      ],
     };
 
     const surface: ApiSurface = {

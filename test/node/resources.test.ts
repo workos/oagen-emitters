@@ -1192,10 +1192,10 @@ describe('partial service coverage', () => {
           AuditLogs: {
             name: 'AuditLogs',
             methods: {
-              createEvent: [{ params: [], returnType: 'AuditLogEvent' }],
+              createEvent: [{ name: 'createEvent', params: [], returnType: 'AuditLogEvent', async: true }],
             },
             properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
           },
         },
         interfaces: {},
