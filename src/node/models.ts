@@ -301,7 +301,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         // in the wire type. The domain type must also be optional to match, otherwise
         // the deserializer produces T | undefined for a field typed as T.
         const isNewFieldOnExistingResponse = !baselineDomain && baselineResponse && !responseBaselineField;
-        const opt = !field.required || isNewFieldOnExistingModel || domainResponseOptionalMismatch || isNewFieldOnExistingResponse ? '?' : '';
+        const opt =
+          !field.required || isNewFieldOnExistingModel || domainResponseOptionalMismatch || isNewFieldOnExistingResponse
+            ? '?'
+            : '';
         lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
       }
     }

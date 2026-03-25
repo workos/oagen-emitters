@@ -13,7 +13,6 @@ import {
   buildDeduplicationMap,
 } from './utils.js';
 
-
 /**
  * Render generic type parameter declarations for a model.
  * E.g., `<CustomAttributesType = Record<string, unknown>>`.
@@ -279,7 +278,8 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         // and the generated interface makes it optional).  Case (c) covers renamed fields (e.g., baseline
         // uses `type` but the generated interface uses `connectionType`).
         const isNewFieldOnExistingDomain = baselineDomain && !baselineDomainField;
-        const domainFieldIsOptional = !field.required || (baselineDomainField?.optional ?? false) || !!isNewFieldOnExistingDomain;
+        const domainFieldIsOptional =
+          !field.required || (baselineDomainField?.optional ?? false) || !!isNewFieldOnExistingDomain;
         const wireFieldIsRequired = baselineWireField ? !baselineWireField.optional : field.required;
         const needsUndefinedCoalesce = domainFieldIsOptional && wireFieldIsRequired && expr === domainAccess;
 
@@ -295,7 +295,8 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
           // For required non-nullable fields (guarded defensively), pass through the raw value
           // with `as any` to avoid type errors — the guard only triggers when callers violate
           // the type contract (e.g., `{} as any` in tests).
-          const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : `${domainAccess} as any`;
+          const fallback =
+            field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : `${domainAccess} as any`;
           if (expr.startsWith(`${domainAccess} != null ?`)) {
             lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
           } else {
@@ -323,7 +324,11 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
           const domainWireField2 = wireFieldName(field.name);
           const responseBaselineField2 = baselineResponse?.fields?.[domainWireField2];
           const baselineDomainField2 = baselineDomain?.fields?.[domain];
-          const domainResponseMismatch = baselineDomainField2 && !baselineDomainField2.optional && responseBaselineField2 && responseBaselineField2.optional;
+          const domainResponseMismatch =
+            baselineDomainField2 &&
+            !baselineDomainField2.optional &&
+            responseBaselineField2 &&
+            responseBaselineField2.optional;
           const fieldEffectivelyOptional = !field.required || isNewSerField || !!domainResponseMismatch;
           if (fieldEffectivelyOptional) {
             lines.push(`  ${wire}: ${expr} ?? null,`);

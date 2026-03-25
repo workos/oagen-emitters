@@ -307,9 +307,7 @@ function isNullableString(field: Field): boolean {
  * Two models with identical fingerprints are structurally equivalent.
  */
 function modelFingerprint(model: Model): string {
-  const fields = model.fields
-    .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
-    .sort();
+  const fields = model.fields.map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`).sort();
   return fields.join('|');
 }
 

@@ -441,12 +441,11 @@ function renderMethod(
       } else if (bodyModel) {
         // When the model lacks a description, list its required fields to help
         // callers understand what must be provided.
-        const requiredFieldNames = bodyModel.fields
-          .filter((f) => f.required)
-          .map((f) => fieldName(f.name));
-        payloadDesc = requiredFieldNames.length > 0
-          ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
-          : '@param payload - The request body.';
+        const requiredFieldNames = bodyModel.fields.filter((f) => f.required).map((f) => fieldName(f.name));
+        payloadDesc =
+          requiredFieldNames.length > 0
+            ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
+            : '@param payload - The request body.';
       } else {
         payloadDesc = '@param payload - The request body.';
       }
@@ -581,7 +580,9 @@ function renderPaginatedMethod(
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push(`    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options);`);
+  lines.push(
+    `    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options);`,
+  );
   lines.push('  }');
 }
 
