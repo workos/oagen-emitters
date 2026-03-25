@@ -72,6 +72,24 @@ function generateServiceTest(
     method: resolveMethodName(op, service, ctx),
   }));
 
+  // Sort plans to match the existing file's method order (same as resources.ts).
+  if (ctx.overlayLookup?.methodByOperation) {
+    const methodOrder = new Map<string, number>();
+    let pos = 0;
+    for (const [, info] of ctx.overlayLookup.methodByOperation) {
+      if (!methodOrder.has(info.methodName)) {
+        methodOrder.set(info.methodName, pos++);
+      }
+    }
+    if (methodOrder.size > 0) {
+      plans.sort((a, b) => {
+        const aPos = methodOrder.get(a.method) ?? Number.MAX_SAFE_INTEGER;
+        const bPos = methodOrder.get(b.method) ?? Number.MAX_SAFE_INTEGER;
+        return aPos - bPos;
+      });
+    }
+  }
+
   // Compute model-to-service mapping so fixture imports use the correct cross-service path.
   // A test for service A may reference a response model owned by service B — the fixture
   // lives in service B's fixtures directory, not service A's.
@@ -141,6 +159,15 @@ function generateServiceTest(
   lines.push('');
   lines.push("const workos = new WorkOS('sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU');");
   lines.push('');
+
+  // Generate per-entity assertion helpers for models used in 2+ tests.
+  // This deduplicates the field assertion blocks that would otherwise be
+  // copy-pasted across list/find/create/update test cases.
+  const { lines: helperLines, helpers: entityHelperNames } = generateEntityHelpers(plans, modelMap, ctx);
+  for (const line of helperLines) {
+    lines.push(line);
+  }
+
   lines.push(`describe('${serviceClass}', () => {`);
   lines.push('  beforeEach(() => fetch.resetMocks());');
 
@@ -149,13 +176,13 @@ function generateServiceTest(
     lines.push(`  describe('${method}', () => {`);
 
     if (plan.isPaginated) {
-      renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap);
+      renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
     } else if (plan.isDelete) {
       renderDeleteTest(lines, op, plan, method, serviceProp, modelMap);
     } else if (plan.hasBody && plan.responseModelName) {
-      renderBodyTest(lines, op, plan, method, serviceProp, modelMap);
+      renderBodyTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
     } else if (plan.responseModelName) {
-      renderGetTest(lines, op, plan, method, serviceProp, modelMap);
+      renderGetTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
     } else {
       renderVoidTest(lines, op, plan, method, serviceProp, modelMap);
     }
@@ -209,6 +236,8 @@ function renderPaginatedTest(
   method: string,
   serviceProp: string,
   modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  entityHelpers?: Set<string>,
 ): void {
   let itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
   // Unwrap list wrapper models to match the fixture file naming in fixtures.ts
@@ -234,14 +263,20 @@ function renderPaginatedTest(
   lines.push('      expect(Array.isArray(data)).toBe(true);');
   lines.push('      expect(listMetadata).toBeDefined();');
 
-  // Assert on first item fields when item model is available
-  const itemModel = modelMap.get(itemModelName);
-  if (itemModel) {
-    const assertions = buildFieldAssertions(itemModel, 'data[0]', modelMap);
-    if (assertions.length > 0) {
-      lines.push('      expect(data.length).toBeGreaterThan(0);');
-      for (const assertion of assertions) {
-        lines.push(`      ${assertion}`);
+  // Assert on first item fields — use entity helper if available
+  const paginatedHelperName = ctx ? `expect${resolveInterfaceName(itemModelName, ctx)}` : null;
+  if (paginatedHelperName && entityHelpers?.has(paginatedHelperName)) {
+    lines.push('      expect(data.length).toBeGreaterThan(0);');
+    lines.push(`      ${paginatedHelperName}(data[0]);`);
+  } else {
+    const itemModel = modelMap.get(itemModelName);
+    if (itemModel) {
+      const assertions = buildFieldAssertions(itemModel, 'data[0]', modelMap);
+      if (assertions.length > 0) {
+        lines.push('      expect(data.length).toBeGreaterThan(0);');
+        for (const assertion of assertions) {
+          lines.push(`      ${assertion}`);
+        }
       }
     }
   }
@@ -300,6 +335,8 @@ function renderBodyTest(
   method: string,
   serviceProp: string,
   modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  entityHelpers?: Set<string>,
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
@@ -328,19 +365,24 @@ function renderBodyTest(
     lines.push('      expect(fetchBody()).toBeDefined();');
   }
 
-  // Fix #11: Response field assertions (no redundant toBeDefined())
-  const responseModel = modelMap.get(responseModelName);
-  if (responseModel) {
-    const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
-    if (assertions.length > 0) {
-      for (const assertion of assertions) {
-        lines.push(`      ${assertion}`);
+  // Use entity helper if available, otherwise inline assertions
+  const bodyHelperName = ctx ? `expect${resolveInterfaceName(responseModelName, ctx)}` : null;
+  if (bodyHelperName && entityHelpers?.has(bodyHelperName)) {
+    lines.push(`      ${bodyHelperName}(result);`);
+  } else {
+    const responseModel = modelMap.get(responseModelName);
+    if (responseModel) {
+      const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
+      if (assertions.length > 0) {
+        for (const assertion of assertions) {
+          lines.push(`      ${assertion}`);
+        }
+      } else {
+        lines.push('      expect(result).toBeDefined();');
       }
     } else {
       lines.push('      expect(result).toBeDefined();');
     }
-  } else {
-    lines.push('      expect(result).toBeDefined();');
   }
 
   lines.push('    });');
@@ -353,6 +395,8 @@ function renderGetTest(
   method: string,
   serviceProp: string,
   modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  entityHelpers?: Set<string>,
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
@@ -368,19 +412,24 @@ function renderGetTest(
   const expectedPathGet = buildExpectedPath(op);
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathGet}');`);
 
-  // Fix #11: Response field assertions (no redundant toBeDefined())
-  const responseModel = modelMap.get(responseModelName);
-  if (responseModel) {
-    const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
-    if (assertions.length > 0) {
-      for (const assertion of assertions) {
-        lines.push(`      ${assertion}`);
+  // Use entity helper if available, otherwise inline assertions
+  const helperName = ctx ? `expect${resolveInterfaceName(responseModelName, ctx)}` : null;
+  if (helperName && entityHelpers?.has(helperName)) {
+    lines.push(`      ${helperName}(result);`);
+  } else {
+    const responseModel = modelMap.get(responseModelName);
+    if (responseModel) {
+      const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
+      if (assertions.length > 0) {
+        for (const assertion of assertions) {
+          lines.push(`      ${assertion}`);
+        }
+      } else {
+        lines.push('      expect(result).toBeDefined();');
       }
     } else {
       lines.push('      expect(result).toBeDefined();');
     }
-  } else {
-    lines.push('      expect(result).toBeDefined();');
   }
 
   lines.push('    });');
@@ -427,6 +476,27 @@ function renderErrorTest(
 
   lines.push('');
   lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
+
+  // Add error-status tests based on the operation's error responses
+  const errorStatuses = new Set(op.errors.map((e) => e.statusCode));
+
+  // 404 test for find/get methods
+  if (errorStatuses.has(404) && (method.startsWith('get') || method.startsWith('find'))) {
+    lines.push('');
+    lines.push("    it('throws NotFoundException on 404', async () => {");
+    lines.push("      fetchOnce('', { status: 404 });");
+    lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
+    lines.push('    });');
+  }
+
+  // 422 test for create/update methods
+  if (errorStatuses.has(422) && (method.startsWith('create') || method.startsWith('update'))) {
+    lines.push('');
+    lines.push("    it('throws UnprocessableEntityException on 422', async () => {");
+    lines.push("      fetchOnce('', { status: 422 });");
+    lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
+    lines.push('    });');
+  }
 }
 
 /**
@@ -444,6 +514,62 @@ function buildCallArgs(op: Operation, plan: any, modelMap: Map<string, Model>): 
     return pathArgs ? `${pathArgs}, ${fb}` : fb;
   }
   return pathArgs || '';
+}
+
+/**
+ * Generate per-entity assertion helper functions for models used in 2+ tests.
+ * Returns lines like: function expectConnection(result: any) { expect(...) }
+ */
+/**
+ * Generate per-entity assertion helper functions for models used in 2+ tests.
+ * Returns { lines, helpers } where helpers is a Set of helper function names.
+ */
+function generateEntityHelpers(
+  plans: { op: Operation; plan: any; method: string }[],
+  modelMap: Map<string, Model>,
+  ctx: EmitterContext,
+): { lines: string[]; helpers: Set<string> } {
+  // Count how many tests reference each response model
+  const modelUsage = new Map<string, number>();
+  for (const { op, plan } of plans) {
+    let modelName: string | null = null;
+    if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+      modelName = op.pagination.itemType.name;
+      const rawModel = modelMap.get(modelName);
+      if (rawModel) {
+        const unwrapped = unwrapListModel(rawModel, modelMap);
+        if (unwrapped) modelName = unwrapped.name;
+      }
+    } else if (plan.responseModelName) {
+      modelName = plan.responseModelName;
+    }
+    if (modelName) {
+      modelUsage.set(modelName, (modelUsage.get(modelName) ?? 0) + 1);
+    }
+  }
+
+  const lines: string[] = [];
+  const helpers = new Set<string>();
+  for (const [modelName, count] of modelUsage) {
+    if (count < 2) continue;
+    const model = modelMap.get(modelName);
+    if (!model) continue;
+    const assertions = buildFieldAssertions(model, 'result', modelMap);
+    if (assertions.length === 0) continue;
+
+    const domainName = resolveInterfaceName(modelName, ctx);
+    const helperName = `expect${domainName}`;
+    if (helpers.has(helperName)) continue;
+    helpers.add(helperName);
+
+    lines.push(`function ${helperName}(result: any) {`);
+    for (const assertion of assertions) {
+      lines.push(`  ${assertion}`);
+    }
+    lines.push('}');
+    lines.push('');
+  }
+  return { lines, helpers };
 }
 
 /**
