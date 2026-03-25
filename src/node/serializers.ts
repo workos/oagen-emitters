@@ -59,6 +59,9 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
   const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
   const dedup = buildDeduplicationMap(models);
+  // Track model names whose serialize function was skipped due to baseline incompatibility.
+  // Dependent serializers that import a skipped serialize function must also skip.
+  const skippedSerializeModels = new Set<string>();
 
   for (const model of models) {
     // Fix #5: Skip per-domain ListMetadata serializers — the shared deserializeListMetadata covers these
@@ -102,6 +105,35 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     // in ALL models skip conversion — not just those with a baseline interface.
     const skipFormatFields = new Set<string>();
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
+
+    // Check if the serialize function would produce type errors against the baseline
+    // wire interface.  Skip serialize generation when the baseline has required fields
+    // that aren't in the IR model — the generated serialize body would be missing those
+    // fields, causing TS2741 / TS2322 errors.  The merger will preserve any existing
+    // hand-written serialize function.
+    let shouldSkipSerialize = serializerHasBaselineIncompatibility(model, baselineResponse, baselineDomain, ctx);
+    // Also skip if any nested model dependency had its serialize skipped — the generated
+    // serialize function would reference a non-existent serialize export.
+    if (!shouldSkipSerialize) {
+      for (const field of model.fields) {
+        for (const ref of collectSerializedModelRefs(field.type)) {
+          // Check both the original model name and its dedup canonical name
+          if (skippedSerializeModels.has(ref)) {
+            shouldSkipSerialize = true;
+            break;
+          }
+          const canon = dedup.get(ref);
+          if (canon && skippedSerializeModels.has(canon)) {
+            shouldSkipSerialize = true;
+            break;
+          }
+        }
+        if (shouldSkipSerialize) break;
+      }
+    }
+    if (shouldSkipSerialize) {
+      skippedSerializeModels.add(model.name);
+    }
     if (useStringDates) {
       // Global convention: skip date-time conversion for every date field
       for (const field of model.fields) {
@@ -215,43 +247,95 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     // truly needed, the merger will preserve the existing serializer for that field.
     lines.push('});');
 
-    // Serialize function (domain → wire)
-    const serParamPrefix = model.fields.length === 0 ? '_' : '';
-    lines.push('');
-    lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
-    lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
-    lines.push(`): ${responseName}${typeParams.usage} => ({`);
-    const seenSerFields = new Set<string>();
-    for (const field of model.fields) {
-      const wire = wireFieldName(field.name);
-      if (seenSerFields.has(wire)) continue;
-      seenSerFields.add(wire);
-      const domain = fieldName(field.name);
-      const domainAccess = `model.${domain}`;
-      const skip = skipFormatFields.has(field.name);
-      const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
-      // Treat new fields (not in baseline) as effectively optional — see deserializer comment above.
-      const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
-      const effectivelyOptionalSer = !field.required || isNewSerField;
-      // If the expression involves a function call (nested model/array serializer),
-      // wrap with a null check to prevent crashes when tests pass `{} as any`.
-      // When the field type is nullable, preserve null instead of undefined.
-      // For required non-nullable fields, skip the null guard: the domain type
-      // guarantees the value is present, and adding `?? null` would violate the
-      // wire type contract (the field is declared as non-nullable in the response).
-      const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
-      if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
-        const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : 'null';
-        if (expr.startsWith(`${domainAccess} != null ?`)) {
-          lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
+    // Serialize function (domain → wire) — skip when the baseline wire interface
+    // has required fields not covered by the IR model (the merger will preserve
+    // any existing hand-written serialize function).
+    if (!shouldSkipSerialize) {
+      const serParamPrefix = model.fields.length === 0 ? '_' : '';
+      lines.push('');
+      lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
+      lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
+      lines.push(`): ${responseName}${typeParams.usage} => ({`);
+      const seenSerFields = new Set<string>();
+      for (const field of model.fields) {
+        const wire = wireFieldName(field.name);
+        if (seenSerFields.has(wire)) continue;
+        seenSerFields.add(wire);
+        const domain = fieldName(field.name);
+        const domainAccess = `model.${domain}`;
+        const skip = skipFormatFields.has(field.name);
+        const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
+        // Treat new fields (not in baseline) as effectively optional — see deserializer comment above.
+        const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
+        const effectivelyOptionalSer = !field.required || isNewSerField;
+
+        // Check if the domain field is optional but the baseline wire field is required.
+        // The serializer assigns `T | undefined` to the wire field, but the wire interface
+        // expects `T`.  Add `?? null` coalesce to strip undefined and satisfy the wire type.
+        const baselineWireField = baselineResponse?.fields?.[wire];
+        const baselineDomainField = baselineDomain?.fields?.[domain];
+        // The domain field is optional if: (a) the IR says it's optional, (b) the baseline says it's optional,
+        // or (c) the baseline domain exists but doesn't have this field name (it's a "new field on existing model"
+        // and the generated interface makes it optional).  Case (c) covers renamed fields (e.g., baseline
+        // uses `type` but the generated interface uses `connectionType`).
+        const isNewFieldOnExistingDomain = baselineDomain && !baselineDomainField;
+        const domainFieldIsOptional = !field.required || (baselineDomainField?.optional ?? false) || !!isNewFieldOnExistingDomain;
+        const wireFieldIsRequired = baselineWireField ? !baselineWireField.optional : field.required;
+        const needsUndefinedCoalesce = domainFieldIsOptional && wireFieldIsRequired && expr === domainAccess;
+
+        // If the expression involves a function call (nested model/array serializer),
+        // wrap with a null check to prevent crashes when callers pass partial objects
+        // (e.g., `{} as any` in tests).
+        // When the field type is nullable, preserve null instead of undefined.
+        // Guard all nested model/array-of-model fields, including required ones,
+        // as a defensive measure against runtime undefined values.
+        const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable' || needsNullGuard(field.type);
+        if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
+          // For nullable fields, fallback to null.  For optional fields, fallback to undefined.
+          // For required non-nullable fields (guarded defensively), pass through the raw value
+          // with `as any` to avoid type errors — the guard only triggers when callers violate
+          // the type contract (e.g., `{} as any` in tests).
+          const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : `${domainAccess} as any`;
+          if (expr.startsWith(`${domainAccess} != null ?`)) {
+            lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
+          } else {
+            lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : ${fallback},`);
+          }
+        } else if (needsUndefinedCoalesce) {
+          // Domain field is optional (T | undefined) but wire field is required (T or T | null).
+          // When the wire type includes null, coalesce undefined → null.
+          // Otherwise, use a non-null assertion — the consumer is responsible for
+          // providing required fields when calling serialize, so undefined at runtime
+          // indicates a programming error on the caller's side.
+          const wireHasNull = baselineWireField?.type?.includes('null') || field.type.kind === 'nullable';
+          if (wireHasNull) {
+            lines.push(`  ${wire}: ${expr} ?? null,`);
+          } else {
+            lines.push(`  ${wire}: ${expr}!,`);
+          }
+        } else if (field.type.kind === 'nullable' && expr === domainAccess) {
+          // Check if the domain interface makes this field optional (T | null | undefined).
+          // This can happen when: (a) the IR says not required, (b) the field is new on
+          // an existing model, or (c) the baseline domain is required but the baseline
+          // response is optional (domainResponseOptionalMismatch in models.ts).
+          // In all these cases, the domain type includes `undefined` but the wire type
+          // may only accept `T | null`, so coalesce undefined → null.
+          const domainWireField2 = wireFieldName(field.name);
+          const responseBaselineField2 = baselineResponse?.fields?.[domainWireField2];
+          const baselineDomainField2 = baselineDomain?.fields?.[domain];
+          const domainResponseMismatch = baselineDomainField2 && !baselineDomainField2.optional && responseBaselineField2 && responseBaselineField2.optional;
+          const fieldEffectivelyOptional = !field.required || isNewSerField || !!domainResponseMismatch;
+          if (fieldEffectivelyOptional) {
+            lines.push(`  ${wire}: ${expr} ?? null,`);
+          } else {
+            lines.push(`  ${wire}: ${expr},`);
+          }
         } else {
-          lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : ${fallback},`);
+          lines.push(`  ${wire}: ${expr},`);
         }
-      } else {
-        lines.push(`  ${wire}: ${expr},`);
       }
+      lines.push('});');
     }
-    lines.push('});');
 
     files.push({
       path: serializerPath,
@@ -542,4 +626,120 @@ function defaultForType(ref: TypeRef): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Check if the generated serialize function would produce type errors
+ * against the baseline wire (response) interface.  Returns true when:
+ * - The baseline response interface has required fields whose wire name
+ *   doesn't match any IR model field → TS2741 missing property.
+ * - The baseline domain interface has required fields whose camelCase name
+ *   doesn't match any IR model field → the serializer would produce
+ *   expressions referencing domain fields that don't exist on the baseline.
+ * - The baseline response has a required array field whose type references
+ *   a different module than where the serializer imports its nested serializer.
+ */
+function serializerHasBaselineIncompatibility(
+  model: Model,
+  baselineResponse: { fields?: Record<string, { type: string; optional: boolean }> } | undefined,
+  baselineDomain?: { fields?: Record<string, { type: string; optional: boolean }> },
+  ctx?: EmitterContext,
+): boolean {
+  if (!baselineResponse?.fields) return false;
+
+  // Collect all wire-format field names the IR model will produce
+  const irWireFields = new Set<string>();
+  const irDomainFields = new Set<string>();
+  for (const field of model.fields) {
+    irWireFields.add(wireFieldName(field.name));
+    irDomainFields.add(fieldName(field.name));
+  }
+
+  // Check if the baseline response has required fields not in the IR model
+  for (const [wireField2, fieldDef] of Object.entries(baselineResponse.fields)) {
+    if (fieldDef.optional) continue; // Optional fields won't cause TS errors
+    if (!irWireFields.has(wireField2)) {
+      // Baseline requires a field the IR doesn't produce → type error
+      return true;
+    }
+  }
+
+  // Check if the baseline domain has required fields whose names differ from
+  // what the IR would generate (e.g., baseline uses `type` but IR maps
+  // `connection_type` → `connectionType`).  If there are required fields in
+  // the baseline domain that the IR doesn't produce, the serializer would read
+  // from domain fields that may have incompatible types.
+  if (baselineDomain?.fields) {
+    const baselineRequiredFields = Object.entries(baselineDomain.fields)
+      .filter(([, f]) => !f.optional)
+      .map(([name]) => name);
+    // Count how many baseline required fields are NOT in the IR domain fields.
+    // If more than 1/3 of required fields are unrecognized, assume significant
+    // structural differences → skip serialize to avoid type mismatches.
+    const unmatchedCount = baselineRequiredFields.filter((n) => !irDomainFields.has(n)).length;
+    if (unmatchedCount > 0 && baselineRequiredFields.length > 0) {
+      const unmatchedRatio = unmatchedCount / baselineRequiredFields.length;
+      if (unmatchedRatio > 0.3) {
+        return true;
+      }
+    }
+  }
+
+  // Check for nested model type mismatches: when the baseline response interface
+  // references a nested model type whose source file is in a DIFFERENT directory
+  // than the serializer's parent directory.  The generated serializer creates local
+  // copies of nested model interfaces (via the model generator), and these local
+  // copies are structurally similar but TypeScript treats them as different types.
+  // Example: OrganizationDomainResponse from organization-domains/interfaces/ vs
+  // the generated copy in organizations/interfaces/ — same structure, different modules.
+  if (ctx?.apiSurface?.interfaces) {
+    // Determine the serializer's parent directory from the model name
+    const modelSourceFile = (baselineResponse as any)?.sourceFile as string | undefined;
+    const responseDir = modelSourceFile ? modelSourceFile.split('/').slice(0, 2).join('/') : null;
+
+    for (const field of model.fields) {
+      // Unwrap nullable to get the inner model type
+      let fieldType = field.type;
+      if (fieldType.kind === 'nullable') fieldType = fieldType.inner;
+      if (fieldType.kind !== 'array' && fieldType.kind !== 'model') continue;
+      const innerType = fieldType.kind === 'array' ? fieldType.items : fieldType;
+      if (innerType.kind !== 'model') continue;
+
+      const nestedWireName = wireInterfaceName(resolveInterfaceName(innerType.name, ctx));
+      const wireField3 = wireFieldName(field.name);
+      const baselineWireField2 = baselineResponse.fields[wireField3];
+      if (!baselineWireField2) continue;
+
+      // Check for type name mismatch: the baseline wire field references a type
+      // that is different from what the generated serializer would produce.
+      // e.g., baseline has `role: RoleResponse` but the deduped serializer returns
+      // `AddRolePermissionResponse`.
+      const baselineTypeNames = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*Response\b/g) || [];
+      if (baselineTypeNames.length > 0 && !baselineTypeNames.includes(nestedWireName)) {
+        // The baseline expects a different Response type than the serializer produces
+        return true;
+      }
+
+      // Check if the baseline wire field type includes the nested wire type name
+      if (baselineWireField2.type.includes(nestedWireName) || baselineWireField2.type.match(/\b[A-Z]\w*Response\b/)) {
+        // Extract type names from the baseline field type
+        const typeNames = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
+        for (const typeName of typeNames) {
+          if (typeName === 'Record' || typeName === 'Array') continue;
+          const nestedIface = ctx.apiSurface.interfaces[typeName];
+          if (!nestedIface) continue;
+          const nestedSrc = (nestedIface as any).sourceFile as string | undefined;
+          if (!nestedSrc || !responseDir) continue;
+          const nestedDir = nestedSrc.split('/').slice(0, 2).join('/');
+          if (nestedDir !== responseDir) {
+            // The baseline response uses a type from a different directory than
+            // where the response itself lives → cross-module type incompatibility
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
 }
