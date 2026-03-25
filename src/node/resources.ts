@@ -101,9 +101,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     if (ops.length === 0) continue;
 
     if (ops.length < service.operations.length) {
-      // Partial coverage: create a service with only uncovered operations
+      // Partial coverage: create a service with only uncovered operations.
+      // Remove skipIfExists so the merger can add these new methods to the
+      // existing class file (otherwise uncovered operations are silently lost).
       const partialService = { ...service, operations: ops };
-      files.push(generateResourceClass(partialService, ctx));
+      const file = generateResourceClass(partialService, ctx);
+      delete file.skipIfExists;
+      files.push(file);
     } else {
       files.push(generateResourceClass(service, ctx));
     }
@@ -123,6 +127,31 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     plan: planOperation(op),
     method: resolveMethodName(op, service, ctx),
   }));
+
+  // Sort plans to match the existing file's method order.
+  // When the merger integrates generated content with existing files, its
+  // URL-fingerprint fallback (pass 2) matches by position among methods that
+  // share the same endpoint path.  If the spec lists POST before GET for a
+  // path (common in OpenAPI) but the existing class has them in a different
+  // order, JSDoc comments get attached to the wrong methods (list↔create,
+  // add↔set swaps).  Sorting by the overlay's method order ensures the
+  // generated output matches the existing file's method order.
+  if (ctx.overlayLookup?.methodByOperation) {
+    const methodOrder = new Map<string, number>();
+    let pos = 0;
+    for (const [, info] of ctx.overlayLookup.methodByOperation) {
+      if (!methodOrder.has(info.methodName)) {
+        methodOrder.set(info.methodName, pos++);
+      }
+    }
+    if (methodOrder.size > 0) {
+      plans.sort((a, b) => {
+        const aPos = methodOrder.get(a.method) ?? Number.MAX_SAFE_INTEGER;
+        const bPos = methodOrder.get(b.method) ?? Number.MAX_SAFE_INTEGER;
+        return aPos - bPos;
+      });
+    }
+  }
 
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
