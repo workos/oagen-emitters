@@ -21,12 +21,28 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const baselineAlias = ctx.apiSurface?.typeAliases?.[enumDef.name];
     const lines: string[] = [];
 
+    // Track whether the generated content has new values not in the baseline.
+    // When it does, skipIfExists must be false so the file gets updated.
+    let hasNewValues = false;
+
     if (baselineEnum?.members) {
-      // Generate TS `enum` using baseline member names and values directly
+      // Generate TS `enum` using baseline member names and values, merging
+      // any new IR values that the baseline is missing.
+      const existingValues = new Set(Object.values(baselineEnum.members).map(String));
+      const irValues = enumDef.values.map((v) => String(v.value));
+      const missingValues = irValues.filter((v) => !existingValues.has(v));
+      hasNewValues = missingValues.length > 0;
+
       lines.push(`export enum ${enumDef.name} {`);
       for (const [memberName, memberValue] of Object.entries(baselineEnum.members)) {
         const valueStr = typeof memberValue === 'string' ? `'${memberValue}'` : String(memberValue);
         lines.push(`  ${memberName} = ${valueStr},`);
+      }
+      // Append new values from the spec that the baseline is missing
+      for (const val of missingValues) {
+        // Derive a PascalCase member name from the value
+        const memberName = val.replace(/[^a-zA-Z0-9]+/g, '');
+        lines.push(`  ${memberName} = '${val}',`);
       }
       lines.push('}');
     } else if (baselineAlias?.value) {
@@ -34,6 +50,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const baselineValues = extractLiteralUnionValues(baselineAlias.value);
       const irValues = enumDef.values.map((v) => String(v.value));
       const missing = irValues.filter((v) => !baselineValues.has(v));
+      hasNewValues = missing.length > 0;
       if (missing.length > 0) {
         // Baseline is missing values from the spec — regenerate with all values merged
         const allValues = [...baselineValues, ...missing];
@@ -63,7 +80,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     files.push({
       path: `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`,
       content: lines.join('\n'),
-      skipIfExists: true,
+      // When the spec has new values the baseline is missing, allow the file
+      // to be updated so the SDK picks up the full set of enum values.
+      skipIfExists: !hasNewValues,
     });
   }
 
