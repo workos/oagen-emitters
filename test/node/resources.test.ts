@@ -94,9 +94,9 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should have AutoPaginatable and fetchAndDeserialize imports
-    expect(content).toContain("import { AutoPaginatable } from '../common/utils/pagination'");
-    expect(content).toContain("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize'");
+    // Should have AutoPaginatable type import and createPaginatedList import
+    expect(content).toContain("import type { AutoPaginatable } from '../common/utils/pagination'");
+    expect(content).toContain("import { createPaginatedList } from '../common/utils/fetch-and-deserialize'");
 
     // Should generate options interface
     expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
@@ -145,9 +145,8 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use item type (Connection) not list wrapper (ConnectionList)
-    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
+    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
     expect(content).toContain('deserializeConnection');
-    expect(content).toContain('new AutoPaginatable(');
     expect(content).toContain('Promise<AutoPaginatable<Connection,');
 
     // Should NOT reference the list wrapper type
@@ -782,13 +781,10 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should use fetchAndDeserialize + new AutoPaginatable (existing SDK-compatible pattern)
-    expect(content).toContain('new AutoPaginatable(');
-    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
+    // Should use createPaginatedList helper for concise paginated methods
+    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
     expect(content).toContain('this.workos,');
     expect(content).toContain('deserializeConnection');
-    // Should NOT contain the createPaginatedList helper (may not exist in target SDK)
-    expect(content).not.toContain('createPaginatedList');
   });
 
   it('prefixes ListOptions with service name when method is "list"', () => {
@@ -1130,5 +1126,92 @@ describe('hasCompatibleConstructor', () => {
     };
 
     expect(hasCompatibleConstructor('EmptyService', ctxWithSurface)).toBe(true);
+  });
+});
+
+describe('partial service coverage', () => {
+  it('generates methods for uncovered operations in partially covered services', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createEvent',
+            httpMethod: 'post',
+            path: '/audit_logs/events',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuditLogEvent' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+          {
+            name: 'getRetention',
+            httpMethod: 'get',
+            path: '/audit_logs/retention',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuditLogRetention' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    // createEvent is covered by existing AuditLogs class, getRetention is NOT
+    const ctxPartial: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /audit_logs/events',
+            {
+              className: 'AuditLogs',
+              methodName: 'createEvent',
+              params: [],
+              returnType: 'AuditLogEvent',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          AuditLogs: {
+            name: 'AuditLogs',
+            methods: {
+              createEvent: [{ params: [], returnType: 'AuditLogEvent' }],
+            },
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, ctxPartial);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+
+    // Should generate method for uncovered operation
+    expect(content).toContain('async getRetention');
+    // Should NOT generate method for covered operation
+    expect(content).not.toContain('async createEvent');
   });
 });

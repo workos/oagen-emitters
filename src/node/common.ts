@@ -245,5 +245,29 @@ export function testPaginatedList(
     expect(Array.isArray(data)).toBe(true);
     expect(listMetadata).toBeDefined();
   });
+}
+
+/**
+ * Shared test helper: asserts that a paginated list call returns empty data
+ * when the server responds with an empty list.
+ */
+export function testEmptyResults(fn: () => Promise<any>) {
+  it('handles empty results', async () => {
+    fetchOnce({ data: [], list_metadata: { before: null, after: null } });
+    const { data } = await fn();
+    expect(data).toEqual([]);
+  });
+}
+
+/**
+ * Shared test helper: asserts that pagination params are forwarded correctly.
+ */
+export function testPaginationParams(fn: (opts: any) => Promise<any>, fixture: any) {
+  it('forwards pagination params', async () => {
+    fetchOnce(fixture);
+    await fn({ limit: 10, after: 'cursor_abc' });
+    expect(fetchSearchParams()['limit']).toBe('10');
+    expect(fetchSearchParams()['after']).toBe('cursor_abc');
+  });
 }`;
 }

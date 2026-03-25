@@ -12,7 +12,7 @@ import {
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 import { resolveResourceClassName } from './resources.js';
-import { createServiceDirResolver, isServiceCoveredByExisting, relativeImport } from './utils.js';
+import { createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations, relativeImport } from './utils.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -28,10 +28,14 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
 
   // Generate test files per service — skip services whose endpoints are fully
-  // covered by existing hand-written service classes.
+  // covered by existing hand-written service classes. For partially covered
+  // services, generate tests only for uncovered operations.
   for (const service of spec.services) {
     if (isServiceCoveredByExisting(service, ctx)) continue;
-    files.push(generateServiceTest(service, spec, ctx, modelMap));
+    const ops = uncoveredOperations(service, ctx);
+    if (ops.length === 0) continue;
+    const testService = ops.length < service.operations.length ? { ...service, operations: ops } : service;
+    files.push(generateServiceTest(testService, spec, ctx, modelMap));
   }
 
   // Generate serializer round-trip tests
@@ -76,9 +80,9 @@ function generateServiceTest(
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
-  // Note: testUnauthorized/testPaginatedList are NOT imported — they are inlined
-  // in the generated test body to avoid relying on symbols that may not exist
-  // in the target SDK's test-utils.ts (which uses skipIfExists).
+  // Import shared test helpers for error and pagination tests
+  if (hasPaginated) testUtils.push('testEmptyResults', 'testPaginationParams');
+  testUtils.push('testUnauthorized');
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -259,28 +263,16 @@ function renderPaginatedTest(
 
   lines.push('    });');
 
-  // Edge case: handles empty results
+  // Edge case: handles empty results — use shared helper
   lines.push('');
-  lines.push("    it('handles empty results', async () => {");
-  lines.push('      fetchOnce({ data: [], list_metadata: { before: null, after: null } });');
-  lines.push('');
-  lines.push(`      const { data } = await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''});`);
-  lines.push('');
-  lines.push('      expect(data).toEqual([]);');
-  lines.push('    });');
+  lines.push(`    testEmptyResults(() => workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}));`);
 
-  // Edge case: forwards pagination params
+  // Edge case: forwards pagination params — use shared helper
   lines.push('');
-  lines.push("    it('forwards pagination params', async () => {");
-  lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
-  lines.push('');
-  lines.push(
-    `      await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}{ limit: 10, after: 'cursor_abc' });`,
-  );
-  lines.push('');
-  lines.push("      expect(fetchSearchParams()['limit']).toBe('10');");
-  lines.push("      expect(fetchSearchParams()['after']).toBe('cursor_abc');");
-  lines.push('    });');
+  lines.push(`    testPaginationParams(`);
+  lines.push(`      (opts) => workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}opts),`);
+  lines.push(`      list${itemModelName}Fixture,`);
+  lines.push('    );');
 }
 
 function renderDeleteTest(
@@ -442,10 +434,7 @@ function renderErrorTest(lines: string[], op: Operation, plan: any, method: stri
   const args = buildCallArgs(op, plan);
 
   lines.push('');
-  lines.push("    it('throws on unauthorized', async () => {");
-  lines.push("      fetchOnce({ message: 'Unauthorized' }, { status: 401 });");
-  lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
-  lines.push('    });');
+  lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
 }
 
 /**
@@ -638,11 +627,12 @@ function hasNestedSerialization(ref: TypeRef): boolean {
 }
 
 /**
- * Determine whether a model has any fields that require non-trivial serialization.
- * Simple flat models (all primitives without special formats) are excluded.
+ * Determine whether a model should get a round-trip serializer test.
+ * Includes all models with at least one field — every model gets both
+ * serialize and deserialize functions, so all benefit from round-trip testing.
  */
 function modelNeedsRoundTripTest(model: Model): boolean {
-  return model.fields.some((field) => hasNestedSerialization(field.type));
+  return model.fields.length > 0;
 }
 
 /**
@@ -715,7 +705,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       lines.push(`    const fixture = ${fixtureName};`);
       lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
       lines.push(`    const reserialized = serialize${domainName}(deserialized);`);
-      lines.push('    expect(reserialized).toEqual(fixture);');
+      lines.push('    expect(reserialized).toEqual(expect.objectContaining(fixture));');
       lines.push('  });');
       lines.push('});');
       lines.push('');

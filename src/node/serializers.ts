@@ -10,7 +10,9 @@ import {
   createServiceDirResolver,
   isListMetadataModel,
   isListWrapperModel,
+  buildDeduplicationMap,
 } from './utils.js';
+
 
 /**
  * Render generic type parameter declarations for a model.
@@ -56,6 +58,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
   const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
   const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
+  const dedup = buildDeduplicationMap(models);
 
   for (const model of models) {
     // Fix #5: Skip per-domain ListMetadata serializers — the shared deserializeListMetadata covers these
@@ -63,6 +66,28 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
 
     // Fix #7: Skip per-domain list wrapper serializers — the shared deserializeList covers these
     if (isListWrapperModel(model)) continue;
+
+    // Deduplication: for structurally identical models, re-export the canonical serializer
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const canonService = modelToService.get(canonicalName);
+      const canonDir = resolveDir(canonService);
+      const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+      const canonSerializerPath = `src/${canonDir}/serializers/${fileName(canonicalName)}.serializer.ts`;
+      const rel = relativeImport(serializerPath, canonSerializerPath);
+      const aliasLines = [
+        `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`,
+      ];
+      files.push({
+        path: serializerPath,
+        content: aliasLines.join('\n'),
+      });
+      continue;
+    }
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -212,7 +237,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       // wrap with a null check to prevent crashes when tests pass `{} as any`.
       // When the field type is nullable, preserve null instead of undefined.
       if (expr !== domainAccess && needsNullGuard(field.type)) {
-        const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : 'undefined';
+        const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : 'null';
         if (expr.startsWith(`${domainAccess} != null ?`)) {
           lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
         } else {

@@ -16,6 +16,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(generateWorkOSClient(spec, ctx));
   files.push(...generateServiceBarrels(spec, ctx));
   files.push(generateBarrel(spec, ctx));
+  files.push(generateWorkerBarrel(spec, ctx));
   files.push(generatePackageJson(ctx));
   files.push(generateTsConfig());
 
@@ -296,7 +297,10 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
 
     // Resource class — skip if already exported or if service is fully covered
     // by existing hand-written classes
-    if (!coveredServicesBarrel.has(service.name) && !exportedNames.has(resolvedName)) {
+    if (coveredServicesBarrel.has(service.name)) {
+      // Emit a comment indicating this service is covered by an existing class
+      lines.push(`// ${resolvedName} is covered by an existing hand-written class — not re-exported.`);
+    } else if (!exportedNames.has(resolvedName)) {
       exportedNames.add(resolvedName);
       lines.push(`export { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
     }
@@ -368,6 +372,19 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   }
 
   return { path: 'src/index.ts', content: lines.join('\n'), skipIfExists: true };
+}
+
+/**
+ * Generate a worker-compatible barrel file that re-exports everything from
+ * the main barrel. This keeps type exports in sync automatically.
+ */
+function generateWorkerBarrel(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile {
+  const lines: string[] = [];
+
+  // Re-export everything from the main index — keeps type exports in sync
+  lines.push("export * from './index';");
+
+  return { path: 'src/index.worker.ts', content: lines.join('\n'), skipIfExists: true };
 }
 
 function findEnumService(enumName: string, services: Service[]): string | undefined {
@@ -476,6 +493,7 @@ function generateTsConfig(): GeneratedFile {
       lib: ['ES2020'],
       declaration: true,
       strict: true,
+      exactOptionalPropertyTypes: true,
       esModuleInterop: true,
       skipLibCheck: true,
       forceConsistentCasingInFileNames: true,

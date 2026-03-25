@@ -13,6 +13,7 @@ import {
   createServiceDirResolver,
   isListMetadataModel,
   isListWrapperModel,
+  buildDeduplicationMap,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 
@@ -75,12 +76,45 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
 
+  // Detect structurally identical models — emit type aliases for duplicates
+  const dedup = buildDeduplicationMap(models);
+
   for (const model of models) {
     // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
     if (isListMetadataModel(model)) continue;
 
     // Fix #6: Skip per-domain list wrapper interfaces — the shared List<T>/ListResponse<T> covers these
     if (isListWrapperModel(model)) continue;
+
+    // Deduplication: if this model is structurally identical to a canonical model,
+    // emit a type alias instead of a full interface.
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const responseName = wireInterfaceName(domainName);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const canonResponseName = wireInterfaceName(canonDomainName);
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const canonService = modelToService.get(canonicalName);
+      const canonDir = resolveDir(canonService);
+      const canonRelPath =
+        canonDir === dirName
+          ? `./${fileName(canonicalName)}.interface`
+          : `../../${canonDir}/interfaces/${fileName(canonicalName)}.interface`;
+      const aliasLines = [
+        `import type { ${canonDomainName}, ${canonResponseName} } from '${canonRelPath}';`,
+        '',
+        `export type ${domainName} = ${canonDomainName};`,
+        `export type ${responseName} = ${canonResponseName};`,
+      ];
+      files.push({
+        path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
+        content: aliasLines.join('\n'),
+        skipIfExists: true,
+      });
+      continue;
+    }
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);

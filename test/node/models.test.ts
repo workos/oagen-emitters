@@ -651,3 +651,58 @@ describe('generateModels', () => {
     expect(files[0].path).toContain('pagination.interface.ts');
   });
 });
+
+describe('model deduplication', () => {
+  it('emits type alias for structurally identical models', () => {
+    const service: Service = {
+      name: 'Roles',
+      operations: [
+        {
+          name: 'getRole',
+          httpMethod: 'get',
+          path: '/roles/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'EnvironmentRole' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'EnvironmentRole',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+        ],
+      },
+      {
+        name: 'OrganizationRole',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    expect(files.length).toBe(2);
+
+    // First model: full interface
+    expect(files[0].content).toContain('export interface EnvironmentRole');
+
+    // Second model: type alias referencing canonical
+    expect(files[1].content).toContain('export type OrganizationRole = EnvironmentRole');
+    expect(files[1].content).toContain('export type OrganizationRoleResponse = EnvironmentRoleResponse');
+  });
+});

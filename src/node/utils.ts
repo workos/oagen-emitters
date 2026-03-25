@@ -303,6 +303,39 @@ function isNullableString(field: Field): boolean {
 }
 
 /**
+ * Compute a structural fingerprint for a model based on its fields.
+ * Two models with identical fingerprints are structurally equivalent.
+ */
+function modelFingerprint(model: Model): string {
+  const fields = model.fields
+    .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
+    .sort();
+  return fields.join('|');
+}
+
+/**
+ * Find structurally identical models and build a deduplication map.
+ * Returns a Map from duplicate model name → canonical model name.
+ */
+export function buildDeduplicationMap(models: Model[]): Map<string, string> {
+  const dedup = new Map<string, string>();
+  const fingerprints = new Map<string, string>();
+
+  for (const model of models) {
+    if (model.fields.length === 0) continue;
+    const fp = modelFingerprint(model);
+    const existing = fingerprints.get(fp);
+    if (existing) {
+      dedup.set(model.name, existing);
+    } else {
+      fingerprints.set(fp, model.name);
+    }
+  }
+
+  return dedup;
+}
+
+/**
  * Check whether a service's endpoints are already fully covered by existing
  * hand-written service classes.
  *
@@ -338,5 +371,26 @@ export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext
     const match = overlay.get(httpKey);
     if (!match) return false;
     return existingClassNames.has(match.className);
+  });
+}
+
+/**
+ * Return operations in a service that are NOT covered by existing hand-written
+ * service classes. For fully uncovered services, returns all operations.
+ * For partially covered services, returns only the uncovered operations.
+ */
+export function uncoveredOperations(service: Service, ctx: EmitterContext): Operation[] {
+  const overlay = ctx.overlayLookup?.methodByOperation;
+  if (!overlay || overlay.size === 0) return service.operations;
+
+  const baselineClasses = ctx.apiSurface?.classes;
+  if (!baselineClasses) return service.operations;
+  const existingClassNames = new Set(Object.keys(baselineClasses));
+
+  return service.operations.filter((op: Operation) => {
+    const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+    const match = overlay.get(httpKey);
+    if (!match) return true; // Not in overlay → uncovered
+    return !existingClassNames.has(match.className); // Class doesn't exist → uncovered
   });
 }

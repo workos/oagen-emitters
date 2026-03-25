@@ -14,7 +14,7 @@ import {
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver, isServiceCoveredByExisting } from './utils.js';
+import { docComment, createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
 
@@ -87,11 +87,29 @@ function httpMethodNeedsBody(method: string): boolean {
 
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
-  // Skip services whose endpoints are fully covered by existing hand-written
-  // service classes to avoid generating duplicate resource classes.
-  return services
-    .filter((service) => !isServiceCoveredByExisting(service, ctx))
-    .map((service) => generateResourceClass(service, ctx));
+  const files: GeneratedFile[] = [];
+
+  for (const service of services) {
+    if (isServiceCoveredByExisting(service, ctx)) {
+      // Fully covered — skip entirely
+      continue;
+    }
+
+    // Check for partial coverage: some operations covered, some not.
+    // Generate methods only for uncovered operations.
+    const ops = uncoveredOperations(service, ctx);
+    if (ops.length === 0) continue;
+
+    if (ops.length < service.operations.length) {
+      // Partial coverage: create a service with only uncovered operations
+      const partialService = { ...service, operations: ops };
+      files.push(generateResourceClass(partialService, ctx));
+    } else {
+      files.push(generateResourceClass(service, ctx));
+    }
+  }
+
+  return files;
 }
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
@@ -171,8 +189,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
-    lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
-    lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
+    lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
+    lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
   }
 
   // Check if any operation needs PostOptions (idempotent POST or custom encoding)
@@ -543,11 +561,7 @@ function renderPaginatedMethod(
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push(`    return new AutoPaginatable(`);
-  lines.push(`      await fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(this.workos, ${pathStr}, deserialize${itemType}, options),`);
-  lines.push(`      (params) => fetchAndDeserialize<${wireInterfaceName(itemType)}, ${itemType}>(this.workos, ${pathStr}, deserialize${itemType}, params),`);
-  lines.push('      options,');
-  lines.push('    );');
+  lines.push(`    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options);`);
   lines.push('  }');
 }
 
