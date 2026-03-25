@@ -70,7 +70,22 @@ export function buildServiceNameMap(services: Service[], ctx: EmitterContext): M
 export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) return existing.methodName;
+  if (existing) {
+    // Fix: when the path ends with a path parameter (single-resource operation)
+    // and the overlay method name is plural, prefer the singular form.
+    // E.g., getUsers → getUser when path is /user_management/users/{id}
+    const isSingleResource = /\/\{[^}]+\}$/.test(op.path);
+    if (isSingleResource && existing.methodName.endsWith('s') && !existing.methodName.endsWith('ss')) {
+      const singular = existing.methodName.slice(0, -1);
+      // Only singularize if it looks like a typical pluralization (ends in 's')
+      // and the spec-derived name agrees it should be singular
+      const specDerived = toCamelCase(op.name);
+      if (specDerived === singular || specDerived.endsWith(singular.slice(singular.length - 4))) {
+        return singular;
+      }
+    }
+    return existing.methodName;
+  }
   return toCamelCase(op.name);
 }
 

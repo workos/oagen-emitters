@@ -1,38 +1,151 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
+import { mapTypeRef as tsMapTypeRef } from './type-map.js';
+import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
-  fieldName,
-  wireFieldName,
-  fileName,
-  serviceDirName,
-  resolveInterfaceName,
-  buildServiceNameMap,
-  wireInterfaceName,
-} from './naming.js';
-import { assignModelsToServices, relativeImport } from './utils.js';
+  relativeImport,
+  pruneUnusedImports,
+  detectStringDateConvention,
+  buildKnownTypeNames,
+  isBaselineGeneric,
+  createServiceDirResolver,
+  isListMetadataModel,
+  isListWrapperModel,
+  buildDeduplicationMap,
+} from './utils.js';
+
+/**
+ * Render generic type parameter declarations for a model.
+ * E.g., `<CustomAttributesType = Record<string, unknown>>`.
+ * Returns empty string for non-generic models.
+ */
+function renderSerializerTypeParams(model: Model, ctx?: EmitterContext): { decl: string; usage: string } {
+  if (model.typeParams?.length) {
+    const params = model.typeParams.map((tp) => {
+      const def = tp.default ? ` = ${tsMapTypeRef(tp.default)}` : '';
+      return `${tp.name}${def}`;
+    });
+    const names = model.typeParams.map((tp) => tp.name);
+    return { decl: `<${params.join(', ')}>`, usage: `<${names.join(', ')}>` };
+  }
+  // Fallback: check if the baseline interface is generic (hand-written generics
+  // not captured in the IR).  Only apply if the baseline file path matches the
+  // generated path — meaning the existing generic file will be preserved via
+  // skipIfExists.  If paths differ, the interface is newly generated and non-generic.
+  if (ctx?.apiSurface?.interfaces) {
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (baseline?.fields) {
+      const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
+      const { modelToService, resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
+      const generatedPath = `src/${resolveDir(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
+      const pathMatches = !baselineSourceFile || baselineSourceFile === generatedPath;
+      const knownNames = buildKnownTypeNames(ctx.spec.models, ctx);
+      if (pathMatches && isBaselineGeneric(baseline.fields, knownNames)) {
+        return {
+          decl: '<GenericType extends Record<string, unknown> = Record<string, unknown>>',
+          usage: '<GenericType>',
+        };
+      }
+    }
+  }
+  return { decl: '', usage: '' };
+}
 
 export function generateSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
+  const useStringDates = detectStringDateConvention(models, ctx);
   const files: GeneratedFile[] = [];
+  const dedup = buildDeduplicationMap(models, ctx);
+  // Track model names whose serialize function was skipped due to baseline incompatibility.
+  // Dependent serializers that import a skipped serialize function must also skip.
+  const skippedSerializeModels = new Set<string>();
 
   for (const model of models) {
+    // Fix #5: Skip per-domain ListMetadata serializers — the shared deserializeListMetadata covers these
+    if (isListMetadataModel(model)) continue;
+
+    // Fix #7: Skip per-domain list wrapper serializers — the shared deserializeList covers these
+    if (isListWrapperModel(model)) continue;
+
+    // Deduplication: for structurally identical models, re-export the canonical serializer
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const canonService = modelToService.get(canonicalName);
+      const canonDir = resolveDir(canonService);
+      const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+      const canonSerializerPath = `src/${canonDir}/serializers/${fileName(canonicalName)}.serializer.ts`;
+      const rel = relativeImport(serializerPath, canonSerializerPath);
+      const aliasLines = [
+        `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`,
+      ];
+      files.push({
+        path: serializerPath,
+        content: aliasLines.join('\n'),
+      });
+      continue;
+    }
+
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+    const typeParams = renderSerializerTypeParams(model, ctx);
+    const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
 
-    // Build a set of field names where the baseline interface uses 'string' for a
-    // date-time IR field. When the baseline says 'string', the serializer must not
-    // apply new Date() / .toISOString() conversions — the types would mismatch.
+    // Build a set of field names where format conversion (new Date / BigInt) should
+    // be skipped.  When the SDK-wide convention is string dates, ALL date-time fields
+    // in ALL models skip conversion — not just those with a baseline interface.
     const skipFormatFields = new Set<string>();
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
-    if (baselineDomain) {
+
+    // Check if the serialize function would produce type errors against the baseline
+    // wire interface.  Skip serialize generation when the baseline has required fields
+    // that aren't in the IR model — the generated serialize body would be missing those
+    // fields, causing TS2741 / TS2322 errors.  The merger will preserve any existing
+    // hand-written serialize function.
+    let shouldSkipSerialize = serializerHasBaselineIncompatibility(model, baselineResponse, baselineDomain, ctx);
+    // Also skip if any nested model dependency had its serialize skipped — the generated
+    // serialize function would reference a non-existent serialize export.
+    if (!shouldSkipSerialize) {
       for (const field of model.fields) {
+        for (const ref of collectSerializedModelRefs(field.type)) {
+          // Check both the original model name and its dedup canonical name
+          if (skippedSerializeModels.has(ref)) {
+            shouldSkipSerialize = true;
+            break;
+          }
+          const canon = dedup.get(ref);
+          if (canon && skippedSerializeModels.has(canon)) {
+            shouldSkipSerialize = true;
+            break;
+          }
+        }
+        if (shouldSkipSerialize) break;
+      }
+    }
+    if (shouldSkipSerialize) {
+      skippedSerializeModels.add(model.name);
+    }
+    if (useStringDates) {
+      // Global convention: skip date-time conversion for every date field
+      for (const field of model.fields) {
+        if (hasDateTimeConversion(field.type)) {
+          skipFormatFields.add(field.name);
+        }
+      }
+    }
+    if (baselineDomain) {
+      // Per-field baseline check: also skip any other format conversions
+      // (e.g., int64 → BigInt) when the baseline uses a simpler type
+      for (const field of model.fields) {
+        if (skipFormatFields.has(field.name)) continue;
         const baselineField = baselineDomain.fields?.[fieldName(field.name)];
         if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
           skipFormatFields.add(field.name);
@@ -58,22 +171,26 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       `import type { ${domainName}, ${responseName} } from '${relativeImport(serializerPath, interfacePath)}';`,
     );
 
-    // Import nested model deserializers/serializers
+    // Import nested model deserializers/serializers as a single merged import.
+    // pruneUnusedImports will strip any unused identifiers (e.g., serialize*
+    // when shouldSkipSerialize is true).
     for (const dep of nestedModelRefs) {
       const depService = modelToService.get(dep);
       const depDir = resolveDir(depService);
       const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
       const depName = resolveInterfaceName(dep, ctx);
-      const imports = [`deserialize${depName}`, `serialize${depName}`];
-      lines.push(`import { ${imports.join(', ')} } from '${relativeImport(serializerPath, depSerializerPath)}';`);
+      const rel = relativeImport(serializerPath, depSerializerPath);
+      lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
     }
     lines.push('');
 
     // Deserialize function (wire → domain) — deduplicate by camelCase name
     const seenDeserFields = new Set<string>();
-    lines.push(`export const deserialize${domainName} = (`);
-    lines.push(`  response: ${responseName},`);
-    lines.push(`): ${domainName} => ({`);
+    // Prefix param with _ when model has no fields to avoid unused-param warnings
+    const deserParamPrefix = model.fields.length === 0 ? '_' : '';
+    lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
+    lines.push(`  ${deserParamPrefix}response: ${responseName}${typeParams.usage},`);
+    lines.push(`): ${domainName}${typeParams.usage} => ({`);
     for (const field of model.fields) {
       const domain = fieldName(field.name);
       if (seenDeserFields.has(domain)) continue;
@@ -82,14 +199,35 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       const wireAccess = `response.${wire}`;
       const skip = skipFormatFields.has(field.name);
       const expr = skip ? wireAccess : deserializeExpression(field.type, wireAccess, ctx);
+      // Treat new fields (not in baseline) as effectively optional: the merger
+      // can deep-merge them into existing interfaces but cannot update existing
+      // deserializer bodies, so the wire response may not contain them.
+      const isNewField = baselineDomain && !baselineDomain.fields?.[domain];
+      const effectivelyOptional = !field.required || isNewField;
       // If the field is optional and the expression involves a function call,
-      // wrap with a null check to avoid passing undefined to the deserializer
-      if (!field.required && expr !== wireAccess && needsNullGuard(field.type)) {
-        lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : undefined,`);
+      // wrap with a null check to avoid passing undefined to the deserializer.
+      // When the field type is nullable, preserve null on the wire instead of
+      // converting it to undefined (APIs distinguish null from absent).
+      if (effectivelyOptional && expr !== wireAccess && needsNullGuard(field.type)) {
+        const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
+        // If the expression already starts with a null guard from nullable handling,
+        // don't wrap it again — just replace the inner null fallback
+        if (expr.startsWith(`${wireAccess} != null ?`)) {
+          lines.push(`  ${domain}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
+        } else {
+          lines.push(`  ${domain}: ${wireAccess} != null ? ${expr} : ${fallback},`);
+        }
       } else if (field.required && expr === wireAccess) {
-        // Required field with direct assignment — add fallback for cases where
-        // the response interface makes the field optional (baseline override)
-        const fallback = defaultForType(field.type);
+        // Required field with direct assignment — only add a fallback when the
+        // response interface makes the field optional (baseline override mismatch)
+        // or the field is newly added. When the field is required on BOTH
+        // interfaces, the response always contains it — no fallback is needed.
+        // This prevents incorrect fallbacks like ?? '' on string|null fields
+        // and invalid enum fallbacks like ?? 'Pending'.
+        const responseFieldInfo = baselineResponse?.fields?.[wire];
+        const responseFieldOptional = responseFieldInfo?.optional ?? false;
+        const needsFallback = responseFieldOptional || isNewField;
+        const fallback = needsFallback ? defaultForType(field.type) : null;
         if (fallback) {
           lines.push(`  ${domain}: ${expr} ?? ${fallback},`);
         } else {
@@ -99,36 +237,108 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
         lines.push(`  ${domain}: ${expr},`);
       }
     }
+    // NOTE: Previously we added passthrough assignments for baseline-required fields
+    // missing from the IR model.  This was removed because it creates type errors:
+    // the serializer would output fields that don't exist on the generated interface
+    // (e.g., Connection.type, AuditLogSchema.createdAt).  If a baseline field is
+    // truly needed, the merger will preserve the existing serializer for that field.
     lines.push('});');
 
-    // Serialize function (domain → wire)
-    lines.push('');
-    lines.push(`export const serialize${domainName} = (`);
-    lines.push(`  model: ${domainName},`);
-    lines.push(`): ${responseName} => ({`);
-    const seenSerFields = new Set<string>();
-    for (const field of model.fields) {
-      const wire = wireFieldName(field.name);
-      if (seenSerFields.has(wire)) continue;
-      seenSerFields.add(wire);
-      const domain = fieldName(field.name);
-      const domainAccess = `model.${domain}`;
-      const skip = skipFormatFields.has(field.name);
-      const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
-      // If the field is optional and the expression involves a function call,
-      // wrap with a null check to avoid passing undefined to the serializer
-      if (!field.required && expr !== domainAccess && needsNullGuard(field.type)) {
-        lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : undefined,`);
-      } else {
-        lines.push(`  ${wire}: ${expr},`);
+    // Serialize function (domain → wire) — skip when the baseline wire interface
+    // has required fields not covered by the IR model (the merger will preserve
+    // any existing hand-written serialize function).
+    if (!shouldSkipSerialize) {
+      const serParamPrefix = model.fields.length === 0 ? '_' : '';
+      lines.push('');
+      lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
+      lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
+      lines.push(`): ${responseName}${typeParams.usage} => ({`);
+      const seenSerFields = new Set<string>();
+      for (const field of model.fields) {
+        const wire = wireFieldName(field.name);
+        if (seenSerFields.has(wire)) continue;
+        seenSerFields.add(wire);
+        const domain = fieldName(field.name);
+        const domainAccess = `model.${domain}`;
+        const skip = skipFormatFields.has(field.name);
+        const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx);
+        // Treat new fields (not in baseline) as effectively optional — see deserializer comment above.
+        const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
+        const effectivelyOptionalSer = !field.required || isNewSerField;
+
+        // Check if the domain field is optional but the baseline wire field is required.
+        // The serializer assigns `T | undefined` to the wire field, but the wire interface
+        // expects `T`.  Add `?? null` coalesce to strip undefined and satisfy the wire type.
+        const baselineWireField = baselineResponse?.fields?.[wire];
+        const baselineDomainField = baselineDomain?.fields?.[domain];
+        // The domain field is optional if: (a) the IR says it's optional, (b) the baseline says it's optional,
+        // or (c) the baseline domain exists but doesn't have this field name (it's a "new field on existing model"
+        // and the generated interface makes it optional).  Case (c) covers renamed fields (e.g., baseline
+        // uses `type` but the generated interface uses `connectionType`).
+        const isNewFieldOnExistingDomain = baselineDomain && !baselineDomainField;
+        const domainFieldIsOptional =
+          !field.required || (baselineDomainField?.optional ?? false) || !!isNewFieldOnExistingDomain;
+        const wireFieldIsRequired = baselineWireField ? !baselineWireField.optional : field.required;
+        const needsUndefinedCoalesce = domainFieldIsOptional && wireFieldIsRequired && expr === domainAccess;
+
+        // If the expression involves a function call (nested model/array serializer),
+        // wrap with a null check to prevent crashes when callers pass partial objects
+        // (e.g., `{} as any` in tests).
+        // When the field type is nullable, preserve null instead of undefined.
+        // Guard nullable and optional nested model/array-of-model fields.
+        // Required non-nullable fields are not guarded — the caller must provide them.
+        const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
+        if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
+          // For nullable fields, fallback to null.  For optional fields, fallback to undefined.
+          const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
+          if (expr.startsWith(`${domainAccess} != null ?`)) {
+            lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);
+          } else {
+            lines.push(`  ${wire}: ${domainAccess} != null ? ${expr} : ${fallback},`);
+          }
+        } else if (needsUndefinedCoalesce) {
+          // Domain field is optional (T | undefined) but wire field is required (T or T | null).
+          // When the wire type includes null, coalesce undefined → null.
+          // Otherwise, use a non-null assertion — the consumer is responsible for
+          // providing required fields when calling serialize, so undefined at runtime
+          // indicates a programming error on the caller's side.
+          const wireHasNull = baselineWireField?.type?.includes('null') || field.type.kind === 'nullable';
+          if (wireHasNull) {
+            lines.push(`  ${wire}: ${expr} ?? null,`);
+          } else {
+            lines.push(`  ${wire}: ${expr}!,`);
+          }
+        } else if (field.type.kind === 'nullable' && expr === domainAccess) {
+          // Check if the domain interface makes this field optional (T | null | undefined).
+          // This can happen when: (a) the IR says not required, (b) the field is new on
+          // an existing model, or (c) the baseline domain is required but the baseline
+          // response is optional (domainResponseOptionalMismatch in models.ts).
+          // In all these cases, the domain type includes `undefined` but the wire type
+          // may only accept `T | null`, so coalesce undefined → null.
+          const domainWireField2 = wireFieldName(field.name);
+          const responseBaselineField2 = baselineResponse?.fields?.[domainWireField2];
+          const baselineDomainField2 = baselineDomain?.fields?.[domain];
+          const domainResponseMismatch =
+            baselineDomainField2 &&
+            !baselineDomainField2.optional &&
+            responseBaselineField2 &&
+            responseBaselineField2.optional;
+          const fieldEffectivelyOptional = !field.required || isNewSerField || !!domainResponseMismatch;
+          if (fieldEffectivelyOptional) {
+            lines.push(`  ${wire}: ${expr} ?? null,`);
+          } else {
+            lines.push(`  ${wire}: ${expr},`);
+          }
+        } else {
+          lines.push(`  ${wire}: ${expr},`);
+        }
       }
+      lines.push('});');
     }
-    lines.push('});');
 
     files.push({
       path: serializerPath,
-      content: lines.join('\n'),
-      skipIfExists: true,
+      content: pruneUnusedImports(lines).join('\n'),
     });
   }
 
@@ -310,6 +520,18 @@ function hasFormatConversion(ref: TypeRef): boolean {
   }
 }
 
+/** Check if a type specifically has a date-time format conversion. */
+function hasDateTimeConversion(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'primitive':
+      return ref.format === 'date-time';
+    case 'nullable':
+      return hasDateTimeConversion(ref.inner);
+    default:
+      return false;
+  }
+}
+
 /** Deserialize a primitive value, applying format conversions when needed. */
 function deserializePrimitive(ref: PrimitiveType, wireExpr: string): string {
   if (ref.format === 'date-time') return `new Date(${wireExpr})`;
@@ -371,8 +593,21 @@ function renderAllOfMerge(
  */
 function defaultForType(ref: TypeRef): string | null {
   switch (ref.kind) {
+    case 'literal':
+      // Use the literal value itself as the fallback (e.g., 'role' for object: 'role')
+      return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
+    case 'enum':
+      // Don't provide enum fallbacks — the first enum value may not be a valid
+      // member of the target type (e.g., 'Pending' is not a member of ConnectionType).
+      // If the field is required, the API always sends it; if the response baseline
+      // says optional, null/undefined is safer than guessing a value.
+      return null;
     case 'map':
       return '{}';
+    case 'nullable':
+      // Nullable fields should fall back to null, not the inner type's default.
+      // This prevents incorrect conversions like nullable<string> → '' instead of null.
+      return 'null';
     case 'primitive':
       switch (ref.type) {
         case 'boolean':
@@ -390,4 +625,120 @@ function defaultForType(ref: TypeRef): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Check if the generated serialize function would produce type errors
+ * against the baseline wire (response) interface.  Returns true when:
+ * - The baseline response interface has required fields whose wire name
+ *   doesn't match any IR model field → TS2741 missing property.
+ * - The baseline domain interface has required fields whose camelCase name
+ *   doesn't match any IR model field → the serializer would produce
+ *   expressions referencing domain fields that don't exist on the baseline.
+ * - The baseline response has a required array field whose type references
+ *   a different module than where the serializer imports its nested serializer.
+ */
+function serializerHasBaselineIncompatibility(
+  model: Model,
+  baselineResponse: { fields?: Record<string, { type: string; optional: boolean }> } | undefined,
+  baselineDomain?: { fields?: Record<string, { type: string; optional: boolean }> },
+  ctx?: EmitterContext,
+): boolean {
+  if (!baselineResponse?.fields) return false;
+
+  // Collect all wire-format field names the IR model will produce
+  const irWireFields = new Set<string>();
+  const irDomainFields = new Set<string>();
+  for (const field of model.fields) {
+    irWireFields.add(wireFieldName(field.name));
+    irDomainFields.add(fieldName(field.name));
+  }
+
+  // Check if the baseline response has required fields not in the IR model
+  for (const [wireField2, fieldDef] of Object.entries(baselineResponse.fields)) {
+    if (fieldDef.optional) continue; // Optional fields won't cause TS errors
+    if (!irWireFields.has(wireField2)) {
+      // Baseline requires a field the IR doesn't produce → type error
+      return true;
+    }
+  }
+
+  // Check if the baseline domain has required fields whose names differ from
+  // what the IR would generate (e.g., baseline uses `type` but IR maps
+  // `connection_type` → `connectionType`).  If there are required fields in
+  // the baseline domain that the IR doesn't produce, the serializer would read
+  // from domain fields that may have incompatible types.
+  if (baselineDomain?.fields) {
+    const baselineRequiredFields = Object.entries(baselineDomain.fields)
+      .filter(([, f]) => !f.optional)
+      .map(([name]) => name);
+    // Count how many baseline required fields are NOT in the IR domain fields.
+    // If more than 1/3 of required fields are unrecognized, assume significant
+    // structural differences → skip serialize to avoid type mismatches.
+    const unmatchedCount = baselineRequiredFields.filter((n) => !irDomainFields.has(n)).length;
+    if (unmatchedCount > 0 && baselineRequiredFields.length > 0) {
+      const unmatchedRatio = unmatchedCount / baselineRequiredFields.length;
+      if (unmatchedRatio > 0.3) {
+        return true;
+      }
+    }
+  }
+
+  // Check for nested model type mismatches: when the baseline response interface
+  // references a nested model type whose source file is in a DIFFERENT directory
+  // than the serializer's parent directory.  The generated serializer creates local
+  // copies of nested model interfaces (via the model generator), and these local
+  // copies are structurally similar but TypeScript treats them as different types.
+  // Example: OrganizationDomainResponse from organization-domains/interfaces/ vs
+  // the generated copy in organizations/interfaces/ — same structure, different modules.
+  if (ctx?.apiSurface?.interfaces) {
+    // Determine the serializer's parent directory from the model name
+    const modelSourceFile = (baselineResponse as any)?.sourceFile as string | undefined;
+    const responseDir = modelSourceFile ? modelSourceFile.split('/').slice(0, 2).join('/') : null;
+
+    for (const field of model.fields) {
+      // Unwrap nullable to get the inner model type
+      let fieldType = field.type;
+      if (fieldType.kind === 'nullable') fieldType = fieldType.inner;
+      if (fieldType.kind !== 'array' && fieldType.kind !== 'model') continue;
+      const innerType = fieldType.kind === 'array' ? fieldType.items : fieldType;
+      if (innerType.kind !== 'model') continue;
+
+      const nestedWireName = wireInterfaceName(resolveInterfaceName(innerType.name, ctx));
+      const wireField3 = wireFieldName(field.name);
+      const baselineWireField2 = baselineResponse.fields[wireField3];
+      if (!baselineWireField2) continue;
+
+      // Check for type name mismatch: the baseline wire field references a type
+      // that is different from what the generated serializer would produce.
+      // e.g., baseline has `role: RoleResponse` but the deduped serializer returns
+      // `AddRolePermissionResponse`.
+      const baselineTypeNames: string[] = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*Response\b/g) || [];
+      if (baselineTypeNames.length > 0 && !baselineTypeNames.includes(nestedWireName)) {
+        // The baseline expects a different Response type than the serializer produces
+        return true;
+      }
+
+      // Check if the baseline wire field type includes the nested wire type name
+      if (baselineWireField2.type.includes(nestedWireName) || baselineWireField2.type.match(/\b[A-Z]\w*Response\b/)) {
+        // Extract type names from the baseline field type
+        const typeNames: string[] = baselineWireField2.type.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
+        for (const typeName of typeNames) {
+          if (typeName === 'Record' || typeName === 'Array') continue;
+          const nestedIface = ctx.apiSurface.interfaces[typeName];
+          if (!nestedIface) continue;
+          const nestedSrc = (nestedIface as any).sourceFile as string | undefined;
+          if (!nestedSrc || !responseDir) continue;
+          const nestedDir = nestedSrc.split('/').slice(0, 2).join('/');
+          if (nestedDir !== responseDir) {
+            // The baseline response uses a type from a different directory than
+            // where the response itself lives → cross-module type incompatibility
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
 }

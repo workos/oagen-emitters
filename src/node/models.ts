@@ -1,54 +1,138 @@
-import type { Model, Field, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { walkTypeRef } from '@workos/oagen';
+import type { Model, Field, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
+import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
-  fieldName,
-  wireFieldName,
-  fileName,
-  serviceDirName,
-  resolveInterfaceName,
-  buildServiceNameMap,
-  wireInterfaceName,
-} from './naming.js';
-import { assignModelsToServices, collectFieldDependencies, docComment } from './utils.js';
+  collectFieldDependencies,
+  docComment,
+  buildGenericModelDefaults,
+  pruneUnusedImports,
+  TS_BUILTINS,
+  detectStringDateConvention,
+  buildKnownTypeNames,
+  isBaselineGeneric,
+  createServiceDirResolver,
+  isListMetadataModel,
+  isListWrapperModel,
+  buildDeduplicationMap,
+} from './utils.js';
+import { assignEnumsToServices } from './enums.js';
 
-/** Built-in TypeScript types that are always available (no import needed). */
-const BUILTINS = new Set([
-  'Record',
-  'Promise',
-  'Array',
-  'Map',
-  'Set',
-  'Date',
-  'string',
-  'number',
-  'boolean',
-  'void',
-  'null',
-  'undefined',
-  'any',
-  'never',
-  'unknown',
-  'true',
-  'false',
-]);
+/**
+ * Detect baseline interfaces that are generic (have type parameters) even though
+ * the IR model has no typeParams (OpenAPI doesn't support generics).
+ *
+ * Heuristic: if any field type in the baseline interface contains a PascalCase
+ * name that isn't a known model, enum, or builtin, it's likely a type parameter
+ * (e.g., `CustomAttributesType`), indicating the interface is generic.
+ *
+ * When detected, adds a default generic type arg so references like `Profile`
+ * become `Profile<Record<string, unknown>>`.
+ */
+function enrichGenericDefaultsFromBaseline(
+  genericDefaults: Map<string, string>,
+  models: Model[],
+  ctx: EmitterContext,
+  resolveDir: (irService: string | undefined) => string,
+  modelToService: Map<string, string>,
+): void {
+  if (!ctx.apiSurface?.interfaces) return;
+  const knownNames = buildKnownTypeNames(models, ctx);
+
+  for (const model of models) {
+    if (genericDefaults.has(model.name)) continue; // IR already handles it
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const baseline = ctx.apiSurface.interfaces[domainName];
+    if (!baseline?.fields) continue;
+
+    // Only enrich generic defaults for models whose baseline file will be
+    // preserved via skipIfExists (paths match).  If the file is generated
+    // fresh in a new directory, it won't have generics, so references
+    // to it don't need type args.
+    const generatedPath = `src/${resolveDir(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
+    const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
+    if (baselineSourceFile && baselineSourceFile !== generatedPath) continue;
+
+    if (isBaselineGeneric(baseline.fields, knownNames)) {
+      genericDefaults.set(model.name, '<Record<string, unknown>>');
+    }
+  }
+}
 
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
+  // Detect whether the existing SDK uses string dates (ISO 8601) rather than Date objects.
+  // When detected, newly generated models also use string to maintain consistency.
+  const useStringDates = detectStringDateConvention(models, ctx);
+  const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
+  // Enrich genericDefaults from baseline interfaces that appear to be generic.
+  // The IR doesn't carry typeParams for models parsed from OpenAPI (which has no
+  // generics), but the existing SDK may have hand-written generic interfaces
+  // (e.g., Profile<CustomAttributesType>).  Detect these by checking if any
+  // field type contains a PascalCase name that isn't a known model, enum, or builtin.
+  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
+  const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
+  const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
 
+  // Detect structurally identical or same-name models — emit type aliases for duplicates
+  const dedup = buildDeduplicationMap(models, ctx);
+
   for (const model of models) {
+    // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
+    if (isListMetadataModel(model)) continue;
+
+    // Fix #6: Skip per-domain list wrapper interfaces — the shared List<T>/ListResponse<T> covers these
+    if (isListWrapperModel(model)) continue;
+
+    // Deduplication: if this model is structurally identical to a canonical model,
+    // emit a type alias instead of a full interface.
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const responseName = wireInterfaceName(domainName);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const canonResponseName = wireInterfaceName(canonDomainName);
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const canonService = modelToService.get(canonicalName);
+      const canonDir = resolveDir(canonService);
+      const canonRelPath =
+        canonDir === dirName
+          ? `./${fileName(canonicalName)}.interface`
+          : `../../${canonDir}/interfaces/${fileName(canonicalName)}.interface`;
+      const aliasLines = [
+        `import type { ${canonDomainName}, ${canonResponseName} } from '${canonRelPath}';`,
+        '',
+        `export type ${domainName} = ${canonDomainName};`,
+        `export type ${responseName} = ${canonResponseName};`,
+      ];
+      files.push({
+        path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
+        content: aliasLines.join('\n'),
+        skipIfExists: true,
+      });
+      continue;
+    }
+
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const domainName = resolveInterfaceName(model.name, ctx);
     const responseName = wireInterfaceName(domainName);
     const deps = collectFieldDependencies(model);
     const lines: string[] = [];
+
+    // Exclude the current model from generic defaults to avoid self-referencing
+    // (e.g., Profile's own fields should use TCustom, not Profile<Record<...>>)
+    let modelTypeRefOpts = typeRefOpts;
+    let modelWireTypeRefOpts = wireTypeRefOpts;
+    if (genericDefaults.has(model.name)) {
+      const filteredDefaults = new Map(genericDefaults);
+      filteredDefaults.delete(model.name);
+      modelTypeRefOpts = { ...typeRefOpts, genericDefaults: filteredDefaults };
+      modelWireTypeRefOpts = { genericDefaults: filteredDefaults };
+    }
 
     // Baseline interface data (for compat field type matching)
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
@@ -71,9 +155,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Pre-pass: discover baseline type names that aren't directly importable.
     // For each unresolvable name we either:
     //   1. Import the real type from another service (if it exists as an enum/model there)
-    //   2. Create a local type declaration as a fallback
+    //   2. Create a local type alias from a suffix match
+    //   3. Mark as unresolvable — the field will fall back to the IR-generated type
     const typeDecls = new Map<string, string>(); // aliasName → type expression
     const crossServiceImports = new Map<string, { name: string; relPath: string }>(); // extra imports
+    const unresolvableNames = new Set<string>(); // names that can't be resolved — forces IR fallback
     const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
     // Build a lookup: resolved enum name → IR enum name
     const resolvedEnumNames = new Map<string, string>();
@@ -92,10 +178,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (!names) continue;
 
         for (const name of names) {
-          if (BUILTINS.has(name)) continue;
+          if (TS_BUILTINS.has(name)) continue;
           if (importableNames.has(name)) continue;
           if (typeDecls.has(name)) continue;
           if (crossServiceImports.has(name)) continue;
+          if (unresolvableNames.has(name)) continue;
 
           // Check if this name exists as an enum in another service —
           // import the actual type so the extractor sees the real name
@@ -119,11 +206,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
             typeDecls.set(name, candidates[0]);
             importableNames.add(name);
           } else {
-            // No suffix match — create a type alias using the IR-generated type
-            const innerType = field.type.kind === 'nullable' ? field.type.inner : field.type;
-            const typeExpr = mapTypeRef(innerType);
-            typeDecls.set(name, typeExpr);
-            importableNames.add(name);
+            // Cannot resolve this baseline type name — mark it so the field
+            // falls back to the IR-generated type instead of the baseline.
+            // This avoids creating type aliases that reference undefined types.
+            unresolvableNames.add(name);
           }
         }
       }
@@ -157,8 +243,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     if (typeDecls.size > 0) lines.push('');
 
-    // Type params (generics)
-    const typeParams = renderTypeParams(model);
+    // Type params (generics) — pass genericDefaults so baseline-detected generics
+    // also get type parameter declarations on the interface itself.
+    const typeParams = renderTypeParams(model, genericDefaults);
 
     // Domain interface (camelCase fields) — deduplicate by camelCase name
     const seenDomainFields = new Set<string>();
@@ -198,8 +285,27 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         const opt = baselineField.optional ? '?' : '';
         lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${baselineField.type};`);
       } else {
-        const opt = !field.required ? '?' : '';
-        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type)};`);
+        // When a baseline exists for this model, new fields (not present in the
+        // baseline) are generated as optional.  The merger can deep-merge new
+        // fields into existing interfaces, but it cannot update existing
+        // deserializer function bodies.  Making the field optional prevents a
+        // type error where the interface requires a field that the preserved
+        // deserializer never populates.
+        const isNewFieldOnExistingModel = baselineDomain && !baselineField;
+        // Also make the field optional when the response baseline has it as optional
+        // but the domain baseline has it as required — the deserializer reads from
+        // the response type, so if the response field is optional, the domain value
+        // may be undefined.
+        // Additionally, when a baseline exists for the RESPONSE interface but NOT the
+        // domain interface, fields that are new on the response baseline become optional
+        // in the wire type. The domain type must also be optional to match, otherwise
+        // the deserializer produces T | undefined for a field typed as T.
+        const isNewFieldOnExistingResponse = !baselineDomain && baselineResponse && !responseBaselineField;
+        const opt =
+          !field.required || isNewFieldOnExistingModel || domainResponseOptionalMismatch || isNewFieldOnExistingResponse
+            ? '?'
+            : '';
+        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
       }
     }
     lines.push('}');
@@ -221,15 +327,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         const opt = baselineField.optional ? '?' : '';
         lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
       } else {
-        const opt = !field.required ? '?' : '';
-        lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type)};`);
+        const isNewFieldOnExistingModel = baselineResponse && !baselineField;
+        const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+        lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
       }
     }
     lines.push('}');
 
     files.push({
       path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
-      content: lines.join('\n'),
+      content: pruneUnusedImports(lines).join('\n'),
       skipIfExists: true,
     });
   }
@@ -250,7 +357,7 @@ function baselineTypeResolvable(typeStr: string, importableNames: Set<string>): 
   if (!matches) return true;
 
   for (const name of matches) {
-    if (BUILTINS.has(name)) continue;
+    if (TS_BUILTINS.has(name)) continue;
     if (importableNames.has(name)) continue;
     return false;
   }
@@ -290,38 +397,43 @@ function baselineFieldCompatible(baselineField: { type: string; optional: boolea
   // the serializer produces a definite value but the interface is looser — that's OK
   // (the domain type is wider than the serializer output)
 
+  // If the baseline type is Record<string, unknown> but the IR field has a more specific
+  // type (model, enum, or union with named variants), prefer the IR type for better type safety
+  if (baselineField.type === 'Record<string, unknown>' && hasSpecificIRType(irField.type)) {
+    return false;
+  }
+
   return true;
 }
 
-function renderTypeParams(model: Model): string {
-  if (!model.typeParams?.length) return '';
+/** Check if an IR type is more specific than Record<string, unknown>. */
+function hasSpecificIRType(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'model':
+    case 'enum':
+      return true;
+    case 'union':
+      // A union with named model/enum variants is more specific
+      return ref.variants.some((v) => v.kind === 'model' || v.kind === 'enum');
+    case 'nullable':
+      return hasSpecificIRType(ref.inner);
+    default:
+      return false;
+  }
+}
+
+function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): string {
+  if (!model.typeParams?.length) {
+    // Fallback: if genericDefaults indicates this model is generic (detected
+    // from the baseline), generate a default generic type parameter declaration.
+    if (genericDefaults?.has(model.name)) {
+      return '<GenericType extends Record<string, unknown> = Record<string, unknown>>';
+    }
+    return '';
+  }
   const params = model.typeParams.map((tp) => {
     const def = tp.default ? ` = ${mapTypeRef(tp.default)}` : '';
     return `${tp.name}${def}`;
   });
   return `<${params.join(', ')}>`;
-}
-
-function assignEnumsToServices(enums: { name: string }[], services: Service[]): Map<string, string> {
-  const enumToService = new Map<string, string>();
-  const enumNames = new Set(enums.map((e) => e.name));
-  for (const service of services) {
-    for (const op of service.operations) {
-      const refs = new Set<string>();
-      const collect = (ref: any) => {
-        walkTypeRef(ref, { enum: (r: any) => refs.add(r.name) });
-      };
-      if (op.requestBody) collect(op.requestBody);
-      collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
-        collect(p.type);
-      }
-      for (const name of refs) {
-        if (enumNames.has(name) && !enumToService.has(name)) {
-          enumToService.set(name, service.name);
-        }
-      }
-    }
-  }
-  return enumToService;
 }

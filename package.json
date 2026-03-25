@@ -58,7 +58,7 @@
     "sdk:extract:rust": "oagen extract --lang rust --sdk-path ../backend/workos-rust --output ./sdk-rust-surface.json"
   },
   "dependencies": {
-    "@workos/oagen": "^0.1.1"
+    "@workos/oagen": "^0.2.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
@@ -69,6 +69,7 @@
     "oxlint": "^1.51.0",
     "prettier": "^3.8.1",
     "tsup": "^8.4.0",
+    "typescript": "^5.9.3",
     "tsx": "^4.19.0",
     "vitest": "^3.0.0"
   },

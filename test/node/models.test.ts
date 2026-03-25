@@ -298,6 +298,86 @@ describe('generateModels', () => {
     expect(content).toContain('  /** @deprecated */');
   });
 
+  it('renders field-level JSDoc from OpenAPI descriptions', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        description: 'An organization in the WorkOS system.',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'Unique identifier for the organization.',
+          },
+          {
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'The display name of the organization.',
+          },
+          {
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
+            required: true,
+            // No description — should not get JSDoc
+          },
+          {
+            name: 'allow_profiles_outside_organization',
+            type: { kind: 'primitive', type: 'boolean' },
+            required: false,
+            description:
+              'Whether connections within the organization allow profiles\nthat do not have a domain that is verified by the organization.',
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const content = files[0].content;
+
+    // Model-level JSDoc is emitted
+    expect(content).toContain('/** An organization in the WorkOS system. */');
+
+    // Fields with description get per-field JSDoc
+    expect(content).toContain('/** Unique identifier for the organization. */');
+    expect(content).toContain('/** The display name of the organization. */');
+
+    // Multiline description renders correctly
+    expect(content).toContain(
+      '  /**\n   * Whether connections within the organization allow profiles\n   * that do not have a domain that is verified by the organization.\n   */',
+    );
+
+    // Field without description does NOT get JSDoc
+    const lines = content.split('\n');
+    const createdAtIdx = lines.findIndex((l) => l.includes('createdAt'));
+    expect(createdAtIdx).toBeGreaterThan(0);
+    // The line before createdAt should not be a JSDoc closing tag
+    expect(lines[createdAtIdx - 1].trim()).not.toBe('*/');
+  });
+
   it('renders readOnly/writeOnly/default annotations', () => {
     const service: Service = {
       name: 'Organizations',
@@ -359,5 +439,270 @@ describe('generateModels', () => {
 
     // default field gets @default JSDoc
     expect(content).toContain('@default "active"');
+  });
+
+  it('skips per-domain ListMetadata models (Fix #4)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionListListMetadata',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // The ListMetadata model should be skipped entirely
+    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
+    expect(listMetadataFile).toBeUndefined();
+
+    // The Connection model should still be generated
+    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
+    expect(connectionFile).toBeDefined();
+  });
+
+  it('skips per-domain list wrapper models (Fix #6)', () => {
+    const service: Service = {
+      name: 'Connections',
+      operations: [
+        {
+          name: 'listConnections',
+          httpMethod: 'get',
+          path: '/connections',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ConnectionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            itemType: { kind: 'model', name: 'Connection' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ConnectionList',
+        fields: [
+          {
+            name: 'object',
+            type: { kind: 'literal', value: 'list' },
+            required: true,
+          },
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Connection' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ConnectionListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ConnectionListListMetadata',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // The list wrapper model should be skipped
+    const listFile = files.find((f) => f.path.includes('connection-list.interface.ts'));
+    expect(listFile).toBeUndefined();
+
+    // The ListMetadata model should also be skipped
+    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
+    expect(listMetadataFile).toBeUndefined();
+
+    // The Connection model should still be generated
+    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
+    expect(connectionFile).toBeDefined();
+  });
+
+  it('does not skip models that only partially match list-metadata shape', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Pagination' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Pagination',
+        fields: [
+          {
+            name: 'before',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'after',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          {
+            name: 'total',
+            type: { kind: 'primitive', type: 'integer' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    // Model with 3 fields should NOT be skipped even if it has before/after
+    expect(files.length).toBe(1);
+    expect(files[0].path).toContain('pagination.interface.ts');
+  });
+});
+
+describe('model deduplication', () => {
+  it('emits type alias for structurally identical models', () => {
+    const service: Service = {
+      name: 'Roles',
+      operations: [
+        {
+          name: 'getRole',
+          httpMethod: 'get',
+          path: '/roles/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'EnvironmentRole' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'EnvironmentRole',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+        ],
+      },
+      {
+        name: 'OrganizationRole',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    expect(files.length).toBe(2);
+
+    // First model: full interface
+    expect(files[0].content).toContain('export interface EnvironmentRole');
+
+    // Second model: type alias referencing canonical
+    expect(files[1].content).toContain('export type OrganizationRole = EnvironmentRole');
+    expect(files[1].content).toContain('export type OrganizationRoleResponse = EnvironmentRoleResponse');
   });
 });
