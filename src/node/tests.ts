@@ -102,12 +102,10 @@ function generateServiceTest(
             itemModelName = unwrapped.name;
           }
         }
-        const itemService = modelToService.get(itemModelName);
-        const itemDir = resolveDir(itemService);
-        const fixturePath =
-          itemDir === serviceDir
-            ? `./fixtures/list-${fileName(itemModelName)}.fixture.json`
-            : `../${itemDir}/fixtures/list-${fileName(itemModelName)}.fixture.json`;
+        // List fixtures are always generated in the current service's directory
+        // (the service owning the list operation), not in the model's home service.
+        // Always use a local import path.
+        const fixturePath = `./fixtures/list-${fileName(itemModelName)}.fixture.json`;
         fixtureImports.add(`import list${itemModelName}Fixture from '${fixturePath}';`);
       }
     } else if (plan.responseModelName) {
@@ -250,7 +248,7 @@ function renderPaginatedTest(
   // Assert on first item fields when item model is available
   const itemModel = modelMap.get(itemModelName);
   if (itemModel) {
-    const assertions = buildFieldAssertions(itemModel, 'data[0]');
+    const assertions = buildFieldAssertions(itemModel, 'data[0]', modelMap);
     if (assertions.length > 0) {
       lines.push('      expect(data.length).toBeGreaterThan(0);');
       for (const assertion of assertions) {
@@ -356,7 +354,7 @@ function renderBodyTest(
   // Fix #11: Response field assertions (no redundant toBeDefined())
   const responseModel = modelMap.get(responseModelName);
   if (responseModel) {
-    const assertions = buildFieldAssertions(responseModel, 'result');
+    const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
     if (assertions.length > 0) {
       for (const assertion of assertions) {
         lines.push(`      ${assertion}`);
@@ -396,7 +394,7 @@ function renderGetTest(
   // Fix #11: Response field assertions (no redundant toBeDefined())
   const responseModel = modelMap.get(responseModelName);
   if (responseModel) {
-    const assertions = buildFieldAssertions(responseModel, 'result');
+    const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
     if (assertions.length > 0) {
       for (const assertion of assertions) {
         lines.push(`      ${assertion}`);
@@ -467,8 +465,13 @@ function buildCallArgs(op: Operation, plan: any): string {
 /**
  * Build field-level assertions for top-level primitive fields of a response model.
  * Returns lines like: expect(result.fieldName).toBe(fixtureValue);
+ *
+ * When the top level has no assertable primitive fields (e.g. wrapper types
+ * whose only required fields are nested models), recurse one level into those
+ * nested models so we still get meaningful assertions instead of a bare
+ * `toBeDefined()`.
  */
-function buildFieldAssertions(model: Model, accessor: string): string[] {
+function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<string, Model>): string[] {
   const assertions: string[] = [];
 
   for (const field of model.fields) {
@@ -489,6 +492,24 @@ function buildFieldAssertions(model: Model, accessor: string): string[] {
     if (value === null) continue;
     const domainField = fieldName(field.name);
     assertions.push(`expect(${accessor}.${domainField}).toBe(${value});`);
+  }
+
+  // When no primitive assertions were found (e.g. wrapper types like
+  // ResetPasswordResponse { user: User }), recurse one level into nested
+  // model-type fields to generate assertions on their primitive fields.
+  if (assertions.length === 0 && modelMap) {
+    for (const field of model.fields) {
+      if (!field.required) continue;
+      if (field.type.kind === 'model') {
+        const nestedModel = modelMap.get(field.type.name);
+        if (nestedModel) {
+          const nestedAccessor = `${accessor}.${fieldName(field.name)}`;
+          // Recurse without modelMap to limit depth to one level
+          const nested = buildFieldAssertions(nestedModel, nestedAccessor);
+          assertions.push(...nested);
+        }
+      }
+    }
   }
 
   return assertions;

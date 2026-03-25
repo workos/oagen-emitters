@@ -19,6 +19,7 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       path: 'smoke-manifest.json',
       content: JSON.stringify(manifest, null, 2),
       integrateTarget: false,
+      overwriteExisting: true,
     },
   ];
 }
