@@ -9,16 +9,16 @@
     "url": "https://github.com/workos/oagen-emitters"
   },
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsdown",
     "lint": "oxlint -D warnings",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --check .",
@@ -68,9 +68,9 @@
     "oxfmt": "^0.36.0",
     "oxlint": "^1.51.0",
     "prettier": "^3.8.1",
-    "tsup": "^8.4.0",
-    "typescript": "^5.9.3",
+    "tsdown": "^0.21.5",
     "tsx": "^4.19.0",
+    "typescript": "^6.0.0-dev.20260324",
     "vitest": "^3.0.0"
   },
   "engines": {
