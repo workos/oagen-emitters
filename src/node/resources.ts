@@ -435,9 +435,21 @@ function renderMethod(
     const bodyInfo = extractRequestBodyType(op, ctx);
     if (bodyInfo?.kind === 'model') {
       const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
-      const payloadDesc = bodyModel?.description
-        ? `@param payload - ${bodyModel.description}`
-        : `@param payload - The request body.`;
+      let payloadDesc: string;
+      if (bodyModel?.description) {
+        payloadDesc = `@param payload - ${bodyModel.description}`;
+      } else if (bodyModel) {
+        // When the model lacks a description, list its required fields to help
+        // callers understand what must be provided.
+        const requiredFieldNames = bodyModel.fields
+          .filter((f) => f.required)
+          .map((f) => fieldName(f.name));
+        payloadDesc = requiredFieldNames.length > 0
+          ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
+          : '@param payload - The request body.';
+      } else {
+        payloadDesc = '@param payload - The request body.';
+      }
       docParts.push(payloadDesc);
     } else {
       docParts.push('@param payload - The request body.');
@@ -449,10 +461,18 @@ function renderMethod(
   } else if (op.queryParams.length > 0) {
     docParts.push('@param options - Additional query options.');
   }
-  // @returns for the primary response model (use item type for paginated operations)
+  // @returns for the primary response model (use item type for paginated operations).
+  // Unwrap list wrapper models to match the actual return type — the method returns
+  // AutoPaginatable<ItemType>, not the list wrapper.
   if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
-    const itemTypeName = resolveInterfaceName(op.pagination.itemType.name, ctx);
-    docParts.push(`@returns {${itemTypeName}}`);
+    let itemRawName = op.pagination.itemType.name;
+    const pModel = modelMap.get(itemRawName);
+    if (pModel) {
+      const unwrapped = unwrapListModel(pModel, modelMap);
+      if (unwrapped) itemRawName = unwrapped.name;
+    }
+    const itemTypeName = resolveInterfaceName(itemRawName, ctx);
+    docParts.push(`@returns {AutoPaginatable<${itemTypeName}>}`);
   } else if (responseModel) {
     docParts.push(`@returns {${responseModel}}`);
   } else {

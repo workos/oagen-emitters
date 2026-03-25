@@ -236,7 +236,11 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       // If the expression involves a function call (nested model/array serializer),
       // wrap with a null check to prevent crashes when tests pass `{} as any`.
       // When the field type is nullable, preserve null instead of undefined.
-      if (expr !== domainAccess && needsNullGuard(field.type)) {
+      // For required non-nullable fields, skip the null guard: the domain type
+      // guarantees the value is present, and adding `?? null` would violate the
+      // wire type contract (the field is declared as non-nullable in the response).
+      const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
+      if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
         const fallback = field.type.kind === 'nullable' ? 'null' : effectivelyOptionalSer ? 'undefined' : 'null';
         if (expr.startsWith(`${domainAccess} != null ?`)) {
           lines.push(`  ${wire}: ${expr.replace(/: null$/, `: ${fallback}`)},`);

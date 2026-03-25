@@ -12,7 +12,7 @@ export function generateCommon(): GeneratedFile[] {
       path: 'src/common/utils/fetch-and-deserialize.ts',
       content: fetchAndDeserializeContent(),
       skipIfExists: true,
-      integrateTarget: false,
+      integrateTarget: true,
     },
     {
       path: 'src/common/serializers/list.serializer.ts',
@@ -24,7 +24,7 @@ export function generateCommon(): GeneratedFile[] {
       path: 'src/common/utils/test-utils.ts',
       content: testUtilsContent(),
       skipIfExists: true,
-      integrateTarget: false,
+      integrateTarget: true,
     },
   ];
 }

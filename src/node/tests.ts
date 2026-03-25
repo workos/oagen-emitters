@@ -153,7 +153,7 @@ function generateServiceTest(
 
     // Error case test for all non-void operations
     if (plan.responseModelName || plan.isPaginated) {
-      renderErrorTest(lines, op, plan, method, serviceProp);
+      renderErrorTest(lines, op, plan, method, serviceProp, modelMap);
     }
 
     lines.push('  });');
@@ -286,7 +286,7 @@ function renderDeleteTest(
   const pathArgs = buildTestPathArgs(op);
   // Build realistic payload for body-bearing delete operations
   const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
-  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : '{} as any') : '';
+  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap)) : '';
   const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
 
   lines.push("    it('sends a DELETE request', async () => {");
@@ -322,7 +322,7 @@ function renderBodyTest(
 
   // Build realistic payload from request body model fields
   const payload = buildTestPayload(op, modelMap);
-  const payloadArg = payload ? payload.camelCaseObj : '{} as any';
+  const payloadArg = payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap);
   const allArgs = pathArgs ? `${pathArgs}, ${payloadArg}` : payloadArg;
 
   lines.push("    it('sends the correct request and returns result', async () => {");
@@ -412,7 +412,7 @@ function renderVoidTest(
   const pathArgs = buildTestPathArgs(op);
   // Build realistic payload for body-bearing void operations
   const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
-  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : '{} as any') : '';
+  const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap)) : '';
   const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
 
   lines.push("    it('sends the request', async () => {");
@@ -430,8 +430,8 @@ function renderVoidTest(
   lines.push('    });');
 }
 
-function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string): void {
-  const args = buildCallArgs(op, plan);
+function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string, modelMap: Map<string, Model>): void {
+  const args = buildCallArgs(op, plan, modelMap);
 
   lines.push('');
   lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
@@ -441,13 +441,16 @@ function renderErrorTest(lines: string[], op: Operation, plan: any, method: stri
  * Build the argument string for a method call in tests.
  * Shared by renderErrorTest and other test renderers.
  */
-function buildCallArgs(op: Operation, plan: any): string {
+function buildCallArgs(op: Operation, plan: any, modelMap: Map<string, Model>): string {
   const pathArgs = buildTestPathArgs(op);
   const isPaginated = plan.isPaginated;
   const hasBody = plan.hasBody;
 
   if (isPaginated) return pathArgs || '';
-  if (hasBody) return pathArgs ? `${pathArgs}, {} as any` : '{} as any';
+  if (hasBody) {
+    const fb = fallbackBodyArg(op, modelMap);
+    return pathArgs ? `${pathArgs}, ${fb}` : fb;
+  }
   return pathArgs || '';
 }
 
@@ -600,6 +603,20 @@ function buildTestPayload(
     camelCaseObj: `{ ${camelEntries.join(', ')} }`,
     snakeCaseObj: `{ ${snakeEntries.join(', ')} }`,
   };
+}
+
+/**
+ * Compute a fallback body argument when buildTestPayload returns null.
+ * If the request body model has no required fields (all optional), an empty
+ * object `{}` is a valid value and doesn't need a type assertion. Otherwise,
+ * fall back to `{} as any` to bypass type checking for complex required fields.
+ */
+function fallbackBodyArg(op: Operation, modelMap: Map<string, Model>): string {
+  if (!op.requestBody || op.requestBody.kind !== 'model') return '{} as any';
+  const model = modelMap.get(op.requestBody.name);
+  if (!model) return '{} as any';
+  const hasRequiredFields = model.fields.some((f) => f.required);
+  return hasRequiredFields ? '{} as any' : '{}';
 }
 
 /**
