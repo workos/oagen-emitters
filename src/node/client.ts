@@ -1,13 +1,12 @@
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
-  fileName,
-  serviceDirName,
-  servicePropertyName,
-  resolveInterfaceName,
-  resolveServiceName,
-  wireInterfaceName,
-} from './naming.js';
-import { docComment, createServiceDirResolver, isServiceCoveredByExisting, isListMetadataModel, isListWrapperModel } from './utils.js';
+  docComment,
+  createServiceDirResolver,
+  isServiceCoveredByExisting,
+  isListMetadataModel,
+  isListWrapperModel,
+} from './utils.js';
 import { resolveResourceClassName } from './resources.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

@@ -12,7 +12,14 @@ import {
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 import { resolveResourceClassName } from './resources.js';
-import { createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations, relativeImport, isListMetadataModel, isListWrapperModel } from './utils.js';
+import {
+  createServiceDirResolver,
+  isServiceCoveredByExisting,
+  uncoveredOperations,
+  relativeImport,
+  isListMetadataModel,
+  isListWrapperModel,
+} from './utils.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -166,16 +173,6 @@ function generateServiceTest(
   return { path: testPath, content: lines.join('\n'), skipIfExists: true };
 }
 
-/**
- * Extract static path segments for URL assertions.
- * For a path like `/users/{id}/email_verification/send`, returns
- * ['/users/', '/email_verification/send'] so tests assert all distinct segments.
- */
-function staticPathSegments(path: string): string[] {
-  // Split on `{...}` placeholders and filter out empty strings
-  return path.split(/\{[^}]+\}/).filter((s) => s.length > 0);
-}
-
 /** Compute the test value for a single path parameter.
  *  Uses distinct values per param name so multi-param paths don't all get 'test_id'.
  */
@@ -205,18 +202,6 @@ function buildTestPathArgs(op: Operation): string {
   return allVars.map((varName) => `'${pathParamTestValue(paramByName.get(varName), varName)}'`).join(', ');
 }
 
-/** Get a URL-safe string that should appear in the path for assertions. */
-function buildTestPathAssertionValue(op: Operation): string {
-  const paramByName = new Map(op.pathParams.map((p) => [fieldName(p.name), p]));
-  // Use the first path param's test value for the assertion
-  if (op.pathParams.length > 0) {
-    const name = fieldName(op.pathParams[0].name);
-    return pathParamTestValue(paramByName.get(name), name);
-  }
-  const templateVars = [...op.path.matchAll(/\{(\w+)\}/g)].map(([, name]) => fieldName(name));
-  return templateVars.length > 0 ? 'test_id' : '';
-}
-
 function renderPaginatedTest(
   lines: string[],
   op: Operation,
@@ -239,9 +224,7 @@ function renderPaginatedTest(
   lines.push("    it('returns paginated results', async () => {");
   lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
   lines.push('');
-  lines.push(
-    `      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs});`,
-  );
+  lines.push(`      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs});`);
   lines.push('');
   lines.push("      expect(fetchMethod()).toBe('GET');");
   // Fix #12: Full URL path assertion instead of toContain()
@@ -432,7 +415,14 @@ function renderVoidTest(
   lines.push('    });');
 }
 
-function renderErrorTest(lines: string[], op: Operation, plan: any, method: string, serviceProp: string, modelMap: Map<string, Model>): void {
+function renderErrorTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+): void {
   const args = buildCallArgs(op, plan, modelMap);
 
   lines.push('');
@@ -639,30 +629,6 @@ function fallbackBodyArg(op: Operation, modelMap: Map<string, Model>): string {
 }
 
 /**
- * Check whether a TypeRef involves nested serialization (model refs, arrays of models,
- * date-time formats, etc.) that would require non-trivial serialize/deserialize logic.
- */
-function hasNestedSerialization(ref: TypeRef): boolean {
-  switch (ref.kind) {
-    case 'model':
-      return true;
-    case 'array':
-      return hasNestedSerialization(ref.items);
-    case 'nullable':
-      return hasNestedSerialization(ref.inner);
-    case 'union':
-      return ref.variants.some(hasNestedSerialization);
-    case 'primitive':
-      return ref.format === 'date-time' || ref.format === 'int64';
-    case 'map':
-      return hasNestedSerialization(ref.valueType);
-    case 'literal':
-    case 'enum':
-      return false;
-  }
-}
-
-/**
  * Determine whether a model should get a round-trip serializer test.
  * Includes all models with at least one field — every model gets both
  * serialize and deserialize functions, so all benefit from round-trip testing.
@@ -722,9 +688,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       serializerImports.push(
         `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
       );
-      fixtureImports.push(
-        `import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}';`,
-      );
+      fixtureImports.push(`import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}';`);
     }
 
     for (const imp of serializerImports) {
