@@ -12,7 +12,7 @@ import {
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 import { resolveResourceClassName } from './resources.js';
-import { createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations, relativeImport } from './utils.js';
+import { createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations, relativeImport, isListMetadataModel, isListWrapperModel } from './utils.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -82,7 +82,9 @@ function generateServiceTest(
   if (hasBody) testUtils.push('fetchBody');
   // Import shared test helpers for error and pagination tests
   if (hasPaginated) testUtils.push('testEmptyResults', 'testPaginationParams');
-  testUtils.push('testUnauthorized');
+  // Only import testUnauthorized when at least one operation has a response model or is paginated
+  const hasErrorTests = plans.some((p) => p.plan.responseModelName || p.plan.isPaginated);
+  if (hasErrorTests) testUtils.push('testUnauthorized');
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -238,7 +240,7 @@ function renderPaginatedTest(
   lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
   lines.push('');
   lines.push(
-    `      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''});`,
+    `      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs});`,
   );
   lines.push('');
   lines.push("      expect(fetchMethod()).toBe('GET');");
@@ -265,7 +267,7 @@ function renderPaginatedTest(
 
   // Edge case: handles empty results — use shared helper
   lines.push('');
-  lines.push(`    testEmptyResults(() => workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}));`);
+  lines.push(`    testEmptyResults(() => workos.${serviceProp}.${method}(${pathArgs}));`);
 
   // Edge case: forwards pagination params — use shared helper
   lines.push('');
@@ -517,6 +519,21 @@ function fixtureValueForType(ref: TypeRef, name: string, modelName: string): str
       return fixtureValueForPrimitive(ref.type, ref.format, name, modelName);
     case 'literal':
       return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
+    case 'enum':
+      // Use the first enum value as a realistic fixture value
+      if (ref.values?.length) {
+        const first = ref.values[0];
+        return typeof first === 'string' ? `'${first}'` : String(first);
+      }
+      return null;
+    case 'array': {
+      // For arrays of primitives/enums, generate a single-element array assertion.
+      // For arrays of models/complex types, return null to skip the assertion —
+      // the fixture will have populated items that we can't predict here.
+      const itemValue = fixtureValueForType(ref.items, name, modelName);
+      if (itemValue !== null) return `[${itemValue}]`;
+      return null;
+    }
     default:
       return null;
   }
@@ -583,10 +600,12 @@ function buildTestPayload(
   if (!model) return null;
 
   const fields = model.fields.filter((f) => f.required);
-  // Only use primitive/literal fields that we can generate deterministic values for
+  // Only use primitive/literal/enum/array fields that we can generate deterministic values for
   const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name, model.name) !== null);
 
-  if (usableFields.length === 0) return null;
+  // Only generate a typed payload when ALL required fields have fixture values.
+  // A partial payload missing required fields would fail TypeScript type checking.
+  if (usableFields.length === 0 || usableFields.length < fields.length) return null;
 
   const camelEntries: string[] = [];
   const snakeEntries: string[] = [];
@@ -666,8 +685,11 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const resolveDir = (irService: string | undefined) =>
     irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
 
-  // Only generate round-trip tests for models with nested serialization
-  const eligibleModels = spec.models.filter(modelNeedsRoundTripTest);
+  // Only generate round-trip tests for models with fields that have serializers generated.
+  // Skip list metadata and list wrapper models since their serializers are not emitted.
+  const eligibleModels = spec.models.filter(
+    (m) => modelNeedsRoundTripTest(m) && !isListMetadataModel(m) && !isListWrapperModel(m),
+  );
 
   if (eligibleModels.length === 0) return files;
 
@@ -701,7 +723,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
       );
       fixtureImports.push(
-        `import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}.json';`,
+        `import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}';`,
       );
     }
 
