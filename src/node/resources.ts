@@ -14,7 +14,13 @@ import {
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations } from './utils.js';
+import {
+  docComment,
+  createServiceDirResolver,
+  isServiceCoveredByExisting,
+  hasMethodsAbsentFromBaseline,
+  uncoveredOperations,
+} from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
 
@@ -394,9 +400,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   for (const service of services) {
     if (isServiceCoveredByExisting(service, ctx)) {
       // Fully covered: generate with ALL operations so the merger's docstring
-      // refresh pass can update JSDoc on existing methods.  skipIfExists stays
-      // true — no new file is created, but the merger still runs JSDoc refresh.
+      // refresh pass can update JSDoc on existing methods.
       const file = generateResourceClass(service, ctx);
+      // When the baseline class is missing methods for some operations,
+      // remove skipIfExists so the merger adds the new methods.
+      if (hasMethodsAbsentFromBaseline(service, ctx)) {
+        delete file.skipIfExists;
+      }
       files.push(file);
       continue;
     }
@@ -504,11 +514,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
           requestModels.add(name);
         }
       } else {
-        // Non-discriminated union: import variant models as domain types only.
-        // Without a discriminator we can't statically dispatch serialization,
-        // so the payload is passed through as-is.
+        // Non-discriminated union: import variant models with serializers so we
+        // can dispatch to the correct serializer at runtime via field guards.
         for (const name of bodyInfo.modelNames) {
-          paramModels.add(name);
+          requestModels.add(name);
         }
       }
     }
@@ -961,7 +970,7 @@ function renderDeleteWithBodyMethod(
     if (bodyInfo.discriminator) {
       bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
     } else {
-      bodyExpr = 'payload';
+      bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
   } else {
     requestType = 'Record<string, unknown>';
@@ -1000,12 +1009,9 @@ function renderBodyMethod(
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
-      // Discriminated union: dispatch to the correct serializer at runtime.
       bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
     } else {
-      // Non-discriminated union: cannot statically dispatch —
-      // pass the payload directly (caller provides the correct shape).
-      bodyExpr = 'payload';
+      bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
   } else {
     requestType = 'Record<string, unknown>';
@@ -1130,7 +1136,7 @@ function renderVoidMethod(
       if (bodyInfo.discriminator) {
         bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
       } else {
-        bodyExpr = 'payload';
+        bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
       }
     } else {
       bodyParam = 'payload: Record<string, unknown>';
@@ -1250,6 +1256,64 @@ function renderUnionBodySerializer(
     cases.push(`case '${value}': return serialize${resolved}(payload as any)`);
   }
   return `(() => { switch ((payload as any).${prop}) { ${cases.join('; ')}; default: return payload } })()`;
+}
+
+/**
+ * Generate an IIFE expression that dispatches to the correct serializer for a
+ * non-discriminated union request body.  Inspects model fields to find a
+ * required field unique to each variant and uses `'field' in payload` guards.
+ * Falls back to `payload` only when no variant can be distinguished.
+ */
+function renderNonDiscriminatedUnionBodySerializer(modelNames: string[], ctx: EmitterContext): string {
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
+
+  // Collect required field names per model (using camelCase domain names).
+  const requiredFieldsByModel = new Map<string, Set<string>>();
+  for (const name of modelNames) {
+    const model = modelMap.get(name);
+    if (!model) return 'payload';
+    requiredFieldsByModel.set(name, new Set(model.fields.filter((f) => f.required).map((f) => fieldName(f.name))));
+  }
+
+  // For each model, find a required field that no other model has.
+  const guards: Array<{ modelName: string; field: string }> = [];
+  let fallbackModel: string | undefined;
+
+  for (const name of modelNames) {
+    const myFields = requiredFieldsByModel.get(name)!;
+    let uniqueField: string | undefined;
+    for (const field of myFields) {
+      const isUnique = modelNames.every((other) => other === name || !requiredFieldsByModel.get(other)?.has(field));
+      if (isUnique) {
+        uniqueField = field;
+        break;
+      }
+    }
+    if (uniqueField) {
+      guards.push({ modelName: name, field: uniqueField });
+    } else if (!fallbackModel) {
+      fallbackModel = name;
+    } else {
+      // Multiple models with no unique field — can't dispatch
+      return 'payload';
+    }
+  }
+
+  if (guards.length === 0) return 'payload';
+
+  const parts: string[] = [];
+  for (const { modelName, field } of guards) {
+    const resolved = resolveInterfaceName(modelName, ctx);
+    parts.push(`if ('${field}' in payload) return serialize${resolved}(payload as any)`);
+  }
+  if (fallbackModel) {
+    const resolved = resolveInterfaceName(fallbackModel, ctx);
+    parts.push(`return serialize${resolved}(payload as any)`);
+  } else {
+    parts.push('return payload');
+  }
+
+  return `(() => { ${parts.join('; ')} })()`;
 }
 
 /** Return type for extractRequestBodyType when the body is a union. */

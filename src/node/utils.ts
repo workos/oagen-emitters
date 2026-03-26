@@ -406,6 +406,29 @@ export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext
 }
 
 /**
+ * Check whether a fully-covered service has operations whose overlay-mapped
+ * methods are missing from the baseline class.  Returns true when at least
+ * one operation maps to a method name that the baseline class does not have,
+ * meaning the merger needs to add new methods (skipIfExists must be removed).
+ */
+export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterContext): boolean {
+  const overlay = ctx.overlayLookup?.methodByOperation;
+  if (!overlay) return false;
+  const baselineClasses = ctx.apiSurface?.classes;
+  if (!baselineClasses) return false;
+
+  for (const op of service.operations) {
+    const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+    const match = overlay.get(httpKey);
+    if (!match) continue;
+    const cls = baselineClasses[match.className];
+    if (!cls) continue;
+    if (!cls.methods?.[match.methodName]) return true;
+  }
+  return false;
+}
+
+/**
  * Return operations in a service that are NOT covered by existing hand-written
  * service classes. For fully uncovered services, returns all operations.
  * For partially covered services, returns only the uncovered operations.

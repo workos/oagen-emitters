@@ -603,7 +603,7 @@ describe('generateResources', () => {
     expect(content).toContain('query: options');
   });
 
-  it('generates union type for non-discriminated request body (pass-through)', () => {
+  it('falls back to pass-through for non-discriminated union when models not in spec', () => {
     const services: Service[] = [
       {
         name: 'Auth',
@@ -640,7 +640,7 @@ describe('generateResources', () => {
     // Should NOT use Record<string, unknown>
     expect(content).not.toContain('Record<string, unknown>');
 
-    // Should pass payload directly (no serializer for unions)
+    // Models not in spec → falls back to pass-through
     expect(content).toContain("'/user_management/authenticate',");
     expect(content).toContain('payload,');
 
@@ -648,6 +648,83 @@ describe('generateResources', () => {
     expect(content).toContain('AuthByPassword');
     expect(content).toContain('AuthByCode');
     expect(content).toContain('AuthByMagicAuth');
+  });
+
+  it('generates field-guard serializer dispatch for non-discriminated union with models', () => {
+    const services: Service[] = [
+      {
+        name: 'Applications',
+        operations: [
+          {
+            name: 'createApplication',
+            httpMethod: 'post',
+            path: '/connect/applications',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'CreateOAuthApplication' },
+                { kind: 'model', name: 'CreateM2MApplication' },
+              ],
+            },
+            response: { kind: 'model', name: 'ConnectApplication' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const testCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: {
+        ...emptySpec,
+        services,
+        models: [
+          {
+            name: 'CreateOAuthApplication',
+            fields: [
+              { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+              {
+                name: 'redirect_uris',
+                type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                required: true,
+              },
+              { name: 'uses_pkce', type: { kind: 'primitive', type: 'boolean' }, required: false },
+            ],
+          },
+          {
+            name: 'CreateM2MApplication',
+            fields: [
+              { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'scopes', type: { kind: 'array', items: { kind: 'primitive', type: 'string' } }, required: true },
+            ],
+          },
+          {
+            name: 'ConnectApplication',
+            fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          },
+        ],
+      },
+    };
+
+    const files = generateResources(services, testCtx);
+    const content = files[0].content;
+
+    // Should use the union type for the payload parameter
+    expect(content).toContain('payload: CreateOAuthApplication | CreateM2MApplication');
+
+    // Should dispatch via unique required field guards
+    expect(content).toContain("'redirectUris' in payload");
+    expect(content).toContain('serializeCreateOAuthApplication(payload as any)');
+    expect(content).toContain('serializeCreateM2MApplication(payload as any)');
+
+    // Should import serializers for all union variants
+    expect(content).toContain('serializeCreateOAuthApplication');
+    expect(content).toContain('serializeCreateM2MApplication');
   });
 
   it('generates discriminated union serializer dispatch for request body', () => {
@@ -884,6 +961,153 @@ describe('generateResources', () => {
 
     // Method is "listOrganizations", not "list", so options name should be normal
     expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
+  });
+
+  it('removes skipIfExists when fully-covered service has methods absent from baseline', () => {
+    const services: Service[] = [
+      {
+        name: 'SSOService',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuthorizationUrl' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+          {
+            name: 'logout',
+            httpMethod: 'get',
+            path: '/sso/logout',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'LogoutResult' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    // Overlay maps both operations to SSO class
+    // Baseline SSO class exists but only has getAuthorizationUrl (logout is missing)
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /sso/authorize',
+            { className: 'SSO', methodName: 'getAuthorizationUrl', params: [], returnType: 'void' },
+          ],
+          ['GET /sso/logout', { className: 'SSO', methodName: 'logout', params: [], returnType: 'void' }],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          SSO: {
+            name: 'SSO',
+            methods: {
+              getAuthorizationUrl: [{ name: 'getAuthorizationUrl', params: [], returnType: 'void', async: true }],
+              // logout method is intentionally ABSENT
+            },
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    expect(files.length).toBe(1);
+
+    // skipIfExists should be removed because 'logout' is absent from baseline
+    expect(files[0].skipIfExists).toBeUndefined();
+  });
+
+  it('keeps skipIfExists when fully-covered service has all methods in baseline', () => {
+    const services: Service[] = [
+      {
+        name: 'SSOService',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuthorizationUrl' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /sso/authorize',
+            { className: 'SSO', methodName: 'getAuthorizationUrl', params: [], returnType: 'void' },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          SSO: {
+            name: 'SSO',
+            methods: {
+              getAuthorizationUrl: [{ name: 'getAuthorizationUrl', params: [], returnType: 'void', async: true }],
+            },
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    expect(files.length).toBe(1);
+
+    // skipIfExists should stay true because all methods exist in baseline
+    expect(files[0].skipIfExists).toBe(true);
   });
 });
 

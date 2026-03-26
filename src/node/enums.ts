@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { walkTypeRef } from '@workos/oagen';
+import { toPascalCase, walkTypeRef } from '@workos/oagen';
 import { fileName, serviceDirName, buildServiceNameMap } from './naming.js';
 import { docComment } from './utils.js';
 
@@ -41,7 +41,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // Append new values from the spec that the baseline is missing
       for (const val of missingValues) {
         // Derive a PascalCase member name from the value
-        const memberName = val.replace(/[^a-zA-Z0-9]+/g, '');
+        const memberName = toPascalCase(val);
         lines.push(`  ${memberName} = '${val}',`);
       }
       lines.push('}');
