@@ -28,7 +28,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec, ctx);
   for (const f of fixtures) {
-    files.push({ path: f.path, content: f.content, headerPlacement: 'skip' });
+    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', integrateTarget: false });
   }
 
   // Build model lookup for response field assertions

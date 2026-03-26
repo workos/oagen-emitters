@@ -87,6 +87,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
       files.push({
         path: serializerPath,
         content: aliasLines.join('\n'),
+        integrateTarget: false,
       });
       continue;
     }
@@ -339,6 +340,7 @@ export function generateSerializers(models: Model[], ctx: EmitterContext): Gener
     files.push({
       path: serializerPath,
       content: pruneUnusedImports(lines).join('\n'),
+      integrateTarget: false,
     });
   }
 
