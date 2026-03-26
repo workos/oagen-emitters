@@ -1267,6 +1267,14 @@ function renderUnionBodySerializer(
 function renderNonDiscriminatedUnionBodySerializer(modelNames: string[], ctx: EmitterContext): string {
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
+  // Try to detect an implicit discriminator: a required field present in all
+  // variants whose type is `kind: 'literal'` with a distinct value per variant.
+  // This covers oneOf unions where each variant has e.g. `grant_type: 'authorization_code'`.
+  const implicitDisc = detectImplicitDiscriminator(modelNames, modelMap);
+  if (implicitDisc) {
+    return renderUnionBodySerializer(implicitDisc, ctx);
+  }
+
   // Collect required field names per model (using camelCase domain names).
   const requiredFieldsByModel = new Map<string, Set<string>>();
   for (const name of modelNames) {
@@ -1314,6 +1322,56 @@ function renderNonDiscriminatedUnionBodySerializer(modelNames: string[], ctx: Em
   }
 
   return `(() => { ${parts.join('; ')} })()`;
+}
+
+/**
+ * Detect an implicit discriminator from literal-typed fields.
+ * Returns a discriminator descriptor if all variants share a required field
+ * whose type is `kind: 'literal'` with a distinct value per variant.
+ */
+function detectImplicitDiscriminator(
+  modelNames: string[],
+  modelMap: Map<string, Model>,
+): { property: string; mapping: Record<string, string> } | null {
+  if (modelNames.length < 2) return null;
+
+  const firstModel = modelMap.get(modelNames[0]);
+  if (!firstModel) return null;
+
+  // Candidate fields: required fields with literal type in the first model.
+  const candidates = firstModel.fields.filter((f) => f.required && f.type.kind === 'literal');
+
+  for (const candidate of candidates) {
+    const mapping: Record<string, string> = {};
+    const values = new Set<string | number | boolean | null>();
+    let valid = true;
+
+    for (const name of modelNames) {
+      const model = modelMap.get(name);
+      if (!model) {
+        valid = false;
+        break;
+      }
+      const field = model.fields.find((f) => f.name === candidate.name);
+      if (!field || !field.required || field.type.kind !== 'literal') {
+        valid = false;
+        break;
+      }
+      const val = field.type.value;
+      if (values.has(val)) {
+        valid = false;
+        break;
+      } // duplicate value
+      values.add(val);
+      mapping[String(val)] = name;
+    }
+
+    if (valid && Object.keys(mapping).length === modelNames.length) {
+      return { property: candidate.name, mapping };
+    }
+  }
+
+  return null;
 }
 
 /** Return type for extractRequestBodyType when the body is a union. */
