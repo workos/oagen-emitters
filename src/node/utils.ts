@@ -1,4 +1,5 @@
 import type { Model, EmitterContext, Service, Operation, Field } from '@workos/oagen';
+import { toPascalCase } from '@workos/oagen';
 export {
   collectModelRefs,
   collectEnumRefs,
@@ -7,7 +8,14 @@ export {
   collectRequestBodyModels,
 } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { resolveInterfaceName, fieldName, resolveServiceDir, buildServiceNameMap } from './naming.js';
+import {
+  resolveInterfaceName,
+  fieldName,
+  resolveServiceDir,
+  resolveMethodName,
+  buildServiceNameMap,
+  SERVICE_COVERED_BY,
+} from './naming.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 /**
@@ -384,6 +392,9 @@ export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Ma
  * endpoints (e.g., `GET /connections`).
  */
 export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext): boolean {
+  // Explicit override: services known to be covered by existing hand-written classes
+  if (SERVICE_COVERED_BY[toPascalCase(service.name)]) return true;
+
   const overlay = ctx.overlayLookup?.methodByOperation;
   if (!overlay || overlay.size === 0) return false;
   if (service.operations.length === 0) return false;
@@ -412,10 +423,26 @@ export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext
  * meaning the merger needs to add new methods (skipIfExists must be removed).
  */
 export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterContext): boolean {
-  const overlay = ctx.overlayLookup?.methodByOperation;
-  if (!overlay) return false;
   const baselineClasses = ctx.apiSurface?.classes;
   if (!baselineClasses) return false;
+
+  // For services explicitly mapped to an existing class via SERVICE_COVERED_BY,
+  // check each operation's resolved method name against the target class directly.
+  // This avoids the overlay gap where new endpoints are silently skipped.
+  const targetClassName = SERVICE_COVERED_BY[toPascalCase(service.name)];
+  if (targetClassName) {
+    const cls = baselineClasses[targetClassName];
+    if (!cls) return true; // Target class missing from baseline — treat as absent
+    for (const op of service.operations) {
+      const method = resolveMethodName(op, service, ctx);
+      if (!cls.methods?.[method]) return true;
+    }
+    return false;
+  }
+
+  // Default overlay-based detection
+  const overlay = ctx.overlayLookup?.methodByOperation;
+  if (!overlay) return false;
 
   for (const op of service.operations) {
     const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;

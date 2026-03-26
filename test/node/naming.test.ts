@@ -138,7 +138,7 @@ describe('naming', () => {
 
     it('falls back to PascalCase of service.name', () => {
       const service: Service = {
-        name: 'MultiFactorAuth',
+        name: 'SomeNewService',
         operations: [],
       };
 
@@ -148,7 +148,7 @@ describe('naming', () => {
         spec: emptySpec,
       };
 
-      expect(resolveServiceName(service, ctx)).toBe('MultiFactorAuth');
+      expect(resolveServiceName(service, ctx)).toBe('SomeNewService');
     });
   });
 

@@ -115,6 +115,22 @@ const SERVICE_DIR_OVERRIDES: Record<string, string> = {
  *   - `hasMethodsAbsentFromBaseline` checks the target class for missing methods,
  *     so new endpoints are added to the existing class rather than silently dropped
  */
+export const SERVICE_COVERED_BY: Record<string, string> = {
+  Connections: 'SSO',
+  Directories: 'DirectorySync',
+  DirectoryGroups: 'DirectorySync',
+  DirectoryUsers: 'DirectorySync',
+  FeatureFlagsTargets: 'FeatureFlags',
+  MultiFactorAuth: 'Mfa',
+  MultiFactorAuthChallenges: 'Mfa',
+  OrganizationsApiKeys: 'Organizations',
+  UserManagementAuthentication: 'UserManagement',
+  UserManagementInvitations: 'UserManagement',
+  UserManagementMagicAuth: 'UserManagement',
+  UserManagementMultiFactorAuthentication: 'UserManagement',
+  UserManagementOrganizationMembership: 'UserManagement',
+  UserManagementUsers: 'UserManagement',
+};
 
 /**
  * Explicit class name overrides. Maps the default PascalCase service name
@@ -159,6 +175,10 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
 
 /** Resolve the SDK class name for a service, checking overlay for existing names. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
+  // Explicit coverage: this service's endpoints belong to an existing class
+  const coveredBy = SERVICE_COVERED_BY[toPascalCase(service.name)];
+  if (coveredBy) return coveredBy;
+
   // Check overlay's methodByOperation for any operation in this service
   // to find the existing class name
   if (ctx.overlayLookup?.methodByOperation) {

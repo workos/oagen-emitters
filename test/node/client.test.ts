@@ -112,7 +112,7 @@ describe('generateClient', () => {
 
   it('uses overlay-resolved names for imports and accessors', () => {
     const mfaService: Service = {
-      name: 'MultiFactorAuth',
+      name: 'Billing',
       operations: [
         {
           name: 'enrollFactor',
@@ -396,12 +396,12 @@ describe('generateClient', () => {
       ],
     };
     const enumService: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [
             {
@@ -422,12 +422,12 @@ describe('generateClient', () => {
       ],
     };
     const dirService: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [
             {
@@ -482,21 +482,21 @@ describe('generateClient', () => {
 
     const content = barrel!.content;
     // Both enums are now re-exported via per-service barrel wildcards
-    expect(content).toContain("export * from './connections/interfaces'");
-    expect(content).toContain("export * from './directories/interfaces'");
+    expect(content).toContain("export * from './payments/interfaces'");
+    expect(content).toContain("export * from './invoices/interfaces'");
     // Individual enum exports should NOT appear (covered by wildcard)
     expect(content).not.toContain('export { ConnectionType }');
-    expect(content).not.toContain('export type { DirectoryState }');
+    expect(content).not.toContain('export type { InvoiceState }');
   });
 
   it('skips services whose endpoints are fully covered by existing hand-written services', () => {
     const connectionsService: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -507,7 +507,7 @@ describe('generateClient', () => {
         {
           name: 'getConnection',
           httpMethod: 'get',
-          path: '/connections/{id}',
+          path: '/payments/{id}',
           pathParams: [
             {
               name: 'id',
@@ -663,19 +663,19 @@ describe('generateClient', () => {
     expect(barrelContent).not.toContain('export { Sso }');
     expect(barrelContent).not.toContain('export { Connections }');
 
-    // But model types from the Connections service should still be exported
-    // (via the service barrel wildcard for the resolved directory)
-    expect(barrelContent).toContain("export * from './sso/interfaces'");
+    // Covered services don't generate barrel exports — their types are
+    // already exported by the hand-written service's own barrel.
+    expect(barrelContent).not.toContain("export * from './sso/interfaces'");
   });
 
   it('does not skip services when only some operations are covered', () => {
     const partialService: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -684,13 +684,13 @@ describe('generateClient', () => {
           injectIdempotencyKey: false,
         },
         {
-          name: 'createDirectory',
+          name: 'createInvoice',
           httpMethod: 'post',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          response: { kind: 'model', name: 'Directory' },
+          response: { kind: 'model', name: 'Invoice' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -698,7 +698,7 @@ describe('generateClient', () => {
     };
 
     const dirModel: Model = {
-      name: 'Directory',
+      name: 'Invoice',
       fields: [
         {
           name: 'id',
@@ -727,14 +727,14 @@ describe('generateClient', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          DirectorySync: {
-            name: 'DirectorySync',
+          Billing: {
+            name: 'Billing',
             methods: {
-              listDirectories: [
+              listInvoices: [
                 {
-                  name: 'listDirectories',
+                  name: 'listInvoices',
                   params: [],
-                  returnType: 'Promise<AutoPaginatable<Directory>>',
+                  returnType: 'Promise<AutoPaginatable<Invoice>>',
                   async: true,
                 },
               ],
@@ -750,12 +750,12 @@ describe('generateClient', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /directories',
+            'GET /invoices',
             {
-              className: 'DirectorySync',
-              methodName: 'listDirectories',
+              className: 'Billing',
+              methodName: 'listInvoices',
               params: [],
-              returnType: 'Promise<AutoPaginatable<Directory>>',
+              returnType: 'Promise<AutoPaginatable<Invoice>>',
             },
           ],
         ]),
@@ -773,7 +773,7 @@ describe('generateClient', () => {
     const content = workosFile.content;
 
     // Service should still be generated because it has an uncovered operation
-    expect(content).toContain('DirectorySync');
+    expect(content).toContain('Billing');
   });
 
   it('does not skip services when no overlay is provided', () => {
@@ -784,7 +784,7 @@ describe('generateClient', () => {
 
   it('does not skip services when overlay exists but no apiSurface baseline', () => {
     const mfaService: Service = {
-      name: 'MultiFactorAuth',
+      name: 'Analytics',
       operations: [
         {
           name: 'enrollFactor',
@@ -829,7 +829,7 @@ describe('generateClient', () => {
           [
             'POST /auth/factors/enroll',
             {
-              className: 'Mfa',
+              className: 'Analytics',
               methodName: 'enrollFactor',
               params: [],
               returnType: 'void',
@@ -847,7 +847,7 @@ describe('generateClient', () => {
 
     const files = generateClient(mfaSpec, namingOnlyCtx);
     const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
-    expect(workosFile.content).toContain('readonly mfa = new Mfa(this);');
+    expect(workosFile.content).toContain('readonly analytics = new Analytics(this);');
   });
 });
 
@@ -863,12 +863,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when no overlay is provided', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -888,12 +888,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when overlay is empty', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1009,12 +1009,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when only some operations are covered', () => {
     const svc: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1023,13 +1023,13 @@ describe('isServiceCoveredByExisting', () => {
           injectIdempotencyKey: false,
         },
         {
-          name: 'createDirectory',
+          name: 'createInvoice',
           httpMethod: 'post',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          response: { kind: 'model', name: 'Directory' },
+          response: { kind: 'model', name: 'Invoice' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -1045,8 +1045,8 @@ describe('isServiceCoveredByExisting', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          DirectorySync: {
-            name: 'DirectorySync',
+          Billing: {
+            name: 'Billing',
             methods: {},
             properties: {},
             constructorParams: [],
@@ -1059,10 +1059,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /directories',
+            'GET /invoices',
             {
-              className: 'DirectorySync',
-              methodName: 'listDirectories',
+              className: 'Billing',
+              methodName: 'listInvoices',
               params: [],
               returnType: 'Promise<AutoPaginatable<Directory>>',
             },
@@ -1130,12 +1130,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when overlay covers operations but target class is not in baseline', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1162,10 +1162,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /connections',
+            'GET /payments',
             {
               className: 'Sso',
-              methodName: 'listConnections',
+              methodName: 'listPayments',
               params: [],
               returnType: 'Promise<AutoPaginatable<Connection>>',
             },
@@ -1184,12 +1184,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when no apiSurface is provided', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1206,10 +1206,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /connections',
+            'GET /payments',
             {
               className: 'Sso',
-              methodName: 'listConnections',
+              methodName: 'listPayments',
               params: [],
               returnType: 'Promise<AutoPaginatable<Connection>>',
             },

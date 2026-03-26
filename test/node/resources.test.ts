@@ -933,12 +933,12 @@ describe('generateResources', () => {
   it('prefixes ListOptions with service name when method is "list"', () => {
     const services: Service[] = [
       {
-        name: 'Connections',
+        name: 'Payments',
         operations: [
           {
             name: 'list',
             httpMethod: 'get',
-            path: '/connections',
+            path: '/payments',
             pathParams: [],
             queryParams: [
               {
@@ -970,9 +970,9 @@ describe('generateResources', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /connections',
+            'GET /payments',
             {
-              className: 'Connections',
+              className: 'Payments',
               methodName: 'list',
               params: [],
               returnType: 'void',
@@ -992,8 +992,8 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use service-prefixed options name instead of generic "ListOptions"
-    expect(content).toContain('export interface ConnectionsListOptions extends PaginationOptions {');
-    expect(content).toContain('Promise<AutoPaginatable<Connection, ConnectionsListOptions>>');
+    expect(content).toContain('export interface PaymentsListOptions extends PaginationOptions {');
+    expect(content).toContain('Promise<AutoPaginatable<Connection, PaymentsListOptions>>');
     // Should NOT use the generic "ListOptions"
     expect(content).not.toContain('export interface ListOptions ');
   });
