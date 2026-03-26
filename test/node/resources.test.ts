@@ -1211,7 +1211,204 @@ describe('partial service coverage', () => {
 
     // Should generate method for uncovered operation
     expect(content).toContain('async getRetention');
-    // Should NOT generate method for covered operation
-    expect(content).not.toContain('async createEvent');
+    // Should also generate covered operation so the merger can apply JSDoc
+    expect(content).toContain('async createEvent');
+  });
+
+  it('generates resource class for fully covered services to provide JSDoc', () => {
+    const services: Service[] = [
+      {
+        name: 'Permissions',
+        operations: [
+          {
+            name: 'listPermissions',
+            description: 'List all permissions.',
+            httpMethod: 'get',
+            path: '/authorization/permissions',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'PermissionList' },
+            errors: [{ statusCode: 404 }],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxCovered: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'GET /authorization/permissions',
+            { className: 'Permissions', methodName: 'listPermissions', params: [], returnType: 'void' },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Permissions: {
+            name: 'Permissions',
+            methods: {
+              listPermissions: [{ name: 'listPermissions', params: [], returnType: 'void', async: true }],
+            },
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, ctxCovered);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+    // Should contain JSDoc with description from the spec
+    expect(content).toContain('List all permissions.');
+    // skipIfExists should remain true for covered services
+    expect(files[0].skipIfExists).toBe(true);
+  });
+
+  it('reconciles method names against api-surface using word-set matching', () => {
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'listRolesOrganizations',
+            httpMethod: 'get',
+            path: '/authorization/organizations/{organizationId}/roles',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'RoleList' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor' as const,
+              param: 'after',
+              itemType: { kind: 'model' as const, name: 'RoleList' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxRecon: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [{ name: 'RoleList', fields: [] }] },
+      overlayLookup: {
+        methodByOperation: new Map(), // no overlay mapping
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {
+          Authorization: {
+            name: 'Authorization',
+            methods: {
+              listOrganizationRoles: [{ name: 'listOrganizationRoles', params: [], returnType: 'void', async: true }],
+            },
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, ctxRecon);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+    // Should use reconciled name from api-surface, not spec-derived name
+    expect(content).toContain('async listOrganizationRoles');
+    expect(content).not.toContain('async listRolesOrganizations');
+  });
+
+  it('deduplicates method names for operations on different paths', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'create',
+            httpMethod: 'post',
+            path: '/organization_domains',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrgDomain' },
+            response: { kind: 'model', name: 'OrgDomain' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+          {
+            name: 'create',
+            httpMethod: 'post',
+            path: '/organizations',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrg' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxDedup: EmitterContext = {
+      ...ctx,
+      spec: {
+        ...emptySpec,
+        services,
+        models: [
+          { name: 'CreateOrgDomain', fields: [] },
+          { name: 'OrgDomain', fields: [] },
+          { name: 'CreateOrg', fields: [] },
+          { name: 'Organization', fields: [] },
+        ],
+      },
+    };
+
+    const files = generateResources(services, ctxDedup);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+    // The best-scoring plan keeps the name; the other gets disambiguated.
+    // "create" matches "organizations" path better (the word "create" doesn't
+    // appear in either path, but scoring is equal — first wins).
+    // The other gets a path suffix.
+    const createMatches = content.match(/async create\b/g);
+    // At most one un-suffixed "create"
+    expect(createMatches?.length ?? 0).toBeLessThanOrEqual(1);
+    // The two methods should have different names
+    const methodNames = [...content.matchAll(/async (\w+)\(/g)].map((m) => m[1]);
+    const createMethods = methodNames.filter((n) => n.toLowerCase().startsWith('create'));
+    expect(new Set(createMethods).size).toBe(createMethods.length); // all unique
   });
 });
