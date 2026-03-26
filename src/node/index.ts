@@ -77,8 +77,30 @@ export const nodeEmitter: Emitter = {
   },
 
   formatCommand(targetDir: string): FormatCommand | null {
-    if (fs.existsSync(path.join(targetDir, '.prettierrc'))) {
+    const hasPrettier = fs.existsSync(path.join(targetDir, '.prettierrc'));
+    const hasEslint =
+      fs.existsSync(path.join(targetDir, 'eslint.config.mjs')) ||
+      fs.existsSync(path.join(targetDir, 'eslint.config.js')) ||
+      fs.existsSync(path.join(targetDir, '.eslintrc.json')) ||
+      fs.existsSync(path.join(targetDir, '.eslintrc.js'));
+
+    if (hasPrettier && hasEslint) {
+      // Chain ESLint autofix (e.g. unused-import removal) then prettier.
+      // ESLint errors are suppressed so formatting still runs on lint failure.
+      return {
+        cmd: 'bash',
+        args: [
+          '-c',
+          'npx eslint --fix --no-error-on-unmatched-pattern "$@" 2>/dev/null; npx prettier --write --log-level silent "$@"',
+          '--',
+        ],
+      };
+    }
+    if (hasPrettier) {
       return { cmd: 'npx', args: ['prettier', '--write', '--log-level', 'silent'] };
+    }
+    if (hasEslint) {
+      return { cmd: 'npx', args: ['eslint', '--fix', '--no-error-on-unmatched-pattern'] };
     }
     return null;
   },
