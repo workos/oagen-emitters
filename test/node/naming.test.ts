@@ -116,7 +116,12 @@ describe('naming', () => {
           methodByOperation: new Map([
             [
               'POST /auth/factors/enroll',
-              { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+              {
+                className: 'Mfa',
+                methodName: 'enrollFactor',
+                params: [],
+                returnType: 'void',
+              },
             ],
           ]),
           httpKeyByMethod: new Map(),
@@ -133,7 +138,7 @@ describe('naming', () => {
 
     it('falls back to PascalCase of service.name', () => {
       const service: Service = {
-        name: 'MultiFactorAuth',
+        name: 'SomeNewService',
         operations: [],
       };
 
@@ -143,7 +148,7 @@ describe('naming', () => {
         spec: emptySpec,
       };
 
-      expect(resolveServiceName(service, ctx)).toBe('MultiFactorAuth');
+      expect(resolveServiceName(service, ctx)).toBe('SomeNewService');
     });
   });
 
@@ -189,7 +194,12 @@ describe('naming', () => {
           methodByOperation: new Map([
             [
               'POST /auth/factors/enroll',
-              { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+              {
+                className: 'Mfa',
+                methodName: 'enrollFactor',
+                params: [],
+                returnType: 'void',
+              },
             ],
           ]),
           httpKeyByMethod: new Map(),

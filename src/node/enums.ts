@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { walkTypeRef } from '@workos/oagen';
-import { fileName, serviceDirName, buildServiceNameMap } from './naming.js';
+import { toPascalCase, walkTypeRef } from '@workos/oagen';
+import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment } from './utils.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -9,7 +9,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
   const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
@@ -41,7 +41,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // Append new values from the spec that the baseline is missing
       for (const val of missingValues) {
         // Derive a PascalCase member name from the value
-        const memberName = val.replace(/[^a-zA-Z0-9]+/g, '');
+        const memberName = toPascalCase(val);
         lines.push(`  ${memberName} = '${val}',`);
       }
       lines.push('}');

@@ -225,7 +225,7 @@ export function fetchBody({ raw = false } = {}): any {
 export function testUnauthorized(fn: () => Promise<any>) {
   it('throws on unauthorized', async () => {
     fetchOnce({ message: 'Unauthorized' }, { status: 401 });
-    await expect(fn()).rejects.toThrow('Unauthorized');
+    await expect(fn()).rejects.toThrow('Could not authorize the request');
   });
 }
 

@@ -1,5 +1,5 @@
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
   docComment,
   createServiceDirResolver,
@@ -46,7 +46,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = serviceDirName(resolvedName);
+    const serviceDir = resolveServiceDir(resolvedName);
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
 
@@ -99,7 +99,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('}');
 
-  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/workos.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 /**
@@ -315,10 +319,68 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Track directories that have already been wildcard-exported
   const exportedDirs = new Set<string>();
 
+  // Pre-compute all names per interfaces directory (generated + baseline) to detect
+  // cross-directory conflicts before emitting any star exports.  A star export is
+  // unsafe when two different directories export the same name (e.g., Factor in
+  // both mfa/interfaces and user-management/interfaces).
+  const dirAllNames = new Map<string, Set<string>>();
+  for (const service of spec.services) {
+    const iDir = resolveDir(service.name);
+    if (!dirAllNames.has(iDir)) dirAllNames.set(iDir, new Set());
+    const names = dirAllNames.get(iDir)!;
+    for (const model of spec.models) {
+      if (modelToService.get(model.name) !== service.name) continue;
+      if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
+      names.add(resolveInterfaceName(model.name, ctx));
+      names.add(wireInterfaceName(resolveInterfaceName(model.name, ctx)));
+    }
+  }
+  // Add baseline names per directory
+  if (ctx.apiSurface?.interfaces) {
+    for (const [name, iface] of Object.entries(ctx.apiSurface.interfaces)) {
+      const sourceFile = (iface as any).sourceFile as string | undefined;
+      if (!sourceFile) continue;
+      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
+      if (match) {
+        const dirName = match[1];
+        if (!dirAllNames.has(dirName)) dirAllNames.set(dirName, new Set());
+        dirAllNames.get(dirName)!.add(name);
+      }
+    }
+  }
+  if (ctx.apiSurface?.typeAliases) {
+    for (const [name, alias] of Object.entries(ctx.apiSurface.typeAliases)) {
+      const sourceFile = (alias as any).sourceFile as string | undefined;
+      if (!sourceFile) continue;
+      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
+      if (match) {
+        const dirName = match[1];
+        if (!dirAllNames.has(dirName)) dirAllNames.set(dirName, new Set());
+        dirAllNames.get(dirName)!.add(name);
+      }
+    }
+  }
+  // Detect directories with cross-directory name conflicts
+  const unsafeStarDirs = new Set<string>();
+  const allDirEntries = [...dirAllNames.entries()];
+  for (let i = 0; i < allDirEntries.length; i++) {
+    for (let j = i + 1; j < allDirEntries.length; j++) {
+      const [dirA, namesA] = allDirEntries[i];
+      const [dirB, namesB] = allDirEntries[j];
+      for (const name of namesA) {
+        if (namesB.has(name)) {
+          unsafeStarDirs.add(dirA);
+          unsafeStarDirs.add(dirB);
+          break;
+        }
+      }
+    }
+  }
+
   // Per-service exports: service barrel + resource class
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = serviceDirName(resolvedName);
+    const serviceDir = resolveServiceDir(resolvedName);
     // The interfaces directory may differ from the resource class directory when
     // a service's class name is remapped (e.g., WebhooksEndpoints class lives in
     // webhooks-endpoints/ but its model interfaces live in webhooks/).
@@ -338,13 +400,25 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
       return enumService === service.name;
     });
 
-    // Check whether any model or enum in this service conflicts with existingSdkExports.
-    // If so, fall back to individual exports to avoid shadowing hand-written types.
+    // Check whether any model or enum in this service conflicts with names already
+    // exported (from earlier star exports or the existing SDK baseline).  If so, fall
+    // back to individual named exports to avoid duplicate-export TS2308 errors.
     const hasConflict =
-      serviceModels.some((m) => existingSdkExports.has(resolveInterfaceName(m.name, ctx))) ||
-      serviceEnums.some((e) => existingSdkExports.has(e.name));
+      serviceModels.some((m) => {
+        const name = resolveInterfaceName(m.name, ctx);
+        return existingSdkExports.has(name) || exportedNames.has(name) || exportedNames.has(wireInterfaceName(name));
+      }) || serviceEnums.some((e) => existingSdkExports.has(e.name) || exportedNames.has(e.name));
 
-    if ((serviceModels.length > 0 || serviceEnums.length > 0) && !exportedDirs.has(interfacesDir) && !hasConflict) {
+    // Skip star export for covered services — their directory may have hand-written types
+    // (e.g., Factor in mfa/) that conflict with types in the covering service's directory.
+    const isCovered = coveredServicesBarrel.has(service.name);
+    if (
+      (serviceModels.length > 0 || serviceEnums.length > 0) &&
+      !exportedDirs.has(interfacesDir) &&
+      !hasConflict &&
+      !unsafeStarDirs.has(interfacesDir) &&
+      !isCovered
+    ) {
       exportedDirs.add(interfacesDir);
       lines.push(`export * from './${interfacesDir}/interfaces';`);
       // Track the individual names so they don't get re-exported below
@@ -446,7 +520,11 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push("export { WorkOS } from './workos';");
   }
 
-  return { path: 'src/index.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/index.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 /**
@@ -459,7 +537,11 @@ function generateWorkerBarrel(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFi
   // Re-export everything from the main index — keeps type exports in sync
   lines.push("export * from './index';");
 
-  return { path: 'src/index.worker.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/index.worker.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 function findEnumService(enumName: string, services: Service[]): string | undefined {

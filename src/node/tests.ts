@@ -5,7 +5,7 @@ import {
   fieldName,
   wireFieldName,
   fileName,
-  serviceDirName,
+  resolveServiceDir,
   servicePropertyName,
   resolveMethodName,
   resolveInterfaceName,
@@ -28,7 +28,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec, ctx);
   for (const f of fixtures) {
-    files.push({ path: f.path, content: f.content, headerPlacement: 'skip' });
+    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', integrateTarget: false });
   }
 
   // Build model lookup for response field assertions
@@ -61,7 +61,7 @@ function generateServiceTest(
   modelMap: Map<string, Model>,
 ): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = serviceDirName(resolvedName);
+  const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
   const serviceProp = servicePropertyName(resolvedName);
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
@@ -510,8 +510,9 @@ function buildCallArgs(op: Operation, plan: any, modelMap: Map<string, Model>): 
 
   if (isPaginated) return pathArgs || '';
   if (hasBody) {
-    const fb = fallbackBodyArg(op, modelMap);
-    return pathArgs ? `${pathArgs}, ${fb}` : fb;
+    const payload = buildTestPayload(op, modelMap);
+    const bodyArg = payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap);
+    return pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg;
   }
   return pathArgs || '';
 }
@@ -626,10 +627,18 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
 }
 
 /**
- * Return a JS literal string for the expected fixture value of a primitive field.
- * Returns null for non-primitive or complex types (arrays, models, etc.).
+ * Return a JS literal string for the expected fixture value of a field.
+ * Returns null for types that cannot be deterministically generated.
+ * When a modelMap is provided, recursively builds object literals for nested model types.
+ * When wire is true, uses snake_case keys for nested model objects (wire format).
  */
-function fixtureValueForType(ref: TypeRef, name: string, modelName: string): string | null {
+function fixtureValueForType(
+  ref: TypeRef,
+  name: string,
+  modelName: string,
+  modelMap?: Map<string, Model>,
+  wire?: boolean,
+): string | null {
   switch (ref.kind) {
     case 'primitive':
       return fixtureValueForPrimitive(ref.type, ref.format, name, modelName);
@@ -646,9 +655,23 @@ function fixtureValueForType(ref: TypeRef, name: string, modelName: string): str
       // For arrays of primitives/enums, generate a single-element array assertion.
       // For arrays of models/complex types, return null to skip the assertion —
       // the fixture will have populated items that we can't predict here.
-      const itemValue = fixtureValueForType(ref.items, name, modelName);
+      const itemValue = fixtureValueForType(ref.items, name, modelName, modelMap, wire);
       if (itemValue !== null) return `[${itemValue}]`;
       return null;
+    }
+    case 'model': {
+      if (!modelMap) return null;
+      const nested = modelMap.get(ref.name);
+      if (!nested) return null;
+      const requiredFields = nested.fields.filter((f) => f.required);
+      const entries: string[] = [];
+      for (const field of requiredFields) {
+        const value = fixtureValueForType(field.type, field.name, nested.name, modelMap, wire);
+        if (value === null) return null; // Can't build a complete object
+        const key = wire ? wireFieldName(field.name) : fieldName(field.name);
+        entries.push(`${key}: ${value}`);
+      }
+      return `{ ${entries.join(', ')} }`;
     }
     default:
       return null;
@@ -716,8 +739,8 @@ function buildTestPayload(
   if (!model) return null;
 
   const fields = model.fields.filter((f) => f.required);
-  // Only use primitive/literal/enum/array fields that we can generate deterministic values for
-  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name, model.name) !== null);
+  // Only use fields that we can generate deterministic values for (primitives, enums, and nested models)
+  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name, model.name, modelMap) !== null);
 
   // Only generate a typed payload when ALL required fields have fixture values.
   // A partial payload missing required fields would fail TypeScript type checking.
@@ -727,11 +750,12 @@ function buildTestPayload(
   const snakeEntries: string[] = [];
 
   for (const field of usableFields) {
-    const value = fixtureValueForType(field.type, field.name, model.name)!;
+    const camelValue = fixtureValueForType(field.type, field.name, model.name, modelMap)!;
+    const wireValue = fixtureValueForType(field.type, field.name, model.name, modelMap, true)!;
     const camelKey = fieldName(field.name);
     const snakeKey = wireFieldName(field.name);
-    camelEntries.push(`${camelKey}: ${value}`);
-    snakeEntries.push(`${snakeKey}: ${value}`);
+    camelEntries.push(`${camelKey}: ${camelValue}`);
+    snakeEntries.push(`${snakeKey}: ${wireValue}`);
   }
 
   return {
@@ -775,7 +799,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     serviceNameMap.set(service.name, resolveResourceClassName(service, ctx));
   }
   const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
 
   // Only generate round-trip tests for models with fields that have serializers generated.
   // Skip list metadata and list wrapper models since their serializers are not emitted.

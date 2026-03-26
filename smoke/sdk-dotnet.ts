@@ -115,7 +115,12 @@ function createProxyServer(apiKey: string, captures: ProxyCapture[]): Promise<{ 
             }
 
             captures.push({
-              request: { method: req.method!, path: url.pathname, queryParams, body },
+              request: {
+                method: req.method!,
+                path: url.pathname,
+                queryParams,
+                body,
+              },
               response: { status: proxyRes.statusCode!, body: resBody },
             });
 
@@ -689,7 +694,11 @@ async function main(): Promise<void> {
 
       // Build planned calls for this wave, resolving methods
       const plannedCalls: PlannedCall[] = [];
-      const waveSkipped: Array<{ op: Operation; irService: string; reason: string }> = [];
+      const waveSkipped: Array<{
+        op: Operation;
+        irService: string;
+        reason: string;
+      }> = [];
 
       for (const { op, irService, pathParams } of wave.calls) {
         const resolution = resolveMethod(op, irService, manifest);
@@ -858,7 +867,12 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationId: op.name,
     service,
     operationName: op.name,
-    request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
+    request: {
+      method: op.httpMethod.toUpperCase(),
+      path: op.path,
+      queryParams: {},
+      body: null,
+    },
     response: { status: 0, body: null },
     outcome: 'skipped',
     error: reason,

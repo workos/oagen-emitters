@@ -252,87 +252,98 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (model.description) {
       lines.push(...docComment(model.description));
     }
-    lines.push(`export interface ${domainName}${typeParams} {`);
-    for (const field of model.fields) {
-      const domainFieldName = fieldName(field.name);
-      if (seenDomainFields.has(domainFieldName)) continue;
-      seenDomainFields.add(domainFieldName);
-      if (field.description || field.deprecated || field.readOnly || field.writeOnly || field.default !== undefined) {
-        const parts: string[] = [];
-        if (field.description) parts.push(field.description);
-        if (field.readOnly) parts.push('@readonly');
-        if (field.writeOnly) parts.push('@writeonly');
-        if (field.default !== undefined) parts.push(`@default ${JSON.stringify(field.default)}`);
-        if (field.deprecated) parts.push('@deprecated');
-        lines.push(...docComment(parts.join('\n'), 2));
+    if (model.fields.length === 0) {
+      lines.push(`export type ${domainName}${typeParams} = object;`);
+    } else {
+      lines.push(`export interface ${domainName}${typeParams} {`);
+      for (const field of model.fields) {
+        const domainFieldName = fieldName(field.name);
+        if (seenDomainFields.has(domainFieldName)) continue;
+        seenDomainFields.add(domainFieldName);
+        if (field.description || field.deprecated || field.readOnly || field.writeOnly || field.default !== undefined) {
+          const parts: string[] = [];
+          if (field.description) parts.push(field.description);
+          if (field.readOnly) parts.push('@readonly');
+          if (field.writeOnly) parts.push('@writeonly');
+          if (field.default !== undefined) parts.push(`@default ${JSON.stringify(field.default)}`);
+          if (field.deprecated) parts.push('@deprecated');
+          lines.push(...docComment(parts.join('\n'), 2));
+        }
+        const baselineField = baselineDomain?.fields?.[domainFieldName];
+        // For the domain interface, also check that the response baseline's optionality
+        // is compatible — the serializer reads from the response type and assigns to the domain type.
+        // If the domain baseline says required but the response baseline says optional,
+        // the serializer would produce T | undefined for a field expecting T.
+        const domainWireField = wireFieldName(field.name);
+        const responseBaselineField = baselineResponse?.fields?.[domainWireField];
+        const domainResponseOptionalMismatch =
+          baselineField && !baselineField.optional && responseBaselineField && responseBaselineField.optional;
+        const readonlyPrefix = field.readOnly ? 'readonly ' : '';
+        if (
+          baselineField &&
+          !domainResponseOptionalMismatch &&
+          baselineTypeResolvable(baselineField.type, importableNames) &&
+          baselineFieldCompatible(baselineField, field)
+        ) {
+          const opt = baselineField.optional ? '?' : '';
+          lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${baselineField.type};`);
+        } else {
+          // When a baseline exists for this model, new fields (not present in the
+          // baseline) are generated as optional.  The merger can deep-merge new
+          // fields into existing interfaces, but it cannot update existing
+          // deserializer function bodies.  Making the field optional prevents a
+          // type error where the interface requires a field that the preserved
+          // deserializer never populates.
+          const isNewFieldOnExistingModel = baselineDomain && !baselineField;
+          // Also make the field optional when the response baseline has it as optional
+          // but the domain baseline has it as required — the deserializer reads from
+          // the response type, so if the response field is optional, the domain value
+          // may be undefined.
+          // Additionally, when a baseline exists for the RESPONSE interface but NOT the
+          // domain interface, fields that are new on the response baseline become optional
+          // in the wire type. The domain type must also be optional to match, otherwise
+          // the deserializer produces T | undefined for a field typed as T.
+          const isNewFieldOnExistingResponse = !baselineDomain && baselineResponse && !responseBaselineField;
+          const opt =
+            !field.required ||
+            isNewFieldOnExistingModel ||
+            domainResponseOptionalMismatch ||
+            isNewFieldOnExistingResponse
+              ? '?'
+              : '';
+          lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
+        }
       }
-      const baselineField = baselineDomain?.fields?.[domainFieldName];
-      // For the domain interface, also check that the response baseline's optionality
-      // is compatible — the serializer reads from the response type and assigns to the domain type.
-      // If the domain baseline says required but the response baseline says optional,
-      // the serializer would produce T | undefined for a field expecting T.
-      const domainWireField = wireFieldName(field.name);
-      const responseBaselineField = baselineResponse?.fields?.[domainWireField];
-      const domainResponseOptionalMismatch =
-        baselineField && !baselineField.optional && responseBaselineField && responseBaselineField.optional;
-      const readonlyPrefix = field.readOnly ? 'readonly ' : '';
-      if (
-        baselineField &&
-        !domainResponseOptionalMismatch &&
-        baselineTypeResolvable(baselineField.type, importableNames) &&
-        baselineFieldCompatible(baselineField, field)
-      ) {
-        const opt = baselineField.optional ? '?' : '';
-        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${baselineField.type};`);
-      } else {
-        // When a baseline exists for this model, new fields (not present in the
-        // baseline) are generated as optional.  The merger can deep-merge new
-        // fields into existing interfaces, but it cannot update existing
-        // deserializer function bodies.  Making the field optional prevents a
-        // type error where the interface requires a field that the preserved
-        // deserializer never populates.
-        const isNewFieldOnExistingModel = baselineDomain && !baselineField;
-        // Also make the field optional when the response baseline has it as optional
-        // but the domain baseline has it as required — the deserializer reads from
-        // the response type, so if the response field is optional, the domain value
-        // may be undefined.
-        // Additionally, when a baseline exists for the RESPONSE interface but NOT the
-        // domain interface, fields that are new on the response baseline become optional
-        // in the wire type. The domain type must also be optional to match, otherwise
-        // the deserializer produces T | undefined for a field typed as T.
-        const isNewFieldOnExistingResponse = !baselineDomain && baselineResponse && !responseBaselineField;
-        const opt =
-          !field.required || isNewFieldOnExistingModel || domainResponseOptionalMismatch || isNewFieldOnExistingResponse
-            ? '?'
-            : '';
-        lines.push(`  ${readonlyPrefix}${domainFieldName}${opt}: ${mapTypeRef(field.type, modelTypeRefOpts)};`);
-      }
-    }
-    lines.push('}');
+      lines.push('}');
+    } // close else for non-empty domain interface
     lines.push('');
 
     // Wire/response interface (snake_case fields) — deduplicate by snake_case name
     const seenWireFields = new Set<string>();
-    lines.push(`export interface ${responseName}${typeParams} {`);
-    for (const field of model.fields) {
-      const wireField = wireFieldName(field.name);
-      if (seenWireFields.has(wireField)) continue;
-      seenWireFields.add(wireField);
-      const baselineField = baselineResponse?.fields?.[wireField];
-      if (
-        baselineField &&
-        baselineTypeResolvable(baselineField.type, importableNames) &&
-        baselineFieldCompatible(baselineField, field)
-      ) {
-        const opt = baselineField.optional ? '?' : '';
-        lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
-      } else {
-        const isNewFieldOnExistingModel = baselineResponse && !baselineField;
-        const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
-        lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
+    if (model.fields.length === 0) {
+      lines.push(`export type ${responseName}${typeParams} = object;`);
+    } else {
+      lines.push(`export interface ${responseName}${typeParams} {`);
+      for (const field of model.fields) {
+        const wireField = wireFieldName(field.name);
+        if (seenWireFields.has(wireField)) continue;
+        seenWireFields.add(wireField);
+        const baselineField = baselineResponse?.fields?.[wireField];
+        if (
+          baselineField &&
+          baselineTypeResolvable(baselineField.type, importableNames) &&
+          baselineFieldCompatible(baselineField, field)
+        ) {
+          const opt = baselineField.optional ? '?' : '';
+          lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
+        } else {
+          const isNewFieldOnExistingModel = baselineResponse && !baselineField;
+          const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+          lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
+        }
       }
-    }
-    lines.push('}');
+      lines.push('}');
+    } // close else for non-empty wire interface
 
     files.push({
       path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,

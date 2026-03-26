@@ -1,20 +1,26 @@
 // @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
 
 import type { Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
-import { planOperation, toPascalCase } from '@workos/oagen';
+import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import {
   fieldName,
   wireFieldName,
   fileName,
-  serviceDirName,
+  resolveServiceDir,
   resolveMethodName,
   resolveInterfaceName,
   resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
-import { docComment, createServiceDirResolver, isServiceCoveredByExisting, uncoveredOperations } from './utils.js';
+import {
+  docComment,
+  createServiceDirResolver,
+  isServiceCoveredByExisting,
+  hasMethodsAbsentFromBaseline,
+  uncoveredOperations,
+} from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
 
@@ -85,27 +91,334 @@ function httpMethodNeedsBody(method: string): boolean {
   return method === 'post' || method === 'put' || method === 'patch';
 }
 
+// ---------------------------------------------------------------------------
+// Method-name reconciliation helpers
+// ---------------------------------------------------------------------------
+
+/** Map HTTP methods to expected CRUD verb prefixes for method name matching. */
+const HTTP_VERB_PREFIXES: Record<string, string[]> = {
+  get: ['list', 'get', 'fetch', 'retrieve', 'find'],
+  post: ['create', 'add', 'insert', 'send'],
+  put: ['set', 'update', 'replace', 'put'],
+  patch: ['update', 'patch', 'modify'],
+  delete: ['delete', 'remove', 'revoke'],
+};
+
+/** Split a camelCase/PascalCase name into lowercase word parts. */
+function splitCamelWords(name: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 1; i < name.length; i++) {
+    if (name[i] >= 'A' && name[i] <= 'Z') {
+      parts.push(name.slice(start, i).toLowerCase());
+      start = i;
+    }
+  }
+  parts.push(name.slice(start).toLowerCase());
+  return parts;
+}
+
+/** Naive singularize: strip trailing 's' unless it ends in 'ss'. */
+function singularize(word: string): string {
+  return word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
+}
+
+/**
+ * Batch-reconcile generated method names against the api-surface class methods.
+ *
+ * When the overlay doesn't map an operation (missing from previous manifest or
+ * fuzzy-matching failed), the emitter falls back to the spec-derived name which
+ * often doesn't match the hand-written SDK. This function uses three passes
+ * with progressive exclusion to find the best surface match:
+ *
+ * 1. **Overlay-resolved** — already correct, mark as taken.
+ * 2. **Word-set match** — same content words regardless of order (handles
+ *    `listRolesOrganizations` ↔ `listOrganizationRoles`).
+ * 3. **Path-context match** — all surface-method content words appear in the
+ *    operation's URL path segments (handles `findById` ↔ `getResource`).
+ *
+ * After each pass, matched surface methods are removed from the pool so that
+ * ambiguous cases (e.g., `listEnvironmentRoles` vs `listOrganizationRoles`)
+ * resolve by elimination.
+ */
+function reconcileMethodNames(
+  plans: Array<{ op: Operation; plan: OperationPlan; method: string }>,
+  service: Service,
+  ctx: EmitterContext,
+): void {
+  const className = resolveResourceClassName(service, ctx);
+  const classMethods = ctx.apiSurface?.classes?.[className]?.methods;
+  if (!classMethods) return;
+
+  const available = new Set(Object.keys(classMethods));
+  const resolved = new Map<(typeof plans)[number], string>();
+
+  // Exclude surface methods that are overlay-mapped by OTHER services'
+  // operations.  This prevents the reconciliation from stealing methods
+  // that belong to a different service (e.g., `createPermission` belongs
+  // to the Permissions service, not the Authorization service).
+  const thisServicePaths = new Set(service.operations.map((op) => op.path));
+  if (ctx.overlayLookup?.methodByOperation) {
+    for (const [httpKey, info] of ctx.overlayLookup.methodByOperation) {
+      if (info.className !== className) continue; // different class
+      const path = httpKey.split(' ')[1];
+      if (thisServicePaths.has(path)) continue; // same service
+      // This method is mapped to an operation in a different service
+      available.delete(info.methodName);
+    }
+  }
+
+  // Determine which plans are already overlay-resolved
+  const overlayResolved = new Set<(typeof plans)[number]>();
+  for (const plan of plans) {
+    const httpKey = `${plan.op.httpMethod.toUpperCase()} ${plan.op.path}`;
+    if (ctx.overlayLookup?.methodByOperation?.get(httpKey)) {
+      overlayResolved.add(plan);
+      if (available.has(plan.method)) {
+        resolved.set(plan, plan.method);
+        available.delete(plan.method);
+      }
+    }
+  }
+
+  // Helper: check verb compatibility.
+  // When specVerb is provided, require the surface method to use the same verb
+  // subgroup (e.g., "list" operations only match "list" methods, not "get").
+  const verbMatches = (methodName: string, httpMethod: string, specVerb?: string): boolean => {
+    const prefixes = HTTP_VERB_PREFIXES[httpMethod] ?? [];
+    const lower = methodName.toLowerCase();
+    if (!prefixes.some((p) => lower.startsWith(p))) return false;
+    if (specVerb) {
+      const surfaceVerb = splitCamelWords(methodName)[0];
+      // "list" is a distinct verb subgroup from "get/find/fetch/retrieve"
+      if (specVerb === 'list' && surfaceVerb !== 'list') return false;
+      if (specVerb !== 'list' && surfaceVerb === 'list') return false;
+    }
+    return true;
+  };
+
+  // Pass 1: Word-set matching (handles word-order differences)
+  for (const plan of plans) {
+    if (resolved.has(plan)) continue;
+    const specVerb = splitCamelWords(plan.method)[0];
+    const specWords = splitCamelWords(plan.method).slice(1).map(singularize); // skip verb
+    const specSet = new Set(specWords);
+    if (specSet.size === 0) continue;
+
+    let match: string | null = null;
+    for (const name of available) {
+      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
+      const methodWords = splitCamelWords(name).slice(1).map(singularize);
+      if (methodWords.length !== specWords.length) continue;
+      const methodSet = new Set(methodWords);
+      if (specSet.size === methodSet.size && [...specSet].every((w) => methodSet.has(w))) {
+        if (match !== null) {
+          match = null; // ambiguous — more than one match
+          break;
+        }
+        match = name;
+      }
+    }
+    if (match) {
+      resolved.set(plan, match);
+      available.delete(match);
+    }
+  }
+
+  // Pass 2: Path-context matching (handles different naming e.g., findById → getResource)
+  // To avoid false matches (e.g., `createPermission` matching a role-permission path
+  // just because "permission" appears somewhere in the URL), require that the method's
+  // content words reference the LEAF resource of the path, not just any segment.
+  for (const plan of plans) {
+    if (resolved.has(plan)) continue;
+    const specVerb = splitCamelWords(plan.method)[0];
+    const pathSegments = plan.op.path.split('/').filter((s) => s && !s.startsWith('{'));
+    const pathWords = new Set(pathSegments.flatMap((s) => s.split('_')).map(singularize));
+    // The "leaf" words come from the last non-param segment — the most specific resource.
+    let bestMatch: string | null = null;
+    let bestLen = 0;
+    let ambiguous = false;
+    for (const name of available) {
+      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
+      const methodWords = splitCamelWords(name).slice(1).map(singularize);
+      if (methodWords.length === 0) continue;
+      // All method content words must appear in path context
+      if (!methodWords.every((w) => pathWords.has(w))) continue;
+      // For paths with 3+ non-param segments (nested sub-resources like
+      // /authorization/roles/{slug}/permissions), require at least 2 content
+      // words.  A single-word method like `createPermission` should only match
+      // a top-level path like /authorization/permissions, not a nested one.
+      if (methodWords.length < 2 && pathSegments.length > 2) continue;
+      if (methodWords.length > bestLen) {
+        bestMatch = name;
+        bestLen = methodWords.length;
+        ambiguous = false;
+      } else if (methodWords.length === bestLen) {
+        ambiguous = true;
+      }
+    }
+    if (bestMatch && !ambiguous) {
+      resolved.set(plan, bestMatch);
+      available.delete(bestMatch);
+    }
+  }
+
+  // Pass 3: Retry word-set and path-context for still-unresolved plans
+  // (earlier passes may have eliminated ambiguous candidates)
+  for (const plan of plans) {
+    if (resolved.has(plan)) continue;
+    const specVerb = splitCamelWords(plan.method)[0];
+
+    // Retry word-set
+    const specWords = splitCamelWords(plan.method).slice(1).map(singularize);
+    const specSet = new Set(specWords);
+    let match: string | null = null;
+    for (const name of available) {
+      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
+      const methodWords = splitCamelWords(name).slice(1).map(singularize);
+      if (methodWords.length !== specWords.length) continue;
+      const methodSet = new Set(methodWords);
+      if (specSet.size === methodSet.size && [...specSet].every((w) => methodSet.has(w))) {
+        if (match !== null) {
+          match = null;
+          break;
+        }
+        match = name;
+      }
+    }
+    if (match) {
+      resolved.set(plan, match);
+      available.delete(match);
+      continue;
+    }
+
+    // Retry path-context (with leaf-word check)
+    const pathSegments = plan.op.path.split('/').filter((s) => s && !s.startsWith('{'));
+    const pathWords = new Set(pathSegments.flatMap((s) => s.split('_')).map(singularize));
+    let bestMatch: string | null = null;
+    let bestLen = 0;
+    let ambiguous = false;
+    for (const name of available) {
+      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
+      const methodWords = splitCamelWords(name).slice(1).map(singularize);
+      if (methodWords.length === 0) continue;
+      if (!methodWords.every((w) => pathWords.has(w))) continue;
+      if (methodWords.length < 2 && pathSegments.length > 2) continue;
+      if (methodWords.length > bestLen) {
+        bestMatch = name;
+        bestLen = methodWords.length;
+        ambiguous = false;
+      } else if (methodWords.length === bestLen) {
+        ambiguous = true;
+      }
+    }
+    if (bestMatch && !ambiguous) {
+      resolved.set(plan, bestMatch);
+      available.delete(bestMatch);
+    }
+  }
+
+  // Apply resolved names (only for non-overlay plans)
+  for (const plan of plans) {
+    if (overlayResolved.has(plan)) continue;
+    const name = resolved.get(plan);
+    if (name) plan.method = name;
+  }
+}
+
+/**
+ * Deduplicate method names within the plans array.
+ *
+ * When `disambiguateOperationNames()` in `@workos/oagen` fails (e.g., for
+ * single-segment paths like `/organizations`), two operations can resolve to
+ * the same method name. Disambiguate by appending a path-derived suffix.
+ */
+function deduplicateMethodNames(
+  plans: Array<{ op: Operation; plan: OperationPlan; method: string }>,
+  _ctx: EmitterContext,
+): void {
+  const nameCount = new Map<string, number>();
+  for (const p of plans) {
+    nameCount.set(p.method, (nameCount.get(p.method) ?? 0) + 1);
+  }
+
+  for (const [name, count] of nameCount) {
+    if (count <= 1) continue;
+    const dupes = plans.filter((p) => p.method === name);
+
+    // If all duplicates are on the SAME base path (different HTTP methods),
+    // trust the names — they represent the same resource.
+    const basePaths = new Set(dupes.map((d) => d.op.path.replace(/\/\{[^}]+\}$/, '')));
+    if (basePaths.size <= 1) continue;
+
+    // Disambiguate: keep the name for the plan whose path best matches,
+    // append path suffix for the others.
+    // Score: how many words in the method name appear in the path segments
+    const nameWords = new Set(splitCamelWords(name).map(singularize));
+    const scored = dupes.map((d) => {
+      const pathWords = d.op.path
+        .split('/')
+        .filter((s) => s && !s.startsWith('{'))
+        .flatMap((s) => s.split('_'))
+        .map(singularize);
+      const overlap = pathWords.filter((w) => nameWords.has(w)).length;
+      return { plan: d, score: overlap };
+    });
+    scored.sort((a, b) => b.score - a.score);
+
+    // The best-scoring plan keeps the name; others get disambiguated
+    for (let i = 1; i < scored.length; i++) {
+      const dupe = scored[i].plan;
+      const segments = dupe.op.path.split('/').filter((s) => s && !s.startsWith('{'));
+      // Use first segment as suffix (the resource collection name)
+      const suffix = segments[0] ?? '';
+      if (suffix) {
+        dupe.method = toCamelCase(`${name}_${suffix}`);
+      }
+    }
+
+    // If still colliding after suffix, append index
+    const stillDuped = new Map<string, typeof dupes>();
+    for (const dupe of dupes) {
+      const group = stillDuped.get(dupe.method) ?? [];
+      group.push(dupe);
+      stillDuped.set(dupe.method, group);
+    }
+    for (const [, group] of stillDuped) {
+      if (group.length <= 1) continue;
+      for (let i = 1; i < group.length; i++) {
+        group[i].method = `${group[i].method}${i + 1}`;
+      }
+    }
+  }
+}
+
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
   const files: GeneratedFile[] = [];
 
   for (const service of services) {
     if (isServiceCoveredByExisting(service, ctx)) {
-      // Fully covered — skip entirely
+      // Fully covered: generate with ALL operations so the merger's docstring
+      // refresh pass can update JSDoc on existing methods.
+      const file = generateResourceClass(service, ctx);
+      // When the baseline class is missing methods for some operations,
+      // remove skipIfExists so the merger adds the new methods.
+      if (hasMethodsAbsentFromBaseline(service, ctx)) {
+        delete file.skipIfExists;
+      }
+      files.push(file);
       continue;
     }
 
-    // Check for partial coverage: some operations covered, some not.
-    // Generate methods only for uncovered operations.
     const ops = uncoveredOperations(service, ctx);
     if (ops.length === 0) continue;
 
     if (ops.length < service.operations.length) {
-      // Partial coverage: create a service with only uncovered operations.
-      // Remove skipIfExists so the merger can add these new methods to the
-      // existing class file (otherwise uncovered operations are silently lost).
-      const partialService = { ...service, operations: ops };
-      const file = generateResourceClass(partialService, ctx);
+      // Partial coverage: generate with ALL operations so JSDoc is available
+      // for both covered and uncovered methods.  Remove skipIfExists so the
+      // merger adds new methods AND refreshes existing JSDoc.
+      const file = generateResourceClass(service, ctx);
       delete file.skipIfExists;
       files.push(file);
     } else {
@@ -118,7 +431,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = serviceDirName(resolvedName);
+  const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
   const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;
 
@@ -127,6 +440,15 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     plan: planOperation(op),
     method: resolveMethodName(op, service, ctx),
   }));
+
+  // Reconcile method names against the api-surface class methods.
+  // This fixes cases where the overlay is missing mappings and the
+  // spec-derived name doesn't match the hand-written SDK name.
+  reconcileMethodNames(plans, service, ctx);
+
+  // Deduplicate method names within the class (e.g., two operations both
+  // resolving to "create" for different paths).
+  deduplicateMethodNames(plans, ctx);
 
   // Sort plans to match the existing file's method order.
   // When the merger integrates generated content with existing files, its
@@ -192,11 +514,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
           requestModels.add(name);
         }
       } else {
-        // Non-discriminated union: import variant models as domain types only.
-        // Without a discriminator we can't statically dispatch serialization,
-        // so the payload is passed through as-is.
+        // Non-discriminated union: import variant models with serializers so we
+        // can dispatch to the correct serializer at runtime via field guards.
         for (const name of bodyInfo.modelNames) {
-          paramModels.add(name);
+          requestModels.add(name);
         }
       }
     }
@@ -649,7 +970,7 @@ function renderDeleteWithBodyMethod(
     if (bodyInfo.discriminator) {
       bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
     } else {
-      bodyExpr = 'payload';
+      bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
   } else {
     requestType = 'Record<string, unknown>';
@@ -688,12 +1009,9 @@ function renderBodyMethod(
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
-      // Discriminated union: dispatch to the correct serializer at runtime.
       bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
     } else {
-      // Non-discriminated union: cannot statically dispatch —
-      // pass the payload directly (caller provides the correct shape).
-      bodyExpr = 'payload';
+      bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
   } else {
     requestType = 'Record<string, unknown>';
@@ -818,7 +1136,7 @@ function renderVoidMethod(
       if (bodyInfo.discriminator) {
         bodyExpr = renderUnionBodySerializer(bodyInfo.discriminator, ctx);
       } else {
-        bodyExpr = 'payload';
+        bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
       }
     } else {
       bodyParam = 'payload: Record<string, unknown>';
@@ -940,6 +1258,122 @@ function renderUnionBodySerializer(
   return `(() => { switch ((payload as any).${prop}) { ${cases.join('; ')}; default: return payload } })()`;
 }
 
+/**
+ * Generate an IIFE expression that dispatches to the correct serializer for a
+ * non-discriminated union request body.  Inspects model fields to find a
+ * required field unique to each variant and uses `'field' in payload` guards.
+ * Falls back to `payload` only when no variant can be distinguished.
+ */
+function renderNonDiscriminatedUnionBodySerializer(modelNames: string[], ctx: EmitterContext): string {
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
+
+  // Try to detect an implicit discriminator: a required field present in all
+  // variants whose type is `kind: 'literal'` with a distinct value per variant.
+  // This covers oneOf unions where each variant has e.g. `grant_type: 'authorization_code'`.
+  const implicitDisc = detectImplicitDiscriminator(modelNames, modelMap);
+  if (implicitDisc) {
+    return renderUnionBodySerializer(implicitDisc, ctx);
+  }
+
+  // Collect required field names per model (using camelCase domain names).
+  const requiredFieldsByModel = new Map<string, Set<string>>();
+  for (const name of modelNames) {
+    const model = modelMap.get(name);
+    if (!model) return 'payload';
+    requiredFieldsByModel.set(name, new Set(model.fields.filter((f) => f.required).map((f) => fieldName(f.name))));
+  }
+
+  // For each model, find a required field that no other model has.
+  const guards: Array<{ modelName: string; field: string }> = [];
+  let fallbackModel: string | undefined;
+
+  for (const name of modelNames) {
+    const myFields = requiredFieldsByModel.get(name)!;
+    let uniqueField: string | undefined;
+    for (const field of myFields) {
+      const isUnique = modelNames.every((other) => other === name || !requiredFieldsByModel.get(other)?.has(field));
+      if (isUnique) {
+        uniqueField = field;
+        break;
+      }
+    }
+    if (uniqueField) {
+      guards.push({ modelName: name, field: uniqueField });
+    } else if (!fallbackModel) {
+      fallbackModel = name;
+    } else {
+      // Multiple models with no unique field — can't dispatch
+      return 'payload';
+    }
+  }
+
+  if (guards.length === 0) return 'payload';
+
+  const parts: string[] = [];
+  for (const { modelName, field } of guards) {
+    const resolved = resolveInterfaceName(modelName, ctx);
+    parts.push(`if ('${field}' in payload) return serialize${resolved}(payload as any)`);
+  }
+  if (fallbackModel) {
+    const resolved = resolveInterfaceName(fallbackModel, ctx);
+    parts.push(`return serialize${resolved}(payload as any)`);
+  } else {
+    parts.push('return payload');
+  }
+
+  return `(() => { ${parts.join('; ')} })()`;
+}
+
+/**
+ * Detect an implicit discriminator from literal-typed fields.
+ * Returns a discriminator descriptor if all variants share a required field
+ * whose type is `kind: 'literal'` with a distinct value per variant.
+ */
+function detectImplicitDiscriminator(
+  modelNames: string[],
+  modelMap: Map<string, Model>,
+): { property: string; mapping: Record<string, string> } | null {
+  if (modelNames.length < 2) return null;
+
+  const firstModel = modelMap.get(modelNames[0]);
+  if (!firstModel) return null;
+
+  // Candidate fields: required fields with literal type in the first model.
+  const candidates = firstModel.fields.filter((f) => f.required && f.type.kind === 'literal');
+
+  for (const candidate of candidates) {
+    const mapping: Record<string, string> = {};
+    const values = new Set<string | number | boolean | null>();
+    let valid = true;
+
+    for (const name of modelNames) {
+      const model = modelMap.get(name);
+      if (!model) {
+        valid = false;
+        break;
+      }
+      const field = model.fields.find((f) => f.name === candidate.name);
+      if (!field || !field.required || field.type.kind !== 'literal') {
+        valid = false;
+        break;
+      }
+      const val = field.type.value;
+      if (values.has(val)) {
+        valid = false;
+        break;
+      } // duplicate value
+      values.add(val);
+      mapping[String(val)] = name;
+    }
+
+    if (valid && Object.keys(mapping).length === modelNames.length) {
+      return { property: candidate.name, mapping };
+    }
+  }
+
+  return null;
+}
+
 /** Return type for extractRequestBodyType when the body is a union. */
 interface UnionBodyInfo {
   kind: 'union';
@@ -961,7 +1395,12 @@ function extractRequestBodyType(
     }
     if (modelNames.length > 0) {
       const typeStr = modelNames.map((n) => resolveInterfaceName(n, ctx)).join(' | ');
-      return { kind: 'union', typeStr, modelNames, discriminator: op.requestBody.discriminator };
+      return {
+        kind: 'union',
+        typeStr,
+        modelNames,
+        discriminator: op.requestBody.discriminator,
+      };
     }
   }
   return null;

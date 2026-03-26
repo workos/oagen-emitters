@@ -30,7 +30,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -101,7 +107,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -247,7 +259,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -306,7 +324,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -386,7 +410,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -470,12 +500,18 @@ describe('generateModels', () => {
         fields: [
           {
             name: 'before',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
           {
             name: 'after',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
         ],
@@ -542,7 +578,10 @@ describe('generateModels', () => {
           },
           {
             name: 'data',
-            type: { kind: 'array', items: { kind: 'model', name: 'Connection' } },
+            type: {
+              kind: 'array',
+              items: { kind: 'model', name: 'Connection' },
+            },
             required: true,
           },
           {
@@ -557,12 +596,18 @@ describe('generateModels', () => {
         fields: [
           {
             name: 'before',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
           {
             name: 'after',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
         ],
@@ -607,7 +652,13 @@ describe('generateModels', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Pagination' },
@@ -623,12 +674,18 @@ describe('generateModels', () => {
         fields: [
           {
             name: 'before',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
           {
             name: 'after',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
           {
@@ -661,7 +718,13 @@ describe('model deduplication', () => {
           name: 'getRole',
           httpMethod: 'get',
           path: '/roles/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'EnvironmentRole' },
@@ -675,17 +738,41 @@ describe('model deduplication', () => {
       {
         name: 'EnvironmentRole',
         fields: [
-          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'type',
+            type: { kind: 'literal', value: 'environment_role' },
+            required: true,
+          },
         ],
       },
       {
         name: 'OrganizationRole',
         fields: [
-          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-          { name: 'type', type: { kind: 'literal', value: 'environment_role' }, required: true },
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'type',
+            type: { kind: 'literal', value: 'environment_role' },
+            required: true,
+          },
         ],
       },
     ];

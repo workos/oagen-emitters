@@ -11,7 +11,13 @@ const service: Service = {
       name: 'getOrganization',
       httpMethod: 'get',
       path: '/organizations/{id}',
-      pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      pathParams: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
       queryParams: [],
       headerParams: [],
       response: { kind: 'model', name: 'Organization' },
@@ -25,7 +31,11 @@ const model: Model = {
   name: 'Organization',
   fields: [
     { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-    { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+    {
+      name: 'name',
+      type: { kind: 'primitive', type: 'string' },
+      required: true,
+    },
   ],
 };
 
@@ -102,7 +112,7 @@ describe('generateClient', () => {
 
   it('uses overlay-resolved names for imports and accessors', () => {
     const mfaService: Service = {
-      name: 'MultiFactorAuth',
+      name: 'Billing',
       operations: [
         {
           name: 'enrollFactor',
@@ -120,7 +130,13 @@ describe('generateClient', () => {
 
     const mfaModel: Model = {
       name: 'AuthenticationFactor',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const overlaySpec: ApiSpec = {
@@ -140,7 +156,12 @@ describe('generateClient', () => {
         methodByOperation: new Map([
           [
             'POST /auth/factors/enroll',
-            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+            {
+              className: 'Mfa',
+              methodName: 'enrollFactor',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -209,14 +230,28 @@ describe('generateClient', () => {
     const eventModel: Model = {
       name: 'Event',
       fields: [
-        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+        {
+          name: 'event',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
       ],
     };
 
     const otherModel: Model = {
       name: 'EventCursor',
-      fields: [{ name: 'cursor', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'cursor',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const eventSpec: ApiSpec = {
@@ -361,17 +396,21 @@ describe('generateClient', () => {
       ],
     };
     const enumService: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [
             {
               name: 'type',
-              type: { kind: 'enum', name: 'ConnectionType', values: ['ADFSSAML', 'GoogleOAuth'] },
+              type: {
+                kind: 'enum',
+                name: 'ConnectionType',
+                values: ['ADFSSAML', 'GoogleOAuth'],
+              },
               required: false,
             },
           ],
@@ -383,17 +422,21 @@ describe('generateClient', () => {
       ],
     };
     const dirService: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [
             {
               name: 'state',
-              type: { kind: 'enum', name: 'DirectoryState', values: ['active', 'inactive'] },
+              type: {
+                kind: 'enum',
+                name: 'DirectoryState',
+                values: ['active', 'inactive'],
+              },
               required: false,
             },
           ],
@@ -439,21 +482,21 @@ describe('generateClient', () => {
 
     const content = barrel!.content;
     // Both enums are now re-exported via per-service barrel wildcards
-    expect(content).toContain("export * from './connections/interfaces'");
-    expect(content).toContain("export * from './directories/interfaces'");
+    expect(content).toContain("export * from './payments/interfaces'");
+    expect(content).toContain("export * from './invoices/interfaces'");
     // Individual enum exports should NOT appear (covered by wildcard)
     expect(content).not.toContain('export { ConnectionType }');
-    expect(content).not.toContain('export type { DirectoryState }');
+    expect(content).not.toContain('export type { InvoiceState }');
   });
 
   it('skips services whose endpoints are fully covered by existing hand-written services', () => {
     const connectionsService: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -464,8 +507,14 @@ describe('generateClient', () => {
         {
           name: 'getConnection',
           httpMethod: 'get',
-          path: '/connections/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          path: '/payments/{id}',
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Connection' },
@@ -478,8 +527,16 @@ describe('generateClient', () => {
     const connectionModel: Model = {
       name: 'Connection',
       fields: [
-        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+        {
+          name: 'name',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
       ],
     };
 
@@ -502,7 +559,13 @@ describe('generateClient', () => {
 
     const radarModel: Model = {
       name: 'RadarResult',
-      fields: [{ name: 'score', type: { kind: 'primitive', type: 'number' }, required: true }],
+      fields: [
+        {
+          name: 'score',
+          type: { kind: 'primitive', type: 'number' },
+          required: true,
+        },
+      ],
     };
 
     const coveredSpec: ApiSpec = {
@@ -600,19 +663,19 @@ describe('generateClient', () => {
     expect(barrelContent).not.toContain('export { Sso }');
     expect(barrelContent).not.toContain('export { Connections }');
 
-    // But model types from the Connections service should still be exported
-    // (via the service barrel wildcard for the resolved directory)
-    expect(barrelContent).toContain("export * from './sso/interfaces'");
+    // Covered services don't generate barrel exports — their types are
+    // already exported by the hand-written service's own barrel.
+    expect(barrelContent).not.toContain("export * from './sso/interfaces'");
   });
 
   it('does not skip services when only some operations are covered', () => {
     const partialService: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -621,13 +684,13 @@ describe('generateClient', () => {
           injectIdempotencyKey: false,
         },
         {
-          name: 'createDirectory',
+          name: 'createInvoice',
           httpMethod: 'post',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          response: { kind: 'model', name: 'Directory' },
+          response: { kind: 'model', name: 'Invoice' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -635,8 +698,14 @@ describe('generateClient', () => {
     };
 
     const dirModel: Model = {
-      name: 'Directory',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      name: 'Invoice',
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const partialSpec: ApiSpec = {
@@ -658,14 +727,14 @@ describe('generateClient', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          DirectorySync: {
-            name: 'DirectorySync',
+          Billing: {
+            name: 'Billing',
             methods: {
-              listDirectories: [
+              listInvoices: [
                 {
-                  name: 'listDirectories',
+                  name: 'listInvoices',
                   params: [],
-                  returnType: 'Promise<AutoPaginatable<Directory>>',
+                  returnType: 'Promise<AutoPaginatable<Invoice>>',
                   async: true,
                 },
               ],
@@ -681,12 +750,12 @@ describe('generateClient', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /directories',
+            'GET /invoices',
             {
-              className: 'DirectorySync',
-              methodName: 'listDirectories',
+              className: 'Billing',
+              methodName: 'listInvoices',
               params: [],
-              returnType: 'Promise<AutoPaginatable<Directory>>',
+              returnType: 'Promise<AutoPaginatable<Invoice>>',
             },
           ],
         ]),
@@ -704,7 +773,7 @@ describe('generateClient', () => {
     const content = workosFile.content;
 
     // Service should still be generated because it has an uncovered operation
-    expect(content).toContain('DirectorySync');
+    expect(content).toContain('Billing');
   });
 
   it('does not skip services when no overlay is provided', () => {
@@ -715,7 +784,7 @@ describe('generateClient', () => {
 
   it('does not skip services when overlay exists but no apiSurface baseline', () => {
     const mfaService: Service = {
-      name: 'MultiFactorAuth',
+      name: 'Analytics',
       operations: [
         {
           name: 'enrollFactor',
@@ -733,7 +802,13 @@ describe('generateClient', () => {
 
     const mfaModel: Model = {
       name: 'AuthenticationFactor',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const mfaSpec: ApiSpec = {
@@ -753,7 +828,12 @@ describe('generateClient', () => {
         methodByOperation: new Map([
           [
             'POST /auth/factors/enroll',
-            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+            {
+              className: 'Analytics',
+              methodName: 'enrollFactor',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -767,7 +847,7 @@ describe('generateClient', () => {
 
     const files = generateClient(mfaSpec, namingOnlyCtx);
     const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
-    expect(workosFile.content).toContain('readonly mfa = new Mfa(this);');
+    expect(workosFile.content).toContain('readonly analytics = new Analytics(this);');
   });
 });
 
@@ -783,12 +863,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when no overlay is provided', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -808,12 +888,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when overlay is empty', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -859,7 +939,13 @@ describe('isServiceCoveredByExisting', () => {
           name: 'getConnection',
           httpMethod: 'get',
           path: '/connections/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Connection' },
@@ -923,12 +1009,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when only some operations are covered', () => {
     const svc: Service = {
-      name: 'Directories',
+      name: 'Invoices',
       operations: [
         {
-          name: 'listDirectories',
+          name: 'listInvoices',
           httpMethod: 'get',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -937,13 +1023,13 @@ describe('isServiceCoveredByExisting', () => {
           injectIdempotencyKey: false,
         },
         {
-          name: 'createDirectory',
+          name: 'createInvoice',
           httpMethod: 'post',
-          path: '/directories',
+          path: '/invoices',
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          response: { kind: 'model', name: 'Directory' },
+          response: { kind: 'model', name: 'Invoice' },
           errors: [],
           injectIdempotencyKey: false,
         },
@@ -959,8 +1045,8 @@ describe('isServiceCoveredByExisting', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          DirectorySync: {
-            name: 'DirectorySync',
+          Billing: {
+            name: 'Billing',
             methods: {},
             properties: {},
             constructorParams: [],
@@ -973,10 +1059,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /directories',
+            'GET /invoices',
             {
-              className: 'DirectorySync',
-              methodName: 'listDirectories',
+              className: 'Billing',
+              methodName: 'listInvoices',
               params: [],
               returnType: 'Promise<AutoPaginatable<Directory>>',
             },
@@ -1008,7 +1094,12 @@ describe('isServiceCoveredByExisting', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          Other: { name: 'Other', methods: {}, properties: {}, constructorParams: [] },
+          Other: {
+            name: 'Other',
+            methods: {},
+            properties: {},
+            constructorParams: [],
+          },
         },
         enums: {},
         typeAliases: {},
@@ -1016,7 +1107,15 @@ describe('isServiceCoveredByExisting', () => {
       },
       overlayLookup: {
         methodByOperation: new Map([
-          ['GET /something', { className: 'Other', methodName: 'doSomething', params: [], returnType: 'void' }],
+          [
+            'GET /something',
+            {
+              className: 'Other',
+              methodName: 'doSomething',
+              params: [],
+              returnType: 'void',
+            },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),
@@ -1031,12 +1130,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when overlay covers operations but target class is not in baseline', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1063,10 +1162,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /connections',
+            'GET /payments',
             {
               className: 'Sso',
-              methodName: 'listConnections',
+              methodName: 'listPayments',
               params: [],
               returnType: 'Promise<AutoPaginatable<Connection>>',
             },
@@ -1085,12 +1184,12 @@ describe('isServiceCoveredByExisting', () => {
 
   it('returns false when no apiSurface is provided', () => {
     const svc: Service = {
-      name: 'Connections',
+      name: 'Payments',
       operations: [
         {
-          name: 'listConnections',
+          name: 'listPayments',
           httpMethod: 'get',
-          path: '/connections',
+          path: '/payments',
           pathParams: [],
           queryParams: [],
           headerParams: [],
@@ -1107,10 +1206,10 @@ describe('isServiceCoveredByExisting', () => {
       overlayLookup: {
         methodByOperation: new Map([
           [
-            'GET /connections',
+            'GET /payments',
             {
               className: 'Sso',
-              methodName: 'listConnections',
+              methodName: 'listPayments',
               params: [],
               returnType: 'Promise<AutoPaginatable<Connection>>',
             },

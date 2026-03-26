@@ -641,7 +641,9 @@ function defaultForType(ref: TypeRef): string | null {
 function serializerHasBaselineIncompatibility(
   model: Model,
   baselineResponse: { fields?: Record<string, { type: string; optional: boolean }> } | undefined,
-  baselineDomain?: { fields?: Record<string, { type: string; optional: boolean }> },
+  baselineDomain?: {
+    fields?: Record<string, { type: string; optional: boolean }>;
+  },
   ctx?: EmitterContext,
 ): boolean {
   if (!baselineResponse?.fields) return false;
