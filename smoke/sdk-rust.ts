@@ -452,7 +452,11 @@ serde_json = "1"
 
       // Build planned calls for this wave, resolving methods
       const plannedCalls: PlannedCall[] = [];
-      const waveSkipped: Array<{ op: Operation; irService: string; reason: string }> = [];
+      const waveSkipped: Array<{
+        op: Operation;
+        irService: string;
+        reason: string;
+      }> = [];
 
       for (const { op, irService, pathParams } of wave.calls) {
         const resolution = resolveMethod(op, irService, manifest);
@@ -534,7 +538,11 @@ serde_json = "1"
         await new Promise<void>((resolvePromise, rejectPromise) => {
           const child = spawn(join(tmpDir, 'target', 'debug', 'smoke-driver'), [], {
             cwd: tmpDir,
-            env: { ...process.env, WORKOS_API_KEY: apiKey, WORKOS_BASE_URL: `http://localhost:${proxy.port}` },
+            env: {
+              ...process.env,
+              WORKOS_API_KEY: apiKey,
+              WORKOS_BASE_URL: `http://localhost:${proxy.port}`,
+            },
             stdio: ['pipe', 'pipe', 'pipe'],
           });
 
@@ -729,7 +737,12 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationId: op.name,
     service,
     operationName: op.name,
-    request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
+    request: {
+      method: op.httpMethod.toUpperCase(),
+      path: op.path,
+      queryParams: {},
+      body: null,
+    },
     response: { status: 0, body: null },
     outcome: 'skipped',
     error: reason,

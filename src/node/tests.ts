@@ -5,7 +5,7 @@ import {
   fieldName,
   wireFieldName,
   fileName,
-  serviceDirName,
+  resolveServiceDir,
   servicePropertyName,
   resolveMethodName,
   resolveInterfaceName,
@@ -61,7 +61,7 @@ function generateServiceTest(
   modelMap: Map<string, Model>,
 ): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = serviceDirName(resolvedName);
+  const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
   const serviceProp = servicePropertyName(resolvedName);
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
@@ -799,7 +799,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     serviceNameMap.set(service.name, resolveResourceClassName(service, ctx));
   }
   const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
 
   // Only generate round-trip tests for models with fields that have serializers generated.
   // Skip list metadata and list wrapper models since their serializers are not emitted.

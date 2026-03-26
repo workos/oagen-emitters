@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toPascalCase, walkTypeRef } from '@workos/oagen';
-import { fileName, serviceDirName, buildServiceNameMap } from './naming.js';
+import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment } from './utils.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -9,7 +9,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
   const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {

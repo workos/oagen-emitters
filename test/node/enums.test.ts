@@ -30,7 +30,13 @@ describe('generateEnums', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: {
@@ -76,7 +82,13 @@ describe('generateEnums', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'enum', name: 'OrgStatus' },
@@ -162,7 +174,12 @@ describe('generateEnums', () => {
         name: 'Status',
         values: [
           { name: 'ACTIVE', value: 'active' },
-          { name: 'LEGACY', value: 'legacy', description: 'No longer supported.', deprecated: true },
+          {
+            name: 'LEGACY',
+            value: 'legacy',
+            description: 'No longer supported.',
+            deprecated: true,
+          },
           { name: 'OLD', value: 'old', deprecated: true },
         ],
       },

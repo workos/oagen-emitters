@@ -257,7 +257,12 @@ class CaptureProxy {
       }
     }
 
-    const capturedReq: CapturedRequest = { method, path, queryParams, body: parsedReqBody };
+    const capturedReq: CapturedRequest = {
+      method,
+      path,
+      queryParams,
+      body: parsedReqBody,
+    };
 
     // Forward to the real API
     const targetUrl = new URL(path, this.targetBaseUrl);
@@ -580,7 +585,11 @@ async function main(): Promise<void> {
 
       // Build planned calls for this wave, resolving methods
       const plannedCalls: PlannedCall[] = [];
-      const waveSkipped: Array<{ op: Operation; irService: string; reason: string }> = [];
+      const waveSkipped: Array<{
+        op: Operation;
+        irService: string;
+        reason: string;
+      }> = [];
 
       for (const { op, irService, pathParams } of wave.calls) {
         const resolution = resolveMethod(op, irService, manifest);
@@ -655,7 +664,10 @@ async function main(): Promise<void> {
         execSync('go build -o smoke-driver main.go', {
           cwd: tmpDir,
           timeout: 120_000,
-          env: { ...process.env, GOPATH: process.env.GOPATH || resolve(process.env.HOME || '~', 'go') },
+          env: {
+            ...process.env,
+            GOPATH: process.env.GOPATH || resolve(process.env.HOME || '~', 'go'),
+          },
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -903,7 +915,12 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationId: op.name,
     service,
     operationName: op.name,
-    request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
+    request: {
+      method: op.httpMethod.toUpperCase(),
+      path: op.path,
+      queryParams: {},
+      body: null,
+    },
     response: { status: 0, body: null },
     outcome: 'skipped',
     error: reason,

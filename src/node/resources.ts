@@ -8,7 +8,7 @@ import {
   fieldName,
   wireFieldName,
   fileName,
-  serviceDirName,
+  resolveServiceDir,
   resolveMethodName,
   resolveInterfaceName,
   resolveServiceName,
@@ -431,7 +431,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = serviceDirName(resolvedName);
+  const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
   const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;
 
@@ -1395,7 +1395,12 @@ function extractRequestBodyType(
     }
     if (modelNames.length > 0) {
       const typeStr = modelNames.map((n) => resolveInterfaceName(n, ctx)).join(' | ');
-      return { kind: 'union', typeStr, modelNames, discriminator: op.requestBody.discriminator };
+      return {
+        kind: 'union',
+        typeStr,
+        modelNames,
+        discriminator: op.requestBody.discriminator,
+      };
     }
   }
   return null;

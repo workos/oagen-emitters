@@ -11,7 +11,13 @@ const service: Service = {
       name: 'getOrganization',
       httpMethod: 'get',
       path: '/organizations/{id}',
-      pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      pathParams: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
       queryParams: [],
       headerParams: [],
       response: { kind: 'model', name: 'Organization' },
@@ -25,7 +31,11 @@ const model: Model = {
   name: 'Organization',
   fields: [
     { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-    { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+    {
+      name: 'name',
+      type: { kind: 'primitive', type: 'string' },
+      required: true,
+    },
   ],
 };
 
@@ -120,7 +130,13 @@ describe('generateClient', () => {
 
     const mfaModel: Model = {
       name: 'AuthenticationFactor',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const overlaySpec: ApiSpec = {
@@ -140,7 +156,12 @@ describe('generateClient', () => {
         methodByOperation: new Map([
           [
             'POST /auth/factors/enroll',
-            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+            {
+              className: 'Mfa',
+              methodName: 'enrollFactor',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -209,14 +230,28 @@ describe('generateClient', () => {
     const eventModel: Model = {
       name: 'Event',
       fields: [
-        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+        {
+          name: 'event',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
       ],
     };
 
     const otherModel: Model = {
       name: 'EventCursor',
-      fields: [{ name: 'cursor', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'cursor',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const eventSpec: ApiSpec = {
@@ -371,7 +406,11 @@ describe('generateClient', () => {
           queryParams: [
             {
               name: 'type',
-              type: { kind: 'enum', name: 'ConnectionType', values: ['ADFSSAML', 'GoogleOAuth'] },
+              type: {
+                kind: 'enum',
+                name: 'ConnectionType',
+                values: ['ADFSSAML', 'GoogleOAuth'],
+              },
               required: false,
             },
           ],
@@ -393,7 +432,11 @@ describe('generateClient', () => {
           queryParams: [
             {
               name: 'state',
-              type: { kind: 'enum', name: 'DirectoryState', values: ['active', 'inactive'] },
+              type: {
+                kind: 'enum',
+                name: 'DirectoryState',
+                values: ['active', 'inactive'],
+              },
               required: false,
             },
           ],
@@ -465,7 +508,13 @@ describe('generateClient', () => {
           name: 'getConnection',
           httpMethod: 'get',
           path: '/connections/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Connection' },
@@ -478,8 +527,16 @@ describe('generateClient', () => {
     const connectionModel: Model = {
       name: 'Connection',
       fields: [
-        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+        {
+          name: 'name',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
       ],
     };
 
@@ -502,7 +559,13 @@ describe('generateClient', () => {
 
     const radarModel: Model = {
       name: 'RadarResult',
-      fields: [{ name: 'score', type: { kind: 'primitive', type: 'number' }, required: true }],
+      fields: [
+        {
+          name: 'score',
+          type: { kind: 'primitive', type: 'number' },
+          required: true,
+        },
+      ],
     };
 
     const coveredSpec: ApiSpec = {
@@ -636,7 +699,13 @@ describe('generateClient', () => {
 
     const dirModel: Model = {
       name: 'Directory',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const partialSpec: ApiSpec = {
@@ -733,7 +802,13 @@ describe('generateClient', () => {
 
     const mfaModel: Model = {
       name: 'AuthenticationFactor',
-      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        {
+          name: 'id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+        },
+      ],
     };
 
     const mfaSpec: ApiSpec = {
@@ -753,7 +828,12 @@ describe('generateClient', () => {
         methodByOperation: new Map([
           [
             'POST /auth/factors/enroll',
-            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+            {
+              className: 'Mfa',
+              methodName: 'enrollFactor',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -859,7 +939,13 @@ describe('isServiceCoveredByExisting', () => {
           name: 'getConnection',
           httpMethod: 'get',
           path: '/connections/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Connection' },
@@ -1008,7 +1094,12 @@ describe('isServiceCoveredByExisting', () => {
         extractedAt: '2024-01-01',
         interfaces: {},
         classes: {
-          Other: { name: 'Other', methods: {}, properties: {}, constructorParams: [] },
+          Other: {
+            name: 'Other',
+            methods: {},
+            properties: {},
+            constructorParams: [],
+          },
         },
         enums: {},
         typeAliases: {},
@@ -1016,7 +1107,15 @@ describe('isServiceCoveredByExisting', () => {
       },
       overlayLookup: {
         methodByOperation: new Map([
-          ['GET /something', { className: 'Other', methodName: 'doSomething', params: [], returnType: 'void' }],
+          [
+            'GET /something',
+            {
+              className: 'Other',
+              methodName: 'doSomething',
+              params: [],
+              returnType: 'void',
+            },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),

@@ -30,7 +30,13 @@ describe('generateSerializers', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -90,7 +96,13 @@ describe('generateSerializers', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -151,7 +163,13 @@ describe('generateSerializers', () => {
           name: 'getOrganization',
           httpMethod: 'get',
           path: '/organizations/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
           queryParams: [],
           headerParams: [],
           response: { kind: 'model', name: 'Organization' },
@@ -303,12 +321,18 @@ describe('generateSerializers', () => {
         fields: [
           {
             name: 'before',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
           {
             name: 'after',
-            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'primitive', type: 'string' },
+            },
             required: false,
           },
         ],
@@ -375,7 +399,10 @@ describe('generateSerializers', () => {
           },
           {
             name: 'data',
-            type: { kind: 'array', items: { kind: 'model', name: 'Connection' } },
+            type: {
+              kind: 'array',
+              items: { kind: 'model', name: 'Connection' },
+            },
             required: true,
           },
           {

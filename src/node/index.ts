@@ -97,10 +97,16 @@ export const nodeEmitter: Emitter = {
       };
     }
     if (hasPrettier) {
-      return { cmd: 'npx', args: ['prettier', '--write', '--log-level', 'silent'] };
+      return {
+        cmd: 'npx',
+        args: ['prettier', '--write', '--log-level', 'silent'],
+      };
     }
     if (hasEslint) {
-      return { cmd: 'npx', args: ['eslint', '--fix', '--no-error-on-unmatched-pattern'] };
+      return {
+        cmd: 'npx',
+        args: ['eslint', '--fix', '--no-error-on-unmatched-pattern'],
+      };
     }
     return null;
   },

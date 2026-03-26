@@ -52,7 +52,10 @@ interface CapturedResponse {
 // HTTP Interception
 // ---------------------------------------------------------------------------
 
-let currentCapture: { request: CapturedRequest; response: CapturedResponse } | null = null;
+let currentCapture: {
+  request: CapturedRequest;
+  response: CapturedResponse;
+} | null = null;
 const originalFetch = globalThis.fetch;
 
 function interceptFetch(): void {
@@ -259,7 +262,11 @@ async function main(): Promise<void> {
   const groups = planOperations(spec);
   const ids = new IdRegistry();
   const exchanges: CapturedExchange[] = [];
-  const createdEntities: Array<{ service: string; id: string; deleteFn?: () => Promise<void> }> = [];
+  const createdEntities: Array<{
+    service: string;
+    id: string;
+    deleteFn?: () => Promise<void>;
+  }> = [];
   const delayMs = Number(process.env.SMOKE_DELAY_MS) || 200;
 
   let successCount = 0;
@@ -452,7 +459,12 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationId: op.name,
     service,
     operationName: op.name,
-    request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
+    request: {
+      method: op.httpMethod.toUpperCase(),
+      path: op.path,
+      queryParams: {},
+      body: null,
+    },
     response: { status: 0, body: null },
     outcome: 'skipped',
     error: reason,

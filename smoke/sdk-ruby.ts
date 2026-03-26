@@ -160,7 +160,12 @@ function startProxy(
           }
         }
 
-        const capturedReq: CapturedRequest = { method, path, queryParams, body: reqBody };
+        const capturedReq: CapturedRequest = {
+          method,
+          path,
+          queryParams,
+          body: reqBody,
+        };
 
         // Forward to real API
         const forwardHeaders: Record<string, string> = {
@@ -420,7 +425,11 @@ async function main(): Promise<void> {
 
     // Build planned calls for this wave, resolving methods
     const plannedCalls: PlannedCall[] = [];
-    const waveSkipped: Array<{ op: Operation; irService: string; reason: string }> = [];
+    const waveSkipped: Array<{
+      op: Operation;
+      irService: string;
+      reason: string;
+    }> = [];
 
     for (const { op, irService, pathParams } of wave.calls) {
       const resolution = resolveMethod(op, irService, manifest);
@@ -678,7 +687,12 @@ function makeSkippedExchange(op: Operation, service: string, reason: string): Ca
     operationId: op.name,
     service,
     operationName: op.name,
-    request: { method: op.httpMethod.toUpperCase(), path: op.path, queryParams: {}, body: null },
+    request: {
+      method: op.httpMethod.toUpperCase(),
+      path: op.path,
+      queryParams: {},
+      body: null,
+    },
     response: { status: 0, body: null },
     outcome: 'skipped',
     error: reason,

@@ -116,7 +116,12 @@ describe('naming', () => {
           methodByOperation: new Map([
             [
               'POST /auth/factors/enroll',
-              { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+              {
+                className: 'Mfa',
+                methodName: 'enrollFactor',
+                params: [],
+                returnType: 'void',
+              },
             ],
           ]),
           httpKeyByMethod: new Map(),
@@ -189,7 +194,12 @@ describe('naming', () => {
           methodByOperation: new Map([
             [
               'POST /auth/factors/enroll',
-              { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+              {
+                className: 'Mfa',
+                methodName: 'enrollFactor',
+                params: [],
+                returnType: 'void',
+              },
             ],
           ]),
           httpKeyByMethod: new Map(),

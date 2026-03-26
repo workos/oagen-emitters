@@ -7,7 +7,7 @@ export {
   collectRequestBodyModels,
 } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { resolveInterfaceName, fieldName, serviceDirName, buildServiceNameMap } from './naming.js';
+import { resolveInterfaceName, fieldName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 /**
@@ -218,7 +218,7 @@ export function createServiceDirResolver(
   const modelToService = assignModelsToServices(models, services);
   const serviceNameMap = buildServiceNameMap(services, ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? serviceDirName(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
   return { modelToService, serviceNameMap, resolveDir };
 }
 

@@ -1,5 +1,5 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
-import { wireFieldName, fileName, serviceDirName } from './naming.js';
+import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
@@ -42,7 +42,7 @@ export function generateFixtures(
     ? createServiceDirResolver(spec.models, ctx.spec.services, ctx)
     : {
         modelToService: assignModelsToServices(spec.models, spec.services),
-        resolveDir: (irService: string | undefined) => (irService ? serviceDirName(irService) : 'common'),
+        resolveDir: (irService: string | undefined) => (irService ? resolveServiceDir(irService) : 'common'),
       };
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
@@ -66,7 +66,7 @@ export function generateFixtures(
   // Generate list fixtures for models that appear in paginated responses
   for (const service of spec.services) {
     const resolvedName = ctx ? resolveResourceClassName(service, ctx) : service.name;
-    const serviceDir = serviceDirName(resolvedName);
+    const serviceDir = resolveServiceDir(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {
         let itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;
@@ -175,7 +175,9 @@ function generateFieldValue(
       }
       return null;
     case 'map':
-      return { key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap) };
+      return {
+        key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap),
+      };
   }
 }
 

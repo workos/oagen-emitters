@@ -72,7 +72,10 @@ describe('generateResources', () => {
             queryParams: [
               {
                 name: 'domains',
-                type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                type: {
+                  kind: 'array',
+                  items: { kind: 'primitive', type: 'string' },
+                },
                 required: false,
               },
             ],
@@ -243,7 +246,12 @@ describe('generateResources', () => {
         methodByOperation: new Map([
           [
             'POST /auth/factors/enroll',
-            { className: 'Mfa', methodName: 'enrollFactor', params: [], returnType: 'void' },
+            {
+              className: 'Mfa',
+              methodName: 'enrollFactor',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -315,7 +323,13 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'Organization' },
@@ -340,7 +354,13 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [
               {
                 name: 'include_fields',
@@ -372,7 +392,13 @@ describe('generateResources', () => {
             name: 'getSession',
             httpMethod: 'get',
             path: '/sessions/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [],
             headerParams: [
               {
@@ -421,8 +447,14 @@ describe('generateResources', () => {
             requestBody: { kind: 'model', name: 'CreateOrganizationInput' },
             response: { kind: 'model', name: 'Organization' },
             successResponses: [
-              { statusCode: 200, type: { kind: 'model', name: 'Organization' } },
-              { statusCode: 201, type: { kind: 'model', name: 'Organization' } },
+              {
+                statusCode: 200,
+                type: { kind: 'model', name: 'Organization' },
+              },
+              {
+                statusCode: 201,
+                type: { kind: 'model', name: 'Organization' },
+              },
             ],
             errors: [],
             injectIdempotencyKey: false,
@@ -517,7 +549,13 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [
               {
                 name: 'include_fields',
@@ -687,25 +725,53 @@ describe('generateResources', () => {
           {
             name: 'CreateOAuthApplication',
             fields: [
-              { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
               {
-                name: 'redirect_uris',
-                type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                name: 'name',
+                type: { kind: 'primitive', type: 'string' },
                 required: true,
               },
-              { name: 'uses_pkce', type: { kind: 'primitive', type: 'boolean' }, required: false },
+              {
+                name: 'redirect_uris',
+                type: {
+                  kind: 'array',
+                  items: { kind: 'primitive', type: 'string' },
+                },
+                required: true,
+              },
+              {
+                name: 'uses_pkce',
+                type: { kind: 'primitive', type: 'boolean' },
+                required: false,
+              },
             ],
           },
           {
             name: 'CreateM2MApplication',
             fields: [
-              { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-              { name: 'scopes', type: { kind: 'array', items: { kind: 'primitive', type: 'string' } }, required: true },
+              {
+                name: 'name',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+              {
+                name: 'scopes',
+                type: {
+                  kind: 'array',
+                  items: { kind: 'primitive', type: 'string' },
+                },
+                required: true,
+              },
             ],
           },
           {
             name: 'ConnectApplication',
-            fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            fields: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
           },
         ],
       },
@@ -903,7 +969,15 @@ describe('generateResources', () => {
       spec: { ...emptySpec, services, models: [] },
       overlayLookup: {
         methodByOperation: new Map([
-          ['GET /connections', { className: 'Connections', methodName: 'list', params: [], returnType: 'void' }],
+          [
+            'GET /connections',
+            {
+              className: 'Connections',
+              methodName: 'list',
+              params: [],
+              returnType: 'void',
+            },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),
@@ -937,7 +1011,10 @@ describe('generateResources', () => {
             queryParams: [
               {
                 name: 'domains',
-                type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                type: {
+                  kind: 'array',
+                  items: { kind: 'primitive', type: 'string' },
+                },
                 required: false,
               },
             ],
@@ -1004,9 +1081,22 @@ describe('generateResources', () => {
         methodByOperation: new Map([
           [
             'GET /sso/authorize',
-            { className: 'SSO', methodName: 'getAuthorizationUrl', params: [], returnType: 'void' },
+            {
+              className: 'SSO',
+              methodName: 'getAuthorizationUrl',
+              params: [],
+              returnType: 'void',
+            },
           ],
-          ['GET /sso/logout', { className: 'SSO', methodName: 'logout', params: [], returnType: 'void' }],
+          [
+            'GET /sso/logout',
+            {
+              className: 'SSO',
+              methodName: 'logout',
+              params: [],
+              returnType: 'void',
+            },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),
@@ -1023,7 +1113,14 @@ describe('generateResources', () => {
           SSO: {
             name: 'SSO',
             methods: {
-              getAuthorizationUrl: [{ name: 'getAuthorizationUrl', params: [], returnType: 'void', async: true }],
+              getAuthorizationUrl: [
+                {
+                  name: 'getAuthorizationUrl',
+                  params: [],
+                  returnType: 'void',
+                  async: true,
+                },
+              ],
               // logout method is intentionally ABSENT
             },
             properties: {},
@@ -1072,7 +1169,12 @@ describe('generateResources', () => {
         methodByOperation: new Map([
           [
             'GET /sso/authorize',
-            { className: 'SSO', methodName: 'getAuthorizationUrl', params: [], returnType: 'void' },
+            {
+              className: 'SSO',
+              methodName: 'getAuthorizationUrl',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -1090,7 +1192,14 @@ describe('generateResources', () => {
           SSO: {
             name: 'SSO',
             methods: {
-              getAuthorizationUrl: [{ name: 'getAuthorizationUrl', params: [], returnType: 'void', async: true }],
+              getAuthorizationUrl: [
+                {
+                  name: 'getAuthorizationUrl',
+                  params: [],
+                  returnType: 'void',
+                  async: true,
+                },
+              ],
             },
             properties: {},
             constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
@@ -1138,7 +1247,12 @@ describe('resolveResourceClassName', () => {
         methodByOperation: new Map([
           [
             'GET /webhook_events',
-            { className: 'Webhooks', methodName: 'listWebhookEvents', params: [], returnType: 'void' },
+            {
+              className: 'Webhooks',
+              methodName: 'listWebhookEvents',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -1157,7 +1271,13 @@ describe('resolveResourceClassName', () => {
             name: 'Webhooks',
             methods: {},
             properties: {},
-            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+            constructorParams: [
+              {
+                name: 'cryptoProvider',
+                type: 'CryptoProvider',
+                optional: false,
+              },
+            ],
           },
         },
         interfaces: {},
@@ -1181,7 +1301,12 @@ describe('resolveResourceClassName', () => {
         methodByOperation: new Map([
           [
             'GET /webhook_events',
-            { className: 'Webhooks', methodName: 'listWebhookEvents', params: [], returnType: 'void' },
+            {
+              className: 'Webhooks',
+              methodName: 'listWebhookEvents',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -1238,7 +1363,15 @@ describe('resolveResourceClassName', () => {
       spec: { ...emptySpec, services: [collisionService] },
       overlayLookup: {
         methodByOperation: new Map([
-          ['GET /webhooks', { className: 'Webhooks', methodName: 'listWebhooks', params: [], returnType: 'void' }],
+          [
+            'GET /webhooks',
+            {
+              className: 'Webhooks',
+              methodName: 'listWebhooks',
+              params: [],
+              returnType: 'void',
+            },
+          ],
         ]),
         httpKeyByMethod: new Map(),
         interfaceByName: new Map(),
@@ -1256,7 +1389,13 @@ describe('resolveResourceClassName', () => {
             name: 'Webhooks',
             methods: {},
             properties: {},
-            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+            constructorParams: [
+              {
+                name: 'cryptoProvider',
+                type: 'CryptoProvider',
+                optional: false,
+              },
+            ],
           },
         },
         interfaces: {},
@@ -1314,7 +1453,13 @@ describe('hasCompatibleConstructor', () => {
             name: 'Webhooks',
             methods: {},
             properties: {},
-            constructorParams: [{ name: 'cryptoProvider', type: 'CryptoProvider', optional: false }],
+            constructorParams: [
+              {
+                name: 'cryptoProvider',
+                type: 'CryptoProvider',
+                optional: false,
+              },
+            ],
           },
         },
         interfaces: {},
@@ -1416,7 +1561,14 @@ describe('partial service coverage', () => {
           AuditLogs: {
             name: 'AuditLogs',
             methods: {
-              createEvent: [{ name: 'createEvent', params: [], returnType: 'AuditLogEvent', async: true }],
+              createEvent: [
+                {
+                  name: 'createEvent',
+                  params: [],
+                  returnType: 'AuditLogEvent',
+                  async: true,
+                },
+              ],
             },
             properties: {},
             constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
@@ -1467,7 +1619,12 @@ describe('partial service coverage', () => {
         methodByOperation: new Map([
           [
             'GET /authorization/permissions',
-            { className: 'Permissions', methodName: 'listPermissions', params: [], returnType: 'void' },
+            {
+              className: 'Permissions',
+              methodName: 'listPermissions',
+              params: [],
+              returnType: 'void',
+            },
           ],
         ]),
         httpKeyByMethod: new Map(),
@@ -1485,7 +1642,14 @@ describe('partial service coverage', () => {
           Permissions: {
             name: 'Permissions',
             methods: {
-              listPermissions: [{ name: 'listPermissions', params: [], returnType: 'void', async: true }],
+              listPermissions: [
+                {
+                  name: 'listPermissions',
+                  params: [],
+                  returnType: 'void',
+                  async: true,
+                },
+              ],
             },
             properties: {},
             constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
@@ -1516,7 +1680,13 @@ describe('partial service coverage', () => {
             name: 'listRolesOrganizations',
             httpMethod: 'get',
             path: '/authorization/organizations/{organizationId}/roles',
-            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'organizationId',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'RoleList' },
@@ -1534,7 +1704,11 @@ describe('partial service coverage', () => {
 
     const ctxRecon: EmitterContext = {
       ...ctx,
-      spec: { ...emptySpec, services, models: [{ name: 'RoleList', fields: [] }] },
+      spec: {
+        ...emptySpec,
+        services,
+        models: [{ name: 'RoleList', fields: [] }],
+      },
       overlayLookup: {
         methodByOperation: new Map(), // no overlay mapping
         httpKeyByMethod: new Map(),
@@ -1552,7 +1726,14 @@ describe('partial service coverage', () => {
           Authorization: {
             name: 'Authorization',
             methods: {
-              listOrganizationRoles: [{ name: 'listOrganizationRoles', params: [], returnType: 'void', async: true }],
+              listOrganizationRoles: [
+                {
+                  name: 'listOrganizationRoles',
+                  params: [],
+                  returnType: 'void',
+                  async: true,
+                },
+              ],
             },
             properties: {},
             constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],

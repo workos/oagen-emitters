@@ -258,7 +258,11 @@ function collectTypedErrors(
   ctx: EmitterContext,
 ): { modelName: string; statusCode: number; baseException: string | null }[] {
   const seen = new Set<string>();
-  const results: { modelName: string; statusCode: number; baseException: string | null }[] = [];
+  const results: {
+    modelName: string;
+    statusCode: number;
+    baseException: string | null;
+  }[] = [];
 
   for (const service of ctx.spec.services) {
     for (const op of service.operations) {

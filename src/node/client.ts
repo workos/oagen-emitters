@@ -1,5 +1,5 @@
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { fileName, serviceDirName, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
   docComment,
   createServiceDirResolver,
@@ -46,7 +46,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = serviceDirName(resolvedName);
+    const serviceDir = resolveServiceDir(resolvedName);
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
 
@@ -99,7 +99,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('}');
 
-  return { path: 'src/workos.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/workos.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 /**
@@ -318,7 +322,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Per-service exports: service barrel + resource class
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = serviceDirName(resolvedName);
+    const serviceDir = resolveServiceDir(resolvedName);
     // The interfaces directory may differ from the resource class directory when
     // a service's class name is remapped (e.g., WebhooksEndpoints class lives in
     // webhooks-endpoints/ but its model interfaces live in webhooks/).
@@ -446,7 +450,11 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push("export { WorkOS } from './workos';");
   }
 
-  return { path: 'src/index.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/index.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 /**
@@ -459,7 +467,11 @@ function generateWorkerBarrel(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFi
   // Re-export everything from the main index — keeps type exports in sync
   lines.push("export * from './index';");
 
-  return { path: 'src/index.worker.ts', content: lines.join('\n'), skipIfExists: true };
+  return {
+    path: 'src/index.worker.ts',
+    content: lines.join('\n'),
+    skipIfExists: true,
+  };
 }
 
 function findEnumService(enumName: string, services: Service[]): string | undefined {
