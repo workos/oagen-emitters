@@ -58,6 +58,11 @@ describe('generateEnums', () => {
     expect(files.length).toBe(1);
     expect(files[0].content).toContain('from typing_extensions import Literal, TypeAlias');
     expect(files[0].content).toContain('Status: TypeAlias = Union[Literal["active", "inactive", "pending"], str]');
+    // Companion constants class
+    expect(files[0].content).toContain('class StatusValues:');
+    expect(files[0].content).toContain('    ACTIVE: str = "active"');
+    expect(files[0].content).toContain('    INACTIVE: str = "inactive"');
+    expect(files[0].content).toContain('    PENDING: str = "pending"');
   });
 
   it('places enum in service directory when referenced', () => {

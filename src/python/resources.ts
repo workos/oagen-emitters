@@ -367,13 +367,17 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             if (bodyFields.length > 0 && hasOptionalBodyFields) {
               lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
               for (const f of bodyFields) {
-                lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
+                lines.push(
+                  `            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name), f.required)},`,
+                );
               }
               lines.push('        }.items() if v is not None}');
             } else if (bodyFields.length > 0) {
               lines.push('        body: Dict[str, Any] = {');
               for (const f of bodyFields) {
-                lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
+                lines.push(
+                  `            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name), f.required)},`,
+                );
               }
               lines.push('        }');
             }
@@ -399,13 +403,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           if (bodyFields.length > 0 && hasOptionalBodyFields) {
             lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
             for (const f of bodyFields) {
-              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
+              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name), f.required)},`);
             }
             lines.push('        }.items() if v is not None}');
           } else if (bodyFields.length > 0) {
             lines.push('        body: Dict[str, Any] = {');
             for (const f of bodyFields) {
-              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
+              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name), f.required)},`);
             }
             lines.push('        }');
           } else {
@@ -472,12 +476,18 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
  * Serialize a body field value for inclusion in a request body dict.
  * Calls .to_dict() on model fields and [item.to_dict() for item in ...] on arrays of models.
  */
-function serializeBodyFieldValue(fieldType: any, varName: string): string {
+function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
   if (effectiveType.kind === 'model') {
+    if (!isRequired) {
+      return `${varName}.to_dict() if ${varName} is not None else None`;
+    }
     return `${varName}.to_dict()`;
   }
   if (effectiveType.kind === 'array' && effectiveType.items?.kind === 'model') {
+    if (!isRequired) {
+      return `[item.to_dict() for item in ${varName}] if ${varName} is not None else None`;
+    }
     return `[item.to_dict() for item in ${varName}]`;
   }
   return varName;

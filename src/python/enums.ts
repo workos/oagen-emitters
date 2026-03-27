@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { walkTypeRef } from '@workos/oagen';
+import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 
 /**
@@ -43,14 +43,29 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
       lines.push(`${enumDef.name}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
 
-      // Add docstring with value descriptions if any have them
-      const described = uniqueValues.filter((v) => v.description);
-      if (described.length > 0) {
-        lines.push(`"""${enumDef.name} values:`);
-        for (const v of described) {
-          lines.push(`- \`\`${v.value}\`\`: ${v.description}`);
+      // Companion constants class for attribute access
+      lines.push('');
+      lines.push('');
+      lines.push(`class ${enumDef.name}Values:`);
+      lines.push(`    """Known values for ${enumDef.name}."""`);
+      lines.push('');
+
+      const usedNames = new Set<string>();
+      for (const v of uniqueValues) {
+        let memberName = toUpperSnakeCase(String(v.value));
+        if (usedNames.has(memberName)) {
+          let suffix = 2;
+          while (usedNames.has(`${memberName}_${suffix}`)) suffix++;
+          memberName = `${memberName}_${suffix}`;
         }
-        lines.push('"""');
+        usedNames.add(memberName);
+        const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
+        if (v.description) {
+          lines.push(`    ${memberName}: str = ${valueStr}`);
+          lines.push(`    """${v.description}"""`);
+        } else {
+          lines.push(`    ${memberName}: str = ${valueStr}`);
+        }
       }
     }
 

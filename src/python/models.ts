@@ -20,9 +20,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
-    // Skip list metadata models only if they have generic names (e.g., ListMetadata)
-    // but keep named ones like FooListListMetadata since they're imported by list wrappers
-    if (isListMetadataModel(model) && model.name === 'ListMetadata') continue;
+    // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
+    if (isListWrapperModel(model)) continue;
+    // Skip all list metadata models (e.g., ListMetadata, FooListListMetadata)
+    if (isListMetadataModel(model)) continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -185,6 +186,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Include both models and enums
   const symbolsByDir = new Map<string, string[]>();
   for (const model of models) {
+    if (isListWrapperModel(model)) continue;
     if (isListMetadataModel(model)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
