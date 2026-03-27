@@ -98,6 +98,17 @@ describe('generateClient', () => {
     expect(pyTyped).toBeDefined();
   });
 
+  it('request_page accepts body parameter', () => {
+    const files = generateClient(spec, ctx);
+    const clientFile = files.find((f) => f.path === 'workos/_client.py');
+    const content = clientFile!.content;
+
+    // Signature should include body param
+    expect(content).toContain('body: Optional[Dict[str, Any]] = None,');
+    // Should forward body to self.request()
+    expect(content).toContain('body=body,');
+  });
+
   it('uses base URL from spec', () => {
     const files = generateClient(spec, ctx);
     const clientFile = files.find((f) => f.path === 'workos/_client.py');

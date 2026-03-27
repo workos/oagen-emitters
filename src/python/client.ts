@@ -211,6 +211,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        *,');
   lines.push('        model: Type[D],');
   lines.push('        params: Optional[Dict[str, Any]] = None,');
+  lines.push('        body: Optional[Dict[str, Any]] = None,');
   lines.push('        request_options: Optional[RequestOptions] = None,');
   lines.push('    ) -> SyncPage[D]:');
   lines.push('        """Make an HTTP request that returns a paginated response."""');
@@ -218,6 +219,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            method=method,');
   lines.push('            path=path,');
   lines.push('            params=params,');
+  lines.push('            body=body,');
   lines.push('            request_options=request_options,');
   lines.push('        )');
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
@@ -234,6 +236,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                path=path,');
   lines.push('                model=model,');
   lines.push('                params={**(params or {}), "after": after},');
+  lines.push('                body=body,');
   lines.push('                request_options=request_options,');
   lines.push('            )');
   lines.push('');
