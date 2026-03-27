@@ -212,6 +212,51 @@ describe('generateResources', () => {
     expect(content).not.toContain('SyncPage[OrganizationList]');
   });
 
+  it('generates DELETE with body when requestBody is present', () => {
+    const models: Model[] = [
+      {
+        name: 'RemoveRoleRequest',
+        fields: [
+          { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'resource_id', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'removeRole',
+            httpMethod: 'delete',
+            path: '/authorization/roles/{user_id}',
+            pathParams: [{ name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'RemoveRoleRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    expect(content).toContain(') -> None:');
+    expect(content).toContain('role_slug: str,');
+    expect(content).toContain('"role_slug": role_slug');
+    expect(content).toContain('body=body,');
+  });
+
   it('generates idempotent POST with idempotency_key', () => {
     const models: Model[] = [
       {

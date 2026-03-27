@@ -345,16 +345,23 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       const httpMethod = op.httpMethod;
 
       if (isPaginated) {
-        let itemType = op.pagination!.itemType;
+        const rawItemType = op.pagination!.itemType;
+        let resolvedItemName: string;
         // Unwrap list wrapper models to their inner item type
-        if (itemType.kind === 'model' && listWrapperNames.has(itemType.name)) {
-          const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
+        if (rawItemType.kind === 'model' && listWrapperNames.has(rawItemType.name)) {
+          const wrapperModel = ctx.spec.models.find((m) => m.name === rawItemType.name);
           const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
           if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
-            itemType = dataField.type.items;
+            resolvedItemName = dataField.type.items.name;
+          } else {
+            resolvedItemName = rawItemType.name;
           }
+        } else if (rawItemType.kind === 'model') {
+          resolvedItemName = rawItemType.name;
+        } else {
+          resolvedItemName = 'dict';
         }
-        const itemTypeClass = itemType.kind === 'model' ? className(itemType.name) : 'dict';
+        const itemTypeClass = className(resolvedItemName);
         // Build query params dict
         lines.push('        params = {k: v for k, v in {');
         lines.push('            "limit": limit,');
@@ -374,9 +381,35 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push('            request_options=request_options,');
         lines.push('        )');
       } else if (isDelete) {
+        // Build body dict if the DELETE has a request body
+        if (plan.hasBody && op.requestBody) {
+          const bodyModel = ctx.spec.models.find(
+            (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
+          );
+          if (bodyModel) {
+            const bodyFields = bodyModel.fields.filter((f) => !pathParamNames.has(fieldName(f.name)));
+            const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
+            if (bodyFields.length > 0 && hasOptionalBodyFields) {
+              lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
+              for (const f of bodyFields) {
+                lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+              }
+              lines.push('        }.items() if v is not None}');
+            } else if (bodyFields.length > 0) {
+              lines.push('        body: Dict[str, Any] = {');
+              for (const f of bodyFields) {
+                lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+              }
+              lines.push('        }');
+            }
+          }
+        }
         lines.push(`        self._client.request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
+        if (plan.hasBody && op.requestBody) {
+          lines.push('            body=body,');
+        }
         lines.push('            request_options=request_options,');
         lines.push('        )');
       } else if (plan.hasBody && op.requestBody) {
