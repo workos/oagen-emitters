@@ -372,8 +372,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             lines.push('        body: Dict[str, Any] = {}');
           }
         }
-        const bodyIgnore = responseModel !== 'None' ? '  # type: ignore[no-any-return]' : '';
-        lines.push(`        return self._client._request(${bodyIgnore}`);
+        const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
+        lines.push(`        ${bodyReturnPrefix}self._client._request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         lines.push('            body=body,');
@@ -395,8 +395,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
           lines.push('        }.items() if v is not None}');
         }
-        const getIgnore = responseModel !== 'None' ? '  # type: ignore[no-any-return]' : '';
-        lines.push(`        return self._client._request(${getIgnore}`);
+        const returnPrefix = responseModel !== 'None' ? 'return ' : '';
+        lines.push(`        ${returnPrefix}self._client._request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         if (plan.hasQueryParams) {

@@ -9,19 +9,24 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
 
   const errorsContent = `from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional, Type
 
 
 class WorkOSError(Exception):
     """Base exception for all WorkOS errors."""
 
+    message: str
+    status_code: Optional[int]
+    request_id: Optional[str]
+    code: Optional[str]
+
     def __init__(
         self,
         message: str,
         *,
-        status_code: int | None = None,
-        request_id: str | None = None,
-        code: str | None = None,
+        status_code: Optional[int] = None,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -33,53 +38,97 @@ class WorkOSError(Exception):
 class BadRequestError(WorkOSError):
     """400 Bad Request."""
 
-    def __init__(self, message: str = "Bad request", **kwargs) -> None:
-        super().__init__(message, status_code=400, **kwargs)
+    def __init__(
+        self,
+        message: str = "Bad request",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=400, request_id=request_id, code=code)
 
 
 class AuthenticationError(WorkOSError):
     """401 Unauthorized."""
 
-    def __init__(self, message: str = "Unauthorized", **kwargs) -> None:
-        super().__init__(message, status_code=401, **kwargs)
+    def __init__(
+        self,
+        message: str = "Unauthorized",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=401, request_id=request_id, code=code)
 
 
 class NotFoundError(WorkOSError):
     """404 Not Found."""
 
-    def __init__(self, message: str = "Not found", **kwargs) -> None:
-        super().__init__(message, status_code=404, **kwargs)
+    def __init__(
+        self,
+        message: str = "Not found",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=404, request_id=request_id, code=code)
 
 
 class ConflictError(WorkOSError):
     """409 Conflict."""
 
-    def __init__(self, message: str = "Conflict", **kwargs) -> None:
-        super().__init__(message, status_code=409, **kwargs)
+    def __init__(
+        self,
+        message: str = "Conflict",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=409, request_id=request_id, code=code)
 
 
 class UnprocessableEntityError(WorkOSError):
     """422 Unprocessable Entity."""
 
-    def __init__(self, message: str = "Unprocessable entity", **kwargs) -> None:
-        super().__init__(message, status_code=422, **kwargs)
+    def __init__(
+        self,
+        message: str = "Unprocessable entity",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=422, request_id=request_id, code=code)
 
 
 class RateLimitExceededError(WorkOSError):
     """429 Rate Limited."""
 
+    retry_after: Optional[float]
+
     def __init__(
-        self, message: str = "Too many requests", *, retry_after: float | None = None, **kwargs
+        self,
+        message: str = "Too many requests",
+        *,
+        retry_after: Optional[float] = None,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=429, **kwargs)
+        super().__init__(message, status_code=429, request_id=request_id, code=code)
         self.retry_after = retry_after
 
 
 class ServerError(WorkOSError):
     """500+ Server Error."""
 
-    def __init__(self, message: str = "Server error", *, status_code: int = 500, **kwargs) -> None:
-        super().__init__(message, status_code=status_code, **kwargs)
+    def __init__(
+        self,
+        message: str = "Server error",
+        *,
+        status_code: int = 500,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code, request_id=request_id, code=code)
 
 
 class ConfigurationError(WorkOSError):
@@ -89,7 +138,7 @@ class ConfigurationError(WorkOSError):
         super().__init__(message)
 
 
-STATUS_CODE_TO_ERROR = {
+STATUS_CODE_TO_ERROR: Dict[int, Type[WorkOSError]] = {
     400: BadRequestError,
     401: AuthenticationError,
     404: NotFoundError,

@@ -20,8 +20,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
-    // Skip list metadata models (e.g., { before, after } pagination cursors)
-    if (isListMetadataModel(model)) continue;
+    // Skip list metadata models only if they have generic names (e.g., ListMetadata)
+    // but keep named ones like FooListListMetadata since they're imported by list wrappers
+    if (isListMetadataModel(model) && model.name === 'ListMetadata') continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -247,11 +248,12 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, _mode
       if (isRequired) {
         return `${className(ref.name)}.from_dict(${accessor})`;
       }
-      return `${className(ref.name)}.from_dict(${accessor}) if ${accessor} is not None else None`;
+      // Use a temp var to narrow the type for mypy
+      return `${className(ref.name)}.from_dict(_v) if (_v := ${accessor}) is not None else None`;
     }
     case 'array': {
       if (ref.items.kind === 'model') {
-        return `[${className(ref.items.name)}.from_dict(item) for item in ${accessor}]`;
+        return `[${className(ref.items.name)}.from_dict(item) for item in (${accessor} or [])]`;
       }
       return accessor;
     }

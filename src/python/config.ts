@@ -7,10 +7,12 @@ export function generateConfig(ctx?: EmitterContext): GeneratedFile[] {
   const namespace = ctx?.namespace ?? 'workos';
   const files: GeneratedFile[] = [];
 
-  // _types.py — shared type aliases
+  // _types.py — shared type aliases and protocols
   files.push({
     path: `${namespace}/_types.py`,
-    content: `from typing import Any, Dict, Optional
+    content: `from __future__ import annotations
+
+from typing import Any, ClassVar, Dict, Protocol, TypeVar
 
 # Per-request options that can be passed to any API method.
 RequestOptions = Dict[str, Any]
@@ -18,7 +20,17 @@ RequestOptions = Dict[str, Any]
 Supported keys:
 - extra_headers: Dict[str, str] — additional HTTP headers
 - timeout: float — request timeout in seconds
-"""`,
+"""
+
+
+class Deserializable(Protocol):
+    """Protocol for types that can be deserialized from a dict."""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Deserializable": ...
+
+
+D = TypeVar("D", bound=Deserializable)`,
     skipIfExists: true,
   });
 
@@ -30,7 +42,9 @@ Supported keys:
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, TypeVar
 
-T = TypeVar("T")
+from ._types import Deserializable
+
+T = TypeVar("T", bound=Deserializable)
 
 
 @dataclass

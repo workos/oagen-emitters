@@ -27,7 +27,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('import time');
   lines.push('import uuid');
   lines.push('import random');
-  lines.push('from typing import Any, Dict, Optional, Type, TypeVar');
+  lines.push('from typing import Any, Dict, Optional, Type, cast, overload');
   lines.push('');
   lines.push('import httpx');
   lines.push('');
@@ -44,7 +44,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    STATUS_CODE_TO_ERROR,');
   lines.push(')');
   lines.push('from ._pagination import SyncPage');
-  lines.push('from ._types import RequestOptions');
+  lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes
   for (const service of spec.services) {
@@ -53,8 +53,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`from .${dirName}._resource import ${resolvedName}`);
   }
 
-  lines.push('');
-  lines.push('T = TypeVar("T")');
   lines.push('');
   lines.push('RETRY_STATUS_CODES = {429, 500, 502, 503, 504}');
   lines.push('MAX_RETRIES = 3');
@@ -93,7 +91,33 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        self.${propName} = ${resolvedName}(self)`);
   }
 
-  // _request method
+  // _request overloads for type safety
+  lines.push('');
+  lines.push('    @overload');
+  lines.push('    def _request(');
+  lines.push('        self,');
+  lines.push('        method: str,');
+  lines.push('        path: str,');
+  lines.push('        *,');
+  lines.push('        model: Type[D],');
+  lines.push('        params: Optional[Dict[str, Any]] = ...,');
+  lines.push('        body: Optional[Dict[str, Any]] = ...,');
+  lines.push('        idempotency_key: Optional[str] = ...,');
+  lines.push('        request_options: Optional[RequestOptions] = ...,');
+  lines.push('    ) -> D: ...');
+  lines.push('');
+  lines.push('    @overload');
+  lines.push('    def _request(');
+  lines.push('        self,');
+  lines.push('        method: str,');
+  lines.push('        path: str,');
+  lines.push('        *,');
+  lines.push('        model: None = ...,');
+  lines.push('        params: Optional[Dict[str, Any]] = ...,');
+  lines.push('        body: Optional[Dict[str, Any]] = ...,');
+  lines.push('        idempotency_key: Optional[str] = ...,');
+  lines.push('        request_options: Optional[RequestOptions] = ...,');
+  lines.push('    ) -> Optional[Dict[str, Any]]: ...');
   lines.push('');
   lines.push('    def _request(');
   lines.push('        self,');
@@ -102,7 +126,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        *,');
   lines.push('        params: Optional[Dict[str, Any]] = None,');
   lines.push('        body: Optional[Dict[str, Any]] = None,');
-  lines.push('        model: Optional[Type[T]] = None,');
+  lines.push('        model: Optional[Type[Deserializable]] = None,');
   lines.push('        idempotency_key: Optional[str] = None,');
   lines.push('        request_options: Optional[RequestOptions] = None,');
   lines.push('    ) -> Any:');
@@ -121,10 +145,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('        timeout = self._timeout');
   lines.push('        if request_options:');
-  lines.push('            if request_options.get("extra_headers"):');
-  lines.push('                headers.update(request_options["extra_headers"])');
-  lines.push('            if request_options.get("timeout"):');
-  lines.push('                timeout = request_options["timeout"]');
+  lines.push('            extra = request_options.get("extra_headers")');
+  lines.push('            if isinstance(extra, dict):');
+  lines.push('                headers.update(extra)');
+  lines.push('            t = request_options.get("timeout")');
+  lines.push('            if isinstance(t, (int, float)):');
+  lines.push('                timeout = float(t)');
   lines.push('');
   lines.push('        last_error: Optional[Exception] = None');
   lines.push('        for attempt in range(self._max_retries + 1):');
@@ -157,9 +183,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                if response.status_code == 204 or not response.content:');
   lines.push('                    return None');
   lines.push('');
-  lines.push('                data = response.json()');
-  lines.push('                if model and hasattr(model, "from_dict"):');
-  lines.push('                    return model.from_dict(data)  # type: ignore[attr-defined]');
+  lines.push('                data: Dict[str, Any] = response.json()');
+  lines.push('                if model is not None:');
+  lines.push('                    return model.from_dict(data)');
   lines.push('                return data');
   lines.push('');
   lines.push('            except httpx.HTTPError as e:');
@@ -183,24 +209,23 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        method: str,');
   lines.push('        path: str,');
   lines.push('        *,');
-  lines.push('        model: Type[T],');
+  lines.push('        model: Type[D],');
   lines.push('        params: Optional[Dict[str, Any]] = None,');
   lines.push('        request_options: Optional[RequestOptions] = None,');
-  lines.push('    ) -> SyncPage[T]:');
+  lines.push('    ) -> SyncPage[D]:');
   lines.push('        """Make an HTTP request that returns a paginated response."""');
-  lines.push('        data = self._request(');
+  lines.push('        raw = self._request(');
   lines.push('            method=method,');
   lines.push('            path=path,');
   lines.push('            params=params,');
   lines.push('            request_options=request_options,');
   lines.push('        )');
-  lines.push('        items = [');
-  lines.push(
-    '            model.from_dict(item) if hasattr(model, "from_dict") else item  # type: ignore[attr-defined]',
-  );
+  lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
+  lines.push('        items: list[D] = [');
+  lines.push('            cast(D, model.from_dict(item))');
   lines.push('            for item in (data.get("data") or [])');
   lines.push('        ]');
-  lines.push('        list_metadata = data.get("list_metadata", {})');
+  lines.push('        list_metadata: Dict[str, Any] = data.get("list_metadata", {})');
   lines.push('        return SyncPage(');
   lines.push('            data=items,');
   lines.push('            list_metadata=list_metadata,');
@@ -220,9 +245,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """Raise an appropriate error based on the response status code."""');
   lines.push('        request_id = response.headers.get("x-request-id", "")');
   lines.push('        try:');
-  lines.push('            data = response.json()');
-  lines.push('            message = data.get("message", response.text)');
-  lines.push('            code = data.get("code")');
+  lines.push('            body: Dict[str, Any] = response.json()');
+  lines.push('            message: str = str(body.get("message", response.text))');
+  lines.push('            code: Optional[str] = str(body["code"]) if "code" in body else None');
   lines.push('        except Exception:');
   lines.push('            message = response.text');
   lines.push('            code = None');
@@ -231,7 +256,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        if error_class:');
   lines.push('            if error_class is RateLimitExceededError:');
   lines.push('                retry_after = response.headers.get("Retry-After")');
-  lines.push('                raise error_class(');
+  lines.push('                raise RateLimitExceededError(');
   lines.push('                    message,');
   lines.push('                    retry_after=float(retry_after) if retry_after else None,');
   lines.push('                    request_id=request_id,');
