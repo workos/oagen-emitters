@@ -102,7 +102,6 @@ STATUS_CODE_TO_ERROR = {
     path: `${namespace}/_errors.py`,
     content: errorsContent,
     skipIfExists: true,
-    integrateTarget: false,
   });
 
   return files;

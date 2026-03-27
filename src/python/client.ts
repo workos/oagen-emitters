@@ -159,7 +159,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('                data = response.json()');
   lines.push('                if model and hasattr(model, "from_dict"):');
-  lines.push('                    return model.from_dict(data)');
+  lines.push('                    return model.from_dict(data)  # type: ignore[attr-defined]');
   lines.push('                return data');
   lines.push('');
   lines.push('            except httpx.HTTPError as e:');
@@ -195,7 +195,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            request_options=request_options,');
   lines.push('        )');
   lines.push('        items = [');
-  lines.push('            model.from_dict(item) if hasattr(model, "from_dict") else item');
+  lines.push(
+    '            model.from_dict(item) if hasattr(model, "from_dict") else item  # type: ignore[attr-defined]',
+  );
   lines.push('            for item in (data.get("data") or [])');
   lines.push('        ]');
   lines.push('        list_metadata = data.get("list_metadata", {})');

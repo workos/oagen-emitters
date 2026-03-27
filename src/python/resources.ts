@@ -33,17 +33,43 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
-    lines.push('from typing import Any, Dict, Optional');
+    lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type');
+    lines.push('');
+    lines.push('if TYPE_CHECKING:');
+    lines.push('    from .._client import WorkOS');
     lines.push('');
 
     // Collect all model and enum imports needed
     const modelImports = new Set<string>();
     const enumImports = new Set<string>();
 
+    // Build a set of list wrapper model names to skip
+    const listWrapperNames = new Set<string>();
+    for (const m of ctx.spec.models) {
+      const dataField = m.fields.find((f) => f.name === 'data');
+      const hasListMeta = m.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+      if (dataField && hasListMeta && dataField.type.kind === 'array') {
+        listWrapperNames.add(m.name);
+      }
+    }
+
     for (const op of service.operations) {
       const plan = planOperation(op);
-      if (plan.responseModelName) modelImports.add(plan.responseModelName);
-      if (op.requestBody?.kind === 'model') modelImports.add(op.requestBody.name);
+      if (plan.responseModelName && !listWrapperNames.has(plan.responseModelName)) {
+        modelImports.add(plan.responseModelName);
+      }
+      if (op.requestBody?.kind === 'model') {
+        const requestBodyRef = op.requestBody;
+        modelImports.add(requestBodyRef.name);
+        // Also collect types from body model fields (expanded as keyword params)
+        const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyRef.name);
+        if (bodyModel) {
+          for (const f of bodyModel.fields) {
+            for (const ref of collectModelRefs(f.type)) modelImports.add(ref);
+            for (const ref of collectEnumRefs(f.type)) enumImports.add(ref);
+          }
+        }
+      }
       // Collect from params
       for (const p of [...op.pathParams, ...op.queryParams]) {
         for (const ref of collectEnumRefs(p.type)) {
@@ -69,14 +95,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (!specEnumNames.has(name)) enumImports.delete(name);
     }
 
-    // Filter out list wrapper models
-    const actualModelImports = [...modelImports].filter((name) => {
-      const model = ctx.spec.models.find((m) => m.name === name);
-      if (!model) return true;
-      const dataField = model.fields.find((f) => f.name === 'data');
-      const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-      return !(dataField && hasListMetadata && dataField.type.kind === 'array');
-    });
+    const actualModelImports = [...modelImports];
 
     // Split imports into same-service and cross-service
     const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
@@ -164,9 +183,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('    def __init__(self, client: "WorkOS") -> None:');
     lines.push('        self._client = client');
 
+    const emittedMethods = new Set<string>();
+
     for (const op of service.operations) {
       const plan = planOperation(op);
       const method = resolveMethodName(op, service, ctx);
+
+      // Skip duplicate method names (multiple operations mapping to the same name)
+      if (emittedMethods.has(method)) continue;
+      emittedMethods.add(method);
       const isDelete = plan.isDelete;
       const isPaginated = plan.isPaginated;
 
@@ -177,7 +202,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       // Path params as positional args
       for (const param of op.pathParams) {
         const paramName = fieldName(param.name);
-        const paramType = mapTypeRefUnquoted(param.type);
+        const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
         lines.push(`        ${paramName}: ${paramType},`);
       }
 
@@ -194,11 +219,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           const reqFields = bodyModel.fields.filter((f) => f.required && !pathParamNames.has(fieldName(f.name)));
           const optFields = bodyModel.fields.filter((f) => !f.required && !pathParamNames.has(fieldName(f.name)));
           for (const f of reqFields) {
-            lines.push(`        ${fieldName(f.name)}: ${mapTypeRefUnquoted(f.type)},`);
+            lines.push(`        ${fieldName(f.name)}: ${mapTypeRefUnquoted(f.type, specEnumNames)},`);
           }
           for (const f of optFields) {
             const innerType =
-              f.type.kind === 'nullable' ? mapTypeRefUnquoted(f.type.inner) : mapTypeRefUnquoted(f.type);
+              f.type.kind === 'nullable'
+                ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
+                : mapTypeRefUnquoted(f.type, specEnumNames);
             lines.push(`        ${fieldName(f.name)}: Optional[${innerType}] = None,`);
           }
         } else {
@@ -212,7 +239,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         for (const param of op.queryParams) {
           const paramName = fieldName(param.name);
           if (pathParamNames.has(paramName)) continue;
-          const paramType = mapTypeRefUnquoted(param.type);
+          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
           if (param.required) {
             lines.push(`        ${paramName}: ${paramType},`);
           } else {
@@ -231,7 +258,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         for (const param of op.queryParams) {
           if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
           const paramName = fieldName(param.name);
-          const paramType = mapTypeRefUnquoted(param.type);
+          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
           if (param.required) {
             lines.push(`        ${paramName}: ${paramType},`);
           } else {
@@ -253,7 +280,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         returnType = 'None';
       } else if (isPaginated) {
         const itemType = op.pagination!.itemType;
-        const itemTypeName = itemType.kind === 'model' ? className(itemType.name) : mapTypeRefUnquoted(itemType);
+        const itemTypeName =
+          itemType.kind === 'model' ? className(itemType.name) : mapTypeRefUnquoted(itemType, specEnumNames);
         returnType = `SyncPage[${itemTypeName}]`;
       } else if (plan.responseModelName) {
         returnType = className(plan.responseModelName);
@@ -333,13 +361,19 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
         );
         if (bodyModel) {
-          lines.push('        body = {k: v for k, v in {');
-          for (const f of bodyModel.fields) {
-            lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+          const bodyFields = bodyModel.fields.filter((f) => !pathParamNames.has(fieldName(f.name)));
+          if (bodyFields.length > 0) {
+            lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
+            for (const f of bodyFields) {
+              lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+            }
+            lines.push('        }.items() if v is not None}');
+          } else {
+            lines.push('        body: Dict[str, Any] = {}');
           }
-          lines.push('        }.items() if v is not None}');
         }
-        lines.push(`        return self._client._request(`);
+        const bodyIgnore = responseModel !== 'None' ? '  # type: ignore[no-any-return]' : '';
+        lines.push(`        return self._client._request(${bodyIgnore}`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         lines.push('            body=body,');
@@ -361,7 +395,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
           lines.push('        }.items() if v is not None}');
         }
-        lines.push(`        return self._client._request(`);
+        const getIgnore = responseModel !== 'None' ? '  # type: ignore[no-any-return]' : '';
+        lines.push(`        return self._client._request(${getIgnore}`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         if (plan.hasQueryParams) {

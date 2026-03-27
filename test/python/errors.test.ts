@@ -49,6 +49,5 @@ describe('generateErrors', () => {
   it('marks files as skipIfExists', () => {
     const files = generateErrors(ctx);
     expect(files[0].skipIfExists).toBe(true);
-    expect(files[0].integrateTarget).toBe(false);
   });
 });

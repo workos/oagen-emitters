@@ -20,9 +20,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const files: GeneratedFile[] = [];
 
   for (const model of models) {
-    // Skip list metadata and list wrapper models
+    // Skip list metadata models (e.g., { before, after } pagination cursors)
     if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -56,17 +55,29 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('from dataclasses import dataclass');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
 
+    // Import referenced models from their service's models package
+    if (deps.models.size > 0) {
+      lines.push('');
+      for (const modelName of [...deps.models].sort()) {
+        if (modelName === model.name) continue; // skip self
+        const modelService = modelToService.get(modelName);
+        const modelDir = resolveDir(modelService);
+        if (modelDir === dirName) {
+          lines.push(`from .${fileName(modelName)} import ${className(modelName)}`);
+        } else {
+          lines.push(`from ${ctx.namespace}.${modelDir}.models import ${className(modelName)}`);
+        }
+      }
+    }
+
     // Import referenced enums from their service's models package
     if (deps.enums.size > 0) {
-      lines.push('');
       for (const enumName of [...deps.enums].sort()) {
         const enumService = enumToService.get(enumName);
         const enumDir = resolveDir(enumService);
         if (enumDir === dirName) {
-          // Same service — relative import within models/
           lines.push(`from .${fileName(enumName)} import ${className(enumName)}`);
         } else {
-          // Different service — absolute import
           lines.push(`from ${ctx.namespace}.${enumDir}.models import ${className(enumName)}`);
         }
       }
@@ -173,7 +184,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const symbolsByDir = new Map<string, string[]>();
   for (const model of models) {
     if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const key = `${ctx.namespace}/${dirName}/models`;

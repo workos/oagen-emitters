@@ -20,7 +20,6 @@ Supported keys:
 - timeout: float — request timeout in seconds
 """`,
     skipIfExists: true,
-    integrateTarget: false,
   });
 
   // _pagination.py — SyncPage and auto-pagination
@@ -65,7 +64,6 @@ class SyncPage(Generic[T]):
                 break
             page = page._fetch_page(after=page.after)`,
     skipIfExists: true,
-    integrateTarget: false,
   });
 
   return files;
