@@ -307,6 +307,67 @@ describe('generateModels', () => {
     expect(aliasFile.content).not.toContain('@dataclass');
   });
 
+  it('handles union fields with identical model variants in from_dict', () => {
+    const service: Service = {
+      name: 'Auth',
+      operations: [
+        {
+          name: 'getFactor',
+          httpMethod: 'get',
+          path: '/auth/factors/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuthenticationFactor' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'AuthenticationFactor',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'totp',
+            type: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'AuthenticationFactorTotp' },
+                { kind: 'model', name: 'AuthenticationFactorTotp' },
+              ],
+            },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'AuthenticationFactorTotp',
+        fields: [
+          { name: 'issuer', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'user', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const factorFile = files.find((f) => f.path.includes('authentication_factor.py') && !f.path.includes('totp'))!;
+    expect(factorFile).toBeDefined();
+
+    // Union of identical model refs should collapse in from_dict
+    expect(factorFile.content).toContain('AuthenticationFactorTotp.from_dict');
+    // Type annotation should be collapsed (no Union[Foo, Foo])
+    expect(factorFile.content).toContain('Optional["AuthenticationFactorTotp"]');
+    expect(factorFile.content).not.toContain('Union["AuthenticationFactorTotp", "AuthenticationFactorTotp"]');
+  });
+
   it('handles map fields', () => {
     const service: Service = {
       name: 'Organizations',

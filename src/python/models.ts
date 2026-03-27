@@ -308,8 +308,8 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
   }
 }
 
-// oxlint-disable-next-line only-used-in-recursion -- modelMap will be used for union type handling
-function deserializeField(ref: any, accessor: string, isRequired: boolean, _modelMap: Map<string, Model>): string {
+// oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
+function deserializeField(ref: any, accessor: string, isRequired: boolean, modelMap: Map<string, Model>): string {
   switch (ref.kind) {
     case 'model': {
       if (isRequired) {
@@ -324,7 +324,16 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, _mode
       return accessor;
     }
     case 'nullable':
-      return deserializeField(ref.inner, accessor, false, _modelMap);
+      return deserializeField(ref.inner, accessor, false, modelMap);
+    case 'union': {
+      const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
+      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
+      if (uniqueModels.length === 1) {
+        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, modelMap);
+      }
+      // Mixed unions — pass through (would need runtime discriminant logic)
+      return accessor;
+    }
     default:
       return accessor;
   }
@@ -337,6 +346,14 @@ function serializeField(ref: any, accessor: string): string {
     case 'array': {
       if (ref.items.kind === 'model') {
         return `[item.to_dict() for item in ${accessor}]`;
+      }
+      return accessor;
+    }
+    case 'union': {
+      const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
+      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
+      if (uniqueModels.length === 1) {
+        return `${accessor}.to_dict()`;
       }
       return accessor;
     }

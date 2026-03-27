@@ -124,6 +124,39 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('Literal["sign-up", "sign_up", "sign up"]');
   });
 
+  it('generates type alias for structurally identical enums', () => {
+    const enums: Enum[] = [
+      {
+        name: 'ConnectionType',
+        values: [
+          { name: 'SAML', value: 'saml' },
+          { name: 'OIDC', value: 'oidc' },
+        ],
+      },
+      {
+        name: 'ProfileConnectionType',
+        values: [
+          { name: 'SAML', value: 'saml' },
+          { name: 'OIDC', value: 'oidc' },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    expect(files.length).toBe(2);
+
+    // Canonical (alphabetically first) should be a full enum
+    const canonical = files.find((f) => f.path.includes('connection_type.py') && !f.path.includes('profile'))!;
+    expect(canonical).toBeDefined();
+    expect(canonical.content).toContain('Literal["saml", "oidc"]');
+
+    // Alias should import from canonical
+    const alias = files.find((f) => f.path.includes('profile_connection_type.py'))!;
+    expect(alias).toBeDefined();
+    expect(alias.content).toContain('ConnectionType as ProfileConnectionType');
+    expect(alias.content).not.toContain('Literal');
+  });
+
   it('handles enum with descriptions', () => {
     const enums: Enum[] = [
       {

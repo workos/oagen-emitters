@@ -63,5 +63,8 @@ function joinUnionVariants(ref: UnionType, variants: string[]): string {
     // Python doesn't have intersection types; use the first variant
     return variants[0] ?? 'Any';
   }
-  return `Union[${variants.join(', ')}]`;
+  // Deduplicate identical variants (e.g., Union[Foo, Foo] -> Foo)
+  const unique = [...new Set(variants)];
+  if (unique.length === 1) return unique[0];
+  return `Union[${unique.join(', ')}]`;
 }

@@ -187,6 +187,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push(`class ${resourceClassName}:`);
     if (service.description) {
       lines.push(`    """${service.description}"""`);
+    } else {
+      const readable = resourceClassName.replace(/([A-Z])/g, ' $1').trim();
+      lines.push(`    """${readable} API resources."""`);
     }
     lines.push('');
     lines.push('    def __init__(self, client: "WorkOS") -> None:');
@@ -306,7 +309,40 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
 
       // Args section
-      const allParams = op.pathParams.map((p) => ({ name: fieldName(p.name), desc: p.description }));
+      const allParams: { name: string; desc?: string }[] = op.pathParams.map((p) => ({
+        name: fieldName(p.name),
+        desc: p.description,
+      }));
+
+      // Add body model fields to docs
+      if (plan.hasBody && op.requestBody) {
+        const bodyModel = ctx.spec.models.find(
+          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
+        );
+        if (bodyModel) {
+          for (const f of bodyModel.fields) {
+            if (pathParamNames.has(fieldName(f.name))) continue;
+            allParams.push({ name: fieldName(f.name), desc: f.description });
+          }
+        }
+      }
+
+      // Add query params for non-paginated methods
+      if (plan.hasQueryParams && !isPaginated && !plan.hasBody) {
+        for (const param of op.queryParams) {
+          if (pathParamNames.has(fieldName(param.name))) continue;
+          allParams.push({ name: fieldName(param.name), desc: param.description });
+        }
+      }
+
+      // Add extra non-standard pagination query params
+      if (isPaginated) {
+        for (const param of op.queryParams) {
+          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+          allParams.push({ name: fieldName(param.name), desc: param.description });
+        }
+      }
+
       if (allParams.length > 0 || isPaginated) {
         lines.push('');
         lines.push('        Args:');

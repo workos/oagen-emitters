@@ -15,11 +15,68 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
   const files: GeneratedFile[] = [];
 
+  // Build hash for deduplication based on sorted member values
+  const enumHashMap = new Map<string, string>();
+  const hashGroups = new Map<string, string[]>();
+  for (const enumDef of enums) {
+    const hash = [...enumDef.values]
+      .map((v) => String(v.value))
+      .sort()
+      .join('|');
+    enumHashMap.set(enumDef.name, hash);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(enumDef.name);
+  }
+
+  // For identical enums, pick canonical (alphabetically first)
+  const aliasOf = new Map<string, string>();
+  for (const [, names] of hashGroups) {
+    if (names.length <= 1) continue;
+    const sorted = [...names].sort();
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i], canonical);
+    }
+  }
+
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
+
+    // If this enum is an alias for a canonical enum, generate a type alias file
+    const canonicalName = aliasOf.get(enumDef.name);
+    if (canonicalName) {
+      const canonicalService = enumToService.get(canonicalName);
+      const canonicalDir = resolveDir(canonicalService);
+      const lines: string[] = [];
+      if (canonicalDir === dirName) {
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalName} as ${enumDef.name}`);
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalName}Values as ${enumDef.name}Values`);
+      } else {
+        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName} as ${enumDef.name}`);
+        lines.push(
+          `from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName}Values as ${enumDef.name}Values`,
+        );
+      }
+      files.push({
+        path: `${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+        content: lines.join('\n'),
+      });
+      continue;
+    }
+
     const lines: string[] = [];
 
+    if (enumDef.description) {
+      lines.push(`"""${enumDef.description}"""`);
+    } else {
+      const readable = enumDef.name
+        .replace(/([A-Z])/g, ' $1')
+        .trim()
+        .toLowerCase();
+      lines.push(`"""Enumeration of ${readable} values."""`);
+    }
+    lines.push('');
     lines.push('from __future__ import annotations');
     lines.push('');
     lines.push('from typing import Union');
