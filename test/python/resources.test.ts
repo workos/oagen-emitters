@@ -257,6 +257,67 @@ describe('generateResources', () => {
     expect(content).toContain('body=body,');
   });
 
+  it('calls .to_dict() on model-typed body fields', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [{ name: 'action', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'AuditLogSchemaTarget',
+        fields: [{ name: 'type', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateEventRequest',
+        fields: [
+          { name: 'event', type: { kind: 'model', name: 'AuditLogEvent' }, required: true },
+          {
+            name: 'targets',
+            type: { kind: 'array', items: { kind: 'model', name: 'AuditLogSchemaTarget' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'EventResult',
+        fields: [{ name: 'success', type: { kind: 'primitive', type: 'boolean' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createEvent',
+            httpMethod: 'post',
+            path: '/audit_logs/events',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateEventRequest' },
+            response: { kind: 'model', name: 'EventResult' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Model field should call .to_dict()
+    expect(content).toContain('"event": event.to_dict()');
+    // Array of models should use list comprehension
+    expect(content).toContain('"targets": [item.to_dict() for item in targets]');
+  });
+
   it('generates idempotent POST with idempotency_key', () => {
     const models: Model[] = [
       {

@@ -288,18 +288,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (isDelete) {
         returnType = 'None';
       } else if (isPaginated) {
-        let itemType = op.pagination!.itemType;
-        // Unwrap list wrapper models to their inner item type
-        if (itemType.kind === 'model' && listWrapperNames.has(itemType.name)) {
-          const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
-          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
-          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
-            itemType = dataField.type.items;
-          }
-        }
-        const itemTypeName =
-          itemType.kind === 'model' ? className(itemType.name) : mapTypeRefUnquoted(itemType, specEnumNames);
-        returnType = `SyncPage[${itemTypeName}]`;
+        const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
+        returnType = `SyncPage[${className(resolvedItem)}]`;
       } else if (plan.responseModelName) {
         returnType = className(plan.responseModelName);
       } else {
@@ -345,22 +335,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       const httpMethod = op.httpMethod;
 
       if (isPaginated) {
-        const rawItemType = op.pagination!.itemType;
-        let resolvedItemName: string;
-        // Unwrap list wrapper models to their inner item type
-        if (rawItemType.kind === 'model' && listWrapperNames.has(rawItemType.name)) {
-          const wrapperModel = ctx.spec.models.find((m) => m.name === rawItemType.name);
-          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
-          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
-            resolvedItemName = dataField.type.items.name;
-          } else {
-            resolvedItemName = rawItemType.name;
-          }
-        } else if (rawItemType.kind === 'model') {
-          resolvedItemName = rawItemType.name;
-        } else {
-          resolvedItemName = 'dict';
-        }
+        const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
         const itemTypeClass = className(resolvedItemName);
         // Build query params dict
         lines.push('        params = {k: v for k, v in {');
@@ -392,13 +367,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             if (bodyFields.length > 0 && hasOptionalBodyFields) {
               lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
               for (const f of bodyFields) {
-                lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+                lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
               }
               lines.push('        }.items() if v is not None}');
             } else if (bodyFields.length > 0) {
               lines.push('        body: Dict[str, Any] = {');
               for (const f of bodyFields) {
-                lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+                lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
               }
               lines.push('        }');
             }
@@ -424,13 +399,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           if (bodyFields.length > 0 && hasOptionalBodyFields) {
             lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
             for (const f of bodyFields) {
-              lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
             }
             lines.push('        }.items() if v is not None}');
           } else if (bodyFields.length > 0) {
             lines.push('        body: Dict[str, Any] = {');
             for (const f of bodyFields) {
-              lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+              lines.push(`            "${f.name}": ${serializeBodyFieldValue(f.type, fieldName(f.name))},`);
             }
             lines.push('        }');
           } else {
@@ -491,6 +466,42 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   }
 
   return files;
+}
+
+/**
+ * Serialize a body field value for inclusion in a request body dict.
+ * Calls .to_dict() on model fields and [item.to_dict() for item in ...] on arrays of models.
+ */
+function serializeBodyFieldValue(fieldType: any, varName: string): string {
+  const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
+  if (effectiveType.kind === 'model') {
+    return `${varName}.to_dict()`;
+  }
+  if (effectiveType.kind === 'array' && effectiveType.items?.kind === 'model') {
+    return `[item.to_dict() for item in ${varName}]`;
+  }
+  return varName;
+}
+
+/**
+ * Resolve the item type name for a paginated operation, unwrapping list wrappers.
+ */
+function resolvePageItemName(
+  itemType: import('@workos/oagen').TypeRef,
+  listWrapperNames: Set<string>,
+  ctx: EmitterContext,
+): string {
+  if (itemType.kind === 'model') {
+    if (listWrapperNames.has(itemType.name)) {
+      const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
+      const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
+      if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+        return dataField.type.items.name;
+      }
+    }
+    return itemType.name;
+  }
+  return 'dict';
 }
 
 /**
