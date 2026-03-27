@@ -56,8 +56,8 @@ describe('generateClient', () => {
     const content = clientFile!.content;
     expect(content).toContain('class WorkOS:');
     expect(content).toContain('self.organizations = Organizations(self)');
-    expect(content).toContain('def _request(');
-    expect(content).toContain('def _request_page(');
+    expect(content).toContain('def request(');
+    expect(content).toContain('def request_page(');
     expect(content).toContain('RETRY_STATUS_CODES');
     expect(content).toContain('Idempotency-Key');
   });

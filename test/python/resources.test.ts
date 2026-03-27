@@ -83,6 +83,8 @@ describe('generateResources', () => {
     expect(content).toContain('id: str,');
     expect(content).toContain('f"organizations/{id}"');
     expect(content).toContain('model=Organization');
+    // Public request methods (no underscore prefix)
+    expect(content).toContain('self._client.request(');
 
     // DELETE method returns None
     expect(content).toContain('def delete_organization(');
@@ -138,7 +140,7 @@ describe('generateResources', () => {
     expect(content).toContain('limit: Optional[int] = None,');
     expect(content).toContain('after: Optional[str] = None,');
     expect(content).toContain(') -> SyncPage[Organization]:');
-    expect(content).toContain('_request_page(');
+    expect(content).toContain('request_page(');
     expect(content).toContain('model=Organization');
   });
 

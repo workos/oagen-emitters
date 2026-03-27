@@ -83,8 +83,8 @@ describe('generateModels', () => {
     };
 
     const files = generateModels(models, ctxWithServices);
-    // Model file + barrel __init__.py
-    expect(files.length).toBe(2);
+    // Model file + barrel __init__.py + parent __init__.py
+    expect(files.length).toBe(3);
 
     const modelFile = files.find((f) => f.path === 'workos/organizations/models/organization.py')!;
     expect(modelFile).toBeDefined();
@@ -168,13 +168,13 @@ describe('generateModels', () => {
     };
 
     const files = generateModels(models, ctxWithServices);
-    // 2 model files + 1 barrel __init__.py
-    expect(files.length).toBe(3);
+    // 2 model files + 1 barrel __init__.py + 1 parent __init__.py
+    expect(files.length).toBe(4);
 
     const orgFile = files.find((f) => f.path.includes('organization.py') && !f.path.includes('organization_domain'));
     expect(orgFile).toBeDefined();
     expect(orgFile!.content).toContain('domains: List["OrganizationDomain"]');
-    expect(orgFile!.content).toContain('OrganizationDomain.from_dict(item) for item in');
+    expect(orgFile!.content).toContain('OrganizationDomain.from_dict(cast(Dict[str, Any], item))');
   });
 
   it('handles map fields', () => {
@@ -222,8 +222,8 @@ describe('generateModels', () => {
     };
 
     const files = generateModels(models, ctxWithServices);
-    // 1 model file + 1 barrel __init__.py
-    expect(files.length).toBe(2);
+    // 1 model file + 1 barrel __init__.py + 1 parent __init__.py
+    expect(files.length).toBe(3);
     const modelFile = files.find((f) => f.path.endsWith('organization.py'))!;
     expect(modelFile.content).toContain('metadata: Optional[Dict[str, str]] = None');
   });

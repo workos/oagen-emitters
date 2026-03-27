@@ -341,7 +341,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           lines.push(`            "${param.name}": ${fieldName(param.name)},`);
         }
         lines.push('        }.items() if v is not None}');
-        lines.push(`        return self._client._request_page(`);
+        lines.push(`        return self._client.request_page(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         lines.push(`            model=${itemTypeClass},`);
@@ -349,7 +349,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push('            request_options=request_options,');
         lines.push('        )');
       } else if (isDelete) {
-        lines.push(`        self._client._request(`);
+        lines.push(`        self._client.request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         lines.push('            request_options=request_options,');
@@ -362,18 +362,25 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         );
         if (bodyModel) {
           const bodyFields = bodyModel.fields.filter((f) => !pathParamNames.has(fieldName(f.name)));
-          if (bodyFields.length > 0) {
+          const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
+          if (bodyFields.length > 0 && hasOptionalBodyFields) {
             lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
             for (const f of bodyFields) {
               lines.push(`            "${f.name}": ${fieldName(f.name)},`);
             }
             lines.push('        }.items() if v is not None}');
+          } else if (bodyFields.length > 0) {
+            lines.push('        body: Dict[str, Any] = {');
+            for (const f of bodyFields) {
+              lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+            }
+            lines.push('        }');
           } else {
             lines.push('        body: Dict[str, Any] = {}');
           }
         }
         const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
-        lines.push(`        ${bodyReturnPrefix}self._client._request(`);
+        lines.push(`        ${bodyReturnPrefix}self._client.request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         lines.push('            body=body,');
@@ -389,14 +396,23 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         // GET or similar with query params
         const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
         if (plan.hasQueryParams) {
-          lines.push('        params = {k: v for k, v in {');
-          for (const param of op.queryParams) {
-            lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+          const hasOptionalQueryParams = op.queryParams.some((p) => !p.required);
+          if (hasOptionalQueryParams) {
+            lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
+            for (const param of op.queryParams) {
+              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+            }
+            lines.push('        }.items() if v is not None}');
+          } else {
+            lines.push('        params: Dict[str, Any] = {');
+            for (const param of op.queryParams) {
+              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+            }
+            lines.push('        }');
           }
-          lines.push('        }.items() if v is not None}');
         }
         const returnPrefix = responseModel !== 'None' ? 'return ' : '';
-        lines.push(`        ${returnPrefix}self._client._request(`);
+        lines.push(`        ${returnPrefix}self._client.request(`);
         lines.push(`            method="${httpMethod}",`);
         lines.push(`            path=${pathStr},`);
         if (plan.hasQueryParams) {

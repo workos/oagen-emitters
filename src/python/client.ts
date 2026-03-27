@@ -94,7 +94,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // _request overloads for type safety
   lines.push('');
   lines.push('    @overload');
-  lines.push('    def _request(');
+  lines.push('    def request(');
   lines.push('        self,');
   lines.push('        method: str,');
   lines.push('        path: str,');
@@ -107,7 +107,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    ) -> D: ...');
   lines.push('');
   lines.push('    @overload');
-  lines.push('    def _request(');
+  lines.push('    def request(');
   lines.push('        self,');
   lines.push('        method: str,');
   lines.push('        path: str,');
@@ -119,7 +119,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        request_options: Optional[RequestOptions] = ...,');
   lines.push('    ) -> Optional[Dict[str, Any]]: ...');
   lines.push('');
-  lines.push('    def _request(');
+  lines.push('    def request(');
   lines.push('        self,');
   lines.push('        method: str,');
   lines.push('        path: str,');
@@ -147,7 +147,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        if request_options:');
   lines.push('            extra = request_options.get("extra_headers")');
   lines.push('            if isinstance(extra, dict):');
-  lines.push('                headers.update(extra)');
+  lines.push('                headers.update(cast(Dict[str, str], extra))');
   lines.push('            t = request_options.get("timeout")');
   lines.push('            if isinstance(t, (int, float)):');
   lines.push('                timeout = float(t)');
@@ -183,7 +183,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                if response.status_code == 204 or not response.content:');
   lines.push('                    return None');
   lines.push('');
-  lines.push('                data: Dict[str, Any] = response.json()');
+  lines.push('                data: Dict[str, Any] = cast(Dict[str, Any], response.json())');
   lines.push('                if model is not None:');
   lines.push('                    return model.from_dict(data)');
   lines.push('                return data');
@@ -204,7 +204,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // _request_page method
   lines.push('');
-  lines.push('    def _request_page(');
+  lines.push('    def request_page(');
   lines.push('        self,');
   lines.push('        method: str,');
   lines.push('        path: str,');
@@ -214,28 +214,33 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        request_options: Optional[RequestOptions] = None,');
   lines.push('    ) -> SyncPage[D]:');
   lines.push('        """Make an HTTP request that returns a paginated response."""');
-  lines.push('        raw = self._request(');
+  lines.push('        raw = self.request(');
   lines.push('            method=method,');
   lines.push('            path=path,');
   lines.push('            params=params,');
   lines.push('            request_options=request_options,');
   lines.push('        )');
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
+  lines.push('        raw_items: list[Any] = cast(list[Any], data.get("data") or [])');
   lines.push('        items: list[D] = [');
-  lines.push('            cast(D, model.from_dict(item))');
-  lines.push('            for item in (data.get("data") or [])');
+  lines.push('            cast(D, model.from_dict(cast(Dict[str, Any], item)))');
+  lines.push('            for item in raw_items');
   lines.push('        ]');
-  lines.push('        list_metadata: Dict[str, Any] = data.get("list_metadata", {})');
-  lines.push('        return SyncPage(');
-  lines.push('            data=items,');
-  lines.push('            list_metadata=list_metadata,');
-  lines.push('            _fetch_page=lambda **kw: self._request_page(');
+  lines.push('        list_metadata: Dict[str, Any] = cast(Dict[str, Any], data.get("list_metadata", {}))');
+  lines.push('');
+  lines.push('        def _fetch(*, after: Optional[str] = None) -> SyncPage[D]:');
+  lines.push('            return self.request_page(');
   lines.push('                method=method,');
   lines.push('                path=path,');
   lines.push('                model=model,');
-  lines.push('                params={**(params or {}), **kw},');
+  lines.push('                params={**(params or {}), "after": after},');
   lines.push('                request_options=request_options,');
-  lines.push('            ),');
+  lines.push('            )');
+  lines.push('');
+  lines.push('        return SyncPage(');
+  lines.push('            data=items,');
+  lines.push('            list_metadata=list_metadata,');
+  lines.push('            _fetch_page=_fetch,');
   lines.push('        )');
 
   // _raise_error method
@@ -289,8 +294,8 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const dirName = resolveServiceDir(resolvedName);
     const lines: string[] = [];
 
-    lines.push(`from ._resource import ${resolvedName}`);
-    lines.push('from .models import *  # noqa: F401,F403');
+    lines.push(`from ._resource import ${resolvedName} as ${resolvedName}`);
+    lines.push('from .models import *  # noqa: F401,F403  # pyright: ignore[reportUnusedImport]');
 
     files.push({
       path: `${ctx.namespace}/${dirName}/__init__.py`,
@@ -384,6 +389,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]`;

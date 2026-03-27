@@ -54,6 +54,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('from __future__ import annotations');
     lines.push('');
     lines.push('from dataclasses import dataclass');
+    lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
 
     // Import referenced models from their service's models package
@@ -202,13 +203,26 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   for (const [dirPath, names] of symbolsByDir) {
+    // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
     const imports = [...new Set(names)]
       .sort()
-      .map((name) => `from .${fileName(name)} import ${className(name)}`)
+      .map((name) => `from .${fileName(name)} import ${className(name)} as ${className(name)}`)
       .join('\n');
     files.push({
       path: `${dirPath}/__init__.py`,
       content: imports,
+    });
+
+    // Ensure the parent directory also has an __init__.py (for non-service dirs like common/)
+    const parentDir = dirPath.replace(/\/models$/, '');
+    const reExports = [...new Set(names)]
+      .sort()
+      .map((name) => `from .models import ${className(name)} as ${className(name)}`)
+      .join('\n');
+    files.push({
+      path: `${parentDir}/__init__.py`,
+      content: reExports,
+      skipIfExists: true,
     });
   }
 
@@ -246,14 +260,13 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, _mode
   switch (ref.kind) {
     case 'model': {
       if (isRequired) {
-        return `${className(ref.name)}.from_dict(${accessor})`;
+        return `${className(ref.name)}.from_dict(cast(Dict[str, Any], ${accessor}))`;
       }
-      // Use a temp var to narrow the type for mypy
-      return `${className(ref.name)}.from_dict(_v) if (_v := ${accessor}) is not None else None`;
+      return `${className(ref.name)}.from_dict(cast(Dict[str, Any], _v)) if (_v := ${accessor}) is not None else None`;
     }
     case 'array': {
       if (ref.items.kind === 'model') {
-        return `[${className(ref.items.name)}.from_dict(item) for item in (${accessor} or [])]`;
+        return `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${accessor} or [])]`;
       }
       return accessor;
     }
