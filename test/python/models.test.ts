@@ -177,6 +177,79 @@ describe('generateModels', () => {
     expect(orgFile!.content).toContain('OrganizationDomain.from_dict(cast(Dict[str, Any], item))');
   });
 
+  it('skips list wrapper and list metadata models', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'listOrganizations',
+          httpMethod: 'get',
+          path: '/organizations',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'OrganizationList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            dataPath: 'data',
+            itemType: { kind: 'model', name: 'Organization' },
+          },
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'OrganizationList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const filePaths = files.map((f) => f.path);
+
+    // Should generate Organization but NOT OrganizationList or ListMetadata
+    expect(filePaths.some((p) => p.includes('organization.py'))).toBe(true);
+    expect(filePaths.some((p) => p.includes('organization_list.py'))).toBe(false);
+    expect(filePaths.some((p) => p.includes('list_metadata.py'))).toBe(false);
+
+    // Barrel should not export the skipped models
+    const barrel = files.find((f) => f.path.endsWith('__init__.py') && f.path.includes('models/'));
+    expect(barrel).toBeDefined();
+    expect(barrel!.content).not.toContain('OrganizationList');
+    expect(barrel!.content).not.toContain('ListMetadata');
+  });
+
   it('handles map fields', () => {
     const service: Service = {
       name: 'Organizations',
