@@ -1,0 +1,403 @@
+import type { Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { planOperation, toPascalCase, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
+import { mapTypeRefUnquoted } from './type-map.js';
+import {
+  className,
+  fieldName,
+  resolveServiceDir,
+  resolveMethodName,
+  resolveClassName,
+  buildServiceNameMap,
+} from './naming.js';
+
+/**
+ * Resolve the resource class name for a service.
+ */
+export function resolveResourceClassName(service: Service, ctx: EmitterContext): string {
+  return resolveClassName(service, ctx);
+}
+
+/**
+ * Generate Python resource class files from IR Service definitions.
+ */
+export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
+  if (services.length === 0) return [];
+
+  const files: GeneratedFile[] = [];
+
+  for (const service of services) {
+    const resolvedName = resolveResourceClassName(service, ctx);
+    const dirName = resolveServiceDir(resolvedName);
+    const resourceClassName = resolvedName;
+
+    const lines: string[] = [];
+    lines.push('from __future__ import annotations');
+    lines.push('');
+    lines.push('from typing import Any, Dict, Optional');
+    lines.push('');
+
+    // Collect all model and enum imports needed
+    const modelImports = new Set<string>();
+    const enumImports = new Set<string>();
+
+    for (const op of service.operations) {
+      const plan = planOperation(op);
+      if (plan.responseModelName) modelImports.add(plan.responseModelName);
+      if (op.requestBody?.kind === 'model') modelImports.add(op.requestBody.name);
+      // Collect from params
+      for (const p of [...op.pathParams, ...op.queryParams]) {
+        for (const ref of collectEnumRefs(p.type)) {
+          enumImports.add(ref);
+        }
+      }
+      if (op.requestBody) {
+        for (const ref of collectModelRefs(op.requestBody)) {
+          modelImports.add(ref);
+        }
+        for (const ref of collectEnumRefs(op.requestBody)) {
+          enumImports.add(ref);
+        }
+      }
+      if (op.pagination?.itemType.kind === 'model') {
+        modelImports.add(op.pagination.itemType.name);
+      }
+    }
+
+    // Filter enum imports to only those that actually exist in the spec
+    const specEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
+    for (const name of enumImports) {
+      if (!specEnumNames.has(name)) enumImports.delete(name);
+    }
+
+    // Filter out list wrapper models
+    const actualModelImports = [...modelImports].filter((name) => {
+      const model = ctx.spec.models.find((m) => m.name === name);
+      if (!model) return true;
+      const dataField = model.fields.find((f) => f.name === 'data');
+      const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+      return !(dataField && hasListMetadata && dataField.type.kind === 'array');
+    });
+
+    // Split imports into same-service and cross-service
+    const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+    const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+    const resolveModelDir = (modelName: string) => {
+      const svc = modelToServiceMap.get(modelName);
+      return svc ? resolveServiceDir(serviceNameMap.get(svc) ?? svc) : 'common';
+    };
+
+    const localModels: string[] = [];
+    const crossServiceModels = new Map<string, string[]>(); // dir -> names
+
+    for (const name of actualModelImports.sort()) {
+      const modelDir = resolveModelDir(name);
+      if (modelDir === dirName) {
+        localModels.push(name);
+      } else {
+        if (!crossServiceModels.has(modelDir)) crossServiceModels.set(modelDir, []);
+        crossServiceModels.get(modelDir)!.push(name);
+      }
+    }
+
+    if (localModels.length > 0) {
+      lines.push(`from .models import ${localModels.join(', ')}`);
+    }
+    for (const [csDir, names] of [...crossServiceModels].sort()) {
+      lines.push(`from ${ctx.namespace}.${csDir}.models import ${names.join(', ')}`);
+    }
+
+    // Enum imports — same-service vs cross-service
+    const enumToServiceMap = new Map<string, string>();
+    for (const e of ctx.spec.enums) {
+      // Find which service uses this enum
+      for (const svc of ctx.spec.services) {
+        for (const op of svc.operations) {
+          const refs = new Set<string>();
+          const collect = (ref: any) => {
+            if (ref?.kind === 'enum') refs.add(ref.name);
+          };
+          if (op.requestBody) collect(op.requestBody);
+          collect(op.response);
+          for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+            collect(p.type);
+          }
+          if (refs.has(e.name) && !enumToServiceMap.has(e.name)) {
+            enumToServiceMap.set(e.name, svc.name);
+          }
+        }
+      }
+    }
+
+    const localEnums: string[] = [];
+    const crossServiceEnums = new Map<string, string[]>();
+    for (const name of [...enumImports].sort()) {
+      const enumSvc = enumToServiceMap.get(name);
+      const enumDir = enumSvc ? resolveServiceDir(serviceNameMap.get(enumSvc) ?? enumSvc) : 'common';
+      if (enumDir === dirName) {
+        localEnums.push(name);
+      } else {
+        if (!crossServiceEnums.has(enumDir)) crossServiceEnums.set(enumDir, []);
+        crossServiceEnums.get(enumDir)!.push(name);
+      }
+    }
+
+    if (localEnums.length > 0) {
+      lines.push(`from .models import ${localEnums.join(', ')}`);
+    }
+    for (const [csDir, names] of [...crossServiceEnums].sort()) {
+      lines.push(`from ${ctx.namespace}.${csDir}.models import ${names.join(', ')}`);
+    }
+
+    const hasPaginated = service.operations.some((op) => op.pagination);
+    if (hasPaginated) {
+      lines.push('from .._pagination import SyncPage');
+    }
+    lines.push('from .._types import RequestOptions');
+
+    lines.push('');
+    lines.push('');
+    lines.push(`class ${resourceClassName}:`);
+    if (service.description) {
+      lines.push(`    """${service.description}"""`);
+    }
+    lines.push('');
+    lines.push('    def __init__(self, client: "WorkOS") -> None:');
+    lines.push('        self._client = client');
+
+    for (const op of service.operations) {
+      const plan = planOperation(op);
+      const method = resolveMethodName(op, service, ctx);
+      const isDelete = plan.isDelete;
+      const isPaginated = plan.isPaginated;
+
+      lines.push('');
+      lines.push(`    def ${method}(`);
+      lines.push('        self,');
+
+      // Path params as positional args
+      for (const param of op.pathParams) {
+        const paramName = fieldName(param.name);
+        const paramType = mapTypeRefUnquoted(param.type);
+        lines.push(`        ${paramName}: ${paramType},`);
+      }
+
+      lines.push('        *,');
+
+      const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+
+      // Request body fields as keyword args (skip fields that clash with path params)
+      if (plan.hasBody && op.requestBody) {
+        const bodyModel = ctx.spec.models.find(
+          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
+        );
+        if (bodyModel) {
+          const reqFields = bodyModel.fields.filter((f) => f.required && !pathParamNames.has(fieldName(f.name)));
+          const optFields = bodyModel.fields.filter((f) => !f.required && !pathParamNames.has(fieldName(f.name)));
+          for (const f of reqFields) {
+            lines.push(`        ${fieldName(f.name)}: ${mapTypeRefUnquoted(f.type)},`);
+          }
+          for (const f of optFields) {
+            const innerType =
+              f.type.kind === 'nullable' ? mapTypeRefUnquoted(f.type.inner) : mapTypeRefUnquoted(f.type);
+            lines.push(`        ${fieldName(f.name)}: Optional[${innerType}] = None,`);
+          }
+        } else {
+          // Non-model body — use generic dict
+          lines.push('        body: Optional[Dict[str, Any]] = None,');
+        }
+      }
+
+      // Query params for non-paginated methods (skip if body already covers them)
+      if (plan.hasQueryParams && !isPaginated && !plan.hasBody) {
+        for (const param of op.queryParams) {
+          const paramName = fieldName(param.name);
+          if (pathParamNames.has(paramName)) continue;
+          const paramType = mapTypeRefUnquoted(param.type);
+          if (param.required) {
+            lines.push(`        ${paramName}: ${paramType},`);
+          } else {
+            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+          }
+        }
+      }
+
+      // Pagination params
+      if (isPaginated) {
+        lines.push('        limit: Optional[int] = None,');
+        lines.push('        before: Optional[str] = None,');
+        lines.push('        after: Optional[str] = None,');
+        lines.push('        order: Optional[str] = None,');
+        // Additional non-pagination query params
+        for (const param of op.queryParams) {
+          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+          const paramName = fieldName(param.name);
+          const paramType = mapTypeRefUnquoted(param.type);
+          if (param.required) {
+            lines.push(`        ${paramName}: ${paramType},`);
+          } else {
+            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+          }
+        }
+      }
+
+      // Idempotency key for idempotent POSTs
+      if (plan.isIdempotentPost) {
+        lines.push('        idempotency_key: Optional[str] = None,');
+      }
+
+      lines.push('        request_options: Optional[RequestOptions] = None,');
+
+      // Return type
+      let returnType: string;
+      if (isDelete) {
+        returnType = 'None';
+      } else if (isPaginated) {
+        const itemType = op.pagination!.itemType;
+        const itemTypeName = itemType.kind === 'model' ? className(itemType.name) : mapTypeRefUnquoted(itemType);
+        returnType = `SyncPage[${itemTypeName}]`;
+      } else if (plan.responseModelName) {
+        returnType = className(plan.responseModelName);
+      } else {
+        returnType = 'None';
+      }
+
+      lines.push(`    ) -> ${returnType}:`);
+
+      // Docstring
+      if (op.description) {
+        lines.push(`        """${op.description}`);
+      } else {
+        lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
+      }
+
+      // Args section
+      const allParams = op.pathParams.map((p) => ({ name: fieldName(p.name), desc: p.description }));
+      if (allParams.length > 0 || isPaginated) {
+        lines.push('');
+        lines.push('        Args:');
+        for (const p of allParams) {
+          lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
+        }
+        if (isPaginated) {
+          lines.push('            limit: Maximum number of records to return.');
+          lines.push('            before: Pagination cursor for previous page.');
+          lines.push('            after: Pagination cursor for next page.');
+          lines.push('            order: Sort order.');
+        }
+        lines.push('            request_options: Per-request options (extra headers, timeout).');
+      }
+
+      if (returnType !== 'None') {
+        lines.push('');
+        lines.push('        Returns:');
+        lines.push(`            ${returnType}`);
+      }
+
+      lines.push('        """');
+
+      // Method body — build path
+      const pathStr = buildPathString(op);
+      const httpMethod = op.httpMethod;
+
+      if (isPaginated) {
+        const itemType = op.pagination!.itemType;
+        const itemTypeClass = itemType.kind === 'model' ? className(itemType.name) : 'dict';
+        // Build query params dict
+        lines.push('        params = {k: v for k, v in {');
+        lines.push('            "limit": limit,');
+        lines.push('            "before": before,');
+        lines.push('            "after": after,');
+        lines.push('            "order": order,');
+        for (const param of op.queryParams) {
+          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+        }
+        lines.push('        }.items() if v is not None}');
+        lines.push(`        return self._client._request_page(`);
+        lines.push(`            method="${httpMethod}",`);
+        lines.push(`            path=${pathStr},`);
+        lines.push(`            model=${itemTypeClass},`);
+        lines.push('            params=params,');
+        lines.push('            request_options=request_options,');
+        lines.push('        )');
+      } else if (isDelete) {
+        lines.push(`        self._client._request(`);
+        lines.push(`            method="${httpMethod}",`);
+        lines.push(`            path=${pathStr},`);
+        lines.push('            request_options=request_options,');
+        lines.push('        )');
+      } else if (plan.hasBody && op.requestBody) {
+        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+        // Build body dict
+        const bodyModel = ctx.spec.models.find(
+          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
+        );
+        if (bodyModel) {
+          lines.push('        body = {k: v for k, v in {');
+          for (const f of bodyModel.fields) {
+            lines.push(`            "${f.name}": ${fieldName(f.name)},`);
+          }
+          lines.push('        }.items() if v is not None}');
+        }
+        lines.push(`        return self._client._request(`);
+        lines.push(`            method="${httpMethod}",`);
+        lines.push(`            path=${pathStr},`);
+        lines.push('            body=body,');
+        if (responseModel !== 'None') {
+          lines.push(`            model=${responseModel},`);
+        }
+        if (plan.isIdempotentPost) {
+          lines.push('            idempotency_key=idempotency_key,');
+        }
+        lines.push('            request_options=request_options,');
+        lines.push('        )');
+      } else {
+        // GET or similar with query params
+        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+        if (plan.hasQueryParams) {
+          lines.push('        params = {k: v for k, v in {');
+          for (const param of op.queryParams) {
+            lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+          }
+          lines.push('        }.items() if v is not None}');
+        }
+        lines.push(`        return self._client._request(`);
+        lines.push(`            method="${httpMethod}",`);
+        lines.push(`            path=${pathStr},`);
+        if (plan.hasQueryParams) {
+          lines.push('            params=params,');
+        }
+        if (responseModel !== 'None') {
+          lines.push(`            model=${responseModel},`);
+        }
+        lines.push('            request_options=request_options,');
+        lines.push('        )');
+      }
+    }
+
+    files.push({
+      path: `${ctx.namespace}/${dirName}/_resource.py`,
+      content: lines.join('\n'),
+    });
+  }
+
+  return files;
+}
+
+/**
+ * Build a Python f-string path expression from an operation path.
+ * E.g., "/organizations/{id}" -> f"organizations/{id}"
+ */
+function buildPathString(op: Operation): string {
+  // Strip leading slash and convert {param} to Python f-string interpolation
+  const path = op.path.replace(/^\//, '');
+  if (op.pathParams.length === 0) {
+    return `"${path}"`;
+  }
+  // Convert {paramName} to {fieldName(paramName)}
+  let fPath = path;
+  for (const param of op.pathParams) {
+    fPath = fPath.replace(`{${param.name}}`, `{${fieldName(param.name)}}`);
+  }
+  return `f"${fPath}"`;
+}

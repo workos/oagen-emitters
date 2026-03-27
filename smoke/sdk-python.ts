@@ -284,7 +284,10 @@ function buildBatchedPythonScript(
   calls: PlannedCall[],
   spec: any,
 ): string {
-  const srcPath = resolve(sdkPath, 'src');
+  // Use src/ subdirectory if it exists, otherwise use the SDK root directly.
+  // Generated SDKs use a flat layout (workos/ at root), while some hand-written
+  // SDKs nest under src/.
+  const srcPath = existsSync(resolve(sdkPath, 'src')) ? resolve(sdkPath, 'src') : resolve(sdkPath);
   const lines: string[] = [];
 
   // Preamble -- loaded once
@@ -504,7 +507,7 @@ async function main(): Promise<void> {
         const child = spawn(python3Path, [scriptPath], {
           env: {
             ...process.env,
-            PYTHONPATH: resolve(sdkPath, 'src'),
+            PYTHONPATH: existsSync(resolve(sdkPath, 'src')) ? resolve(sdkPath, 'src') : resolve(sdkPath),
             PYTHONDONTWRITEBYTECODE: '1',
           },
           stdio: ['pipe', 'pipe', 'pipe'],
