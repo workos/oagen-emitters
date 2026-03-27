@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/workos/oagen-emitters/compare/v0.2.0...v0.2.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* enhance Node emitter ([#8](https://github.com/workos/oagen-emitters/issues/8)) ([e409025](https://github.com/workos/oagen-emitters/commit/e4090259784790aed0d4e9c1d98bb4bab3b6ce67))
+
 ## [0.2.0](https://github.com/workos/oagen-emitters/compare/v0.1.1...v0.2.0) (2026-03-25)
 
 
