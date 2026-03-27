@@ -22,7 +22,7 @@ describe('generateEnums', () => {
     expect(generateEnums([], ctx)).toEqual([]);
   });
 
-  it('generates StrEnum class', () => {
+  it('generates Union[Literal[...], str] type alias', () => {
     const enums: Enum[] = [
       {
         name: 'Status',
@@ -56,11 +56,8 @@ describe('generateEnums', () => {
       spec: { ...emptySpec, services: [service] },
     });
     expect(files.length).toBe(1);
-    expect(files[0].content).toContain('from enum import Enum');
-    expect(files[0].content).toContain('class Status(str, Enum):');
-    expect(files[0].content).toContain('    ACTIVE = "active"');
-    expect(files[0].content).toContain('    INACTIVE = "inactive"');
-    expect(files[0].content).toContain('    PENDING = "pending"');
+    expect(files[0].content).toContain('from typing_extensions import Literal, TypeAlias');
+    expect(files[0].content).toContain('Status: TypeAlias = Union[Literal["active", "inactive", "pending"], str]');
   });
 
   it('places enum in service directory when referenced', () => {
@@ -105,7 +102,24 @@ describe('generateEnums', () => {
     expect(files[0].path).toBe('workos/organizations/models/org_status.py');
   });
 
-  it('handles enum with description', () => {
+  it('deduplicates values that produce the same string', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Action',
+        values: [
+          { name: 'SIGN_UP', value: 'sign-up' },
+          { name: 'SIGN_UP_2', value: 'sign_up' },
+          { name: 'SIGN_UP_3', value: 'sign up' },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    expect(files.length).toBe(1);
+    expect(files[0].content).toContain('Literal["sign-up", "sign_up", "sign up"]');
+  });
+
+  it('handles enum with descriptions', () => {
     const enums: Enum[] = [
       {
         name: 'Role',
@@ -118,7 +132,7 @@ describe('generateEnums', () => {
 
     const files = generateEnums(enums, ctx);
     expect(files.length).toBe(1);
-    expect(files[0].content).toContain('ADMIN = "admin"');
-    expect(files[0].content).toContain('"""Administrator role"""');
+    expect(files[0].content).toContain('Union[Literal["admin", "member"], str]');
+    expect(files[0].content).toContain('Administrator role');
   });
 });

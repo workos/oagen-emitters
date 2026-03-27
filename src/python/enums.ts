@@ -1,9 +1,10 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
+import { walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 
 /**
- * Generate Python StrEnum files from IR Enum definitions.
+ * Generate Python Literal type alias files from IR Enum definitions.
+ * Uses Union[Literal[...], str] for forward compatibility with unknown API values.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
@@ -19,31 +20,37 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const dirName = resolveDir(service);
     const lines: string[] = [];
 
-    lines.push('from enum import Enum');
+    lines.push('from __future__ import annotations');
     lines.push('');
+    lines.push('from typing import Union');
+    lines.push('from typing_extensions import Literal, TypeAlias');
     lines.push('');
-    lines.push(`class ${enumDef.name}(str, Enum):`);
 
     if (enumDef.values.length === 0) {
-      lines.push('    pass');
+      lines.push(`${enumDef.name}: TypeAlias = str`);
     } else {
-      const usedNames = new Set<string>();
+      // Deduplicate values that produce the same string
+      const seenValues = new Set<string>();
+      const uniqueValues: typeof enumDef.values = [];
       for (const value of enumDef.values) {
-        let memberName = toUpperSnakeCase(String(value.value));
-        // Deduplicate member names by appending a numeric suffix
-        if (usedNames.has(memberName)) {
-          let suffix = 2;
-          while (usedNames.has(`${memberName}_${suffix}`)) suffix++;
-          memberName = `${memberName}_${suffix}`;
+        const valueStr = String(value.value);
+        if (!seenValues.has(valueStr)) {
+          seenValues.add(valueStr);
+          uniqueValues.push(value);
         }
-        usedNames.add(memberName);
-        const valueStr = typeof value.value === 'string' ? `"${value.value}"` : String(value.value);
-        if (value.description) {
-          lines.push(`    ${memberName} = ${valueStr}`);
-          lines.push(`    """${value.description}"""`);
-        } else {
-          lines.push(`    ${memberName} = ${valueStr}`);
+      }
+
+      const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
+      lines.push(`${enumDef.name}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
+
+      // Add docstring with value descriptions if any have them
+      const described = uniqueValues.filter((v) => v.description);
+      if (described.length > 0) {
+        lines.push(`"""${enumDef.name} values:`);
+        for (const v of described) {
+          lines.push(`- \`\`${v.value}\`\`: ${v.description}`);
         }
+        lines.push('"""');
       }
     }
 
