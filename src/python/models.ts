@@ -194,6 +194,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   // Also include enums in the barrels
+  const enumNamesSet = new Set(ctx.spec.enums.map((e) => e.name));
   for (const enumDef of ctx.spec.enums) {
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
@@ -204,10 +205,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   for (const [dirPath, names] of symbolsByDir) {
     // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
-    const imports = [...new Set(names)]
-      .sort()
-      .map((name) => `from .${fileName(name)} import ${className(name)} as ${className(name)}`)
-      .join('\n');
+    const uniqueNames = [...new Set(names)].sort();
+    const importLines: string[] = [];
+    for (const name of uniqueNames) {
+      importLines.push(`from .${fileName(name)} import ${className(name)} as ${className(name)}`);
+      // Enum types also export a companion Values class
+      if (enumNamesSet.has(name)) {
+        importLines.push(`from .${fileName(name)} import ${className(name)}Values as ${className(name)}Values`);
+      }
+    }
+    const imports = importLines.join('\n');
     files.push({
       path: `${dirPath}/__init__.py`,
       content: imports,
@@ -256,6 +263,7 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
   }
 }
 
+// oxlint-disable-next-line only-used-in-recursion -- modelMap will be used for union type handling
 function deserializeField(ref: any, accessor: string, isRequired: boolean, _modelMap: Map<string, Model>): string {
   switch (ref.kind) {
     case 'model': {

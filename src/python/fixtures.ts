@@ -1,6 +1,6 @@
-import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
-import { toSnakeCase, assignModelsToServices } from '@workos/oagen';
-import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
+import type { Model, TypeRef, Enum } from '@workos/oagen';
+import { toSnakeCase } from '@workos/oagen';
+import { fileName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 
 /**
@@ -25,20 +25,13 @@ export const ID_PREFIXES: Record<string, string> = {
 /**
  * Generate JSON fixture files for test data.
  */
-export function generateFixtures(
-  spec: {
-    models: Model[];
-    enums: Enum[];
-    services: any[];
-  },
-  ctx?: EmitterContext,
-): { path: string; content: string }[] {
+export function generateFixtures(spec: {
+  models: Model[];
+  enums: Enum[];
+  services: any[];
+}): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = ctx ? buildServiceNameMap(ctx.spec.services, ctx) : new Map<string, string>();
-  const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];

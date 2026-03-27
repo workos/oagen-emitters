@@ -1,6 +1,6 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
-import { className, fileName, fieldName, resolveServiceDir, resolveMethodName, buildServiceNameMap } from './naming.js';
+import { className, fileName, fieldName, resolveServiceDir, resolveMethodName } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { generateFixtures } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
@@ -12,7 +12,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec, ctx);
+  const fixtures = generateFixtures(spec);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,

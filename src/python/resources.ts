@@ -85,7 +85,16 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         }
       }
       if (op.pagination?.itemType.kind === 'model') {
-        modelImports.add(op.pagination.itemType.name);
+        let paginationItemName = op.pagination.itemType.name;
+        // Unwrap list wrapper models to their inner item type for imports
+        if (listWrapperNames.has(paginationItemName)) {
+          const wrapperModel = ctx.spec.models.find((m) => m.name === paginationItemName);
+          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
+          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            paginationItemName = dataField.type.items.name;
+          }
+        }
+        modelImports.add(paginationItemName);
       }
     }
 
@@ -279,7 +288,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (isDelete) {
         returnType = 'None';
       } else if (isPaginated) {
-        const itemType = op.pagination!.itemType;
+        let itemType = op.pagination!.itemType;
+        // Unwrap list wrapper models to their inner item type
+        if (itemType.kind === 'model' && listWrapperNames.has(itemType.name)) {
+          const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
+          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
+          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            itemType = dataField.type.items;
+          }
+        }
         const itemTypeName =
           itemType.kind === 'model' ? className(itemType.name) : mapTypeRefUnquoted(itemType, specEnumNames);
         returnType = `SyncPage[${itemTypeName}]`;
@@ -328,7 +345,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       const httpMethod = op.httpMethod;
 
       if (isPaginated) {
-        const itemType = op.pagination!.itemType;
+        let itemType = op.pagination!.itemType;
+        // Unwrap list wrapper models to their inner item type
+        if (itemType.kind === 'model' && listWrapperNames.has(itemType.name)) {
+          const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
+          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
+          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            itemType = dataField.type.items;
+          }
+        }
         const itemTypeClass = itemType.kind === 'model' ? className(itemType.name) : 'dict';
         // Build query params dict
         lines.push('        params = {k: v for k, v in {');

@@ -144,6 +144,74 @@ describe('generateResources', () => {
     expect(content).toContain('model=Organization');
   });
 
+  it('unwraps list wrapper models in paginated methods', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'OrganizationList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ListMetadata' },
+            required: true,
+          },
+          {
+            name: 'object',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'listOrganizations',
+            httpMethod: 'get',
+            path: '/organizations',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'OrganizationList' },
+            },
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Should use item model, not list wrapper
+    expect(content).toContain(') -> SyncPage[Organization]:');
+    expect(content).toContain('model=Organization');
+    expect(content).not.toContain('model=OrganizationList');
+    expect(content).not.toContain('SyncPage[OrganizationList]');
+  });
+
   it('generates idempotent POST with idempotency_key', () => {
     const models: Model[] = [
       {
