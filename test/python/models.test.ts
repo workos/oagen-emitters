@@ -250,6 +250,63 @@ describe('generateModels', () => {
     expect(barrel!.content).not.toContain('ListMetadata');
   });
 
+  it('generates type alias for structurally identical models', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'OrganizationDomain' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'OrganizationDomain',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'OrganizationDomainStandAlone',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // Canonical model should have a full dataclass
+    const canonicalFile = files.find(
+      (f) => f.path.includes('organization_domain.py') && !f.path.includes('stand_alone'),
+    )!;
+    expect(canonicalFile).toBeDefined();
+    expect(canonicalFile.content).toContain('@dataclass');
+    expect(canonicalFile.content).toContain('class OrganizationDomain:');
+
+    // Alias model should be a type alias
+    const aliasFile = files.find((f) => f.path.includes('organization_domain_stand_alone.py'))!;
+    expect(aliasFile).toBeDefined();
+    expect(aliasFile.content).toContain('OrganizationDomainStandAlone = OrganizationDomain');
+    expect(aliasFile.content).not.toContain('@dataclass');
+  });
+
   it('handles map fields', () => {
     const service: Service = {
       name: 'Organizations',

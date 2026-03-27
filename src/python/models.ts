@@ -19,6 +19,28 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const modelMap = new Map(models.map((m) => [m.name, m]));
   const files: GeneratedFile[] = [];
 
+  // Build structural hashes for deduplication
+  const modelHashMap = new Map<string, string>(); // model name -> hash
+  const hashGroups = new Map<string, string[]>(); // hash -> model names
+  for (const model of models) {
+    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    const hash = structuralHash(model);
+    modelHashMap.set(model.name, hash);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(model.name);
+  }
+
+  // For each group of identical models, pick canonical (alphabetically first)
+  const aliasOf = new Map<string, string>(); // alias name -> canonical name
+  for (const [, names] of hashGroups) {
+    if (names.length <= 1) continue;
+    const sorted = [...names].sort();
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i], canonical);
+    }
+  }
+
   for (const model of models) {
     // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
     if (isListWrapperModel(model)) continue;
@@ -28,6 +50,27 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const modelClassName = className(model.name);
+
+    // If this model is an alias for a canonical model, generate a type alias file
+    const canonicalName = aliasOf.get(model.name);
+    if (canonicalName) {
+      const canonicalService = modelToService.get(canonicalName);
+      const canonicalDir = resolveDir(canonicalService);
+      const canonicalClassName = className(canonicalName);
+      const lines: string[] = [];
+      if (canonicalDir === dirName) {
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);
+      } else {
+        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalClassName}`);
+      }
+      lines.push('');
+      lines.push(`${modelClassName} = ${canonicalClassName}`);
+      files.push({
+        path: `${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        content: lines.join('\n'),
+      });
+      continue;
+    }
 
     // Deduplicate fields that map to the same snake_case name
     const seenFieldNames = new Set<string>();
@@ -299,6 +342,40 @@ function serializeField(ref: any, accessor: string): string {
     }
     default:
       return accessor;
+  }
+}
+
+/**
+ * Build a structural hash for a model based on sorted field names, types, and required flags.
+ * Two models with the same hash are structurally identical (same fields, types, required).
+ */
+function structuralHash(model: Model): string {
+  const fields = [...model.fields]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((f) => `${f.name}:${typeHash(f.type)}:${f.required}`);
+  return fields.join('|');
+}
+
+function typeHash(ref: any): string {
+  switch (ref.kind) {
+    case 'primitive':
+      return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
+    case 'model':
+      return `m:${ref.name}`;
+    case 'enum':
+      return `e:${ref.name}`;
+    case 'array':
+      return `a:${typeHash(ref.items)}`;
+    case 'nullable':
+      return `n:${typeHash(ref.inner)}`;
+    case 'union':
+      return `u:${ref.variants.map(typeHash).sort().join(',')}`;
+    case 'map':
+      return `d:${typeHash(ref.valueType)}`;
+    case 'literal':
+      return `l:${String(ref.value)}`;
+    default:
+      return 'unknown';
   }
 }
 
