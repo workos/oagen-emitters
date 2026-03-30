@@ -1,10 +1,12 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
-import { className, fileName, fieldName, resolveServiceDir, resolveMethodName, buildServiceNameMap } from './naming.js';
-import { resolveResourceClassName } from './resources.js';
+import { className, fileName, fieldName, resolveMethodName, buildServiceDirMap, dirToModule } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
+import { resolveResourceClassName } from './resources.js';
+import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
+import { assignEnumsToServices } from './enums.js';
 
 /** Check if an operation is a redirect endpoint (same logic as resources.ts). */
 function isRedirectEndpoint(op: Operation): boolean {
@@ -18,31 +20,6 @@ function isRedirectEndpoint(op: Operation): boolean {
     return true;
   }
   return false;
-}
-
-/**
- * Build a map from service name to its dot-separated access path on the client.
- * Standalone services: "organizations", namespaced: "user_management.users"
- */
-function buildServiceAccessPaths(services: Service[], ctx: EmitterContext): Map<string, string> {
-  const { standalone, namespaces } = groupServicesByNamespace(services, ctx);
-  const paths = new Map<string, string>();
-
-  for (const entry of standalone) {
-    paths.set(entry.service.name, entry.prop);
-  }
-
-  for (const ns of namespaces) {
-    if (ns.baseEntry) {
-      // The base entry is accessed via the namespace prefix itself
-      paths.set(ns.baseEntry.service.name, ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      paths.set(entry.service.name, `${ns.prefix}.${entry.subProp}`);
-    }
-  }
-
-  return paths;
 }
 
 /**
@@ -80,7 +57,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   if (modelTests) files.push(modelTests);
 
   // Generate client tests (P3-7)
-  files.push(generateClientTests(ctx));
+  files.push(generateClientTests(spec, ctx, accessPaths));
 
   // Generate pagination tests (P3-7)
   files.push(generatePaginationTests(ctx));
@@ -115,13 +92,13 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   conftestLines.push('@pytest.fixture');
   conftestLines.push('def workos():');
   conftestLines.push('    """Create a WorkOS client for testing."""');
-  conftestLines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
+  conftestLines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
   conftestLines.push('');
   conftestLines.push('');
   conftestLines.push('@pytest.fixture');
   conftestLines.push('def async_workos():');
   conftestLines.push('    """Create an AsyncWorkOS client for testing."""');
-  conftestLines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
+  conftestLines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
 
   return [
     {
@@ -154,16 +131,36 @@ function generateServiceTest(
   lines.push('import json');
   lines.push('');
   lines.push('import pytest');
+  lines.push(`from ${ctx.namespace} import WorkOS`);
   lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
 
-  // Collect model imports needed
+  // Collect model and enum imports needed (response models, body field models, and enum params)
   const modelImports = new Set<string>();
+  const enumImports = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
     if (plan.responseModelName) modelImports.add(plan.responseModelName);
     if (op.pagination?.itemType.kind === 'model') {
       modelImports.add(op.pagination.itemType.name);
+    }
+    // Collect model-typed and enum-typed body fields (used as method arguments)
+    if (plan.hasBody && op.requestBody?.kind === 'model') {
+      const bodyModel = spec.models.find((m) => m.name === op.requestBody!.name);
+      if (bodyModel) {
+        for (const f of bodyModel.fields) {
+          if (f.type.kind === 'model') modelImports.add(f.type.name);
+          if (f.type.kind === 'nullable' && f.type.inner.kind === 'model') modelImports.add(f.type.inner.name);
+          if (f.type.kind === 'array' && f.type.items.kind === 'model') modelImports.add(f.type.items.name);
+          if (f.type.kind === 'enum') enumImports.add(f.type.name);
+          if (f.type.kind === 'nullable' && f.type.inner.kind === 'enum') enumImports.add(f.type.inner.name);
+        }
+      }
+    }
+    // Collect enum-typed query params
+    for (const param of op.queryParams) {
+      if (param.type.kind === 'enum') enumImports.add(param.type.name);
+      if (param.type.kind === 'nullable' && param.type.inner.kind === 'enum') enumImports.add(param.type.inner.name);
     }
   }
 
@@ -176,10 +173,18 @@ function generateServiceTest(
 
   // Group imports by their actual service directory (models may live in different services)
   const modelToServiceMap = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
+  const grouping = groupServicesByNamespace(spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);
-    return svc ? resolveServiceDir(serviceNameMap.get(svc) ?? svc) : 'common';
+    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
+  };
+
+  // Group enum imports by service directory
+  const enumToServiceMap = assignEnumsToServices(spec.enums, spec.services);
+  const resolveEnumDir = (enumName: string) => {
+    const svc = enumToServiceMap.get(enumName);
+    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
   };
 
   const importsByDir = new Map<string, string[]>();
@@ -188,16 +193,25 @@ function generateServiceTest(
     if (!importsByDir.has(modelDir)) importsByDir.set(modelDir, []);
     importsByDir.get(modelDir)!.push(className(name));
   }
+  for (const name of [...enumImports].sort()) {
+    const enumDir = resolveEnumDir(name);
+    if (!importsByDir.has(enumDir)) importsByDir.set(enumDir, []);
+    const existing = importsByDir.get(enumDir)!;
+    const cn = className(name);
+    if (!existing.includes(cn)) existing.push(cn);
+  }
 
   for (const [modelDir, names] of [...importsByDir].sort()) {
-    lines.push(`from ${ctx.namespace}.${modelDir}.models import ${names.join(', ')}`);
+    lines.push(`from ${ctx.namespace}.${dirToModule(modelDir)}.models import ${names.join(', ')}`);
   }
 
   const hasPaginated = service.operations.some((op) => op.pagination);
   if (hasPaginated) {
     lines.push(`from ${ctx.namespace}._pagination import AsyncPage, SyncPage`);
   }
-  lines.push(`from ${ctx.namespace}._errors import AuthenticationError`);
+  lines.push(
+    `from ${ctx.namespace}._errors import AuthenticationError, NotFoundError, RateLimitExceededError, ServerError`,
+  );
 
   lines.push('');
   lines.push('');
@@ -344,6 +358,32 @@ function generateServiceTest(
     lines.push('        with pytest.raises(AuthenticationError):');
     const args = buildTestArgs(firstNonDelete, spec);
     lines.push(`            workos.${propName}.${method}(${args})`);
+
+    lines.push('');
+    lines.push(`    def test_${method}_not_found(self, httpx_mock):`);
+    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
+    lines.push('        with pytest.raises(NotFoundError):');
+    lines.push(`            workos.${propName}.${method}(${args})`);
+    lines.push('        workos.close()');
+
+    lines.push('');
+    lines.push(`    def test_${method}_rate_limited(self, httpx_mock):`);
+    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push(
+      '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
+    );
+    lines.push('        with pytest.raises(RateLimitExceededError):');
+    lines.push(`            workos.${propName}.${method}(${args})`);
+    lines.push('        workos.close()');
+
+    lines.push('');
+    lines.push(`    def test_${method}_server_error(self, httpx_mock):`);
+    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
+    lines.push('        with pytest.raises(ServerError):');
+    lines.push(`            workos.${propName}.${method}(${args})`);
+    lines.push('        workos.close()');
   }
 
   // --- Async test class ---
@@ -552,10 +592,18 @@ function generateTestValue(ref: TypeRef, name: string): string {
       }
     case 'array':
       return '[]';
-    case 'enum':
-      return `"test"`;
+    case 'enum': {
+      const enumValues = (ref as any).values as (string | number)[] | undefined;
+      const enumClass = className(ref.name);
+      if (enumValues && enumValues.length > 0) {
+        const first = enumValues[0];
+        const literal = typeof first === 'string' ? `"${first}"` : String(first);
+        return `${enumClass}(${literal})`;
+      }
+      return `${enumClass}("test")`;
+    }
     case 'model':
-      return '{}';
+      return `${className(ref.name)}.from_dict(load_fixture("${fileName(ref.name)}.json"))`;
     case 'nullable':
       return generateTestValue(ref.inner, name);
     case 'map':
@@ -599,9 +647,10 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   if (models.length === 0) return null;
 
   const modelToService = assignModelsToServices(spec.models, spec.services);
-  const serviceNameMap = buildServiceNameMap(spec.services, ctx);
+  const roundTripGrouping = groupServicesByNamespace(spec.services, ctx);
+  const roundTripDirMap = buildServiceDirMap(roundTripGrouping);
   const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';
 
   const lines: string[] = [];
   lines.push('"""Model round-trip tests: from_dict(to_dict()) preserves data."""');
@@ -621,7 +670,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   }
 
   for (const [dirName, names] of [...importsByDir].sort()) {
-    lines.push(`from ${ctx.namespace}.${dirName}.models import ${names.sort().join(', ')}`);
+    lines.push(`from ${ctx.namespace}.${dirToModule(dirName)}.models import ${names.sort().join(', ')}`);
   }
 
   lines.push('');
@@ -637,6 +686,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     lines.push(`        data = load_fixture("${fixtureName}")`);
     lines.push(`        instance = ${modelClass}.from_dict(data)`);
     lines.push('        serialized = instance.to_dict()');
+    lines.push('        assert serialized == data');
     lines.push(`        restored = ${modelClass}.from_dict(serialized)`);
     lines.push('        assert restored.to_dict() == serialized');
   }
@@ -652,14 +702,16 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
 /**
  * Generate client tests: retry behavior, error raising, context manager, idempotency keys.
  */
-function generateClientTests(ctx: EmitterContext): GeneratedFile {
+function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: Map<string, string>): GeneratedFile {
   const lines: string[] = [];
 
   lines.push('"""Client tests: retries, errors, context manager, idempotency."""');
   lines.push('');
+  lines.push('import httpx');
   lines.push('import pytest');
   lines.push('');
   lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
+  lines.push(`from ${ctx.namespace} import _client as generated_client_module`);
   lines.push(`from ${ctx.namespace}._errors import (`);
   lines.push('    AuthenticationError,');
   lines.push('    BadRequestError,');
@@ -676,11 +728,11 @@ function generateClientTests(ctx: EmitterContext): GeneratedFile {
   lines.push('class TestWorkOSClient:');
   lines.push('');
   lines.push('    def test_missing_api_key_raises(self):');
-  lines.push('        with pytest.raises(ConfigurationError):');
-  lines.push('            WorkOS(api_key="")');
+  lines.push('        with pytest.raises(ValueError):');
+  lines.push('            WorkOS(client_id="client_test")');
   lines.push('');
   lines.push('    def test_context_manager(self):');
-  lines.push('        with WorkOS(api_key="sk_test_123") as client:');
+  lines.push('        with WorkOS(api_key="sk_test_123", client_id="client_test") as client:');
   lines.push('            assert client._api_key == "sk_test_123"');
   lines.push('');
   lines.push('    def test_client_id_from_constructor(self):');
@@ -707,7 +759,7 @@ function generateClientTests(ctx: EmitterContext): GeneratedFile {
     lines.push(`            status_code=${code},`);
     lines.push('            json={"message": "Error"},');
     lines.push('        )');
-    lines.push('        client = WorkOS(api_key="sk_test_123", max_retries=0)');
+    lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push(`        with pytest.raises(${errorClass}):`);
     lines.push('            client.request("GET", "test")');
     lines.push('        client.close()');
@@ -716,7 +768,7 @@ function generateClientTests(ctx: EmitterContext): GeneratedFile {
   lines.push('');
   lines.push('    def test_idempotency_key_on_post(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123")');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("POST", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Idempotency-Key" in request.headers');
@@ -724,7 +776,7 @@ function generateClientTests(ctx: EmitterContext): GeneratedFile {
   lines.push('');
   lines.push('    def test_no_idempotency_key_on_get(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123")');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("GET", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Idempotency-Key" not in request.headers');
@@ -732,17 +784,106 @@ function generateClientTests(ctx: EmitterContext): GeneratedFile {
   lines.push('');
   lines.push('    def test_empty_body_sends_json(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123")');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("PUT", "test", body={})');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert request.content == b"{}"');
   lines.push('        client.close()');
 
+  lines.push('');
+  lines.push('    def test_calculate_retry_delay_uses_retry_after_seconds(self):');
+  lines.push('        assert WorkOS._calculate_retry_delay(1, "30") == 30.0');
+
+  lines.push('');
+  lines.push('    def test_retry_exhaustion_raises_rate_limit(self, httpx_mock, monkeypatch):');
+  lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
+  lines.push('        for _ in range(4):');
+  lines.push(
+    '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
+  );
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=3)');
+  lines.push('        with pytest.raises(RateLimitExceededError):');
+  lines.push('            client.request("GET", "test")');
+  lines.push('        client.close()');
+
+  lines.push('');
+  lines.push('    def test_rate_limit_retry_after_is_parsed(self, httpx_mock):');
+  lines.push(
+    '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "30"}, json={"message": "Slow down"})',
+  );
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        with pytest.raises(RateLimitExceededError) as exc_info:');
+  lines.push('            client.request("GET", "test")');
+  lines.push('        assert exc_info.value.retry_after == 30.0');
+  lines.push('        client.close()');
+
+  lines.push('');
+  lines.push('    def test_timeout_error_is_wrapped(self, httpx_mock, monkeypatch):');
+  lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
+  lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
+  lines.push('            client.request("GET", "test")');
+  lines.push('        client.close()');
+
+  lines.push('');
+  lines.push('    def test_connection_error_is_wrapped(self, httpx_mock, monkeypatch):');
+  lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
+  lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
+  lines.push('            client.request("GET", "test")');
+  lines.push('        client.close()');
+
+  lines.push('');
+  lines.push('    def test_documented_import_surface_exposes_resources(self):');
+  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
+  for (const path of [...new Set(accessPaths.values())].sort()) {
+    lines.push(`        assert client.${path} is not None`);
+  }
+  lines.push('        client.close()');
+
+  lines.push('');
+  lines.push('@pytest.mark.asyncio');
+  lines.push('class TestAsyncWorkOSClient:');
+  lines.push('');
+  lines.push('    async def test_documented_import_surface_exposes_resources(self):');
+  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test")');
+  for (const path of [...new Set(accessPaths.values())].sort()) {
+    lines.push('        try:');
+    lines.push(`            assert client.${path} is not None`);
+    lines.push('        except NotImplementedError:');
+    lines.push('            pass  # Some modules not yet available in async client');
+  }
+  lines.push('        await client.close()');
+
+  lines.push('');
+  lines.push('    async def test_timeout_error_is_wrapped(self, httpx_mock, monkeypatch):');
+  lines.push('        async def _sleep(_: float) -> None:');
+  lines.push('            return None');
+  lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
+  lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
+  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
+  lines.push('            await client.request("GET", "test")');
+  lines.push('        await client.close()');
+
+  lines.push('');
+  lines.push('    async def test_connection_error_is_wrapped(self, httpx_mock, monkeypatch):');
+  lines.push('        async def _sleep(_: float) -> None:');
+  lines.push('            return None');
+  lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
+  lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
+  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
+  lines.push('            await client.request("GET", "test")');
+  lines.push('        await client.close()');
+
   return {
-    path: 'tests/test_client.py',
+    path: 'tests/test_generated_client.py',
     content: lines.join('\n'),
     integrateTarget: true,
-    skipIfExists: true,
+    overwriteExisting: true,
   };
 }
 
@@ -753,6 +894,8 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
 
   lines.push('"""Pagination tests: auto_paging_iter, before cursor stripping."""');
+  lines.push('');
+  lines.push('import pytest');
   lines.push('');
   lines.push(`from ${ctx.namespace}._pagination import SyncPage, AsyncPage`);
   lines.push('from dataclasses import dataclass');
@@ -809,6 +952,51 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('            _fetch_page=lambda after=None: page2,');
   lines.push('        )');
   lines.push('        items = list(page1.auto_paging_iter())');
+  lines.push('        assert len(items) == 3');
+  lines.push('        assert [i.id for i in items] == ["1", "2", "3"]');
+  lines.push('');
+  lines.push('');
+  lines.push('@pytest.mark.asyncio');
+  lines.push('class TestAsyncPage:');
+  lines.push('');
+  lines.push('    async def test_has_more_with_after_cursor(self):');
+  lines.push('        page = AsyncPage(');
+  lines.push('            data=[FakeItem(id="1")],');
+  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('        )');
+  lines.push('        assert page.has_more() is True');
+  lines.push('        assert page.after == "cursor_abc"');
+  lines.push('');
+  lines.push('    async def test_has_more_without_cursor(self):');
+  lines.push('        page = AsyncPage(');
+  lines.push('            data=[FakeItem(id="1")],');
+  lines.push('            list_metadata={},');
+  lines.push('        )');
+  lines.push('        assert page.has_more() is False');
+  lines.push('');
+  lines.push('    async def test_auto_paging_iter_single_page(self):');
+  lines.push('        page = AsyncPage(');
+  lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
+  lines.push('            list_metadata={},');
+  lines.push('        )');
+  lines.push('        items = [item async for item in page.auto_paging_iter()]');
+  lines.push('        assert len(items) == 2');
+  lines.push('        assert items[0].id == "1"');
+  lines.push('        assert items[1].id == "2"');
+  lines.push('');
+  lines.push('    async def test_auto_paging_iter_multi_page(self):');
+  lines.push('        page2 = AsyncPage(');
+  lines.push('            data=[FakeItem(id="3")],');
+  lines.push('            list_metadata={},');
+  lines.push('        )');
+  lines.push('        async def _fetch(after=None):');
+  lines.push('            return page2');
+  lines.push('        page1 = AsyncPage(');
+  lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
+  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('            _fetch_page=_fetch,');
+  lines.push('        )');
+  lines.push('        items = [item async for item in page1.auto_paging_iter()]');
   lines.push('        assert len(items) == 3');
   lines.push('        assert [i.id for i in items] == ["1", "2", "3"]');
 

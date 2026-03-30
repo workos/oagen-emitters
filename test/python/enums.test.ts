@@ -61,6 +61,7 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('    ACTIVE = "active"');
     expect(files[0].content).toContain('    INACTIVE = "inactive"');
     expect(files[0].content).toContain('    PENDING = "pending"');
+    expect(files[0].content).toContain('StatusLiteral: TypeAlias = Literal["active", "inactive", "pending"]');
   });
 
   it('places enum in service directory when referenced', () => {
@@ -175,5 +176,17 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('class Role(str, Enum):');
     expect(files[0].content).toContain('ADMIN = "admin"');
     expect(files[0].content).toContain('Administrator role');
+  });
+
+  it('normalizes GitHubOAuth casing', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Provider',
+        values: [{ name: 'GITHUB_OAUTH', value: 'GithubOAuth' }],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    expect(files[0].content).toContain('"GitHubOAuth"');
   });
 });

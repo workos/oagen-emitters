@@ -89,7 +89,23 @@ describe('generateTests', () => {
     const testFile = files.find((f) => f.path === 'tests/test_organizations.py');
     // Method names normalized: get_organization → get
     expect(testFile!.content).toContain('def test_get_unauthorized(');
+    expect(testFile!.content).toContain('def test_get_not_found(');
+    expect(testFile!.content).toContain('def test_get_rate_limited(');
+    expect(testFile!.content).toContain('def test_get_server_error(');
     expect(testFile!.content).toContain('pytest.raises(AuthenticationError)');
+  });
+
+  it('generates generated client and pagination tests', () => {
+    const files = generateTests(spec, ctx);
+    const clientTests = files.find((f) => f.path === 'tests/test_generated_client.py');
+    expect(clientTests).toBeDefined();
+    expect(clientTests!.content).toContain('test_retry_exhaustion_raises_rate_limit');
+    expect(clientTests!.content).toContain('test_timeout_error_is_wrapped');
+    expect(clientTests!.content).toContain('test_documented_import_surface_exposes_resources');
+
+    const paginationTests = files.find((f) => f.path === 'tests/test_pagination.py');
+    expect(paginationTests).toBeDefined();
+    expect(paginationTests!.content).toContain('class TestAsyncPage:');
   });
 
   it('generates fixture JSON files', () => {

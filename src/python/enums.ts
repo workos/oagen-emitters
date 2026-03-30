@@ -1,6 +1,9 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
-import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
+import { fileName, buildServiceDirMap, dirToModule } from './naming.js';
+import { groupServicesByNamespace } from './client.js';
+
+const ENUM_VALUE_NORMALIZATIONS = new Map<string, string>([['GithubOAuth', 'GitHubOAuth']]);
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -22,10 +25,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (enums.length === 0) return [];
 
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
   const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
+  const compatAliases = collectCompatEnumAliases(enums, ctx);
 
   // Build hash for deduplication based on sorted member values
   const enumHashMap = new Map<string, string>();
@@ -65,7 +70,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalName}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName}`);
+        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalName}`);
       }
       lines.push('');
       lines.push(`${enumDef.name} = ${canonicalName}`);
@@ -76,6 +81,22 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         integrateTarget: true,
         overwriteExisting: true,
       });
+
+      // Also generate compat alias files for dedup aliases (they may have compat aliases too)
+      for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
+          content: [
+            `from .${fileName(canonicalName)} import ${canonicalName}`,
+            '',
+            `${aliasName} = ${canonicalName}`,
+            `__all__ = ["${aliasName}"]`,
+          ].join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
+
       continue;
     }
 
@@ -97,10 +118,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const seenValues = new Set<string>();
       const uniqueValues: typeof enumDef.values = [];
       for (const value of enumDef.values) {
-        const valueStr = String(value.value);
+        const valueStr = normalizeEnumValue(String(value.value));
         if (!seenValues.has(valueStr)) {
           seenValues.add(valueStr);
-          uniqueValues.push(value);
+          uniqueValues.push({ ...value, value: valueStr });
         }
       }
 
@@ -110,6 +131,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
       if (allStrings) {
         lines.push('from enum import Enum');
+        lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         lines.push('');
         lines.push(`class ${enumDef.name}(str, Enum):`);
@@ -117,6 +139,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('');
       } else if (allIntegers) {
         lines.push('from enum import IntEnum');
+        lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         lines.push('');
         lines.push(`class ${enumDef.name}(IntEnum):`);
@@ -155,6 +178,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
           lines.push(`    ${memberName} = ${valueStr}`);
         }
       }
+      lines.push('');
+      lines.push(
+        `${enumDef.name}Literal: TypeAlias = Literal[${uniqueValues
+          .map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)))
+          .join(', ')}]`,
+      );
     }
 
     files.push({
@@ -163,9 +192,58 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       integrateTarget: true,
       overwriteExisting: true,
     });
+
+    for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+      files.push({
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
+        content: [
+          `from .${fileName(enumDef.name)} import ${enumDef.name}`,
+          '',
+          `${aliasName} = ${enumDef.name}`,
+          `__all__ = ["${aliasName}"]`,
+        ].join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;
+}
+
+export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {
+  const aliases = new Map<string, string[]>();
+  const irEnumNames = new Set(enums.map((enumDef) => enumDef.name));
+  const normalizedHashToEnum = new Map<string, string>();
+
+  for (const enumDef of enums) {
+    normalizedHashToEnum.set(enumValueHash(enumDef), enumDef.name);
+  }
+
+  for (const baselineEnum of Object.values(ctx.apiSurface?.enums ?? {})) {
+    if (irEnumNames.has(baselineEnum.name)) continue;
+    const hash = Object.values(baselineEnum.members)
+      .map((value) => normalizeEnumValue(String(value)))
+      .sort()
+      .join('|');
+    const target = normalizedHashToEnum.get(hash);
+    if (!target) continue;
+    if (!aliases.has(target)) aliases.set(target, []);
+    aliases.get(target)!.push(baselineEnum.name);
+  }
+
+  return aliases;
+}
+
+function enumValueHash(enumDef: Enum): string {
+  return [...enumDef.values]
+    .map((value) => normalizeEnumValue(String(value.value)))
+    .sort()
+    .join('|');
+}
+
+function normalizeEnumValue(value: string): string {
+  return ENUM_VALUE_NORMALIZATIONS.get(value) ?? value;
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

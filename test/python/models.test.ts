@@ -90,7 +90,7 @@ describe('generateModels', () => {
     expect(modelFile).toBeDefined();
 
     // Has dataclass decorator
-    expect(modelFile.content).toContain('@dataclass');
+    expect(modelFile.content).toContain('@dataclass(slots=True)');
     expect(modelFile.content).toContain('class Organization:');
 
     // Required fields
@@ -111,7 +111,9 @@ describe('generateModels', () => {
 
     // to_dict method
     expect(modelFile.content).toContain('def to_dict(self) -> Dict[str, Any]:');
-    expect(modelFile.content).toContain('result["created_at"] = self.created_at.isoformat()');
+    expect(modelFile.content).toContain(
+      'result["created_at"] = self.created_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")',
+    );
   });
 
   it('handles array fields with model refs', () => {
@@ -311,6 +313,81 @@ describe('generateModels', () => {
     expect(aliasFile).toBeDefined();
     expect(aliasFile.content).toContain('OrganizationDomainStandAlone = OrganizationDomain');
     expect(aliasFile.content).not.toContain('@dataclass');
+  });
+
+  it('does not alias response models to request-only dto models', () => {
+    const service: Service = {
+      name: 'Pipes',
+      operations: [
+        {
+          name: 'getUserlandUserToken',
+          httpMethod: 'post',
+          path: '/data-integrations/{slug}/token',
+          pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          requestBody: { kind: 'model', name: 'CreateApplicationSecretDto' },
+          response: { kind: 'model', name: 'DataIntegrationAccessTokenResponse' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'CreateApplicationSecretDto',
+        fields: [{ name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'DataIntegrationAccessTokenResponse',
+        fields: [{ name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, services: [service], models } });
+    const responseFile = files.find((f) => f.path.includes('data_integration_access_token_response.py'))!;
+    expect(responseFile.content).toContain('@dataclass(slots=True)');
+    expect(responseFile.content).not.toContain('= CreateApplicationSecretDto');
+  });
+
+  it('treats deprecated or baseline-optional fields as optional', () => {
+    const service: Service = {
+      name: 'Events',
+      operations: [
+        {
+          name: 'getOrganizationEvent',
+          httpMethod: 'get',
+          path: '/events/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'OrganizationEvent' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'OrganizationEvent',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'allow_profiles_outside_organization',
+            type: { kind: 'primitive', type: 'boolean' },
+            required: true,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, services: [service], models } });
+    const eventFile = files.find((f) => f.path.includes('organization_event.py'))!;
+    expect(eventFile.content).toContain('allow_profiles_outside_organization: Optional[bool] = None');
+    expect(eventFile.content).toContain('data.get("allow_profiles_outside_organization")');
   });
 
   it('handles union fields with identical model variants in from_dict', () => {

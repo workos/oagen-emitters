@@ -1,8 +1,9 @@
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies } from '@workos/oagen';
+import { assignModelsToServices, collectFieldDependencies, planOperation } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { className, fieldName, fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
-import { assignEnumsToServices } from './enums.js';
+import { className, fieldName, fileName, buildServiceDirMap, dirToModule } from './naming.js';
+import { groupServicesByNamespace } from './client.js';
+import { assignEnumsToServices, collectCompatEnumAliases } from './enums.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -13,11 +14,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const modelToService = assignModelsToServices(models, ctx.spec.services);
   const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
   const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
   const modelMap = new Map(models.map((m) => [m.name, m]));
   const files: GeneratedFile[] = [];
+  const modelUsage = collectModelUsage(ctx.spec);
 
   // Build structural hashes for deduplication
   const modelHashMap = new Map<string, string>(); // model name -> hash
@@ -34,10 +37,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const aliasOf = new Map<string, string>(); // alias name -> canonical name
   for (const [, names] of hashGroups) {
     if (names.length <= 1) continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort((a, b) => compareAliasPriority(a, b, modelUsage));
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
+      if (canAliasModels(canonical, sorted[i], modelUsage)) {
+        aliasOf.set(sorted[i], canonical);
+      }
     }
   }
 
@@ -61,7 +66,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalClassName}`);
+        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalClassName}`);
       }
       lines.push('');
       lines.push(`${modelClassName} = ${canonicalClassName}`);
@@ -94,7 +99,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const field of deduplicatedFields) {
       collectTypingImports(field.type, typingImports);
     }
-    const hasOptional = deduplicatedFields.some((f) => !f.required || f.type.kind === 'nullable');
+    const hasOptional = deduplicatedFields.some((f) => isOptionalField(model.name, f, ctx));
     if (hasOptional) typingImports.add('Optional');
     const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
 
@@ -118,7 +123,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (modelDir === dirName) {
           lines.push(`from .${fileName(modelName)} import ${className(modelName)}`);
         } else {
-          lines.push(`from ${ctx.namespace}.${modelDir}.models import ${className(modelName)}`);
+          lines.push(`from ${ctx.namespace}.${dirToModule(modelDir)}.models import ${className(modelName)}`);
         }
       }
     }
@@ -131,7 +136,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (enumDir === dirName) {
           lines.push(`from .${fileName(enumName)} import ${className(enumName)}`);
         } else {
-          lines.push(`from ${ctx.namespace}.${enumDir}.models import ${className(enumName)}`);
+          lines.push(`from ${ctx.namespace}.${dirToModule(enumDir)}.models import ${className(enumName)}`);
         }
       }
     }
@@ -140,7 +145,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
 
     // Dataclass definition
-    lines.push('@dataclass');
+    lines.push('@dataclass(slots=True)');
     lines.push(`class ${modelClassName}:`);
     if (model.description) {
       lines.push(`    """${model.description}"""`);
@@ -155,8 +160,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
 
     // Sort fields: required first, then optional
-    const requiredFields = deduplicatedFields.filter((f) => f.required && f.type.kind !== 'nullable');
-    const optionalFields = deduplicatedFields.filter((f) => !f.required || f.type.kind === 'nullable');
+    const requiredFields = deduplicatedFields.filter((f) => !isOptionalField(model.name, f, ctx));
+    const optionalFields = deduplicatedFields.filter((f) => isOptionalField(model.name, f, ctx));
 
     for (const field of requiredFields) {
       const pyFieldName = fieldName(field.name);
@@ -197,7 +202,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const field of [...requiredFields, ...optionalFields]) {
       const pyFieldName = fieldName(field.name);
       const wireKey = field.name; // Wire keys are snake_case from the spec
-      const isRequired = field.required && field.type.kind !== 'nullable';
+      const isRequired = !isOptionalField(model.name, field, ctx);
       const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
       const deserExpr = deserializeField(field.type, accessor, isRequired, modelMap);
       lines.push(`                ${pyFieldName}=${deserExpr},`);
@@ -218,7 +223,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const field of [...requiredFields, ...optionalFields]) {
       const pyFieldName = fieldName(field.name);
       const wireKey = field.name;
-      const isRequired = field.required && field.type.kind !== 'nullable';
+      const isRequired = !isOptionalField(model.name, field, ctx);
 
       if (isRequired) {
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
@@ -230,6 +235,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         );
         lines.push(`        if self.${pyFieldName} is not None:`);
         lines.push(`            result["${wireKey}"] = ${serExpr}`);
+        lines.push(`        else:`);
+        lines.push(`            result["${wireKey}"] = None`);
       }
     }
 
@@ -257,20 +264,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   // Also include enums in the barrels
+  const compatEnumAliases = collectCompatEnumAliases(ctx.spec.enums, ctx);
   for (const enumDef of ctx.spec.enums) {
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
     symbolsByDir.get(key)!.push(enumDef.name);
+    for (const aliasName of compatEnumAliases.get(enumDef.name) ?? []) {
+      symbolsByDir.get(key)!.push(aliasName);
+    }
   }
 
   // Build set of service directory model paths — these get their parent __init__.py
   // from generateServiceInits in client.ts, so we must not create a competing one here.
   const serviceDirModelPaths = new Set<string>();
   for (const service of ctx.spec.services) {
-    const resolvedName = serviceNameMap.get(service.name) ?? service.name;
-    const dirName = resolveServiceDir(resolvedName);
+    const dirName = serviceDirMap.get(service.name) ?? resolveDir(service.name);
     serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
   }
 
@@ -334,6 +344,108 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
       if (ref.type === 'unknown') imports.add('Any');
       break;
   }
+}
+
+function collectModelUsage(spec: EmitterContext['spec']): {
+  requestOnly: Set<string>;
+  response: Set<string>;
+  mixed: Set<string>;
+} {
+  const request = new Set<string>();
+  const response = new Set<string>();
+
+  for (const service of spec.services) {
+    for (const op of service.operations) {
+      const plan = planOperation(op);
+      if (plan.responseModelName) {
+        response.add(plan.responseModelName);
+      }
+      if (op.pagination?.itemType.kind === 'model') {
+        response.add(op.pagination.itemType.name);
+      }
+      if (op.requestBody?.kind === 'model') {
+        request.add(op.requestBody.name);
+      }
+      if (op.requestBody?.kind === 'union') {
+        for (const variant of op.requestBody.variants ?? []) {
+          if (variant.kind === 'model') request.add(variant.name);
+        }
+      }
+    }
+  }
+
+  const mixed = new Set<string>();
+  for (const name of request) {
+    if (response.has(name)) mixed.add(name);
+  }
+
+  const requestOnly = new Set([...request].filter((name) => !mixed.has(name)));
+  const responseOnly = new Set([...response].filter((name) => !mixed.has(name)));
+
+  return { requestOnly, response: responseOnly, mixed };
+}
+
+function compareAliasPriority(left: string, right: string, usage: ReturnType<typeof collectModelUsage>): number {
+  const score = (name: string): number => {
+    if (usage.response.has(name)) return 0;
+    if (usage.mixed.has(name)) return 1;
+    if (usage.requestOnly.has(name)) return 2;
+    return 3;
+  };
+
+  const diff = score(left) - score(right);
+  if (diff !== 0) return diff;
+  return left.localeCompare(right);
+}
+
+function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
+  if (
+    (usage.response.has(canonical) && usage.requestOnly.has(alias)) ||
+    (usage.response.has(alias) && usage.requestOnly.has(canonical))
+  ) {
+    return false;
+  }
+
+  const canonicalTokens = tokenizeModelName(canonical);
+  const aliasTokens = tokenizeModelName(alias);
+
+  if (canonicalTokens.length === 0 || aliasTokens.length === 0) return false;
+
+  const canonicalSet = new Set(canonicalTokens);
+  const aliasSet = new Set(aliasTokens);
+  const canonicalSubset = [...canonicalSet].every((token) => aliasSet.has(token));
+  const aliasSubset = [...aliasSet].every((token) => canonicalSet.has(token));
+
+  return canonicalSubset || aliasSubset;
+}
+
+function tokenizeModelName(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[\s_]+/)
+    .map((part) => part.toLowerCase())
+    .filter((part) => !['dto', 'request', 'response', 'params', 'param', 'model'].includes(part));
+}
+
+function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
+  if (!field.required || field.type.kind === 'nullable' || field.deprecated) return true;
+  return isBaselineOptionalField(modelName, field.name, ctx);
+}
+
+function isBaselineOptionalField(modelName: string, fieldName: string, ctx: EmitterContext): boolean {
+  const candidateModelNames = new Set<string>([modelName, className(modelName)]);
+  const overlayName = ctx.overlayLookup?.modelNameByIR.get(modelName);
+  if (overlayName) candidateModelNames.add(overlayName);
+
+  for (const candidate of candidateModelNames) {
+    const iface = ctx.apiSurface?.interfaces[candidate];
+    if (iface) {
+      const field = iface.fields[fieldName] ?? iface.fields[fieldName.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)];
+      if (field?.optional) return true;
+    }
+  }
+
+  return false;
 }
 
 function resolveModelFieldType(ref: any): string {
@@ -410,7 +522,7 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
 
 function serializeField(ref: any, accessor: string): string {
   if (isDateTimeType(ref)) {
-    return `${accessor}.isoformat()`;
+    return `${accessor}.isoformat(timespec="milliseconds").replace("+00:00", "Z")`;
   }
   switch (ref.kind) {
     case 'model':
