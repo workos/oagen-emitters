@@ -70,7 +70,7 @@ describe('generateResources', () => {
 
     const files = generateResources(services, ctxWithServices);
     expect(files.length).toBe(1);
-    expect(files[0].path).toBe('workos/organizations/_resource.py');
+    expect(files[0].path).toBe('src/workos/organizations/_resource.py');
 
     const content = files[0].content;
 
@@ -78,16 +78,16 @@ describe('generateResources', () => {
     expect(content).toContain('class Organizations:');
     expect(content).toContain('def __init__(self, client: "WorkOS") -> None:');
 
-    // GET method with path param
-    expect(content).toContain('def get_organization(');
+    // GET method with path param (normalized: get_organization → get)
+    expect(content).toContain('def get(');
     expect(content).toContain('id: str,');
     expect(content).toContain('f"organizations/{id}"');
     expect(content).toContain('model=Organization');
     // Public request methods (no underscore prefix)
     expect(content).toContain('self._client.request(');
 
-    // DELETE method returns None
-    expect(content).toContain('def delete_organization(');
+    // DELETE method returns None (normalized: delete_organization → delete)
+    expect(content).toContain('def delete(');
     expect(content).toContain(') -> None:');
   });
 
@@ -312,10 +312,10 @@ describe('generateResources', () => {
     const files = generateResources(services, ctxWithServices);
     const content = files[0].content;
 
-    // Model field should call .to_dict()
-    expect(content).toContain('"event": event.to_dict()');
-    // Array of models should use list comprehension
-    expect(content).toContain('"targets": [item.to_dict() for item in targets]');
+    // Model field should call .to_dict() with dict fallback
+    expect(content).toContain('"event": event.to_dict() if hasattr(event, "to_dict") else event');
+    // Array of models should use list comprehension with dict fallback
+    expect(content).toContain('"targets": [item.to_dict() if hasattr(item, "to_dict") else item for item in targets]');
   });
 
   it('generates idempotent POST with idempotency_key', () => {
