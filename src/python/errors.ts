@@ -61,6 +61,19 @@ class AuthenticationError(WorkOSError):
         super().__init__(message, status_code=401, request_id=request_id, code=code)
 
 
+class ForbiddenError(WorkOSError):
+    """403 Forbidden."""
+
+    def __init__(
+        self,
+        message: str = "Forbidden",
+        *,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message, status_code=403, request_id=request_id, code=code)
+
+
 class NotFoundError(WorkOSError):
     """404 Not Found."""
 
@@ -138,9 +151,24 @@ class ConfigurationError(WorkOSError):
         super().__init__(message)
 
 
+class WorkOSConnectionError(WorkOSError):
+    """Raised when the SDK cannot connect to the API (DNS failure, connection refused, etc.)."""
+
+    def __init__(self, message: str = "Connection failed") -> None:
+        super().__init__(message)
+
+
+class WorkOSTimeoutError(WorkOSError):
+    """Raised when the API request times out."""
+
+    def __init__(self, message: str = "Request timed out") -> None:
+        super().__init__(message)
+
+
 STATUS_CODE_TO_ERROR: Dict[int, Type[WorkOSError]] = {
     400: BadRequestError,
     401: AuthenticationError,
+    403: ForbiddenError,
     404: NotFoundError,
     409: ConflictError,
     422: UnprocessableEntityError,
@@ -148,9 +176,10 @@ STATUS_CODE_TO_ERROR: Dict[int, Type[WorkOSError]] = {
 }`;
 
   files.push({
-    path: `${namespace}/_errors.py`,
+    path: `src/${namespace}/_errors.py`,
     content: errorsContent,
-    skipIfExists: true,
+    integrateTarget: true,
+    overwriteExisting: true,
   });
 
   return files;

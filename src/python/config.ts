@@ -9,18 +9,18 @@ export function generateConfig(ctx?: EmitterContext): GeneratedFile[] {
 
   // _types.py — shared type aliases and protocols
   files.push({
-    path: `${namespace}/_types.py`,
+    path: `src/${namespace}/_types.py`,
     content: `from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, Protocol, TypeVar
+from typing_extensions import TypedDict
 
-# Per-request options that can be passed to any API method.
-RequestOptions = Dict[str, Any]
-"""
-Supported keys:
-- extra_headers: Dict[str, str] — additional HTTP headers
-- timeout: float — request timeout in seconds
-"""
+
+class RequestOptions(TypedDict, total=False):
+    """Per-request options that can be passed to any API method."""
+
+    extra_headers: Dict[str, str]
+    timeout: float
 
 
 class Deserializable(Protocol):
@@ -31,16 +31,17 @@ class Deserializable(Protocol):
 
 
 D = TypeVar("D", bound=Deserializable)`,
-    skipIfExists: true,
+    integrateTarget: true,
+    overwriteExisting: true,
   });
 
   // _pagination.py — SyncPage and auto-pagination
   files.push({
-    path: `${namespace}/_pagination.py`,
+    path: `src/${namespace}/_pagination.py`,
     content: `from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Generic, Iterator, List, Optional, TypeVar
 
 from ._types import Deserializable
 
@@ -76,8 +77,42 @@ class SyncPage(Generic[T]):
             yield from page.data
             if not page.has_more() or page._fetch_page is None:
                 break
-            page = page._fetch_page(after=page.after)`,
-    skipIfExists: true,
+            page = page._fetch_page(after=page.after)
+
+
+@dataclass
+class AsyncPage(Generic[T]):
+    """A page of results with async auto-pagination support."""
+
+    data: List[T]
+    list_metadata: Dict[str, Any]
+    _fetch_page: Optional[Callable[..., Awaitable["AsyncPage[T]"]]] = field(default=None, repr=False)
+
+    @property
+    def after(self) -> Optional[str]:
+        """Cursor for the next page, if available."""
+        return self.list_metadata.get("after")
+
+    @property
+    def before(self) -> Optional[str]:
+        """Cursor for the previous page, if available."""
+        return self.list_metadata.get("before")
+
+    def has_more(self) -> bool:
+        """Whether there are more pages available."""
+        return self.after is not None
+
+    async def auto_paging_iter(self) -> AsyncIterator[T]:
+        """Iterate through all items across all pages."""
+        page = self
+        while True:
+            for item in page.data:
+                yield item
+            if not page.has_more() or page._fetch_page is None:
+                break
+            page = await page._fetch_page(after=page.after)`,
+    integrateTarget: true,
+    overwriteExisting: true,
   });
 
   return files;

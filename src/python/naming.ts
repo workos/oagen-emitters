@@ -1,9 +1,30 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 
-/** PascalCase class name. */
+/**
+ * Map of lowercase acronym forms to their correct casing.
+ * Applied as a post-processing step after toPascalCase.
+ */
+const ACRONYM_FIXES: [RegExp, string][] = [
+  [/Workos/g, 'WorkOS'],
+  [/Sso/g, 'SSO'],
+  [/Mfa/g, 'MFA'],
+  [/Jwt/g, 'JWT'],
+  [/Cors/g, 'CORS'],
+  [/Saml/g, 'SAML'],
+  [/Scim/g, 'SCIM'],
+  [/Rbac/g, 'RBAC'],
+  [/Oauth/g, 'OAuth'],
+  [/Oidc/g, 'OIDC'],
+];
+
+/** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  return toPascalCase(name);
+  let result = toPascalCase(name);
+  for (const [pattern, replacement] of ACRONYM_FIXES) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
 }
 
 /** snake_case file name (without extension). */
@@ -65,7 +86,62 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
     // Convert from camelCase overlay name to snake_case for Python
     return toSnakeCase(existing.methodName);
   }
-  return toSnakeCase(op.name);
+  return normalizeMethodName(toSnakeCase(op.name), op);
+}
+
+/**
+ * Singularize a noun (naive but covers common cases).
+ */
+function singularize(noun: string): string {
+  if (noun.endsWith('ies')) return noun.slice(0, -3) + 'y';
+  if (noun.endsWith('ses') || noun.endsWith('xes') || noun.endsWith('zes')) return noun.slice(0, -2);
+  if (noun.endsWith('s') && !noun.endsWith('ss')) return noun.slice(0, -1);
+  return noun;
+}
+
+/**
+ * Extract the resource noun from the first path segment (e.g., "/organizations/{id}" → "organization").
+ */
+function extractResourceNoun(op: Operation): string | null {
+  const first = op.path.replace(/^\//, '').split('/')[0];
+  if (!first) return null;
+  return singularize(toSnakeCase(first));
+}
+
+/**
+ * Normalize a generated method name for consistency.
+ *
+ * Rules:
+ * - If the method fetches a single resource by ID (GET with path param ending in
+ *   `{id}` or `{...Id}`), ensure the noun is singular (e.g., get_users → get_user).
+ * - Strip a redundant trailing noun that duplicates the resource path segment
+ *   (e.g., delete_organization on /organizations/{id} → delete,
+ *    update_organization → update).
+ */
+function normalizeMethodName(name: string, op: Operation): string {
+  const method = op.httpMethod.toLowerCase();
+  const hasIdParam = op.pathParams.some((p) => p.name === 'id' || p.name.endsWith('Id') || p.name.endsWith('_id'));
+
+  // For single-resource GET by ID, singularize a plural noun after "get_"
+  if (method === 'get' && hasIdParam && name.startsWith('get_') && name.endsWith('s')) {
+    const noun = name.slice(4); // remove "get_"
+    return `get_${singularize(noun)}`;
+  }
+
+  // Strip redundant noun suffix that duplicates the resource path segment.
+  // E.g., delete_organization on /organizations/{id} → delete
+  //        update_organization on /organizations/{id} → update
+  const resourceNoun = extractResourceNoun(op);
+  if (resourceNoun) {
+    const verbs = ['create', 'update', 'delete', 'get', 'list', 'find'];
+    for (const verb of verbs) {
+      if (name === `${verb}_${resourceNoun}`) {
+        return verb;
+      }
+    }
+  }
+
+  return name;
 }
 
 /** Resolve the SDK class name for a service, checking overlay for existing names. */

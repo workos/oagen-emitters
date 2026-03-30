@@ -1,5 +1,5 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
+
 import { fileName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 
@@ -88,7 +88,7 @@ export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Mod
   return null;
 }
 
-function generateModelFixture(
+export function generateModelFixture(
   model: Model,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
@@ -96,7 +96,8 @@ function generateModelFixture(
   const fixture: Record<string, any> = {};
 
   for (const field of model.fields) {
-    const wireName = toSnakeCase(field.name);
+    // Use the original field name as the wire key (matches from_dict access patterns)
+    const wireName = field.name;
     if (field.example !== undefined) {
       fixture[wireName] = field.example;
     } else {
