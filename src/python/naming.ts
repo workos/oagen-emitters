@@ -18,11 +18,33 @@ const ACRONYM_FIXES: [RegExp, string][] = [
   [/Oidc/g, 'OIDC'],
 ];
 
+/**
+ * Python class names that collide with builtins or typing imports.
+ * When a model name resolves to one of these, suffix with "Model".
+ */
+const PYTHON_RESERVED_CLASS_NAMES = new Set([
+  'List',
+  'Dict',
+  'Set',
+  'Tuple',
+  'Type',
+  'Any',
+  'Optional',
+  'Union',
+  'Literal',
+  'Final',
+  'ClassVar',
+  'Callable',
+]);
+
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
   let result = toPascalCase(name);
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
+  }
+  if (PYTHON_RESERVED_CLASS_NAMES.has(result)) {
+    result += 'Model';
   }
   return result;
 }

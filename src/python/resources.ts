@@ -42,7 +42,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
-    lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type');
+    lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
     lines.push('    from .._client import AsyncWorkOS, WorkOS');
@@ -259,6 +259,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           const variantModels = (op.requestBody.variants ?? [])
             .filter((v: any) => v.kind === 'model')
             .map((v: any) => className(v.name));
+          // Add variant models to imports
+          for (const vm of variantModels) {
+            modelImports.add(vm);
+          }
           if (variantModels.length > 0) {
             const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
             lines.push(`        body: ${unionType},`);
@@ -510,7 +514,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
         } else {
           // Union or non-model body — convert model instances to dicts
-          lines.push('        _body: Dict[str, Any] = body.to_dict() if hasattr(body, "to_dict") else body');
+          lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
         }
         // Build query params dict if any exist alongside the body
         const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
@@ -862,7 +866,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             lines.push('        body: Dict[str, Any] = {}');
           }
         } else {
-          lines.push('        _body: Dict[str, Any] = body.to_dict() if hasattr(body, "to_dict") else body');
+          lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
         }
         const asyncBodyHasParams =
           plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, asyncBodyFieldNamesSet);

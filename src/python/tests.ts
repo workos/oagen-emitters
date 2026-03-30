@@ -101,10 +101,9 @@ function generateConftest(ctx: EmitterContext): GeneratedFile {
   lines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
 
   return {
-    path: 'tests/conftest_generated.py',
+    path: 'tests/conftest.py',
     content: lines.join('\n'),
     integrateTarget: true,
-    overwriteExisting: true,
   };
 }
 
@@ -124,8 +123,7 @@ function generateServiceTest(
   lines.push('import json');
   lines.push('');
   lines.push('import pytest');
-  lines.push('from tests.conftest_generated import load_fixture');
-  lines.push(`from ${ctx.namespace} import WorkOS`);
+  lines.push('from tests.conftest import load_fixture');
   lines.push('');
 
   // Collect model imports needed
@@ -369,6 +367,15 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
         args.push(`${fieldName(f.name)}=${generateTestValue(f.type, f.name)}`);
       }
     }
+  } else if (plan.hasBody && op.requestBody?.kind === 'union') {
+    // Union body — pick the first variant model and use its fixture
+    const variants = (op.requestBody as any).variants ?? [];
+    const firstModelVariant = variants.find((v: any) => v.kind === 'model');
+    if (firstModelVariant) {
+      args.push(`body=load_fixture("${fileName(firstModelVariant.name)}.json")`);
+    } else {
+      args.push('body={}');
+    }
   }
 
   // Required query params (for all methods, including paginated)
@@ -440,6 +447,12 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
       const plan = planOperation(op);
       if (plan.responseModelName) responseModelNames.add(plan.responseModelName);
       if (op.requestBody?.kind === 'model') requestOnlyModelNames.add(op.requestBody.name);
+      // Also collect union body variant models as request-only
+      if (op.requestBody?.kind === 'union') {
+        for (const v of (op.requestBody as any).variants ?? []) {
+          if (v.kind === 'model') requestOnlyModelNames.add(v.name);
+        }
+      }
     }
   }
   // A model is request-only if it's used as a request body but never as a response
@@ -460,7 +473,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('');
   lines.push('import pytest');
   lines.push('');
-  lines.push('from tests.conftest_generated import load_fixture');
+  lines.push('from tests.conftest import load_fixture');
   lines.push('');
 
   // Collect imports by directory

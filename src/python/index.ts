@@ -87,7 +87,11 @@ export const pythonEmitter: Emitter = {
     if (hasRuff || hasRuffInPyproject || hasRuffInNox) {
       return {
         cmd: 'bash',
-        args: ['-c', 'ruff check --fix --quiet "$@" 2>/dev/null; ruff format --quiet "$@"', '--'],
+        args: [
+          '-c',
+          'PY_FILES=$(printf "%s\\n" "$@" | grep "\\.py$"); [ -n "$PY_FILES" ] && echo "$PY_FILES" | xargs ruff check --fix --quiet 2>/dev/null; [ -n "$PY_FILES" ] && echo "$PY_FILES" | xargs ruff format --quiet',
+          '--',
+        ],
       };
     }
     return null;

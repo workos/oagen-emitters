@@ -1,7 +1,14 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
-import { planOperation } from '@workos/oagen';
+import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
 import { mapTypeRefUnquoted } from './type-map.js';
-import { className, fieldName, resolveServiceDir, servicePropertyName, resolveMethodName } from './naming.js';
+import {
+  className,
+  fieldName,
+  resolveServiceDir,
+  servicePropertyName,
+  resolveMethodName,
+  buildServiceNameMap,
+} from './naming.js';
 import { resolveResourceClassName, resolvePageItemName, bodyParamName } from './resources.js';
 
 /**
@@ -267,7 +274,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('import time');
   lines.push('import uuid');
   lines.push('import random');
-  lines.push('from typing import Any, Dict, Optional, Type, cast, overload');
+  lines.push('from typing import Any, Dict, List, Literal, Optional, Type, Union, cast, overload');
   lines.push('');
   lines.push('import httpx');
   lines.push('');
@@ -294,6 +301,99 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const dirName = resolveServiceDir(resolvedName);
     lines.push(`from .${dirName}._resource import ${resolvedName}, Async${resolvedName}`);
+  }
+
+  // Collect model/enum imports needed by namespace delegate method signatures
+  const delegateModelImports = new Set<string>();
+  const delegateEnumImports = new Set<string>();
+  for (const ns of namespaces) {
+    if (!ns.baseEntry) continue;
+    const baseSvc = ns.baseEntry.service;
+    for (const op of baseSvc.operations) {
+      const plan = planOperation(op);
+      if (plan.responseModelName && !listWrapperNames.has(plan.responseModelName)) {
+        delegateModelImports.add(plan.responseModelName);
+      }
+      if (op.pagination?.itemType.kind === 'model') {
+        let paginationItemName = op.pagination.itemType.name;
+        if (listWrapperNames.has(paginationItemName)) {
+          const wrapperModel = ctx.spec.models.find((m) => m.name === paginationItemName);
+          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
+          if (dataField?.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            paginationItemName = dataField.type.items.name;
+          }
+        }
+        delegateModelImports.add(paginationItemName);
+      }
+      if (op.requestBody?.kind === 'model') {
+        delegateModelImports.add(op.requestBody.name);
+        const bodyModel = ctx.spec.models.find((m) => m.name === op.requestBody?.name);
+        if (bodyModel) {
+          for (const f of bodyModel.fields) {
+            for (const ref of collectModelRefs(f.type)) delegateModelImports.add(ref);
+            for (const ref of collectEnumRefs(f.type)) delegateEnumImports.add(ref);
+          }
+        }
+      }
+      if (op.requestBody?.kind === 'union') {
+        for (const v of (op.requestBody as any).variants ?? []) {
+          if (v.kind === 'model') delegateModelImports.add(v.name);
+        }
+      }
+      for (const p of [...op.pathParams, ...op.queryParams]) {
+        for (const ref of collectEnumRefs(p.type)) delegateEnumImports.add(ref);
+      }
+    }
+  }
+
+  // Emit model imports grouped by service directory
+  const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
+  const resolveModelDir = (modelName: string) => {
+    const svc = modelToServiceMap.get(modelName);
+    return svc ? resolveServiceDir(serviceNameMap.get(svc) ?? svc) : 'common';
+  };
+
+  const modelsByDir = new Map<string, string[]>();
+  for (const name of [...delegateModelImports].sort()) {
+    const dir = resolveModelDir(name);
+    if (!modelsByDir.has(dir)) modelsByDir.set(dir, []);
+    modelsByDir.get(dir)!.push(className(name));
+  }
+  for (const [dir, names] of [...modelsByDir].sort()) {
+    lines.push(`from .${dir}.models import ${names.join(', ')}`);
+  }
+
+  // Emit enum imports grouped by service directory
+  const enumToServiceMap = new Map<string, string>();
+  for (const e of ctx.spec.enums) {
+    for (const svc of ctx.spec.services) {
+      for (const op of svc.operations) {
+        const refs = new Set<string>();
+        const allTypeRefs = [
+          op.response,
+          ...(op.requestBody ? [op.requestBody] : []),
+          ...op.pathParams.map((p) => p.type),
+          ...op.queryParams.map((p) => p.type),
+        ];
+        for (const typeRef of allTypeRefs) {
+          for (const ref of collectEnumRefs(typeRef)) refs.add(ref);
+        }
+        if (refs.has(e.name) && !enumToServiceMap.has(e.name)) {
+          enumToServiceMap.set(e.name, svc.name);
+        }
+      }
+    }
+  }
+  const enumsByDir = new Map<string, string[]>();
+  for (const name of [...delegateEnumImports].sort()) {
+    const enumSvc = enumToServiceMap.get(name);
+    const dir = enumSvc ? resolveServiceDir(serviceNameMap.get(enumSvc) ?? enumSvc) : 'common';
+    if (!enumsByDir.has(dir)) enumsByDir.set(dir, []);
+    enumsByDir.get(dir)!.push(className(name));
+  }
+  for (const [dir, names] of [...enumsByDir].sort()) {
+    lines.push(`from .${dir}.models import ${names.join(', ')}`);
   }
 
   lines.push('');
