@@ -58,9 +58,9 @@ const ctx: EmitterContext = {
 };
 
 describe('generateTests', () => {
-  it('generates conftest.py', () => {
+  it('generates conftest_generated.py', () => {
     const files = generateTests(spec, ctx);
-    const conftest = files.find((f) => f.path === 'tests/conftest.py');
+    const conftest = files.find((f) => f.path === 'tests/conftest_generated.py');
     expect(conftest).toBeDefined();
     expect(conftest!.content).toContain('import pytest');
     expect(conftest!.content).toContain('from workos import WorkOS');
@@ -75,8 +75,9 @@ describe('generateTests', () => {
 
     const content = testFile!.content;
     expect(content).toContain('class TestOrganizations:');
-    expect(content).toContain('def test_get_organization(');
-    expect(content).toContain('def test_delete_organization(');
+    // Method names normalized: get_organization → get, delete_organization → delete
+    expect(content).toContain('def test_get(');
+    expect(content).toContain('def test_delete(');
     expect(content).toContain('assert result is None');
     expect(content).toContain('isinstance(result, Organization)');
   });
@@ -84,7 +85,8 @@ describe('generateTests', () => {
   it('generates error test', () => {
     const files = generateTests(spec, ctx);
     const testFile = files.find((f) => f.path === 'tests/test_organizations.py');
-    expect(testFile!.content).toContain('def test_get_organization_unauthorized(');
+    // Method names normalized: get_organization → get
+    expect(testFile!.content).toContain('def test_get_unauthorized(');
     expect(testFile!.content).toContain('pytest.raises(AuthenticationError)');
   });
 

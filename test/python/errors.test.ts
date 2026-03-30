@@ -21,7 +21,7 @@ describe('generateErrors', () => {
   it('generates error hierarchy', () => {
     const files = generateErrors(ctx);
     expect(files.length).toBe(1);
-    expect(files[0].path).toBe('workos/_errors.py');
+    expect(files[0].path).toBe('src/workos/_errors.py');
 
     const content = files[0].content;
 
@@ -33,21 +33,26 @@ describe('generateErrors', () => {
     // Specific errors
     expect(content).toContain('class BadRequestError(WorkOSError):');
     expect(content).toContain('class AuthenticationError(WorkOSError):');
+    expect(content).toContain('class ForbiddenError(WorkOSError):');
     expect(content).toContain('class NotFoundError(WorkOSError):');
     expect(content).toContain('class ConflictError(WorkOSError):');
     expect(content).toContain('class UnprocessableEntityError(WorkOSError):');
     expect(content).toContain('class RateLimitExceededError(WorkOSError):');
     expect(content).toContain('class ServerError(WorkOSError):');
     expect(content).toContain('class ConfigurationError(WorkOSError):');
+    expect(content).toContain('class WorkOSConnectionError(WorkOSError):');
+    expect(content).toContain('class WorkOSTimeoutError(WorkOSError):');
 
     // Status code mapping
     expect(content).toContain('STATUS_CODE_TO_ERROR');
     expect(content).toContain('400: BadRequestError');
+    expect(content).toContain('403: ForbiddenError');
     expect(content).toContain('429: RateLimitExceededError');
   });
 
-  it('marks files as skipIfExists', () => {
+  it('marks files as overwriteExisting', () => {
     const files = generateErrors(ctx);
-    expect(files[0].skipIfExists).toBe(true);
+    expect(files[0].overwriteExisting).toBe(true);
+    expect(files[0].integrateTarget).toBe(true);
   });
 });
