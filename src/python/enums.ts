@@ -3,8 +3,20 @@ import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 
 /**
- * Generate Python Literal type alias files from IR Enum definitions.
- * Uses Union[Literal[...], str] for forward compatibility with unknown API values.
+ * Convert a PascalCase class name to a human-readable lowercase string,
+ * preserving known acronyms instead of splitting them character-by-character.
+ */
+function humanizeClassName(name: string): string {
+  // Insert spaces before uppercase runs, but keep acronyms together
+  let result = name.replace(/([a-z])([A-Z])/g, '$1 $2');
+  // Split consecutive uppercase letters from following lowercase: "SSOProvider" -> "SSO Provider"
+  result = result.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  return result.toLowerCase();
+}
+
+/**
+ * Generate Python enum class files from IR Enum definitions.
+ * Uses `(str, Enum)` for type-safe enum values (Python 3.10+).
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
@@ -49,41 +61,36 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalService = enumToService.get(canonicalName);
       const canonicalDir = resolveDir(canonicalService);
       const lines: string[] = [];
+      // Use explicit __all__ to prevent ruff F401 from stripping the re-export
       if (canonicalDir === dirName) {
-        lines.push(`from .${fileName(canonicalName)} import ${canonicalName} as ${enumDef.name}`);
-        lines.push(`from .${fileName(canonicalName)} import ${canonicalName}Values as ${enumDef.name}Values`);
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalName}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName} as ${enumDef.name}`);
-        lines.push(
-          `from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName}Values as ${enumDef.name}Values`,
-        );
+        lines.push(`from ${ctx.namespace}.${canonicalDir}.models import ${canonicalName}`);
       }
+      lines.push('');
+      lines.push(`${enumDef.name} = ${canonicalName}`);
+      lines.push(`__all__ = ["${enumDef.name}"]`);
       files.push({
-        path: `${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
         content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
       });
       continue;
     }
 
     const lines: string[] = [];
 
-    if (enumDef.description) {
-      lines.push(`"""${enumDef.description}"""`);
-    } else {
-      const readable = enumDef.name
-        .replace(/([A-Z])/g, ' $1')
-        .trim()
-        .toLowerCase();
-      lines.push(`"""Enumeration of ${readable} values."""`);
-    }
+    const readable = humanizeClassName(enumDef.name);
+    lines.push(`"""Enumeration of ${readable} values."""`);
     lines.push('');
     lines.push('from __future__ import annotations');
     lines.push('');
-    lines.push('from typing import Union');
-    lines.push('from typing_extensions import Literal, TypeAlias');
-    lines.push('');
 
     if (enumDef.values.length === 0) {
+      lines.push('from typing import Union');
+      lines.push('from typing_extensions import TypeAlias');
+      lines.push('');
       lines.push(`${enumDef.name}: TypeAlias = str`);
     } else {
       // Deduplicate values that produce the same string
@@ -97,15 +104,39 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         }
       }
 
-      const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
-      lines.push(`${enumDef.name}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
+      // Determine if all values are strings or all integers
+      const allStrings = uniqueValues.every((v) => typeof v.value === 'string');
+      const allIntegers = uniqueValues.every((v) => typeof v.value === 'number' && Number.isInteger(v.value));
 
-      // Companion constants class for attribute access
-      lines.push('');
-      lines.push('');
-      lines.push(`class ${enumDef.name}Values:`);
-      lines.push(`    """Known values for ${enumDef.name}."""`);
-      lines.push('');
+      if (allStrings) {
+        lines.push('from enum import Enum');
+        lines.push('');
+        lines.push('');
+        lines.push(`class ${enumDef.name}(str, Enum):`);
+        lines.push(`    """Known values for ${enumDef.name}."""`);
+        lines.push('');
+      } else if (allIntegers) {
+        lines.push('from enum import IntEnum');
+        lines.push('');
+        lines.push('');
+        lines.push(`class ${enumDef.name}(IntEnum):`);
+        lines.push(`    """Known values for ${enumDef.name}."""`);
+        lines.push('');
+      } else {
+        // Mixed types — fall back to Union[Literal[...], str]
+        lines.push('from typing import Union');
+        lines.push('from typing_extensions import Literal, TypeAlias');
+        lines.push('');
+        const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
+        lines.push(`${enumDef.name}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+        continue;
+      }
 
       const usedNames = new Set<string>();
       for (const v of uniqueValues) {
@@ -118,17 +149,19 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         usedNames.add(memberName);
         const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
         if (v.description) {
-          lines.push(`    ${memberName}: str = ${valueStr}`);
+          lines.push(`    ${memberName} = ${valueStr}`);
           lines.push(`    """${v.description}"""`);
         } else {
-          lines.push(`    ${memberName}: str = ${valueStr}`);
+          lines.push(`    ${memberName} = ${valueStr}`);
         }
       }
     }
 
     files.push({
-      path: `${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+      path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
       content: lines.join('\n'),
+      integrateTarget: true,
+      overwriteExisting: true,
     });
   }
 

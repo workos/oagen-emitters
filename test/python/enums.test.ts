@@ -22,7 +22,7 @@ describe('generateEnums', () => {
     expect(generateEnums([], ctx)).toEqual([]);
   });
 
-  it('generates Union[Literal[...], str] type alias', () => {
+  it('generates str, Enum class', () => {
     const enums: Enum[] = [
       {
         name: 'Status',
@@ -56,13 +56,11 @@ describe('generateEnums', () => {
       spec: { ...emptySpec, services: [service] },
     });
     expect(files.length).toBe(1);
-    expect(files[0].content).toContain('from typing_extensions import Literal, TypeAlias');
-    expect(files[0].content).toContain('Status: TypeAlias = Union[Literal["active", "inactive", "pending"], str]');
-    // Companion constants class
-    expect(files[0].content).toContain('class StatusValues:');
-    expect(files[0].content).toContain('    ACTIVE: str = "active"');
-    expect(files[0].content).toContain('    INACTIVE: str = "inactive"');
-    expect(files[0].content).toContain('    PENDING: str = "pending"');
+    expect(files[0].content).toContain('from enum import Enum');
+    expect(files[0].content).toContain('class Status(str, Enum):');
+    expect(files[0].content).toContain('    ACTIVE = "active"');
+    expect(files[0].content).toContain('    INACTIVE = "inactive"');
+    expect(files[0].content).toContain('    PENDING = "pending"');
   });
 
   it('places enum in service directory when referenced', () => {
@@ -104,7 +102,7 @@ describe('generateEnums', () => {
       spec: { ...emptySpec, services: [service] },
     });
     expect(files.length).toBe(1);
-    expect(files[0].path).toBe('workos/organizations/models/org_status.py');
+    expect(files[0].path).toBe('src/workos/organizations/models/org_status.py');
   });
 
   it('deduplicates values that produce the same string', () => {
@@ -121,7 +119,10 @@ describe('generateEnums', () => {
 
     const files = generateEnums(enums, ctx);
     expect(files.length).toBe(1);
-    expect(files[0].content).toContain('Literal["sign-up", "sign_up", "sign up"]');
+    expect(files[0].content).toContain('class Action(str, Enum):');
+    expect(files[0].content).toContain('SIGN_UP = "sign-up"');
+    expect(files[0].content).toContain('SIGN_UP_2 = "sign_up"');
+    expect(files[0].content).toContain('SIGN_UP_3 = "sign up"');
   });
 
   it('generates type alias for structurally identical enums', () => {
@@ -148,12 +149,13 @@ describe('generateEnums', () => {
     // Canonical (alphabetically first) should be a full enum
     const canonical = files.find((f) => f.path.includes('connection_type.py') && !f.path.includes('profile'))!;
     expect(canonical).toBeDefined();
-    expect(canonical.content).toContain('Literal["saml", "oidc"]');
+    expect(canonical.content).toContain('class ConnectionType(str, Enum):');
 
-    // Alias should import from canonical
+    // Alias should import canonical and create assignment alias
     const alias = files.find((f) => f.path.includes('profile_connection_type.py'))!;
     expect(alias).toBeDefined();
-    expect(alias.content).toContain('ConnectionType as ProfileConnectionType');
+    expect(alias.content).toContain('import ConnectionType');
+    expect(alias.content).toContain('ProfileConnectionType = ConnectionType');
     expect(alias.content).not.toContain('Literal');
   });
 
@@ -170,7 +172,8 @@ describe('generateEnums', () => {
 
     const files = generateEnums(enums, ctx);
     expect(files.length).toBe(1);
-    expect(files[0].content).toContain('Union[Literal["admin", "member"], str]');
+    expect(files[0].content).toContain('class Role(str, Enum):');
+    expect(files[0].content).toContain('ADMIN = "admin"');
     expect(files[0].content).toContain('Administrator role');
   });
 });
