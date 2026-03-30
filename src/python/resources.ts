@@ -42,7 +42,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
-    lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union');
+    lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
     lines.push('    from .._client import AsyncWorkOS, WorkOS');
@@ -324,15 +324,30 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push('        idempotency_key: Optional[str] = None,');
       }
 
+      // Per-operation Bearer token auth (e.g., SSO.get_profile uses access_token instead of API key)
+      const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
+      if (hasBearerOverride) {
+        const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
+        lines.push(`        ${fieldName(tokenParamName)}: str,`);
+      }
+
       lines.push('        request_options: Optional[RequestOptions] = None,');
+
+      // Detect array response type
+      const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
+      const isRedirect = isRedirectEndpoint(op);
 
       // Return type
       let returnType: string;
       if (isDelete) {
         returnType = 'None';
+      } else if (isRedirect) {
+        returnType = 'str';
       } else if (isPaginated) {
         const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
         returnType = `SyncPage[${className(resolvedItem)}]`;
+      } else if (isArrayResponse) {
+        returnType = `List[${className(plan.responseModelName!)}]`;
       } else if (plan.responseModelName) {
         returnType = className(plan.responseModelName);
       } else {
@@ -406,18 +421,57 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push(`            ${returnType}`);
       }
 
+      // Per-operation error documentation from spec error responses
+      const errorRaises = buildErrorRaisesBlock(op);
       lines.push('');
       lines.push('        Raises:');
-      lines.push('            AuthenticationError: If the API key is invalid (401).');
-      lines.push('            RateLimitExceededError: If rate limited (429).');
-      lines.push('            ServerError: If the server returns a 5xx error.');
+      for (const line of errorRaises) {
+        lines.push(`            ${line}`);
+      }
       lines.push('        """');
 
       // Method body — build path
       const pathStr = buildPathString(op);
       const httpMethod = op.httpMethod;
 
-      if (isPaginated) {
+      // Emit auth override for per-operation Bearer token security
+      if (hasBearerOverride) {
+        const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+        lines.push(`        request_options = request_options or {}`);
+        lines.push(
+          `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,
+        );
+      }
+
+      if (isRedirect) {
+        // Redirect endpoint: construct URL client-side instead of making HTTP request
+        const bodyModel =
+          plan.hasBody && op.requestBody?.kind === 'model'
+            ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
+            : undefined;
+        const redirectParamEntries: { key: string; varName: string }[] = [];
+        if (bodyModel) {
+          for (const f of bodyModel.fields) {
+            redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
+          }
+        }
+        for (const param of op.queryParams) {
+          const pn = fieldName(param.name);
+          if (!redirectParamEntries.some((e) => e.varName === pn)) {
+            redirectParamEntries.push({ key: param.name, varName: pn });
+          }
+        }
+        if (redirectParamEntries.length > 0) {
+          lines.push('        params = {k: v for k, v in {');
+          for (const entry of redirectParamEntries) {
+            lines.push(`            "${entry.key}": ${entry.varName},`);
+          }
+          lines.push('        }.items() if v is not None}');
+          lines.push(`        return self._client.build_url(${pathStr}, params)`);
+        } else {
+          lines.push(`        return self._client.build_url(${pathStr})`);
+        }
+      } else if (isPaginated) {
         const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
         const itemTypeClass = className(resolvedItemName);
         // Build query params dict
@@ -518,23 +572,43 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         }
         // Build query params dict if any exist alongside the body
         const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
-        const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
         const bodyVarName = bodyModel ? 'body' : '_body';
-        lines.push(`        ${bodyReturnPrefix}self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        lines.push(`            body=${bodyVarName},`);
-        if (bodyHasParams) {
-          lines.push('            params=params,');
+        if (isArrayResponse) {
+          // Array response with body: request without model, then deserialize each item
+          const itemModel = className(plan.responseModelName!);
+          lines.push(`        raw = self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          lines.push(`            body=${bodyVarName},`);
+          if (bodyHasParams) {
+            lines.push('            params=params,');
+          }
+          if (plan.isIdempotentPost) {
+            lines.push('            idempotency_key=idempotency_key,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
+          lines.push(
+            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+          );
+        } else {
+          const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
+          lines.push(`        ${bodyReturnPrefix}self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          lines.push(`            body=${bodyVarName},`);
+          if (bodyHasParams) {
+            lines.push('            params=params,');
+          }
+          if (responseModel !== 'None') {
+            lines.push(`            model=${responseModel},`);
+          }
+          if (plan.isIdempotentPost) {
+            lines.push('            idempotency_key=idempotency_key,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
         }
-        if (responseModel !== 'None') {
-          lines.push(`            model=${responseModel},`);
-        }
-        if (plan.isIdempotentPost) {
-          lines.push('            idempotency_key=idempotency_key,');
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
       } else {
         // GET or similar with query params
         const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
@@ -554,18 +628,34 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             lines.push('        }');
           }
         }
-        const returnPrefix = responseModel !== 'None' ? 'return ' : '';
-        lines.push(`        ${returnPrefix}self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        if (plan.hasQueryParams) {
-          lines.push('            params=params,');
+        if (isArrayResponse) {
+          // Array response: request without model, then deserialize each item
+          const itemModel = className(plan.responseModelName!);
+          lines.push('        raw = self._client.request(');
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          if (plan.hasQueryParams) {
+            lines.push('            params=params,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
+          lines.push(
+            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+          );
+        } else {
+          const returnPrefix = responseModel !== 'None' ? 'return ' : '';
+          lines.push(`        ${returnPrefix}self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          if (plan.hasQueryParams) {
+            lines.push('            params=params,');
+          }
+          if (responseModel !== 'None') {
+            lines.push(`            model=${responseModel},`);
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
         }
-        if (responseModel !== 'None') {
-          lines.push(`            model=${responseModel},`);
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
       }
     }
 
@@ -687,14 +777,29 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push('        idempotency_key: Optional[str] = None,');
       }
 
+      // Per-operation Bearer token auth (async)
+      const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
+      if (hasBearerOverride) {
+        const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
+        lines.push(`        ${fieldName(tokenParamName)}: str,`);
+      }
+
       lines.push('        request_options: Optional[RequestOptions] = None,');
+
+      // Detect array response type (async)
+      const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
+      const isRedirect = isRedirectEndpoint(op);
 
       let returnType: string;
       if (isDelete) {
         returnType = 'None';
+      } else if (isRedirect) {
+        returnType = 'str';
       } else if (isPaginated) {
         const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
         returnType = `AsyncPage[${className(resolvedItem)}]`;
+      } else if (isArrayResponse) {
+        returnType = `List[${className(plan.responseModelName!)}]`;
       } else if (plan.responseModelName) {
         returnType = className(plan.responseModelName);
       } else {
@@ -764,17 +869,56 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push(`            ${returnType}`);
       }
 
+      // Per-operation error documentation from spec error responses
+      const asyncErrorRaises = buildErrorRaisesBlock(op);
       lines.push('');
       lines.push('        Raises:');
-      lines.push('            AuthenticationError: If the API key is invalid (401).');
-      lines.push('            RateLimitExceededError: If rate limited (429).');
-      lines.push('            ServerError: If the server returns a 5xx error.');
+      for (const line of asyncErrorRaises) {
+        lines.push(`            ${line}`);
+      }
       lines.push('        """');
 
       const pathStr = buildPathString(op);
       const httpMethod = op.httpMethod;
 
-      if (isPaginated) {
+      // Emit auth override for per-operation Bearer token security (async)
+      if (hasBearerOverride) {
+        const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+        lines.push(`        request_options = request_options or {}`);
+        lines.push(
+          `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,
+        );
+      }
+
+      if (isRedirect) {
+        // Redirect endpoint: construct URL client-side (async version, same logic)
+        const bodyModel =
+          plan.hasBody && op.requestBody?.kind === 'model'
+            ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
+            : undefined;
+        const redirectParamEntries: { key: string; varName: string }[] = [];
+        if (bodyModel) {
+          for (const f of bodyModel.fields) {
+            redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
+          }
+        }
+        for (const param of op.queryParams) {
+          const pn = fieldName(param.name);
+          if (!redirectParamEntries.some((e) => e.varName === pn)) {
+            redirectParamEntries.push({ key: param.name, varName: pn });
+          }
+        }
+        if (redirectParamEntries.length > 0) {
+          lines.push('        params = {k: v for k, v in {');
+          for (const entry of redirectParamEntries) {
+            lines.push(`            "${entry.key}": ${entry.varName},`);
+          }
+          lines.push('        }.items() if v is not None}');
+          lines.push(`        return self._client.build_url(${pathStr}, params)`);
+        } else {
+          lines.push(`        return self._client.build_url(${pathStr})`);
+        }
+      } else if (isPaginated) {
         const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
         const itemTypeClass = className(resolvedItemName);
         lines.push('        params = {k: v for k, v in {');
@@ -871,22 +1015,42 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         const asyncBodyHasParams =
           plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, asyncBodyFieldNamesSet);
         const asyncBodyVarName = bodyModel ? 'body' : '_body';
-        const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
-        lines.push(`        ${bodyReturnPrefix}await self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        lines.push(`            body=${asyncBodyVarName},`);
-        if (asyncBodyHasParams) {
-          lines.push('            params=params,');
+        if (isArrayResponse) {
+          // Array response with body: request without model, then deserialize each item
+          const itemModel = className(plan.responseModelName!);
+          lines.push(`        raw = await self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          lines.push(`            body=${asyncBodyVarName},`);
+          if (asyncBodyHasParams) {
+            lines.push('            params=params,');
+          }
+          if (plan.isIdempotentPost) {
+            lines.push('            idempotency_key=idempotency_key,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
+          lines.push(
+            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+          );
+        } else {
+          const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
+          lines.push(`        ${bodyReturnPrefix}await self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          lines.push(`            body=${asyncBodyVarName},`);
+          if (asyncBodyHasParams) {
+            lines.push('            params=params,');
+          }
+          if (responseModel !== 'None') {
+            lines.push(`            model=${responseModel},`);
+          }
+          if (plan.isIdempotentPost) {
+            lines.push('            idempotency_key=idempotency_key,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
         }
-        if (responseModel !== 'None') {
-          lines.push(`            model=${responseModel},`);
-        }
-        if (plan.isIdempotentPost) {
-          lines.push('            idempotency_key=idempotency_key,');
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
       } else {
         const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
         if (plan.hasQueryParams) {
@@ -905,18 +1069,34 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
             lines.push('        }');
           }
         }
-        const returnPrefix = responseModel !== 'None' ? 'return ' : '';
-        lines.push(`        ${returnPrefix}await self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        if (plan.hasQueryParams) {
-          lines.push('            params=params,');
+        if (isArrayResponse) {
+          // Array response: request without model, then deserialize each item
+          const itemModel = className(plan.responseModelName!);
+          lines.push('        raw = await self._client.request(');
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          if (plan.hasQueryParams) {
+            lines.push('            params=params,');
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
+          lines.push(
+            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+          );
+        } else {
+          const returnPrefix = responseModel !== 'None' ? 'return ' : '';
+          lines.push(`        ${returnPrefix}await self._client.request(`);
+          lines.push(`            method="${httpMethod}",`);
+          lines.push(`            path=${pathStr},`);
+          if (plan.hasQueryParams) {
+            lines.push('            params=params,');
+          }
+          if (responseModel !== 'None') {
+            lines.push(`            model=${responseModel},`);
+          }
+          lines.push('            request_options=request_options,');
+          lines.push('        )');
         }
-        if (responseModel !== 'None') {
-          lines.push(`            model=${responseModel},`);
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
       }
     }
 
@@ -967,22 +1147,22 @@ function emitQueryParamsDict(
 
 /**
  * Serialize a body field value for inclusion in a request body dict.
- * Calls .to_dict() on model fields and [item.to_dict() for item in ...] on arrays of models.
+ * Calls .to_dict() directly on model fields since types are known at generation time.
+ * For arrays of models, maps each item through .to_dict().
  */
 function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
   if (effectiveType.kind === 'model') {
-    // Accept both model instances (.to_dict()) and plain dicts
     if (!isRequired) {
-      return `(${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}) if ${varName} is not None else None`;
+      return `${varName}.to_dict() if ${varName} is not None else None`;
     }
-    return `${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}`;
+    return `${varName}.to_dict()`;
   }
   if (effectiveType.kind === 'array' && effectiveType.items?.kind === 'model') {
     if (!isRequired) {
-      return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}] if ${varName} is not None else None`;
+      return `[item.to_dict() for item in ${varName}] if ${varName} is not None else None`;
     }
-    return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}]`;
+    return `[item.to_dict() for item in ${varName}]`;
   }
   return varName;
 }
@@ -1006,6 +1186,85 @@ export function resolvePageItemName(
     return itemType.name;
   }
   return 'dict';
+}
+
+/**
+ * Check if an operation is a redirect endpoint that should construct a URL
+ * instead of making an HTTP request.
+ *
+ * Detection: GET endpoints with no response body (primitive unknown) are redirect
+ * endpoints — e.g., SSO/OAuth authorize and logout flows that redirect the browser.
+ * Also catches endpoints with 302 success responses when the parser includes them.
+ */
+function isRedirectEndpoint(op: Operation): boolean {
+  // Explicit 302 in success responses
+  if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) {
+    return true;
+  }
+  // GET with no response body (primitive unknown) = browser redirect endpoint
+  if (
+    op.httpMethod === 'get' &&
+    op.response.kind === 'primitive' &&
+    op.response.type === 'unknown' &&
+    op.queryParams.length > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Map HTTP status codes to Python error class names for per-operation Raises: documentation.
+ * Falls back to a baseline set (401, 429, 5xx) when the operation has no explicit errors.
+ */
+const STATUS_TO_ERROR: Record<number, string> = {
+  400: 'BadRequestError',
+  401: 'AuthenticationError',
+  403: 'ForbiddenError',
+  404: 'NotFoundError',
+  409: 'ConflictError',
+  422: 'UnprocessableEntityError',
+  429: 'RateLimitExceededError',
+};
+
+const STATUS_TO_DESC: Record<number, string> = {
+  400: 'If the request is malformed (400).',
+  401: 'If the API key is invalid (401).',
+  403: 'If the request is forbidden (403).',
+  404: 'If the resource is not found (404).',
+  409: 'If a conflict occurs (409).',
+  422: 'If the request data is unprocessable (422).',
+  429: 'If rate limited (429).',
+};
+
+function buildErrorRaisesBlock(op: Operation): string[] {
+  const lines: string[] = [];
+  const emittedCodes = new Set<number>();
+
+  if (op.errors.length > 0) {
+    // Use per-operation error responses from the spec
+    for (const err of op.errors) {
+      const errorClass = STATUS_TO_ERROR[err.statusCode];
+      const desc = STATUS_TO_DESC[err.statusCode];
+      if (errorClass && !emittedCodes.has(err.statusCode)) {
+        lines.push(`${errorClass}: ${desc}`);
+        emittedCodes.add(err.statusCode);
+      }
+    }
+    // Always include 5xx
+    if (!emittedCodes.has(500)) {
+      lines.push('ServerError: If the server returns a 5xx error.');
+    }
+  }
+
+  // Fall back to baseline if no specific errors documented
+  if (lines.length === 0) {
+    lines.push('AuthenticationError: If the API key is invalid (401).');
+    lines.push('RateLimitExceededError: If rate limited (429).');
+    lines.push('ServerError: If the server returns a 5xx error.');
+  }
+
+  return lines;
 }
 
 /**

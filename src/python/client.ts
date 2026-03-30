@@ -230,16 +230,34 @@ function buildDelegateSignature(
     forwardArgs.push('idempotency_key=idempotency_key');
   }
 
+  // Per-operation Bearer token auth
+  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
+  if (hasBearerOverride) {
+    const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
+    const pyName = tokenParamName
+      .replace(/([A-Z])/g, '_$1')
+      .toLowerCase()
+      .replace(/^_/, '');
+    sigParams.push(`${pyName}: str`);
+    forwardArgs.push(`${pyName}=${pyName}`);
+  }
+
   sigParams.push('request_options: Optional[RequestOptions] = None');
   forwardArgs.push('request_options=request_options');
 
   // Return type
+  const isRedirect = op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400) ?? false;
+  const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
   let returnType: string;
   if (plan.isDelete) {
     returnType = 'None';
+  } else if (isRedirect) {
+    returnType = 'str';
   } else if (isPaginated) {
     const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
     returnType = `SyncPage[${className(resolvedItem)}]`;
+  } else if (isArrayResponse) {
+    returnType = `List[${className(plan.responseModelName!)}]`;
   } else if (plan.responseModelName) {
     returnType = className(plan.responseModelName);
   } else {
@@ -408,6 +426,14 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('INITIAL_RETRY_DELAY = 0.5');
   lines.push('MAX_RETRY_DELAY = 8.0');
   lines.push('RETRY_MULTIPLIER = 2.0');
+  lines.push('');
+  lines.push('');
+  lines.push('def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
+  lines.push('    """Calculate retry delay with exponential backoff and jitter."""');
+  lines.push('    if retry_after:');
+  lines.push('        return float(retry_after)');
+  lines.push('    delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
+  lines.push('    return delay * (0.5 + random.random())');
 
   // --- Sync namespace classes (composition, not inheritance) ---
   for (const ns of namespaces) {
@@ -580,6 +606,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """The base URL for API requests."""');
   lines.push('        return self._base_url');
 
+  lines.push('');
+  lines.push('    def build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:');
+  lines.push('        """Build a full URL with query parameters for redirect/authorization endpoints."""');
+  lines.push('        from urllib.parse import urlencode');
+  lines.push('        url = f"{self._base_url}/{path}"');
+  lines.push('        if params:');
+  lines.push('            url = f"{url}?{urlencode(params)}"');
+  lines.push('        return url');
+
   // P0-4: close / context manager
   lines.push('');
   lines.push('    def close(self) -> None:');
@@ -685,15 +720,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                )');
   lines.push('');
   lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < self._max_retries:');
-  lines.push('                    retry_after = response.headers.get("Retry-After")');
-  lines.push('                    if retry_after:');
-  lines.push('                        delay = float(retry_after)');
-  lines.push('                    else:');
-  lines.push('                        delay = min(');
-  lines.push('                            INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                            MAX_RETRY_DELAY,');
-  lines.push('                        )');
-  lines.push('                        delay = delay * (0.5 + random.random())');
+  lines.push('                    delay = _calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
   lines.push('                    time.sleep(delay)');
   lines.push('                    continue');
   lines.push('');
@@ -712,34 +739,19 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            except httpx.TimeoutException as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    time.sleep(delay)');
+  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    time.sleep(delay)');
+  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    time.sleep(delay)');
+  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
   lines.push('');
@@ -828,6 +840,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    def base_url(self) -> str:');
   lines.push('        """The base URL for API requests."""');
   lines.push('        return self._base_url');
+
+  lines.push('');
+  lines.push('    def build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:');
+  lines.push('        """Build a full URL with query parameters for redirect/authorization endpoints."""');
+  lines.push('        from urllib.parse import urlencode');
+  lines.push('        url = f"{self._base_url}/{path}"');
+  lines.push('        if params:');
+  lines.push('            url = f"{url}?{urlencode(params)}"');
+  lines.push('        return url');
 
   // async close / context manager
   lines.push('');
@@ -932,15 +953,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                )');
   lines.push('');
   lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < self._max_retries:');
-  lines.push('                    retry_after = response.headers.get("Retry-After")');
-  lines.push('                    if retry_after:');
-  lines.push('                        delay = float(retry_after)');
-  lines.push('                    else:');
-  lines.push('                        delay = min(');
-  lines.push('                            INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                            MAX_RETRY_DELAY,');
-  lines.push('                        )');
-  lines.push('                        delay = delay * (0.5 + random.random())');
+  lines.push('                    delay = _calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
   lines.push('                    await asyncio.sleep(delay)');
   lines.push('                    continue');
   lines.push('');
@@ -958,34 +971,19 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            except httpx.TimeoutException as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    await asyncio.sleep(delay)');
+  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    await asyncio.sleep(delay)');
+  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < self._max_retries:');
-  lines.push('                    delay = min(');
-  lines.push('                        INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt),');
-  lines.push('                        MAX_RETRY_DELAY,');
-  lines.push('                    )');
-  lines.push('                    delay = delay * (0.5 + random.random())');
-  lines.push('                    await asyncio.sleep(delay)');
+  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
   lines.push('');
@@ -1193,6 +1191,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.30.0",
     "ruff>=0.4.0",
 ]
