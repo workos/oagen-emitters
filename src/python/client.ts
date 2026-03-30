@@ -344,8 +344,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         delegateModelImports.add(paginationItemName);
       }
       if (op.requestBody?.kind === 'model') {
-        delegateModelImports.add(op.requestBody.name);
-        const bodyModel = ctx.spec.models.find((m) => m.name === op.requestBody?.name);
+        const requestBodyName = op.requestBody.name;
+        delegateModelImports.add(requestBodyName);
+        const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
         if (bodyModel) {
           for (const f of bodyModel.fields) {
             for (const ref of collectModelRefs(f.type)) delegateModelImports.add(ref);

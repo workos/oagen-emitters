@@ -444,7 +444,7 @@ function pickAssertableFields(
   if (!model) return [];
 
   const fixture = generateModelFixture(model, modelMap, enumMap);
-  const results: { field: string; value: string }[] = [];
+  const results: { field: string; value: string; isBool?: boolean }[] = [];
 
   for (const f of model.fields) {
     if (results.length >= maxFields) break;
@@ -493,7 +493,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
   // Required body fields as keyword args (matching the expanded-field signature)
   const plan = planOperation(op);
   if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = spec.models.find((m) => m.name === op.requestBody!.name);
+    const requestBodyName = op.requestBody.name;
+    const bodyModel = spec.models.find((m) => m.name === requestBodyName);
     if (bodyModel) {
       const reqFields = bodyModel.fields.filter((f) => f.required && !pathParamNames.has(fieldName(f.name)));
       for (const f of reqFields) {
@@ -518,7 +519,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
       if (plan.hasBody && op.requestBody?.kind === 'model') {
-        const bodyModel = spec.models.find((m) => m.name === op.requestBody!.name);
+        const rbName = op.requestBody.name;
+        const bodyModel = spec.models.find((m) => m.name === rbName);
         if (bodyModel?.fields.some((f) => fieldName(f.name) === fieldName(param.name))) continue;
       }
       if (param.required && !pathParamNames.has(fieldName(param.name))) {

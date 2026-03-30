@@ -223,7 +223,8 @@ function emitMethodDocstring(
   // Add body model fields to docs
   if (plan.hasBody && op.requestBody) {
     if (op.requestBody.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => m.name === op.requestBody!.name);
+      const requestBodyName = op.requestBody.name;
+      const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
       if (bodyModel) {
         for (const f of bodyModel.fields) {
           allParams.push({ name: bodyParamName(f, pathParamNames), desc: f.description });
