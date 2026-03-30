@@ -401,7 +401,6 @@ function generateServiceTest(
       lines.push('        assert isinstance(result, str)');
       lines.push('        assert result.startswith("http")');
     } else if (isAsyncArrayResponse) {
-      const modelClass = className(plan.responseModelName!);
       const fixtureName = `${fileName(plan.responseModelName!)}.json`;
       lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
