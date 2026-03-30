@@ -12,7 +12,7 @@ export function generateConfig(ctx?: EmitterContext): GeneratedFile[] {
     path: `src/${namespace}/_types.py`,
     content: `from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, Protocol, TypeVar
+from typing import Any, Dict, Protocol, TypeVar
 from typing_extensions import TypedDict
 
 
@@ -21,6 +21,9 @@ class RequestOptions(TypedDict, total=False):
 
     extra_headers: Dict[str, str]
     timeout: float
+    idempotency_key: str
+    max_retries: int
+    base_url: str
 
 
 class Deserializable(Protocol):
@@ -61,11 +64,6 @@ class SyncPage(Generic[T]):
         """Cursor for the next page, if available."""
         return self.list_metadata.get("after")
 
-    @property
-    def before(self) -> Optional[str]:
-        """Cursor for the previous page, if available."""
-        return self.list_metadata.get("before")
-
     def has_more(self) -> bool:
         """Whether there are more pages available."""
         return self.after is not None
@@ -75,6 +73,8 @@ class SyncPage(Generic[T]):
         page = self
         while True:
             yield from page.data
+            if not page.data:
+                break
             if not page.has_more() or page._fetch_page is None:
                 break
             page = page._fetch_page(after=page.after)
@@ -93,11 +93,6 @@ class AsyncPage(Generic[T]):
         """Cursor for the next page, if available."""
         return self.list_metadata.get("after")
 
-    @property
-    def before(self) -> Optional[str]:
-        """Cursor for the previous page, if available."""
-        return self.list_metadata.get("before")
-
     def has_more(self) -> bool:
         """Whether there are more pages available."""
         return self.after is not None
@@ -108,6 +103,8 @@ class AsyncPage(Generic[T]):
         while True:
             for item in page.data:
                 yield item
+            if not page.data:
+                break
             if not page.has_more() or page._fetch_page is None:
                 break
             page = await page._fetch_page(after=page.after)`,

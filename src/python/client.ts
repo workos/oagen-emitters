@@ -1,15 +1,7 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
+import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
-import { mapTypeRefUnquoted } from './type-map.js';
-import {
-  className,
-  fieldName,
-  resolveServiceDir,
-  servicePropertyName,
-  resolveMethodName,
-  buildServiceNameMap,
-} from './naming.js';
-import { resolveResourceClassName, resolvePageItemName, bodyParamName } from './resources.js';
+import { className, resolveServiceDir, servicePropertyName, buildServiceNameMap } from './naming.js';
+import { resolveResourceClassName } from './resources.js';
 
 /**
  * Generate the main Python client class, barrel __init__.py files,
@@ -113,166 +105,10 @@ export function groupServicesByNamespace(
   return { standalone: filteredStandalone, namespaces };
 }
 
-/**
- * Build typed delegate parameters and forward args for a namespace wrapper method.
- * Returns { sigParams: string[], forwardArgs: string[], returnType: string }
- * where sigParams are the `name: Type` parameter strings (excluding self) and
- * forwardArgs are the `name=name` keyword forwarding strings.
- */
-function buildDelegateSignature(
-  op: Operation,
-  service: Service,
-  ctx: EmitterContext,
-  specEnumNames: Set<string>,
-  listWrapperNames: Set<string>,
-): { sigParams: string[]; forwardArgs: string[]; returnType: string } {
-  const plan = planOperation(op);
-  const sigParams: string[] = [];
-  const forwardArgs: string[] = [];
-
-  // Path params as positional args
-  for (const param of op.pathParams) {
-    const pn = fieldName(param.name);
-    const pt = mapTypeRefUnquoted(param.type, specEnumNames);
-    sigParams.push(`${pn}: ${pt}`);
-    forwardArgs.push(pn);
-  }
-
-  // Keyword-only marker
-  sigParams.push('*');
-
-  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-
-  // Body fields
-  if (plan.hasBody && op.requestBody) {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-    if (bodyModel) {
-      const reqFields = bodyModel.fields.filter((f) => f.required);
-      const optFields = bodyModel.fields.filter((f) => !f.required);
-      for (const f of reqFields) {
-        const fn = bodyParamName(f, pathParamNames);
-        sigParams.push(`${fn}: ${mapTypeRefUnquoted(f.type, specEnumNames)}`);
-        forwardArgs.push(`${fn}=${fn}`);
-      }
-      for (const f of optFields) {
-        const fn = bodyParamName(f, pathParamNames);
-        const innerType =
-          f.type.kind === 'nullable'
-            ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
-            : mapTypeRefUnquoted(f.type, specEnumNames);
-        sigParams.push(`${fn}: Optional[${innerType}] = None`);
-        forwardArgs.push(`${fn}=${fn}`);
-      }
-    } else if (op.requestBody.kind === 'union') {
-      const variantModels = (op.requestBody.variants ?? [])
-        .filter((v: any) => v.kind === 'model')
-        .map((v: any) => className(v.name));
-      if (variantModels.length > 0) {
-        const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
-        sigParams.push(`body: ${unionType}`);
-      } else {
-        sigParams.push('body: Dict[str, Any]');
-      }
-      forwardArgs.push('body=body');
-    } else {
-      sigParams.push('body: Optional[Dict[str, Any]] = None');
-      forwardArgs.push('body=body');
-    }
-  }
-
-  // Query params
-  const isPaginated = plan.isPaginated;
-  if (plan.hasQueryParams && !isPaginated) {
-    for (const param of op.queryParams) {
-      const pn = fieldName(param.name);
-      if (pathParamNames.has(pn)) continue;
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        if (bodyModel?.fields.some((f) => fieldName(f.name) === pn)) continue;
-      }
-      const pt = mapTypeRefUnquoted(param.type, specEnumNames);
-      if (param.required) {
-        sigParams.push(`${pn}: ${pt}`);
-      } else {
-        sigParams.push(`${pn}: Optional[${pt}] = None`);
-      }
-      forwardArgs.push(`${pn}=${pn}`);
-    }
-  }
-
-  // Pagination params
-  if (isPaginated) {
-    sigParams.push('limit: Optional[int] = None');
-    sigParams.push('before: Optional[str] = None');
-    sigParams.push('after: Optional[str] = None');
-    const orderParam = op.queryParams.find((p) => p.name === 'order');
-    const orderType =
-      orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames) : 'str';
-    sigParams.push(`order: Optional[${orderType}] = None`);
-    forwardArgs.push('limit=limit', 'before=before', 'after=after', 'order=order');
-    for (const param of op.queryParams) {
-      if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-      const pn = fieldName(param.name);
-      const pt = mapTypeRefUnquoted(param.type, specEnumNames);
-      if (param.required) {
-        sigParams.push(`${pn}: ${pt}`);
-      } else {
-        sigParams.push(`${pn}: Optional[${pt}] = None`);
-      }
-      forwardArgs.push(`${pn}=${pn}`);
-    }
-  }
-
-  if (plan.isIdempotentPost) {
-    sigParams.push('idempotency_key: Optional[str] = None');
-    forwardArgs.push('idempotency_key=idempotency_key');
-  }
-
-  // Per-operation Bearer token auth
-  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
-  if (hasBearerOverride) {
-    const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
-    const pyName = tokenParamName
-      .replace(/([A-Z])/g, '_$1')
-      .toLowerCase()
-      .replace(/^_/, '');
-    sigParams.push(`${pyName}: str`);
-    forwardArgs.push(`${pyName}=${pyName}`);
-  }
-
-  sigParams.push('request_options: Optional[RequestOptions] = None');
-  forwardArgs.push('request_options=request_options');
-
-  // Return type
-  const isRedirect = op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400) ?? false;
-  const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
-  let returnType: string;
-  if (plan.isDelete) {
-    returnType = 'None';
-  } else if (isRedirect) {
-    returnType = 'str';
-  } else if (isPaginated) {
-    const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-    returnType = `SyncPage[${className(resolvedItem)}]`;
-  } else if (isArrayResponse) {
-    returnType = `List[${className(plan.responseModelName!)}]`;
-  } else if (plan.responseModelName) {
-    returnType = className(plan.responseModelName);
-  } else {
-    returnType = 'None';
-  }
-
-  return { sigParams, forwardArgs, returnType };
-}
-
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const lines: string[] = [];
   const { standalone, namespaces } = groupServicesByNamespace(spec.services, ctx);
 
-  // Build sets needed for typed delegate signatures
-  const specEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
   const listWrapperNames = new Set<string>();
   for (const m of ctx.spec.models) {
     const dataField = m.fields.find((f) => f.name === 'data');
@@ -427,74 +263,25 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('INITIAL_RETRY_DELAY = 0.5');
   lines.push('MAX_RETRY_DELAY = 8.0');
   lines.push('RETRY_MULTIPLIER = 2.0');
-  lines.push('');
-  lines.push('');
-  lines.push('def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
-  lines.push('    """Calculate retry delay with exponential backoff and jitter."""');
-  lines.push('    if retry_after:');
-  lines.push('        return float(retry_after)');
-  lines.push('    delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
-  lines.push('    return delay * (0.5 + random.random())');
 
-  // --- Sync namespace classes (composition, not inheritance) ---
+  // --- Sync namespace classes ---
   for (const ns of namespaces) {
     const nsClassName = className(ns.prefix) + 'Namespace';
+    const baseClass = ns.baseEntry ? ns.baseEntry.resolvedName : 'object';
     lines.push('');
     lines.push('');
-    lines.push(`class ${nsClassName}:`);
+    lines.push(`class ${nsClassName}(${baseClass}):`);
     lines.push(`    """${className(ns.prefix)} resources."""`);
     lines.push('');
     lines.push('    def __init__(self, client: "WorkOS") -> None:');
-    lines.push('        self._client = client');
+    if (ns.baseEntry) {
+      lines.push('        super().__init__(client)');
+    } else {
+      lines.push('        self._client = client');
+    }
 
-    // If there is a base entry, expose it as a composed property and delegate its methods
     if (ns.baseEntry) {
       lines.push('');
-      lines.push('    @functools.cached_property');
-      lines.push(`    def _base(self) -> ${ns.baseEntry.resolvedName}:`);
-      lines.push(`        return ${ns.baseEntry.resolvedName}(self._client)`);
-
-      // Find the base service to get its operations and generate typed delegation methods
-      const baseSvc = ns.baseEntry.service;
-      const emittedDelegates = new Set<string>();
-      for (const op of baseSvc.operations) {
-        const method = resolveMethodName(op, baseSvc, ctx);
-        if (emittedDelegates.has(method)) continue;
-        emittedDelegates.add(method);
-
-        const { sigParams, forwardArgs, returnType } = buildDelegateSignature(
-          op,
-          baseSvc,
-          ctx,
-          specEnumNames,
-          listWrapperNames,
-        );
-
-        // Build the signature line: positional params, then *, then keyword params
-        const positionalParams = sigParams.slice(0, sigParams.indexOf('*'));
-        const kwParams = sigParams.slice(sigParams.indexOf('*') + 1);
-
-        lines.push('');
-        lines.push(`    def ${method}(`);
-        lines.push('        self,');
-        for (const p of positionalParams) {
-          lines.push(`        ${p},`);
-        }
-        if (kwParams.length > 0) {
-          lines.push('        *,');
-          for (const p of kwParams) {
-            lines.push(`        ${p},`);
-          }
-        }
-        lines.push(`    ) -> ${returnType}:`);
-        lines.push(`        """Delegate to base resource."""`);
-
-        // Build forward call: positional args first, then keyword args
-        const positionalForward = forwardArgs.filter((a) => !a.includes('='));
-        const kwForward = forwardArgs.filter((a) => a.includes('='));
-        const allForward = [...positionalForward, ...kwForward].join(', ');
-        lines.push(`        return self._base.${method}(${allForward})`);
-      }
     }
 
     for (const entry of ns.entries) {
@@ -505,63 +292,24 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     }
   }
 
-  // --- Async namespace classes (composition, not inheritance) ---
+  // --- Async namespace classes ---
   for (const ns of namespaces) {
     const asyncNsClassName = 'Async' + className(ns.prefix) + 'Namespace';
+    const baseClass = ns.baseEntry ? `Async${ns.baseEntry.resolvedName}` : 'object';
     lines.push('');
     lines.push('');
-    lines.push(`class ${asyncNsClassName}:`);
+    lines.push(`class ${asyncNsClassName}(${baseClass}):`);
     lines.push(`    """${className(ns.prefix)} resources (async)."""`);
     lines.push('');
     lines.push('    def __init__(self, client: "AsyncWorkOS") -> None:');
-    lines.push('        self._client = client');
+    if (ns.baseEntry) {
+      lines.push('        super().__init__(client)');
+    } else {
+      lines.push('        self._client = client');
+    }
 
-    // If there is a base entry, compose and delegate
     if (ns.baseEntry) {
       lines.push('');
-      lines.push('    @functools.cached_property');
-      lines.push(`    def _base(self) -> Async${ns.baseEntry.resolvedName}:`);
-      lines.push(`        return Async${ns.baseEntry.resolvedName}(self._client)`);
-
-      const baseSvc = ns.baseEntry.service;
-      const asyncEmittedDelegates = new Set<string>();
-      for (const op of baseSvc.operations) {
-        const method = resolveMethodName(op, baseSvc, ctx);
-        if (asyncEmittedDelegates.has(method)) continue;
-        asyncEmittedDelegates.add(method);
-
-        const {
-          sigParams,
-          forwardArgs,
-          returnType: syncReturnType,
-        } = buildDelegateSignature(op, baseSvc, ctx, specEnumNames, listWrapperNames);
-
-        // Swap SyncPage -> AsyncPage in return type for async variant
-        const returnType = syncReturnType.replace(/^SyncPage/, 'AsyncPage');
-
-        const positionalParams = sigParams.slice(0, sigParams.indexOf('*'));
-        const kwParams = sigParams.slice(sigParams.indexOf('*') + 1);
-
-        lines.push('');
-        lines.push(`    async def ${method}(`);
-        lines.push('        self,');
-        for (const p of positionalParams) {
-          lines.push(`        ${p},`);
-        }
-        if (kwParams.length > 0) {
-          lines.push('        *,');
-          for (const p of kwParams) {
-            lines.push(`        ${p},`);
-          }
-        }
-        lines.push(`    ) -> ${returnType}:`);
-        lines.push(`        """Delegate to base resource."""`);
-
-        const positionalForward = forwardArgs.filter((a) => !a.includes('='));
-        const kwForward = forwardArgs.filter((a) => a.includes('='));
-        const allForward = [...positionalForward, ...kwForward].join(', ');
-        lines.push(`        return await self._base.${method}(${allForward})`);
-      }
     }
 
     for (const entry of ns.entries) {
@@ -572,13 +320,10 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     }
   }
 
-  // ===========================================================================
-  // WorkOS (sync) class
-  // ===========================================================================
   lines.push('');
   lines.push('');
-  lines.push('class WorkOS:');
-  lines.push('    """WorkOS API client."""');
+  lines.push('class _BaseWorkOS:');
+  lines.push('    """Shared WorkOS client implementation."""');
   lines.push('');
   lines.push('    def __init__(');
   lines.push('        self,');
@@ -592,21 +337,18 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        self._api_key = api_key or os.environ.get("WORKOS_API_KEY")');
   lines.push('        if not self._api_key:');
   lines.push('            raise ConfigurationError(');
-  lines.push('                "No API key provided. Pass it to the WorkOS constructor "');
+  lines.push('                "No API key provided. Pass it to the client constructor "');
   lines.push('                "or set the WORKOS_API_KEY environment variable."');
   lines.push('            )');
   lines.push('        self.client_id = client_id or os.environ.get("WORKOS_CLIENT_ID")');
   lines.push('        self._base_url = base_url.rstrip("/")');
   lines.push('        self._timeout = timeout');
   lines.push('        self._max_retries = max_retries');
-  lines.push('        self._client = httpx.Client(timeout=timeout)');
-
   lines.push('');
   lines.push('    @property');
   lines.push('    def base_url(self) -> str:');
   lines.push('        """The base URL for API requests."""');
   lines.push('        return self._base_url');
-
   lines.push('');
   lines.push('    def build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:');
   lines.push('        """Build a full URL with query parameters for redirect/authorization endpoints."""');
@@ -615,8 +357,96 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        if params:');
   lines.push('            url = f"{url}?{urlencode(params)}"');
   lines.push('        return url');
+  lines.push('');
+  lines.push('    @staticmethod');
+  lines.push('    def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
+  lines.push('        """Calculate retry delay with exponential backoff and jitter."""');
+  lines.push('        if retry_after:');
+  lines.push('            return float(retry_after)');
+  lines.push('        delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
+  lines.push('        return delay * (0.5 + random.random())');
+  lines.push('');
+  lines.push('    def _resolve_base_url(self, request_options: Optional[RequestOptions]) -> str:');
+  lines.push('        if request_options and request_options.get("base_url"):');
+  lines.push('            return str(request_options["base_url"]).rstrip("/")');
+  lines.push('        return self._base_url');
+  lines.push('');
+  lines.push('    def _resolve_timeout(self, request_options: Optional[RequestOptions]) -> float:');
+  lines.push('        timeout = self._timeout');
+  lines.push('        if request_options:');
+  lines.push('            t = request_options.get("timeout")');
+  lines.push('            if isinstance(t, (int, float)):');
+  lines.push('                timeout = float(t)');
+  lines.push('        return timeout');
+  lines.push('');
+  lines.push('    def _resolve_max_retries(self, request_options: Optional[RequestOptions]) -> int:');
+  lines.push('        if request_options:');
+  lines.push('            retries = request_options.get("max_retries")');
+  lines.push('            if isinstance(retries, int):');
+  lines.push('                return retries');
+  lines.push('        return self._max_retries');
+  lines.push('');
+  lines.push('    def _build_headers(');
+  lines.push('        self,');
+  lines.push('        method: str,');
+  lines.push('        idempotency_key: Optional[str],');
+  lines.push('        request_options: Optional[RequestOptions],');
+  lines.push('    ) -> Dict[str, str]:');
+  lines.push('        headers: Dict[str, str] = {');
+  lines.push('            "Authorization": f"Bearer {self._api_key}",');
+  lines.push('            "Content-Type": "application/json",');
+  lines.push('            "User-Agent": f"workos-python/{VERSION} python/{platform.python_version()}",');
+  lines.push('        }');
+  lines.push('        effective_idempotency_key = idempotency_key');
+  lines.push('        if effective_idempotency_key is None and request_options:');
+  lines.push('            request_option_idempotency_key = request_options.get("idempotency_key")');
+  lines.push('            if isinstance(request_option_idempotency_key, str):');
+  lines.push('                effective_idempotency_key = request_option_idempotency_key');
+  lines.push('        if effective_idempotency_key is None and method.lower() == "post":');
+  lines.push('            effective_idempotency_key = str(uuid.uuid4())');
+  lines.push('        if effective_idempotency_key:');
+  lines.push('            headers["Idempotency-Key"] = effective_idempotency_key');
+  lines.push('        if request_options:');
+  lines.push('            extra = request_options.get("extra_headers")');
+  lines.push('            if isinstance(extra, dict):');
+  lines.push('                headers.update(cast(Dict[str, str], extra))');
+  lines.push('        return headers');
+  lines.push('');
+  lines.push(
+    '    def _deserialize_response(self, response: httpx.Response, model: Optional[Type[Deserializable]]) -> Any:',
+  );
+  lines.push('        if response.status_code == 204 or not response.content:');
+  lines.push('            return None');
+  lines.push('        data: Dict[str, Any] = cast(Dict[str, Any], response.json())');
+  lines.push('        if model is not None:');
+  lines.push('            return model.from_dict(data)');
+  lines.push('        return data');
+  lines.push('');
+  emitRaiseError(lines, 1);
 
-  // P0-4: close / context manager
+  lines.push('');
+  lines.push('');
+  lines.push('class WorkOS(_BaseWorkOS):');
+  lines.push('    """WorkOS API client."""');
+  lines.push('');
+  lines.push('    def __init__(');
+  lines.push('        self,');
+  lines.push('        *,');
+  lines.push('        api_key: Optional[str] = None,');
+  lines.push('        client_id: Optional[str] = None,');
+  lines.push(`        base_url: str = "${spec.baseUrl}",`);
+  lines.push('        timeout: float = 30.0,');
+  lines.push('        max_retries: int = MAX_RETRIES,');
+  lines.push('        http_client: Optional[httpx.Client] = None,');
+  lines.push('    ) -> None:');
+  lines.push('        super().__init__(');
+  lines.push('            api_key=api_key,');
+  lines.push('            client_id=client_id,');
+  lines.push('            base_url=base_url,');
+  lines.push('            timeout=timeout,');
+  lines.push('            max_retries=max_retries,');
+  lines.push('        )');
+  lines.push('        self._client = http_client or httpx.Client(timeout=timeout)');
   lines.push('');
   lines.push('    def close(self) -> None:');
   lines.push('        """Close the underlying HTTP client and release resources."""');
@@ -628,7 +458,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        self.close()');
 
-  // P3-5: lazy resource accessors (standalone)
   for (const entry of standalone) {
     lines.push('');
     lines.push('    @functools.cached_property');
@@ -636,7 +465,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${entry.resolvedName}(self)`);
   }
 
-  // P1-2: lazy namespace accessors
   for (const ns of namespaces) {
     const nsClassName = className(ns.prefix) + 'Namespace';
     lines.push('');
@@ -645,7 +473,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${nsClassName}(self)`);
   }
 
-  // request overloads
   lines.push('');
   lines.push('    @overload');
   lines.push('    def request(');
@@ -685,80 +512,47 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        request_options: Optional[RequestOptions] = None,');
   lines.push('    ) -> Any:');
   lines.push('        """Make an HTTP request with retry logic."""');
-  lines.push('        url = f"{self._base_url}/{path}"');
-  lines.push('        headers: Dict[str, str] = {');
-  lines.push('            "Authorization": f"Bearer {self._api_key}",');
-  lines.push('            "Content-Type": "application/json",');
-  // P3-4: versioned User-Agent
-  lines.push('            "User-Agent": f"workos-python/{VERSION} python/{platform.python_version()}",');
-  lines.push('        }');
-  lines.push('');
-  lines.push('        if idempotency_key is None and method.lower() == "post":');
-  lines.push('            idempotency_key = str(uuid.uuid4())');
-  lines.push('        if idempotency_key:');
-  lines.push('            headers["Idempotency-Key"] = idempotency_key');
-  lines.push('');
-  lines.push('        timeout = self._timeout');
-  lines.push('        if request_options:');
-  lines.push('            extra = request_options.get("extra_headers")');
-  lines.push('            if isinstance(extra, dict):');
-  lines.push('                headers.update(cast(Dict[str, str], extra))');
-  lines.push('            t = request_options.get("timeout")');
-  lines.push('            if isinstance(t, (int, float)):');
-  lines.push('                timeout = float(t)');
-  lines.push('');
+  lines.push('        url = f"{self._resolve_base_url(request_options)}/{path}"');
+  lines.push('        headers = self._build_headers(method, idempotency_key, request_options)');
+  lines.push('        timeout = self._resolve_timeout(request_options)');
+  lines.push('        max_retries = self._resolve_max_retries(request_options)');
   lines.push('        last_error: Optional[Exception] = None');
-  lines.push('        for attempt in range(self._max_retries + 1):');
+  lines.push('        for attempt in range(max_retries + 1):');
   lines.push('            try:');
   lines.push('                response = self._client.request(');
   lines.push('                    method=method.upper(),');
   lines.push('                    url=url,');
   lines.push('                    params=params,');
-  // P0-1: identity check instead of truthiness check
   lines.push('                    json=body if body is not None else None,');
   lines.push('                    headers=headers,');
   lines.push('                    timeout=timeout,');
   lines.push('                )');
-  lines.push('');
-  lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < self._max_retries:');
-  lines.push('                    delay = _calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
+  lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < max_retries:');
+  lines.push('                    delay = self._calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
   lines.push('                    time.sleep(delay)');
   lines.push('                    continue');
-  lines.push('');
   lines.push('                if response.status_code >= 400:');
   lines.push('                    self._raise_error(response)');
-  lines.push('');
-  lines.push('                if response.status_code == 204 or not response.content:');
-  lines.push('                    return None');
-  lines.push('');
-  lines.push('                data: Dict[str, Any] = cast(Dict[str, Any], response.json())');
-  lines.push('                if model is not None:');
-  lines.push('                    return model.from_dict(data)');
-  lines.push('                return data');
-  lines.push('');
-  // P1-3: specific transport exception catches
+  lines.push('                return self._deserialize_response(response, model)');
   lines.push('            except httpx.TimeoutException as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    time.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
-  lines.push('');
   lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
-
-  // request_page with P0-2 fix
   lines.push('');
   lines.push('    def request_page(');
   lines.push('        self,');
@@ -780,39 +574,25 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        )');
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
   lines.push('        raw_items: list[Any] = cast(list[Any], data.get("data") or [])');
-  lines.push('        items: list[D] = [');
-  lines.push('            cast(D, model.from_dict(cast(Dict[str, Any], item)))');
-  lines.push('            for item in raw_items');
-  lines.push('        ]');
+  lines.push('        items: list[D] = [cast(D, model.from_dict(cast(Dict[str, Any], item))) for item in raw_items]');
   lines.push('        list_metadata: Dict[str, Any] = cast(Dict[str, Any], data.get("list_metadata", {}))');
   lines.push('');
-  // P0-2: strip "before" from params to prevent conflicting pagination directives
   lines.push('        def _fetch(*, after: Optional[str] = None) -> SyncPage[D]:');
-  lines.push('            clean_params = {k: v for k, v in (params or {}).items() if k != "before"}');
+  lines.push('            next_params = {**(params or {}), "after": after}');
   lines.push('            return self.request_page(');
   lines.push('                method=method,');
   lines.push('                path=path,');
   lines.push('                model=model,');
-  lines.push('                params={**clean_params, "after": after},');
+  lines.push('                params=next_params,');
   lines.push('                body=body,');
   lines.push('                request_options=request_options,');
   lines.push('            )');
   lines.push('');
-  lines.push('        return SyncPage(');
-  lines.push('            data=items,');
-  lines.push('            list_metadata=list_metadata,');
-  lines.push('            _fetch_page=_fetch,');
-  lines.push('        )');
+  lines.push('        return SyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
 
-  // _raise_error static method
-  emitRaiseError(lines);
-
-  // ===========================================================================
-  // AsyncWorkOS class (P1-1)
-  // ===========================================================================
   lines.push('');
   lines.push('');
-  lines.push('class AsyncWorkOS:');
+  lines.push('class AsyncWorkOS(_BaseWorkOS):');
   lines.push('    """WorkOS API client (async)."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -823,35 +603,16 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push(`        base_url: str = "${spec.baseUrl}",`);
   lines.push('        timeout: float = 30.0,');
   lines.push('        max_retries: int = MAX_RETRIES,');
+  lines.push('        http_client: Optional[httpx.AsyncClient] = None,');
   lines.push('    ) -> None:');
-  lines.push('        self._api_key = api_key or os.environ.get("WORKOS_API_KEY")');
-  lines.push('        if not self._api_key:');
-  lines.push('            raise ConfigurationError(');
-  lines.push('                "No API key provided. Pass it to the AsyncWorkOS constructor "');
-  lines.push('                "or set the WORKOS_API_KEY environment variable."');
-  lines.push('            )');
-  lines.push('        self.client_id = client_id or os.environ.get("WORKOS_CLIENT_ID")');
-  lines.push('        self._base_url = base_url.rstrip("/")');
-  lines.push('        self._timeout = timeout');
-  lines.push('        self._max_retries = max_retries');
-  lines.push('        self._client = httpx.AsyncClient(timeout=timeout)');
-
-  lines.push('');
-  lines.push('    @property');
-  lines.push('    def base_url(self) -> str:');
-  lines.push('        """The base URL for API requests."""');
-  lines.push('        return self._base_url');
-
-  lines.push('');
-  lines.push('    def build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:');
-  lines.push('        """Build a full URL with query parameters for redirect/authorization endpoints."""');
-  lines.push('        from urllib.parse import urlencode');
-  lines.push('        url = f"{self._base_url}/{path}"');
-  lines.push('        if params:');
-  lines.push('            url = f"{url}?{urlencode(params)}"');
-  lines.push('        return url');
-
-  // async close / context manager
+  lines.push('        super().__init__(');
+  lines.push('            api_key=api_key,');
+  lines.push('            client_id=client_id,');
+  lines.push('            base_url=base_url,');
+  lines.push('            timeout=timeout,');
+  lines.push('            max_retries=max_retries,');
+  lines.push('        )');
+  lines.push('        self._client = http_client or httpx.AsyncClient(timeout=timeout)');
   lines.push('');
   lines.push('    async def close(self) -> None:');
   lines.push('        """Close the underlying HTTP client and release resources."""');
@@ -863,7 +624,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        await self.close()');
 
-  // Lazy async resource accessors (standalone)
   for (const entry of standalone) {
     lines.push('');
     lines.push('    @functools.cached_property');
@@ -871,7 +631,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return Async${entry.resolvedName}(self)`);
   }
 
-  // Lazy async namespace accessors
   for (const ns of namespaces) {
     const asyncNsClassName = 'Async' + className(ns.prefix) + 'Namespace';
     lines.push('');
@@ -880,7 +639,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${asyncNsClassName}(self)`);
   }
 
-  // async request overloads
   lines.push('');
   lines.push('    @overload');
   lines.push('    async def request(');
@@ -920,29 +678,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        request_options: Optional[RequestOptions] = None,');
   lines.push('    ) -> Any:');
   lines.push('        """Make an async HTTP request with retry logic."""');
-  lines.push('        url = f"{self._base_url}/{path}"');
-  lines.push('        headers: Dict[str, str] = {');
-  lines.push('            "Authorization": f"Bearer {self._api_key}",');
-  lines.push('            "Content-Type": "application/json",');
-  lines.push('            "User-Agent": f"workos-python/{VERSION} python/{platform.python_version()}",');
-  lines.push('        }');
-  lines.push('');
-  lines.push('        if idempotency_key is None and method.lower() == "post":');
-  lines.push('            idempotency_key = str(uuid.uuid4())');
-  lines.push('        if idempotency_key:');
-  lines.push('            headers["Idempotency-Key"] = idempotency_key');
-  lines.push('');
-  lines.push('        timeout = self._timeout');
-  lines.push('        if request_options:');
-  lines.push('            extra = request_options.get("extra_headers")');
-  lines.push('            if isinstance(extra, dict):');
-  lines.push('                headers.update(cast(Dict[str, str], extra))');
-  lines.push('            t = request_options.get("timeout")');
-  lines.push('            if isinstance(t, (int, float)):');
-  lines.push('                timeout = float(t)');
-  lines.push('');
+  lines.push('        url = f"{self._resolve_base_url(request_options)}/{path}"');
+  lines.push('        headers = self._build_headers(method, idempotency_key, request_options)');
+  lines.push('        timeout = self._resolve_timeout(request_options)');
+  lines.push('        max_retries = self._resolve_max_retries(request_options)');
   lines.push('        last_error: Optional[Exception] = None');
-  lines.push('        for attempt in range(self._max_retries + 1):');
+  lines.push('        for attempt in range(max_retries + 1):');
   lines.push('            try:');
   lines.push('                response = await self._client.request(');
   lines.push('                    method=method.upper(),');
@@ -952,45 +693,32 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                    headers=headers,');
   lines.push('                    timeout=timeout,');
   lines.push('                )');
-  lines.push('');
-  lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < self._max_retries:');
-  lines.push('                    delay = _calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
+  lines.push('                if response.status_code in RETRY_STATUS_CODES and attempt < max_retries:');
+  lines.push('                    delay = self._calculate_retry_delay(attempt, response.headers.get("Retry-After"))');
   lines.push('                    await asyncio.sleep(delay)');
   lines.push('                    continue');
-  lines.push('');
   lines.push('                if response.status_code >= 400:');
   lines.push('                    self._raise_error(response)');
-  lines.push('');
-  lines.push('                if response.status_code == 204 or not response.content:');
-  lines.push('                    return None');
-  lines.push('');
-  lines.push('                data: Dict[str, Any] = cast(Dict[str, Any], response.json())');
-  lines.push('                if model is not None:');
-  lines.push('                    return model.from_dict(data)');
-  lines.push('                return data');
-  lines.push('');
+  lines.push('                return self._deserialize_response(response, model)');
   lines.push('            except httpx.TimeoutException as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
-  lines.push('                if attempt < self._max_retries:');
-  lines.push('                    await asyncio.sleep(_calculate_retry_delay(attempt))');
+  lines.push('                if attempt < max_retries:');
+  lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
-  lines.push('');
   lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
-
-  // async request_page
   lines.push('');
   lines.push('    async def request_page(');
   lines.push('        self,');
@@ -1012,35 +740,21 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        )');
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
   lines.push('        raw_items: list[Any] = cast(list[Any], data.get("data") or [])');
-  lines.push('        items: list[D] = [');
-  lines.push('            cast(D, model.from_dict(cast(Dict[str, Any], item)))');
-  lines.push('            for item in raw_items');
-  lines.push('        ]');
+  lines.push('        items: list[D] = [cast(D, model.from_dict(cast(Dict[str, Any], item))) for item in raw_items]');
   lines.push('        list_metadata: Dict[str, Any] = cast(Dict[str, Any], data.get("list_metadata", {}))');
   lines.push('');
   lines.push('        async def _fetch(*, after: Optional[str] = None) -> AsyncPage[D]:');
-  lines.push('            clean_params = {k: v for k, v in (params or {}).items() if k != "before"}');
+  lines.push('            next_params = {**(params or {}), "after": after}');
   lines.push('            return await self.request_page(');
   lines.push('                method=method,');
   lines.push('                path=path,');
   lines.push('                model=model,');
-  lines.push('                params={**clean_params, "after": after},');
+  lines.push('                params=next_params,');
   lines.push('                body=body,');
   lines.push('                request_options=request_options,');
   lines.push('            )');
   lines.push('');
-  lines.push('        return AsyncPage(');
-  lines.push('            data=items,');
-  lines.push('            list_metadata=list_metadata,');
-  lines.push('            _fetch_page=_fetch,');
-  lines.push('        )');
-
-  // Reuse the sync _raise_error via delegation
-  lines.push('');
-  lines.push('    @staticmethod');
-  lines.push('    def _raise_error(response: httpx.Response) -> None:');
-  lines.push('        """Raise an appropriate error based on the response status code."""');
-  lines.push('        WorkOS._raise_error(response)');
+  lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
 
   return [
     {
@@ -1053,42 +767,75 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 }
 
 /**
- * Emit the static _raise_error method (shared by WorkOS and AsyncWorkOS).
+ * Emit the static _raise_error method.
  */
-function emitRaiseError(lines: string[]): void {
+function emitRaiseError(lines: string[], indentLevel = 1): void {
+  const indent = '    '.repeat(indentLevel);
   lines.push('');
-  lines.push('    @staticmethod');
-  lines.push('    def _raise_error(response: httpx.Response) -> None:');
-  lines.push('        """Raise an appropriate error based on the response status code."""');
-  lines.push('        request_id = response.headers.get("x-request-id", "")');
-  lines.push('        try:');
-  lines.push('            body: Dict[str, Any] = response.json()');
-  lines.push('            message: str = str(body.get("message", response.text))');
-  lines.push('            code: Optional[str] = str(body["code"]) if "code" in body else None');
-  lines.push('        except Exception:');
-  lines.push('            message = response.text');
-  lines.push('            code = None');
+  lines.push(`${indent}@staticmethod`);
+  lines.push(`${indent}def _raise_error(response: httpx.Response) -> None:`);
+  lines.push(`${indent}    """Raise an appropriate error based on the response status code."""`);
+  lines.push(`${indent}    request_id = response.headers.get("x-request-id", "")`);
+  lines.push(`${indent}    raw_body = response.text`);
+  lines.push(`${indent}    request = response.request`);
+  lines.push(`${indent}    request_url = str(request.url) if request is not None else None`);
+  lines.push(`${indent}    request_method = request.method if request is not None else None`);
+  lines.push(`${indent}    try:`);
+  lines.push(`${indent}        body: Dict[str, Any] = response.json()`);
+  lines.push(`${indent}        message: str = str(body.get("message", response.text))`);
+  lines.push(`${indent}        code: Optional[str] = str(body["code"]) if "code" in body else None`);
+  lines.push(`${indent}        param = cast(Optional[str], body.get("param"))`);
+  lines.push(`${indent}    except Exception:`);
+  lines.push(`${indent}        message = response.text`);
+  lines.push(`${indent}        code = None`);
+  lines.push(`${indent}        param = None`);
   lines.push('');
-  lines.push('        error_class = STATUS_CODE_TO_ERROR.get(response.status_code)');
-  lines.push('        if error_class:');
-  lines.push('            if error_class is RateLimitExceededError:');
-  lines.push('                retry_after = response.headers.get("Retry-After")');
-  lines.push('                raise RateLimitExceededError(');
-  lines.push('                    message,');
-  lines.push('                    retry_after=float(retry_after) if retry_after else None,');
-  lines.push('                    request_id=request_id,');
-  lines.push('                    code=code,');
-  lines.push('                )');
-  lines.push('            raise error_class(message, request_id=request_id, code=code)');
+  lines.push(`${indent}    error_class = STATUS_CODE_TO_ERROR.get(response.status_code)`);
+  lines.push(`${indent}    if error_class:`);
+  lines.push(`${indent}        if error_class is RateLimitExceededError:`);
+  lines.push(`${indent}            retry_after = response.headers.get("Retry-After")`);
+  lines.push(`${indent}            raise RateLimitExceededError(`);
+  lines.push(`${indent}                message,`);
+  lines.push(`${indent}                retry_after=float(retry_after) if retry_after else None,`);
+  lines.push(`${indent}                request_id=request_id,`);
+  lines.push(`${indent}                code=code,`);
+  lines.push(`${indent}                param=param,`);
+  lines.push(`${indent}                raw_body=raw_body,`);
+  lines.push(`${indent}                request_url=request_url,`);
+  lines.push(`${indent}                request_method=request_method,`);
+  lines.push(`${indent}            )`);
+  lines.push(`${indent}        raise error_class(`);
+  lines.push(`${indent}            message,`);
+  lines.push(`${indent}            request_id=request_id,`);
+  lines.push(`${indent}            code=code,`);
+  lines.push(`${indent}            param=param,`);
+  lines.push(`${indent}            raw_body=raw_body,`);
+  lines.push(`${indent}            request_url=request_url,`);
+  lines.push(`${indent}            request_method=request_method,`);
+  lines.push(`${indent}        )`);
   lines.push('');
-  lines.push('        if response.status_code >= 500:');
-  lines.push('            raise ServerError(');
-  lines.push('                message, status_code=response.status_code, request_id=request_id, code=code');
-  lines.push('            )');
+  lines.push(`${indent}    if response.status_code >= 500:`);
+  lines.push(`${indent}        raise ServerError(`);
+  lines.push(`${indent}            message,`);
+  lines.push(`${indent}            status_code=response.status_code,`);
+  lines.push(`${indent}            request_id=request_id,`);
+  lines.push(`${indent}            code=code,`);
+  lines.push(`${indent}            param=param,`);
+  lines.push(`${indent}            raw_body=raw_body,`);
+  lines.push(`${indent}            request_url=request_url,`);
+  lines.push(`${indent}            request_method=request_method,`);
+  lines.push(`${indent}        )`);
   lines.push('');
-  lines.push('        raise WorkOSError(');
-  lines.push('            message, status_code=response.status_code, request_id=request_id, code=code');
-  lines.push('        )');
+  lines.push(`${indent}    raise WorkOSError(`);
+  lines.push(`${indent}        message,`);
+  lines.push(`${indent}        status_code=response.status_code,`);
+  lines.push(`${indent}        request_id=request_id,`);
+  lines.push(`${indent}        code=code,`);
+  lines.push(`${indent}        param=param,`);
+  lines.push(`${indent}        raw_body=raw_body,`);
+  lines.push(`${indent}        request_url=request_url,`);
+  lines.push(`${indent}        request_method=request_method,`);
+  lines.push(`${indent}    )`);
 }
 
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

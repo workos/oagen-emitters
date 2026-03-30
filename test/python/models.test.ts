@@ -96,16 +96,22 @@ describe('generateModels', () => {
     // Required fields
     expect(modelFile.content).toContain('    id: str');
     expect(modelFile.content).toContain('    name: str');
-    expect(modelFile.content).toContain('    created_at: str');
+    expect(modelFile.content).toContain('from datetime import datetime');
+    expect(modelFile.content).toContain('    created_at: datetime');
 
     // Optional/nullable field
     expect(modelFile.content).toContain('    external_id: Optional[str] = None');
 
     // from_dict method
     expect(modelFile.content).toContain('def from_dict(cls, data: Dict[str, Any])');
+    expect(modelFile.content).toContain('datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))');
+    expect(modelFile.content).toContain(
+      'raise WorkOSError(f"Unexpected API response: missing field {e!s} in Organization") from e',
+    );
 
     // to_dict method
     expect(modelFile.content).toContain('def to_dict(self) -> Dict[str, Any]:');
+    expect(modelFile.content).toContain('result["created_at"] = self.created_at.isoformat()');
   });
 
   it('handles array fields with model refs', () => {

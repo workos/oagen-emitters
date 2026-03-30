@@ -96,12 +96,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     const hasOptional = deduplicatedFields.some((f) => !f.required || f.type.kind === 'nullable');
     if (hasOptional) typingImports.add('Optional');
+    const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
 
     lines.push('from __future__ import annotations');
     lines.push('');
     lines.push('from dataclasses import dataclass');
+    if (usesDateTime) {
+      lines.push('from datetime import datetime');
+    }
     lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
+    lines.push(`from ${ctx.namespace}._errors import WorkOSError`);
 
     // Import referenced models from their service's models package
     if (deps.models.size > 0) {
@@ -155,7 +160,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     for (const field of requiredFields) {
       const pyFieldName = fieldName(field.name);
-      const pyType = mapTypeRef(field.type);
+      const pyType = resolveModelFieldType(field.type);
       if (field.description) {
         lines.push(`    ${pyFieldName}: ${pyType}`);
         lines.push(`    """${field.description}"""`);
@@ -166,7 +171,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     for (const field of optionalFields) {
       const pyFieldName = fieldName(field.name);
-      const innerType = field.type.kind === 'nullable' ? mapTypeRef(field.type.inner) : mapTypeRef(field.type);
+      const innerType =
+        field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
       const pyType = `Optional[${innerType}]`;
       if (field.description) {
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
@@ -185,7 +191,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('    @classmethod');
     lines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${modelClassName}":`);
     lines.push(`        """Deserialize from a dictionary."""`);
-    lines.push('        return cls(');
+    lines.push('        try:');
+    lines.push('            return cls(');
 
     for (const field of [...requiredFields, ...optionalFields]) {
       const pyFieldName = fieldName(field.name);
@@ -193,10 +200,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isRequired = field.required && field.type.kind !== 'nullable';
       const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
       const deserExpr = deserializeField(field.type, accessor, isRequired, modelMap);
-      lines.push(`            ${pyFieldName}=${deserExpr},`);
+      lines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
-    lines.push('        )');
+    lines.push('            )');
+    lines.push('        except KeyError as e:');
+    lines.push(
+      `            raise WorkOSError(f"Unexpected API response: missing field {e!s} in ${modelClassName}") from e`,
+    );
 
     // to_dict instance method
     lines.push('');
@@ -325,8 +336,29 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
   }
 }
 
+function resolveModelFieldType(ref: any): string {
+  if (isDateTimeType(ref)) {
+    return 'datetime';
+  }
+  return mapTypeRef(ref);
+}
+
+function isDateTimeType(ref: any): boolean {
+  if (ref.kind === 'nullable') {
+    return isDateTimeType(ref.inner);
+  }
+  return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
+}
+
 // oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
 function deserializeField(ref: any, accessor: string, isRequired: boolean, modelMap: Map<string, Model>): string {
+  if (isDateTimeType(ref)) {
+    const parseExpr = `datetime.fromisoformat(${isRequired ? accessor : '_v'}.replace("Z", "+00:00"))`;
+    if (isRequired) {
+      return parseExpr;
+    }
+    return `${parseExpr} if (_v := ${accessor}) is not None else None`;
+  }
   switch (ref.kind) {
     case 'model': {
       if (isRequired) {
@@ -377,6 +409,9 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
 }
 
 function serializeField(ref: any, accessor: string): string {
+  if (isDateTimeType(ref)) {
+    return `${accessor}.isoformat()`;
+  }
   switch (ref.kind) {
     case 'model':
       return `${accessor}.to_dict()`;

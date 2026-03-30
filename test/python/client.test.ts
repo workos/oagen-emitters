@@ -54,7 +54,8 @@ describe('generateClient', () => {
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
-    expect(content).toContain('class WorkOS:');
+    expect(content).toContain('class _BaseWorkOS:');
+    expect(content).toContain('class WorkOS(_BaseWorkOS):');
     // Lazy resource accessors via cached_property
     expect(content).toContain('@functools.cached_property');
     expect(content).toContain('def organizations(self) -> Organizations:');
@@ -62,13 +63,21 @@ describe('generateClient', () => {
     expect(content).toContain('def request_page(');
     expect(content).toContain('RETRY_STATUS_CODES');
     expect(content).toContain('Idempotency-Key');
+    expect(content).toContain('def _calculate_retry_delay(');
     // P1-1: Async client
-    expect(content).toContain('class AsyncWorkOS:');
+    expect(content).toContain('class AsyncWorkOS(_BaseWorkOS):');
     // P0-4: Context manager
     expect(content).toContain('def close(self)');
     expect(content).toContain('def __enter__');
     // P2-3: client_id
     expect(content).toContain('client_id: Optional[str] = None,');
+    expect(content).toContain('http_client: Optional[httpx.Client] = None,');
+    expect(content).toContain('http_client: Optional[httpx.AsyncClient] = None,');
+    expect(content).toContain('request_options.get("idempotency_key")');
+    expect(content).toContain('request_options.get("max_retries")');
+    expect(content).toContain('request_options.get("base_url")');
+    expect(content).toContain('request_url = str(request.url) if request is not None else None');
+    expect(content).toContain('request_method = request.method if request is not None else None');
     // P3-4: Versioned User-Agent
     expect(content).toContain('workos-python/{VERSION}');
   });

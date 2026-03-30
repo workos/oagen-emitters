@@ -19,6 +19,10 @@ class WorkOSError(Exception):
     status_code: Optional[int]
     request_id: Optional[str]
     code: Optional[str]
+    param: Optional[str]
+    raw_body: Optional[str]
+    request_url: Optional[str]
+    request_method: Optional[str]
 
     def __init__(
         self,
@@ -27,12 +31,20 @@ class WorkOSError(Exception):
         status_code: Optional[int] = None,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.request_id = request_id
         self.code = code
+        self.param = param
+        self.raw_body = raw_body
+        self.request_url = request_url
+        self.request_method = request_method
 
 
 class BadRequestError(WorkOSError):
@@ -44,8 +56,21 @@ class BadRequestError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=400, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=400,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class AuthenticationError(WorkOSError):
@@ -57,8 +82,21 @@ class AuthenticationError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=401, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=401,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class ForbiddenError(WorkOSError):
@@ -70,8 +108,21 @@ class ForbiddenError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=403, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=403,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class NotFoundError(WorkOSError):
@@ -83,8 +134,21 @@ class NotFoundError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=404, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=404,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class ConflictError(WorkOSError):
@@ -96,8 +160,21 @@ class ConflictError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=409, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=409,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class UnprocessableEntityError(WorkOSError):
@@ -109,8 +186,21 @@ class UnprocessableEntityError(WorkOSError):
         *,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=422, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=422,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class RateLimitExceededError(WorkOSError):
@@ -125,8 +215,21 @@ class RateLimitExceededError(WorkOSError):
         retry_after: Optional[float] = None,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=429, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=429,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
         self.retry_after = retry_after
 
 
@@ -140,8 +243,21 @@ class ServerError(WorkOSError):
         status_code: int = 500,
         request_id: Optional[str] = None,
         code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
     ) -> None:
-        super().__init__(message, status_code=status_code, request_id=request_id, code=code)
+        super().__init__(
+            message,
+            status_code=status_code,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
 
 
 class ConfigurationError(WorkOSError):

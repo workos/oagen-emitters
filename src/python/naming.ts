@@ -144,6 +144,9 @@ function normalizeMethodName(name: string, op: Operation): string {
   const method = op.httpMethod.toLowerCase();
   const hasIdParam = op.pathParams.some((p) => p.name === 'id' || p.name.endsWith('Id') || p.name.endsWith('_id'));
 
+  if (name === 'find') return 'get';
+  if (name.startsWith('find_')) return `get_${name.slice('find_'.length)}`;
+
   // For single-resource GET by ID, singularize a plural noun after "get_"
   if (method === 'get' && hasIdParam && name.startsWith('get_') && name.endsWith('s')) {
     const noun = name.slice(4); // remove "get_"
@@ -155,7 +158,7 @@ function normalizeMethodName(name: string, op: Operation): string {
   //        update_organization on /organizations/{id} → update
   const resourceNoun = extractResourceNoun(op);
   if (resourceNoun) {
-    const verbs = ['create', 'update', 'delete', 'get', 'list', 'find'];
+    const verbs = ['create', 'update', 'delete', 'get', 'list'];
     for (const verb of verbs) {
       if (name === `${verb}_${resourceNoun}`) {
         return verb;
