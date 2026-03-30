@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 
-import { fileName } from './naming.js';
+import { fileName, fieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 
 /**
@@ -95,7 +95,16 @@ export function generateModelFixture(
 ): Record<string, any> {
   const fixture: Record<string, any> = {};
 
-  for (const field of model.fields) {
+  // Deduplicate fields by snake_case name (matching model generation in models.ts)
+  const seenFieldNames = new Set<string>();
+  const deduplicatedFields = model.fields.filter((f) => {
+    const pyName = fieldName(f.name);
+    if (seenFieldNames.has(pyName)) return false;
+    seenFieldNames.add(pyName);
+    return true;
+  });
+
+  for (const field of deduplicatedFields) {
     // Use the original field name as the wire key (matches from_dict access patterns)
     const wireName = field.name;
     if (field.example !== undefined) {

@@ -13,7 +13,7 @@ export function generateConfig(ctx?: EmitterContext): GeneratedFile[] {
     content: `from __future__ import annotations
 
 from typing import Any, Dict, Protocol, TypeVar
-from typing_extensions import TypedDict
+from typing_extensions import Self, TypedDict
 
 
 class RequestOptions(TypedDict, total=False):
@@ -30,7 +30,7 @@ class Deserializable(Protocol):
     """Protocol for types that can be deserialized from a dict."""
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Deserializable": ...
+    def from_dict(cls, data: Dict[str, Any]) -> Self: ...
 
 
 D = TypeVar("D", bound=Deserializable)`,
