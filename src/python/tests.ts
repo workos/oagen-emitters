@@ -82,7 +82,7 @@ function generateConftest(ctx: EmitterContext): GeneratedFile {
   lines.push('');
   lines.push('import pytest');
   lines.push('');
-  lines.push(`from ${ctx.namespace} import WorkOS`);
+  lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
   lines.push('');
   lines.push('');
   lines.push('FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")');
@@ -99,6 +99,12 @@ function generateConftest(ctx: EmitterContext): GeneratedFile {
   lines.push('def workos():');
   lines.push('    """Create a WorkOS client for testing."""');
   lines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
+  lines.push('');
+  lines.push('');
+  lines.push('@pytest.fixture');
+  lines.push('def async_workos():');
+  lines.push('    """Create an AsyncWorkOS client for testing."""');
+  lines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
 
   return {
     path: 'tests/conftest.py',
@@ -164,7 +170,7 @@ function generateServiceTest(
 
   const hasPaginated = service.operations.some((op) => op.pagination);
   if (hasPaginated) {
-    lines.push(`from ${ctx.namespace}._pagination import SyncPage`);
+    lines.push(`from ${ctx.namespace}._pagination import AsyncPage, SyncPage`);
   }
   lines.push(`from ${ctx.namespace}._errors import AuthenticationError`);
 
@@ -251,13 +257,21 @@ function generateServiceTest(
       lines.push('        request = httpx_mock.get_request()');
       lines.push(`        assert request.method == "${op.httpMethod.toUpperCase()}"`);
       lines.push(`        assert request.url.path.endswith("/${expectedPath}")`);
-      // For POST/PUT/PATCH with required body fields, verify body was sent
+      // For POST/PUT/PATCH with required body fields, verify specific field values
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
         const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-        const hasRequiredFields = bodyModel?.fields.some((f) => f.required);
-        if (hasRequiredFields) {
+        const reqFields = bodyModel?.fields.filter((f) => f.required) ?? [];
+        if (reqFields.length > 0) {
           lines.push('        body = json.loads(request.content)');
-          lines.push('        assert isinstance(body, dict)');
+          for (const f of reqFields) {
+            const testVal = generateTestValue(f.type, f.name);
+            // Only assert primitives (strings, numbers, booleans) — skip complex types
+            if (f.type.kind === 'primitive' || f.type.kind === 'enum' || f.type.kind === 'literal') {
+              lines.push(`        assert body["${f.name}"] == ${testVal}`);
+            } else {
+              lines.push(`        assert "${f.name}" in body`);
+            }
+          }
         }
       }
     } else {
@@ -286,6 +300,69 @@ function generateServiceTest(
     lines.push('        with pytest.raises(AuthenticationError):');
     const args = buildTestArgs(firstNonDelete, spec);
     lines.push(`            workos.${propName}.${method}(${args})`);
+  }
+
+  // --- Async test class ---
+  lines.push('');
+  lines.push('');
+  lines.push(`@pytest.mark.asyncio`);
+  lines.push(`class TestAsync${resolvedName}:`);
+
+  const asyncEmittedTestMethods = new Set<string>();
+  for (const op of service.operations) {
+    const plan = planOperation(op);
+    const method = resolveMethodName(op, service, ctx);
+
+    if (asyncEmittedTestMethods.has(method)) continue;
+    asyncEmittedTestMethods.add(method);
+
+    const isDelete = plan.isDelete;
+    const isPaginated = plan.isPaginated;
+    const asyncArgs = buildTestArgs(op, spec);
+
+    lines.push('');
+
+    if (isPaginated) {
+      const itemType = op.pagination!.itemType;
+      let itemName = itemType.kind === 'model' ? itemType.name : null;
+      if (itemName) {
+        const wrapperModel = spec.models.find((m) => m.name === itemName);
+        if (wrapperModel && isListWrapperModel(wrapperModel)) {
+          const dataField = wrapperModel.fields.find((f) => f.name === 'data');
+          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            itemName = dataField.type.items.name;
+          }
+        }
+      }
+      const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
+      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      if (fixtureName) {
+        lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
+        lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+        lines.push('        assert isinstance(page.data, list)');
+      } else {
+        lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
+        lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+        lines.push('        assert isinstance(page.data, list)');
+      }
+    } else if (isDelete) {
+      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      lines.push('        httpx_mock.add_response(status_code=204)');
+      lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
+      lines.push('        assert result is None');
+    } else if (plan.responseModelName) {
+      const modelName = plan.responseModelName;
+      const fixtureName = `${fileName(modelName)}.json`;
+      const modelClass = className(modelName);
+      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
+      lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
+      lines.push(`        assert isinstance(result, ${modelClass})`);
+    } else {
+      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      lines.push('        httpx_mock.add_response(json={})');
+      lines.push(`        await async_workos.${propName}.${method}(${asyncArgs})`);
+    }
   }
 
   return {

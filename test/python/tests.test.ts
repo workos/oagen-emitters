@@ -58,9 +58,9 @@ const ctx: EmitterContext = {
 };
 
 describe('generateTests', () => {
-  it('generates conftest_generated.py', () => {
+  it('generates conftest.py', () => {
     const files = generateTests(spec, ctx);
-    const conftest = files.find((f) => f.path === 'tests/conftest_generated.py');
+    const conftest = files.find((f) => f.path === 'tests/conftest.py');
     expect(conftest).toBeDefined();
     expect(conftest!.content).toContain('import pytest');
     expect(conftest!.content).toContain('from workos import WorkOS');
