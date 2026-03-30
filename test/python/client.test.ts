@@ -50,34 +50,48 @@ describe('generateClient', () => {
   it('generates client class with resource accessors', () => {
     const files = generateClient(spec, ctx);
 
-    const clientFile = files.find((f) => f.path === 'workos/_client.py');
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
     expect(content).toContain('class WorkOS:');
-    expect(content).toContain('self.organizations = Organizations(self)');
+    // Lazy resource accessors via cached_property
+    expect(content).toContain('@functools.cached_property');
+    expect(content).toContain('def organizations(self) -> Organizations:');
     expect(content).toContain('def request(');
     expect(content).toContain('def request_page(');
     expect(content).toContain('RETRY_STATUS_CODES');
     expect(content).toContain('Idempotency-Key');
+    // P1-1: Async client
+    expect(content).toContain('class AsyncWorkOS:');
+    // P0-4: Context manager
+    expect(content).toContain('def close(self)');
+    expect(content).toContain('def __enter__');
+    // P2-3: client_id
+    expect(content).toContain('client_id: Optional[str] = None,');
+    // P3-4: Versioned User-Agent
+    expect(content).toContain('workos-python/{VERSION}');
   });
 
   it('generates barrel __init__.py', () => {
     const files = generateClient(spec, ctx);
 
-    const barrel = files.find((f) => f.path === 'workos/__init__.py');
+    const barrel = files.find((f) => f.path === 'src/workos/__init__.py');
     expect(barrel).toBeDefined();
-    expect(barrel!.content).toContain('from ._client import WorkOS');
+    expect(barrel!.content).toContain('from ._client import AsyncWorkOS, WorkOS');
     expect(barrel!.content).toContain('from ._errors import');
-    expect(barrel!.content).toContain('from ._pagination import SyncPage');
+    expect(barrel!.content).toContain('from ._pagination import AsyncPage, SyncPage');
+    expect(barrel!.content).toContain('"ForbiddenError"');
+    expect(barrel!.content).toContain('"WorkOSConnectionError"');
+    expect(barrel!.content).toContain('"WorkOSTimeoutError"');
   });
 
   it('generates service __init__.py', () => {
     const files = generateClient(spec, ctx);
 
-    const serviceInit = files.find((f) => f.path === 'workos/organizations/__init__.py');
+    const serviceInit = files.find((f) => f.path === 'src/workos/organizations/__init__.py');
     expect(serviceInit).toBeDefined();
-    expect(serviceInit!.content).toContain('from ._resource import Organizations');
+    expect(serviceInit!.content).toContain('from ._resource import Organizations, AsyncOrganizations');
   });
 
   it('generates pyproject.toml', () => {
@@ -94,13 +108,13 @@ describe('generateClient', () => {
   it('generates py.typed marker', () => {
     const files = generateClient(spec, ctx);
 
-    const pyTyped = files.find((f) => f.path === 'workos/py.typed');
+    const pyTyped = files.find((f) => f.path === 'src/workos/py.typed');
     expect(pyTyped).toBeDefined();
   });
 
   it('request_page accepts body parameter', () => {
     const files = generateClient(spec, ctx);
-    const clientFile = files.find((f) => f.path === 'workos/_client.py');
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     const content = clientFile!.content;
 
     // Signature should include body param
@@ -111,7 +125,7 @@ describe('generateClient', () => {
 
   it('uses base URL from spec', () => {
     const files = generateClient(spec, ctx);
-    const clientFile = files.find((f) => f.path === 'workos/_client.py');
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     expect(clientFile!.content).toContain('base_url: str = "https://api.workos.com"');
   });
 });
