@@ -312,10 +312,10 @@ describe('generateResources', () => {
     const files = generateResources(services, ctxWithServices);
     const content = files[0].content;
 
-    // Model field should call .to_dict() with dict fallback
-    expect(content).toContain('"event": event.to_dict() if hasattr(event, "to_dict") else event');
-    // Array of models should use list comprehension with dict fallback
-    expect(content).toContain('"targets": [item.to_dict() if hasattr(item, "to_dict") else item for item in targets]');
+    // Model field should call .to_dict() directly
+    expect(content).toContain('"event": event.to_dict()');
+    // Array of models should use list comprehension calling .to_dict()
+    expect(content).toContain('"targets": [item.to_dict() for item in targets]');
   });
 
   it('generates idempotent POST with idempotency_key', () => {

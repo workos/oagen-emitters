@@ -63,6 +63,7 @@ describe('generateClient', () => {
     expect(content).toContain('def request_page(');
     expect(content).toContain('RETRY_STATUS_CODES');
     expect(content).toContain('Idempotency-Key');
+    expect(content).toContain('def _parse_retry_after(');
     expect(content).toContain('def _calculate_retry_delay(');
     // P1-1: Async client
     expect(content).toContain('class AsyncWorkOS(_BaseWorkOS):');
@@ -78,6 +79,7 @@ describe('generateClient', () => {
     expect(content).toContain('request_options.get("base_url")');
     expect(content).toContain('request_url = str(request.url) if request is not None else None');
     expect(content).toContain('request_method = request.method if request is not None else None');
+    expect(content).toContain('follow_redirects=True');
     // P3-4: Versioned User-Agent
     expect(content).toContain('workos-python/{VERSION}');
   });
@@ -93,6 +95,7 @@ describe('generateClient', () => {
     expect(barrel!.content).toContain('"ForbiddenError"');
     expect(barrel!.content).toContain('"WorkOSConnectionError"');
     expect(barrel!.content).toContain('"WorkOSTimeoutError"');
+    expect(barrel!.overwriteExisting).toBe(true);
   });
 
   it('generates service __init__.py', () => {
@@ -101,6 +104,43 @@ describe('generateClient', () => {
     const serviceInit = files.find((f) => f.path === 'src/workos/organizations/__init__.py');
     expect(serviceInit).toBeDefined();
     expect(serviceInit!.content).toContain('from ._resource import Organizations, AsyncOrganizations');
+  });
+
+  it('generates nested directory structure for namespace sub-services', () => {
+    const nestedSpec: ApiSpec = {
+      ...spec,
+      services: [
+        ...services,
+        {
+          name: 'OrganizationsApiKeys',
+          operations: [
+            {
+              name: 'listOrganizationApiKeys',
+              httpMethod: 'get',
+              path: '/organizations/api_keys',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const files = generateClient(nestedSpec, { ...ctx, spec: nestedSpec });
+
+    // Sub-service lives directly in the nested directory
+    const subServiceInit = files.find((f) => f.path === 'src/workos/organizations/api_keys/__init__.py');
+    expect(subServiceInit).toBeDefined();
+    // Should contain the resource re-export directly (not an alias to a flat dir)
+    expect(subServiceInit!.content).toContain('from ._resource import OrganizationsApiKeys');
+
+    // Client should import from the nested path
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
+    expect(clientFile!.content).toContain('from .organizations.api_keys._resource import OrganizationsApiKeys');
   });
 
   it('generates pyproject.toml', () => {

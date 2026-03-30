@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
-import { className, resolveServiceDir, servicePropertyName, buildServiceNameMap } from './naming.js';
+import { className, resolveServiceDir, servicePropertyName, buildServiceDirMap, dirToModule } from './naming.js';
+import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 
 /**
@@ -8,10 +9,13 @@ import { resolveResourceClassName } from './resources.js';
  * and project scaffolding (pyproject.toml, py.typed).
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  assertPublicClientReachability(spec, ctx);
+
   const files: GeneratedFile[] = [];
 
   files.push(...generateWorkOSClient(spec, ctx));
   files.push(...generateServiceInits(spec, ctx));
+  files.push(...generateNamespaceAliasPackages(spec, ctx));
   files.push(...generateBarrel(spec, ctx));
   files.push(...generatePyProjectToml(ctx));
   files.push(...generatePyTyped(ctx));
@@ -19,36 +23,26 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   return files;
 }
 
-/** Namespace grouping result. */
-interface NamespaceGroup {
-  prefix: string;
-  entries: { service: Service; subProp: string; resolvedName: string }[];
-  /** When a standalone service's property name matches this namespace prefix,
-   *  the namespace class inherits from it so both resource methods and
-   *  sub-properties are accessible via one client accessor. */
-  baseEntry?: { service: Service; resolvedName: string };
-}
-
 /**
  * Group services by shared snake_case prefix for nested namespaces.
  * Services sharing a common prefix (e.g., user_management_users, user_management_invitations)
  * are grouped under a namespace (user_management) with sub-properties (users, invitations).
  */
-export function groupServicesByNamespace(
-  services: Service[],
-  ctx: EmitterContext,
-): {
-  standalone: { service: Service; prop: string; resolvedName: string }[];
-  namespaces: NamespaceGroup[];
-} {
+export function groupServicesByNamespace(services: Service[], ctx: EmitterContext): NamespaceGrouping {
   const entries = services.map((service) => {
     const resolvedName = resolveResourceClassName(service, ctx);
     return { service, prop: servicePropertyName(resolvedName), resolvedName };
   });
 
+  // Build the set of all actual service property names — only these can serve as namespace prefixes.
+  // This prevents over-aggressive grouping (e.g., "directory" grouping "directory_groups"
+  // when there is no "Directory" service to serve as the namespace base).
+  const allProps = new Set(entries.map((e) => e.prop));
+
   // Count how many property names contain each possible underscore-delimited prefix
   const prefixCount = new Map<string, number>();
   for (const entry of entries) {
+    prefixCount.set(entry.prop, (prefixCount.get(entry.prop) || 0) + 1);
     const parts = entry.prop.split('_');
     for (let len = 1; len < parts.length; len++) {
       const prefix = parts.slice(0, len).join('_');
@@ -57,12 +51,13 @@ export function groupServicesByNamespace(
   }
 
   // For each entry, find the longest prefix shared by 2+ entries (that isn't the full name)
+  // AND corresponds to an actual service property name.
   const entryPrefix = new Map<string, string>();
   for (const entry of entries) {
     const parts = entry.prop.split('_');
     for (let len = parts.length - 1; len >= 1; len--) {
       const prefix = parts.slice(0, len).join('_');
-      if ((prefixCount.get(prefix) ?? 0) >= 2 && prefix !== entry.prop) {
+      if ((prefixCount.get(prefix) ?? 0) >= 2 && prefix !== entry.prop && allProps.has(prefix)) {
         entryPrefix.set(entry.prop, prefix);
         break;
       }
@@ -105,6 +100,37 @@ export function groupServicesByNamespace(
   return { standalone: filteredStandalone, namespaces };
 }
 
+export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext): Map<string, string> {
+  const { standalone, namespaces } = groupServicesByNamespace(services, ctx);
+  const paths = new Map<string, string>();
+
+  for (const entry of standalone) {
+    paths.set(entry.service.name, entry.prop);
+  }
+
+  for (const ns of namespaces) {
+    if (ns.baseEntry) {
+      paths.set(ns.baseEntry.service.name, ns.prefix);
+    }
+    for (const entry of ns.entries) {
+      paths.set(entry.service.name, `${ns.prefix}.${entry.subProp}`);
+    }
+  }
+
+  return paths;
+}
+
+function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): void {
+  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
+  const unreachableServices = spec.services
+    .filter((service) => service.operations.length > 0 && !accessPaths.has(service.name))
+    .map((service) => service.name);
+
+  if (unreachableServices.length > 0) {
+    throw new Error(`Python emitter reachability audit failed for services: ${unreachableServices.join(', ')}`);
+  }
+}
+
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const lines: string[] = [];
   const { standalone, namespaces } = groupServicesByNamespace(spec.services, ctx);
@@ -128,6 +154,8 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('import time');
   lines.push('import uuid');
   lines.push('import random');
+  lines.push('from datetime import datetime, timezone');
+  lines.push('from email.utils import parsedate_to_datetime');
   lines.push('from typing import Any, Dict, List, Literal, Optional, Type, Union, cast, overload');
   lines.push('');
   lines.push('import httpx');
@@ -151,10 +179,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes (both sync and async)
+  const serviceDirMap = buildServiceDirMap({ standalone, namespaces });
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const dirName = resolveServiceDir(resolvedName);
-    lines.push(`from .${dirName}._resource import ${resolvedName}, Async${resolvedName}`);
+    const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
+    lines.push(`from .${dirToModule(dirName)}._resource import ${resolvedName}, Async${resolvedName}`);
   }
 
   // Collect model/enum imports needed by namespace delegate method signatures
@@ -203,10 +232,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Emit model imports grouped by service directory
   const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-  const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);
-    return svc ? resolveServiceDir(serviceNameMap.get(svc) ?? svc) : 'common';
+    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
   };
 
   const modelsByDir = new Map<string, string[]>();
@@ -216,7 +244,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     modelsByDir.get(dir)!.push(className(name));
   }
   for (const [dir, names] of [...modelsByDir].sort()) {
-    lines.push(`from .${dir}.models import ${names.join(', ')}`);
+    lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
   }
 
   // Emit enum imports grouped by service directory
@@ -243,12 +271,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const enumsByDir = new Map<string, string[]>();
   for (const name of [...delegateEnumImports].sort()) {
     const enumSvc = enumToServiceMap.get(name);
-    const dir = enumSvc ? resolveServiceDir(serviceNameMap.get(enumSvc) ?? enumSvc) : 'common';
+    const dir = enumSvc ? (serviceDirMap.get(enumSvc) ?? 'common') : 'common';
     if (!enumsByDir.has(dir)) enumsByDir.set(dir, []);
     enumsByDir.get(dir)!.push(className(name));
   }
   for (const [dir, names] of [...enumsByDir].sort()) {
-    lines.push(`from .${dir}.models import ${names.join(', ')}`);
+    lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
   }
 
   lines.push('');
@@ -336,12 +364,18 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    ) -> None:');
   lines.push('        self._api_key = api_key or os.environ.get("WORKOS_API_KEY")');
   lines.push('        if not self._api_key:');
-  lines.push('            raise ConfigurationError(');
-  lines.push('                "No API key provided. Pass it to the client constructor "');
-  lines.push('                "or set the WORKOS_API_KEY environment variable."');
+  lines.push('            raise ValueError(');
+  lines.push('                "WorkOS API key must be provided when instantiating the client "');
+  lines.push('                "or via the WORKOS_API_KEY environment variable."');
   lines.push('            )');
   lines.push('        self.client_id = client_id or os.environ.get("WORKOS_CLIENT_ID")');
-  lines.push('        self._base_url = base_url.rstrip("/")');
+  lines.push('        if not self.client_id:');
+  lines.push('            raise ValueError(');
+  lines.push('                "WorkOS client ID must be provided when instantiating the client "');
+  lines.push('                "or via the WORKOS_CLIENT_ID environment variable."');
+  lines.push('            )');
+  lines.push('        # Ensure base_url has a trailing slash for backward compatibility');
+  lines.push('        self._base_url = base_url.rstrip("/") + "/"');
   lines.push('        self._timeout = timeout');
   lines.push('        self._max_retries = max_retries');
   lines.push('');
@@ -353,23 +387,47 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    def build_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:');
   lines.push('        """Build a full URL with query parameters for redirect/authorization endpoints."""');
   lines.push('        from urllib.parse import urlencode');
-  lines.push('        url = f"{self._base_url}/{path}"');
+  lines.push('        base = self._base_url.rstrip("/")');
+  lines.push('        url = f"{base}/{path}"');
   lines.push('        if params:');
   lines.push('            url = f"{url}?{urlencode(params)}"');
   lines.push('        return url');
   lines.push('');
   lines.push('    @staticmethod');
+  lines.push('    def _parse_retry_after(retry_after: Optional[str]) -> Optional[float]:');
+  lines.push('        """Parse Retry-After as seconds or an HTTP-date."""');
+  lines.push('        if not retry_after:');
+  lines.push('            return None');
+  lines.push('        value = retry_after.strip()');
+  lines.push('        if not value:');
+  lines.push('            return None');
+  lines.push('        try:');
+  lines.push('            return max(float(value), 0.0)');
+  lines.push('        except ValueError:');
+  lines.push('            pass');
+  lines.push('        try:');
+  lines.push('            retry_at = parsedate_to_datetime(value)');
+  lines.push('        except (TypeError, ValueError, IndexError, OverflowError):');
+  lines.push('            return None');
+  lines.push('        if retry_at.tzinfo is None:');
+  lines.push('            retry_at = retry_at.replace(tzinfo=timezone.utc)');
+  lines.push('        return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0.0)');
+  lines.push('');
+  lines.push('    @staticmethod');
   lines.push('    def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
   lines.push('        """Calculate retry delay with exponential backoff and jitter."""');
-  lines.push('        if retry_after:');
-  lines.push('            return float(retry_after)');
+  lines.push('        parsed_retry_after = _BaseWorkOS._parse_retry_after(retry_after)');
+  lines.push('        if parsed_retry_after is not None:');
+  lines.push('            return parsed_retry_after');
   lines.push('        delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
   lines.push('        return delay * (0.5 + random.random())');
   lines.push('');
   lines.push('    def _resolve_base_url(self, request_options: Optional[RequestOptions]) -> str:');
-  lines.push('        if request_options and request_options.get("base_url"):');
-  lines.push('            return str(request_options["base_url"]).rstrip("/")');
-  lines.push('        return self._base_url');
+  lines.push('        if request_options:');
+  lines.push('            base_url = request_options.get("base_url")');
+  lines.push('            if base_url:');
+  lines.push('                return str(base_url).rstrip("/")');
+  lines.push('        return self._base_url.rstrip("/")'); // Strip trailing slash for URL construction
   lines.push('');
   lines.push('    def _resolve_timeout(self, request_options: Optional[RequestOptions]) -> float:');
   lines.push('        timeout = self._timeout');
@@ -446,7 +504,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            timeout=timeout,');
   lines.push('            max_retries=max_retries,');
   lines.push('        )');
-  lines.push('        self._client = http_client or httpx.Client(timeout=timeout)');
+  lines.push('        self._client = http_client or httpx.Client(timeout=timeout, follow_redirects=True)');
   lines.push('');
   lines.push('    def close(self) -> None:');
   lines.push('        """Close the underlying HTTP client and release resources."""');
@@ -458,11 +516,14 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        self.close()');
 
+  // Collect all generated property names
+  const generatedProps = new Set<string>();
   for (const entry of standalone) {
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${entry.prop}(self) -> ${entry.resolvedName}:`);
     lines.push(`        return ${entry.resolvedName}(self)`);
+    generatedProps.add(entry.prop);
   }
 
   for (const ns of namespaces) {
@@ -471,6 +532,20 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push('    @functools.cached_property');
     lines.push(`    def ${ns.prefix}(self) -> ${nsClassName}:`);
     lines.push(`        return ${nsClassName}(self)`);
+    generatedProps.add(ns.prefix);
+  }
+
+  // Add backward-compatible property aliases from API surface
+  const compatAliases = buildCompatPropertyAliases(ctx, generatedProps);
+  for (const alias of compatAliases) {
+    lines.push('');
+    lines.push('    @functools.cached_property');
+    lines.push(`    def ${alias.name}(self) -> Any:`);
+    if (alias.target) {
+      lines.push(`        return self.${alias.target}`);
+    } else {
+      lines.push(`        return object()  # Backward-compatible stub`);
+    }
   }
 
   lines.push('');
@@ -612,7 +687,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            timeout=timeout,');
   lines.push('            max_retries=max_retries,');
   lines.push('        )');
-  lines.push('        self._client = http_client or httpx.AsyncClient(timeout=timeout)');
+  lines.push('        self._client = http_client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)');
   lines.push('');
   lines.push('    async def close(self) -> None:');
   lines.push('        """Close the underlying HTTP client and release resources."""');
@@ -624,19 +699,62 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        await self.close()');
 
+  // Compute async not-implemented modules BEFORE generating properties
+  const asyncNotImplemented = getAsyncNotImplementedModules(ctx);
+
+  const asyncGeneratedProps = new Set<string>();
   for (const entry of standalone) {
+    // Skip generating real property if it will be overridden as not-implemented
+    if (asyncNotImplemented.has(entry.prop)) {
+      asyncGeneratedProps.add(entry.prop);
+      lines.push('');
+      lines.push('    @property');
+      lines.push(`    def ${entry.prop}(self) -> Any:`);
+      lines.push(`        raise NotImplementedError("${entry.prop} is not yet available in the async client")`);
+      continue;
+    }
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${entry.prop}(self) -> Async${entry.resolvedName}:`);
     lines.push(`        return Async${entry.resolvedName}(self)`);
+    asyncGeneratedProps.add(entry.prop);
   }
 
   for (const ns of namespaces) {
     const asyncNsClassName = 'Async' + className(ns.prefix) + 'Namespace';
+    // Skip generating real property if it will be overridden as not-implemented
+    if (asyncNotImplemented.has(ns.prefix)) {
+      asyncGeneratedProps.add(ns.prefix);
+      lines.push('');
+      lines.push('    @property');
+      lines.push(`    def ${ns.prefix}(self) -> Any:`);
+      lines.push(`        raise NotImplementedError("${ns.prefix} is not yet available in the async client")`);
+      continue;
+    }
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${ns.prefix}(self) -> ${asyncNsClassName}:`);
     lines.push(`        return ${asyncNsClassName}(self)`);
+    asyncGeneratedProps.add(ns.prefix);
+  }
+
+  // Add backward-compatible property aliases from API surface.
+  const asyncCompatAliases = buildCompatPropertyAliases(ctx, asyncGeneratedProps);
+  for (const alias of asyncCompatAliases) {
+    lines.push('');
+    if (asyncNotImplemented.has(alias.name)) {
+      lines.push('    @property');
+      lines.push(`    def ${alias.name}(self) -> Any:`);
+      lines.push(`        raise NotImplementedError("${alias.name} is not yet available in the async client")`);
+    } else {
+      lines.push('    @functools.cached_property');
+      lines.push(`    def ${alias.name}(self) -> Any:`);
+      if (alias.target) {
+        lines.push(`        return self.${alias.target}`);
+      } else {
+        lines.push(`        return object()  # Backward-compatible stub`);
+      }
+    }
   }
 
   lines.push('');
@@ -793,10 +911,10 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}    error_class = STATUS_CODE_TO_ERROR.get(response.status_code)`);
   lines.push(`${indent}    if error_class:`);
   lines.push(`${indent}        if error_class is RateLimitExceededError:`);
-  lines.push(`${indent}            retry_after = response.headers.get("Retry-After")`);
+  lines.push(`${indent}            retry_after = _BaseWorkOS._parse_retry_after(response.headers.get("Retry-After"))`);
   lines.push(`${indent}            raise RateLimitExceededError(`);
   lines.push(`${indent}                message,`);
-  lines.push(`${indent}                retry_after=float(retry_after) if retry_after else None,`);
+  lines.push(`${indent}                retry_after=retry_after,`);
   lines.push(`${indent}                request_id=request_id,`);
   lines.push(`${indent}                code=code,`);
   lines.push(`${indent}                param=param,`);
@@ -840,15 +958,17 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
 
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
+  const grouping = groupServicesByNamespace(spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
 
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const dirName = resolveServiceDir(resolvedName);
+    const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const lines: string[] = [];
 
     // P3-6: explicit resource re-export + star models
-    lines.push(`from ._resource import ${resolvedName}, Async${resolvedName}  # noqa: F401`);
-    lines.push('from .models import *  # noqa: F401,F403  # pyright: ignore[reportUnusedImport]');
+    lines.push(`from ._resource import ${resolvedName}, Async${resolvedName}`);
+    lines.push('from .models import *');
 
     files.push({
       path: `src/${ctx.namespace}/${dirName}/__init__.py`,
@@ -863,6 +983,35 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       content: '',
       skipIfExists: true,
     });
+  }
+
+  return files;
+}
+
+function generateNamespaceAliasPackages(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const grouping = groupServicesByNamespace(spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
+
+  // Build set of service dir names to avoid overwriting service inits
+  const serviceDirs = new Set(serviceDirMap.values());
+
+  for (const ns of grouping.namespaces) {
+    // Only generate the namespace prefix __init__.py when there's no baseEntry AND
+    // the prefix doesn't correspond to an actual service directory (which
+    // already gets its __init__.py from generateServiceInits).
+    if (!ns.baseEntry && !serviceDirs.has(ns.prefix)) {
+      files.push({
+        path: `src/${ctx.namespace}/${ns.prefix}/__init__.py`,
+        content: ['try:', '    from ._compat import *', 'except ModuleNotFoundError:', '    pass'].join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
+
+    // Sub-services now live directly in their nested directory
+    // (e.g., src/workos/organizations/api_keys/), so no alias re-exports needed.
+    // We still add a _compat import for backward compatibility if present.
   }
 
   return files;
@@ -892,9 +1041,15 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('from ._pagination import AsyncPage, SyncPage');
   lines.push('from ._types import RequestOptions');
   lines.push('');
+  lines.push('# Backward-compatible aliases');
+  lines.push('WorkOSClient = WorkOS');
+  lines.push('AsyncWorkOSClient = AsyncWorkOS');
+  lines.push('');
   lines.push('__all__ = [');
   lines.push('    "AsyncWorkOS",');
+  lines.push('    "AsyncWorkOSClient",');
   lines.push('    "WorkOS",');
+  lines.push('    "WorkOSClient",');
   lines.push('    "RequestOptions",');
   lines.push('    "WorkOSError",');
   lines.push('    "AuthenticationError",');
@@ -917,9 +1072,84 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
       path: `src/${ctx.namespace}/__init__.py`,
       content: lines.join('\n'),
       integrateTarget: true,
-      skipIfExists: true,
+      overwriteExisting: true,
     },
   ];
+}
+
+/**
+ * Build backward-compatible property aliases from the API surface.
+ * Maps old client property names to their closest matching generated property.
+ */
+function buildCompatPropertyAliases(
+  ctx: EmitterContext,
+  generatedProps: Set<string>,
+): { name: string; target: string | null }[] {
+  const aliases: { name: string; target: string | null }[] = [];
+
+  // Read the old client property names from the API surface
+  const surfaceClasses = ctx.apiSurface?.classes ?? {};
+  const clientProps = new Set<string>();
+  for (const clsName of ['SyncClient', 'AsyncClient', 'Client']) {
+    const cls = surfaceClasses[clsName];
+    if (cls?.methods) {
+      for (const methodName of Object.keys(cls.methods)) {
+        clientProps.add(methodName);
+      }
+    }
+  }
+
+  // Known mappings from old property names to generated property names
+  const knownMappings: Record<string, string> = {
+    directory_sync: 'directories',
+    fga: 'authorization',
+    mfa: 'multi_factor_auth',
+    portal: 'admin_portal',
+  };
+
+  for (const oldProp of clientProps) {
+    if (generatedProps.has(oldProp)) continue; // Already exists
+    const target = knownMappings[oldProp];
+    if (target && generatedProps.has(target)) {
+      aliases.push({ name: oldProp, target });
+    } else {
+      // For properties without a direct mapping (e.g., passwordless, vault, connect),
+      // generate a stub property that returns a truthy placeholder.
+      aliases.push({ name: oldProp, target: null });
+    }
+  }
+
+  return aliases;
+}
+
+/**
+ * Get the set of module names that should raise NotImplementedError on the async client.
+ * These are detected by comparing sync vs async client return types in the API surface:
+ * when the async return type ends in "Module" (a protocol, not an implementation),
+ * the module was not implemented in the old async SDK.
+ */
+function getAsyncNotImplementedModules(ctx: EmitterContext): Set<string> {
+  const notImplemented = new Set<string>();
+
+  const surfaceClasses = ctx.apiSurface?.classes ?? {};
+  const syncClient = surfaceClasses['SyncClient'];
+  const asyncClient = surfaceClasses['AsyncClient'];
+
+  if (syncClient?.methods && asyncClient?.methods) {
+    for (const methodName of Object.keys(asyncClient.methods)) {
+      const asyncOverloads = asyncClient.methods[methodName] ?? [];
+      for (const overload of asyncOverloads) {
+        const returnType = (overload as any).returnType as string | undefined;
+        // If the async return type ends with "Module" (not "Async*"),
+        // the module was not fully implemented in async.
+        if (returnType && returnType.endsWith('Module') && !returnType.startsWith('Async')) {
+          notImplemented.add(methodName);
+        }
+      }
+    }
+  }
+
+  return notImplemented;
 }
 
 function generatePyProjectToml(ctx: EmitterContext): GeneratedFile[] {

@@ -7,8 +7,11 @@ import {
   resolveServiceDir,
   resolveMethodName,
   resolveClassName,
-  buildServiceNameMap,
+  buildServiceDirMap,
+  dirToModule,
+  relativeImportPrefix,
 } from './naming.js';
+import { groupServicesByNamespace } from './client.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -551,11 +554,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   if (services.length === 0) return [];
 
   const files: GeneratedFile[] = [];
+  const grouping = groupServicesByNamespace(services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
 
   for (const service of services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const dirName = resolveServiceDir(resolvedName);
+    const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const resourceClassName = resolvedName;
+    const importPrefix = relativeImportPrefix(dirName);
 
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
@@ -563,7 +569,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
-    lines.push('    from .._client import AsyncWorkOS, WorkOS');
+    lines.push(`    from ${importPrefix}_client import AsyncWorkOS, WorkOS`);
     lines.push('');
 
     // Collect all model and enum imports needed
@@ -635,10 +641,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
     // Split imports into same-service and cross-service
     const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-    const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
     const resolveModelDir = (modelName: string) => {
       const svc = modelToServiceMap.get(modelName);
-      return svc ? resolveServiceDir(serviceNameMap.get(svc) ?? svc) : 'common';
+      return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
     };
 
     const localModels: string[] = [];
@@ -658,7 +663,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`from .models import ${localModels.map((n) => className(n)).join(', ')}`);
     }
     for (const [csDir, names] of [...crossServiceModels].sort()) {
-      lines.push(`from ${ctx.namespace}.${csDir}.models import ${names.map((n) => className(n)).join(', ')}`);
+      lines.push(
+        `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${names.map((n) => className(n)).join(', ')}`,
+      );
     }
 
     // Enum imports — same-service vs cross-service
@@ -690,7 +697,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const crossServiceEnums = new Map<string, string[]>();
     for (const name of [...enumImports].sort()) {
       const enumSvc = enumToServiceMap.get(name);
-      const enumDir = enumSvc ? resolveServiceDir(serviceNameMap.get(enumSvc) ?? enumSvc) : 'common';
+      const enumDir = enumSvc ? (serviceDirMap.get(enumSvc) ?? 'common') : 'common';
       if (enumDir === dirName) {
         localEnums.push(name);
       } else {
@@ -703,14 +710,16 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`from .models import ${localEnums.map((n) => className(n)).join(', ')}`);
     }
     for (const [csDir, names] of [...crossServiceEnums].sort()) {
-      lines.push(`from ${ctx.namespace}.${csDir}.models import ${names.map((n) => className(n)).join(', ')}`);
+      lines.push(
+        `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${names.map((n) => className(n)).join(', ')}`,
+      );
     }
 
     const hasPaginated = service.operations.some((op) => op.pagination);
     if (hasPaginated) {
-      lines.push('from .._pagination import AsyncPage, SyncPage');
+      lines.push(`from ${importPrefix}_pagination import AsyncPage, SyncPage`);
     }
-    lines.push('from .._types import RequestOptions');
+    lines.push(`from ${importPrefix}_types import RequestOptions`);
 
     // --- Generate sync class ---
     lines.push('');
@@ -844,17 +853,16 @@ function emitQueryParamsDict(
 function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
   if (effectiveType.kind === 'model') {
-    // Use duck-typed check to accept both model instances and plain dicts
     if (!isRequired) {
-      return `(${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}) if ${varName} is not None else None`;
+      return `${varName}.to_dict() if ${varName} is not None else None`;
     }
-    return `${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}`;
+    return `${varName}.to_dict()`;
   }
   if (effectiveType.kind === 'array' && effectiveType.items?.kind === 'model') {
     if (!isRequired) {
-      return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}] if ${varName} is not None else None`;
+      return `[item.to_dict() for item in ${varName}] if ${varName} is not None else None`;
     }
-    return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}]`;
+    return `[item.to_dict() for item in ${varName}]`;
   }
   return varName;
 }

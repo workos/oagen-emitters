@@ -1,6 +1,19 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 
+/** Namespace grouping result (shared with client.ts). */
+export interface NamespaceGroup {
+  prefix: string;
+  entries: { service: Service; subProp: string; resolvedName: string }[];
+  baseEntry?: { service: Service; resolvedName: string };
+}
+
+/** Grouping result returned by groupServicesByNamespace. */
+export interface NamespaceGrouping {
+  standalone: { service: Service; prop: string; resolvedName: string }[];
+  namespaces: NamespaceGroup[];
+}
+
 /**
  * Map of lowercase acronym forms to their correct casing.
  * Applied as a post-processing step after toPascalCase.
@@ -186,4 +199,41 @@ export function resolveTypeName(name: string, ctx: EmitterContext): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
   return toPascalCase(name);
+}
+
+/**
+ * Build a map from IR service name to the physical directory path (relative to src/{namespace}/).
+ * Standalone services get flat dirs (e.g., "organizations").
+ * Namespace sub-services get nested dirs (e.g., "user_management/users").
+ * Namespace base services get the prefix dir (e.g., "user_management").
+ */
+export function buildServiceDirMap(grouping: NamespaceGrouping): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const entry of grouping.standalone) {
+    map.set(entry.service.name, moduleName(entry.resolvedName));
+  }
+  for (const ns of grouping.namespaces) {
+    if (ns.baseEntry) {
+      map.set(ns.baseEntry.service.name, ns.prefix);
+    }
+    for (const entry of ns.entries) {
+      map.set(entry.service.name, `${ns.prefix}/${entry.subProp}`);
+    }
+  }
+  return map;
+}
+
+/** Convert a filesystem directory path (with /) to a Python dotted module path. */
+export function dirToModule(dir: string): string {
+  return dir.replace(/\//g, '.');
+}
+
+/**
+ * Compute the relative import prefix (dots) to reach the namespace root from a given dir depth.
+ * For "organizations" (depth 1): returns ".." (2 dots)
+ * For "user_management/users" (depth 2): returns "..." (3 dots)
+ */
+export function relativeImportPrefix(dirName: string): string {
+  const depth = dirName.split('/').length;
+  return '.'.repeat(depth + 1);
 }
