@@ -1153,16 +1153,17 @@ function emitQueryParamsDict(
 function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
   if (effectiveType.kind === 'model') {
+    // Use duck-typed check to accept both model instances and plain dicts
     if (!isRequired) {
-      return `${varName}.to_dict() if ${varName} is not None else None`;
+      return `(${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}) if ${varName} is not None else None`;
     }
-    return `${varName}.to_dict()`;
+    return `${varName}.to_dict() if hasattr(${varName}, "to_dict") else ${varName}`;
   }
   if (effectiveType.kind === 'array' && effectiveType.items?.kind === 'model') {
     if (!isRequired) {
-      return `[item.to_dict() for item in ${varName}] if ${varName} is not None else None`;
+      return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}] if ${varName} is not None else None`;
     }
-    return `[item.to_dict() for item in ${varName}]`;
+    return `[item.to_dict() if hasattr(item, "to_dict") else item for item in ${varName}]`;
   }
   return varName;
 }

@@ -6,6 +6,20 @@ import { groupServicesByNamespace } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 
+/** Check if an operation is a redirect endpoint (same logic as resources.ts). */
+function isRedirectEndpoint(op: Operation): boolean {
+  if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) return true;
+  if (
+    op.httpMethod === 'get' &&
+    op.response.kind === 'primitive' &&
+    (op.response as any).type === 'unknown' &&
+    op.queryParams.length > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Build a map from service name to its dot-separated access path on the client.
  * Standalone services: "organizations", namespaced: "user_management.users"
@@ -49,8 +63,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  // Generate conftest.py
-  files.push(generateConftest(ctx));
+  // Generate conftest and helpers
+  files.push(...generateConftest(ctx));
 
   // Build access path map for all services
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
@@ -74,43 +88,54 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   return files;
 }
 
-function generateConftest(ctx: EmitterContext): GeneratedFile {
-  const lines: string[] = [];
+function generateConftest(ctx: EmitterContext): GeneratedFile[] {
+  // Helper module for test utilities (load_fixture) — avoids conflicting with
+  // hand-written conftest.py while remaining importable by generated tests.
+  const helperLines: string[] = [];
+  helperLines.push('import json');
+  helperLines.push('import os');
+  helperLines.push('');
+  helperLines.push('');
+  helperLines.push('FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")');
+  helperLines.push('');
+  helperLines.push('');
+  helperLines.push('def load_fixture(name: str) -> dict:');
+  helperLines.push('    """Load a JSON fixture file by name."""');
+  helperLines.push('    path = os.path.join(FIXTURES_DIR, name)');
+  helperLines.push('    with open(path) as f:');
+  helperLines.push('        return json.load(f)');
 
-  lines.push('import json');
-  lines.push('import os');
-  lines.push('');
-  lines.push('import pytest');
-  lines.push('');
-  lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
-  lines.push('');
-  lines.push('');
-  lines.push('FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")');
-  lines.push('');
-  lines.push('');
-  lines.push('def load_fixture(name: str) -> dict:');
-  lines.push('    """Load a JSON fixture file by name."""');
-  lines.push('    path = os.path.join(FIXTURES_DIR, name)');
-  lines.push('    with open(path) as f:');
-  lines.push('        return json.load(f)');
-  lines.push('');
-  lines.push('');
-  lines.push('@pytest.fixture');
-  lines.push('def workos():');
-  lines.push('    """Create a WorkOS client for testing."""');
-  lines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
-  lines.push('');
-  lines.push('');
-  lines.push('@pytest.fixture');
-  lines.push('def async_workos():');
-  lines.push('    """Create an AsyncWorkOS client for testing."""');
-  lines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
+  // conftest.py with pytest fixtures — merged additively into existing conftest
+  const conftestLines: string[] = [];
+  conftestLines.push('import pytest');
+  conftestLines.push('');
+  conftestLines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
+  conftestLines.push('');
+  conftestLines.push('');
+  conftestLines.push('@pytest.fixture');
+  conftestLines.push('def workos():');
+  conftestLines.push('    """Create a WorkOS client for testing."""');
+  conftestLines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
+  conftestLines.push('');
+  conftestLines.push('');
+  conftestLines.push('@pytest.fixture');
+  conftestLines.push('def async_workos():');
+  conftestLines.push('    """Create an AsyncWorkOS client for testing."""');
+  conftestLines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU")');
 
-  return {
-    path: 'tests/conftest.py',
-    content: lines.join('\n'),
-    integrateTarget: true,
-  };
+  return [
+    {
+      path: 'tests/generated_helpers.py',
+      content: helperLines.join('\n'),
+      integrateTarget: true,
+      overwriteExisting: true,
+    },
+    {
+      path: 'tests/conftest.py',
+      content: conftestLines.join('\n'),
+      integrateTarget: true,
+    },
+  ];
 }
 
 function generateServiceTest(
@@ -129,7 +154,7 @@ function generateServiceTest(
   lines.push('import json');
   lines.push('');
   lines.push('import pytest');
-  lines.push('from tests.conftest import load_fixture');
+  lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
 
   // Collect model imports needed
@@ -189,6 +214,7 @@ function generateServiceTest(
 
     const isDelete = plan.isDelete;
     const isPaginated = plan.isPaginated;
+    const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
 
     lines.push('');
 
@@ -232,6 +258,24 @@ function generateServiceTest(
       lines.push('        request = httpx_mock.get_request()');
       lines.push(`        assert request.method == "DELETE"`);
       lines.push(`        assert request.url.path.endswith("/${deletePath}")`);
+    } else if (isRedirectEndpoint(op)) {
+      // Redirect endpoint: returns a URL string, no HTTP request made
+      const args = buildTestArgs(op, spec);
+      lines.push(`    def test_${method}(self, workos):`);
+      lines.push(`        result = workos.${propName}.${method}(${args})`);
+      lines.push('        assert isinstance(result, str)');
+      lines.push('        assert result.startswith("http")');
+    } else if (isArrayResponse) {
+      // Array response: returns List[Model]
+      const modelClass = className(plan.responseModelName!);
+      const fixtureName = `${fileName(plan.responseModelName!)}.json`;
+      const args = buildTestArgs(op, spec);
+      lines.push(`    def test_${method}(self, workos, httpx_mock):`);
+      lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
+      lines.push(`        result = workos.${propName}.${method}(${args})`);
+      lines.push('        assert isinstance(result, list)');
+      lines.push(`        assert len(result) == 1`);
+      lines.push(`        assert isinstance(result[0], ${modelClass})`);
     } else if (plan.responseModelName) {
       const modelName = plan.responseModelName;
       const fixtureName = `${fileName(modelName)}.json`;
@@ -318,6 +362,7 @@ function generateServiceTest(
 
     const isDelete = plan.isDelete;
     const isPaginated = plan.isPaginated;
+    const isAsyncArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
     const asyncArgs = buildTestArgs(op, spec);
 
     lines.push('');
@@ -350,6 +395,18 @@ function generateServiceTest(
       lines.push('        httpx_mock.add_response(status_code=204)');
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert result is None');
+    } else if (isRedirectEndpoint(op)) {
+      lines.push(`    async def test_${method}(self, async_workos):`);
+      lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
+      lines.push('        assert isinstance(result, str)');
+      lines.push('        assert result.startswith("http")');
+    } else if (isAsyncArrayResponse) {
+      const modelClass = className(plan.responseModelName!);
+      const fixtureName = `${fileName(plan.responseModelName!)}.json`;
+      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
+      lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
+      lines.push('        assert isinstance(result, list)');
     } else if (plan.responseModelName) {
       const modelName = plan.responseModelName;
       const fixtureName = `${fileName(modelName)}.json`;
@@ -550,7 +607,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('');
   lines.push('import pytest');
   lines.push('');
-  lines.push('from tests.conftest import load_fixture');
+  lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
 
   // Collect imports by directory

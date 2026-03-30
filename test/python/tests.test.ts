@@ -58,13 +58,15 @@ const ctx: EmitterContext = {
 };
 
 describe('generateTests', () => {
-  it('generates conftest.py', () => {
+  it('generates conftest and helpers', () => {
     const files = generateTests(spec, ctx);
+    const helpers = files.find((f) => f.path === 'tests/generated_helpers.py');
+    expect(helpers).toBeDefined();
+    expect(helpers!.content).toContain('def load_fixture(name: str)');
     const conftest = files.find((f) => f.path === 'tests/conftest.py');
     expect(conftest).toBeDefined();
     expect(conftest!.content).toContain('import pytest');
     expect(conftest!.content).toContain('from workos import WorkOS');
-    expect(conftest!.content).toContain('def load_fixture(name: str)');
     expect(conftest!.content).toContain('@pytest.fixture');
   });
 
