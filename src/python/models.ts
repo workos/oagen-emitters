@@ -66,8 +66,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push('');
       lines.push(`${modelClassName} = ${canonicalClassName}`);
       files.push({
-        path: `${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
         content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
       });
       continue;
     }
@@ -133,13 +135,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
 
     // Dataclass definition
+    lines.push('@dataclass');
+    lines.push(`class ${modelClassName}:`);
     if (model.description) {
-      lines.push('@dataclass');
-      lines.push(`class ${modelClassName}:`);
       lines.push(`    """${model.description}"""`);
     } else {
-      lines.push('@dataclass');
-      lines.push(`class ${modelClassName}:`);
+      // Generate a default docstring from the class name when the spec
+      // doesn't provide a description.
+      let readable = modelClassName.replace(/([a-z])([A-Z])/g, '$1 $2');
+      readable = readable.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+      lines.push(`    """${readable} model."""`);
     }
 
     lines.push('');
@@ -220,8 +225,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('        return result');
 
     files.push({
-      path: `${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+      path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
       content: lines.join('\n'),
+      integrateTarget: true,
+      overwriteExisting: true,
     });
   }
 
@@ -233,19 +240,27 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (isListMetadataModel(model)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
-    const key = `${ctx.namespace}/${dirName}/models`;
+    const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
     symbolsByDir.get(key)!.push(model.name);
   }
 
   // Also include enums in the barrels
-  const enumNamesSet = new Set(ctx.spec.enums.map((e) => e.name));
   for (const enumDef of ctx.spec.enums) {
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
-    const key = `${ctx.namespace}/${dirName}/models`;
+    const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
     symbolsByDir.get(key)!.push(enumDef.name);
+  }
+
+  // Build set of service directory model paths — these get their parent __init__.py
+  // from generateServiceInits in client.ts, so we must not create a competing one here.
+  const serviceDirModelPaths = new Set<string>();
+  for (const service of ctx.spec.services) {
+    const resolvedName = serviceNameMap.get(service.name) ?? service.name;
+    const dirName = resolveServiceDir(resolvedName);
+    serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
   }
 
   for (const [dirPath, names] of symbolsByDir) {
@@ -254,28 +269,30 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const importLines: string[] = [];
     for (const name of uniqueNames) {
       importLines.push(`from .${fileName(name)} import ${className(name)} as ${className(name)}`);
-      // Enum types also export a companion Values class
-      if (enumNamesSet.has(name)) {
-        importLines.push(`from .${fileName(name)} import ${className(name)}Values as ${className(name)}Values`);
-      }
     }
     const imports = importLines.join('\n');
     files.push({
       path: `${dirPath}/__init__.py`,
       content: imports,
+      integrateTarget: true,
+      overwriteExisting: true,
     });
 
-    // Ensure the parent directory also has an __init__.py (for non-service dirs like common/)
-    const parentDir = dirPath.replace(/\/models$/, '');
-    const reExports = [...new Set(names)]
-      .sort()
-      .map((name) => `from .models import ${className(name)} as ${className(name)}`)
-      .join('\n');
-    files.push({
-      path: `${parentDir}/__init__.py`,
-      content: reExports,
-      skipIfExists: true,
-    });
+    // Only generate parent __init__.py for non-service dirs (e.g., common/).
+    // Service dirs get their __init__.py from generateServiceInits in client.ts
+    // which includes both the resource class re-export and model star import.
+    if (!serviceDirModelPaths.has(dirPath)) {
+      const parentDir = dirPath.replace(/\/models$/, '');
+      const reExports = [...new Set(names)]
+        .sort()
+        .map((name) => `from .models import ${className(name)} as ${className(name)}`)
+        .join('\n');
+      files.push({
+        path: `${parentDir}/__init__.py`,
+        content: reExports,
+        skipIfExists: true,
+      });
+    }
   }
 
   return files;
@@ -319,9 +336,29 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
     }
     case 'array': {
       if (ref.items.kind === 'model') {
-        return `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${accessor} or [])]`;
+        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? `${accessor} or []` : '_v'})]`;
+        if (isRequired) {
+          return listExpr;
+        }
+        // For optional arrays, preserve None instead of converting to []
+        return `${listExpr} if (_v := ${accessor}) is not None else None`;
+      }
+      if (ref.items.kind === 'enum') {
+        const enumClass = className(ref.items.name);
+        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? `${accessor} or []` : '_v'})]`;
+        if (isRequired) {
+          return listExpr;
+        }
+        return `${listExpr} if (_v := ${accessor}) is not None else None`;
       }
       return accessor;
+    }
+    case 'enum': {
+      const enumClass = className(ref.name);
+      if (isRequired) {
+        return `${enumClass}(${accessor})`;
+      }
+      return `${enumClass}(_v) if (_v := ${accessor}) is not None else None`;
     }
     case 'nullable':
       return deserializeField(ref.inner, accessor, false, modelMap);
