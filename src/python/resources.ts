@@ -1,4 +1,4 @@
-import type { Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { planOperation, toPascalCase, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
 import { mapTypeRefUnquoted } from './type-map.js';
 import {
@@ -25,6 +25,526 @@ export function bodyParamName(field: { name: string }, pathParamNames: Set<strin
 export function resolveResourceClassName(service: Service, ctx: EmitterContext): string {
   return resolveClassName(service, ctx);
 }
+
+// ─── Shared method-emission helpers ──────────────────────────────────
+
+/** Metadata returned by emitMethodSignature, consumed by docstring & body emitters. */
+interface SignatureMetadata {
+  returnType: string;
+  pathParamNames: Set<string>;
+  isArrayResponse: boolean;
+  isRedirect: boolean;
+  hasBearerOverride: boolean;
+}
+
+/**
+ * Emit a Python method signature (def / async def, parameters, return type).
+ */
+function emitMethodSignature(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  isAsync: boolean,
+  specEnumNames: Set<string>,
+  modelImports: Set<string>,
+  listWrapperNames: Set<string>,
+  ctx: EmitterContext,
+): SignatureMetadata {
+  const isPaginated = plan.isPaginated;
+  const isDelete = plan.isDelete;
+  const defKeyword = isAsync ? 'async def' : 'def';
+
+  lines.push(`    ${defKeyword} ${method}(`);
+  lines.push('        self,');
+
+  // Path params as positional args
+  for (const param of op.pathParams) {
+    const paramName = fieldName(param.name);
+    const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
+    lines.push(`        ${paramName}: ${paramType},`);
+  }
+
+  lines.push('        *,');
+
+  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+
+  // Request body fields as keyword args (rename fields that clash with path params)
+  if (plan.hasBody && op.requestBody) {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      const reqFields = bodyModel.fields.filter((f) => f.required);
+      const optFields = bodyModel.fields.filter((f) => !f.required);
+      for (const f of reqFields) {
+        lines.push(`        ${bodyParamName(f, pathParamNames)}: ${mapTypeRefUnquoted(f.type, specEnumNames)},`);
+      }
+      for (const f of optFields) {
+        const innerType =
+          f.type.kind === 'nullable'
+            ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
+            : mapTypeRefUnquoted(f.type, specEnumNames);
+        lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
+      }
+    } else if (op.requestBody.kind === 'union') {
+      // Union body — accept any of the variant models or a plain dict
+      const variantModels = (op.requestBody.variants ?? [])
+        .filter((v: any) => v.kind === 'model')
+        .map((v: any) => className(v.name));
+      // Add variant models to imports
+      for (const vm of variantModels) {
+        modelImports.add(vm);
+      }
+      if (variantModels.length > 0) {
+        const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
+        lines.push(`        body: ${unionType},`);
+      } else {
+        lines.push('        body: Dict[str, Any],');
+      }
+    } else {
+      // Non-model body — use generic dict
+      lines.push('        body: Optional[Dict[str, Any]] = None,');
+    }
+  }
+
+  // Query params for non-paginated methods
+  if (plan.hasQueryParams && !isPaginated) {
+    for (const param of op.queryParams) {
+      const paramName = fieldName(param.name);
+      if (pathParamNames.has(paramName)) continue;
+      // Skip query params that collide with body field names (using possibly-renamed names)
+      if (plan.hasBody && op.requestBody?.kind === 'model') {
+        const bodyModel = ctx.spec.models.find(
+          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
+        );
+        if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
+      }
+      const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
+      if (param.required) {
+        lines.push(`        ${paramName}: ${paramType},`);
+      } else {
+        lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+      }
+    }
+  }
+
+  // Pagination params
+  if (isPaginated) {
+    lines.push('        limit: Optional[int] = None,');
+    lines.push('        before: Optional[str] = None,');
+    lines.push('        after: Optional[str] = None,');
+    // Use typed enum for order param if the spec provides one, otherwise fall back to str
+    const orderParam = op.queryParams.find((p) => p.name === 'order');
+    const orderType =
+      orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames) : 'str';
+    lines.push(`        order: Optional[${orderType}] = None,`);
+    // Additional non-pagination query params
+    for (const param of op.queryParams) {
+      if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+      const paramName = fieldName(param.name);
+      const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
+      if (param.required) {
+        lines.push(`        ${paramName}: ${paramType},`);
+      } else {
+        lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+      }
+    }
+  }
+
+  // Idempotency key for idempotent POSTs
+  if (plan.isIdempotentPost) {
+    lines.push('        idempotency_key: Optional[str] = None,');
+  }
+
+  // Per-operation Bearer token auth (e.g., SSO.get_profile uses access_token instead of API key)
+  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
+    lines.push(`        ${fieldName(tokenParamName)}: str,`);
+  }
+
+  lines.push('        request_options: Optional[RequestOptions] = None,');
+
+  // Detect array response type
+  const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
+  const isRedirect = isRedirectEndpoint(op);
+
+  // Return type
+  const pageType = isAsync ? 'AsyncPage' : 'SyncPage';
+  let returnType: string;
+  if (isDelete) {
+    returnType = 'None';
+  } else if (isRedirect) {
+    returnType = 'str';
+  } else if (isPaginated) {
+    const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
+    returnType = `${pageType}[${className(resolvedItem)}]`;
+  } else if (isArrayResponse) {
+    returnType = `List[${className(plan.responseModelName!)}]`;
+  } else if (plan.responseModelName) {
+    returnType = className(plan.responseModelName);
+  } else {
+    returnType = 'None';
+  }
+
+  lines.push(`    ) -> ${returnType}:`);
+
+  return { returnType, pathParamNames, isArrayResponse, isRedirect, hasBearerOverride };
+}
+
+/**
+ * Emit a Python method docstring (description, Args, Returns, Raises).
+ * Identical for sync and async — no isAsync parameter needed.
+ */
+function emitMethodDocstring(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  meta: SignatureMetadata,
+  specEnumNames: Set<string>,
+  ctx: EmitterContext,
+): void {
+  const { returnType, pathParamNames, hasBearerOverride } = meta;
+  const isPaginated = plan.isPaginated;
+
+  // Description
+  if (op.description) {
+    lines.push(`        """${op.description}`);
+  } else {
+    lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
+  }
+
+  // Args section
+  const allParams: { name: string; desc?: string }[] = op.pathParams.map((p) => ({
+    name: fieldName(p.name),
+    desc: p.description,
+  }));
+
+  // Add body model fields to docs
+  if (plan.hasBody && op.requestBody) {
+    if (op.requestBody.kind === 'model') {
+      const bodyModel = ctx.spec.models.find((m) => m.name === op.requestBody!.name);
+      if (bodyModel) {
+        for (const f of bodyModel.fields) {
+          allParams.push({ name: bodyParamName(f, pathParamNames), desc: f.description });
+        }
+      }
+    } else if (op.requestBody.kind === 'union') {
+      // Union body — document the body parameter with the accepted variant types
+      const variantModels = (op.requestBody.variants ?? [])
+        .filter((v: any) => v.kind === 'model')
+        .map((v: any) => className(v.name));
+      const desc =
+        variantModels.length > 0
+          ? `The request body. Accepts: ${variantModels.join(', ')}, or a plain dict.`
+          : 'The request body.';
+      allParams.push({ name: 'body', desc });
+    }
+  }
+
+  // Add query params for non-paginated methods
+  if (plan.hasQueryParams && !isPaginated) {
+    for (const param of op.queryParams) {
+      const pn = fieldName(param.name);
+      if (pathParamNames.has(pn)) continue;
+      // Skip params already documented from body fields
+      if (allParams.some((p) => p.name === pn)) continue;
+      allParams.push({ name: pn, desc: param.description });
+    }
+  }
+
+  // Add extra non-standard pagination query params
+  if (isPaginated) {
+    for (const param of op.queryParams) {
+      if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+      allParams.push({ name: fieldName(param.name), desc: param.description });
+    }
+  }
+
+  // Add idempotency key parameter to docs
+  if (plan.isIdempotentPost) {
+    allParams.push({ name: 'idempotency_key', desc: 'Optional idempotency key for safe retries.' });
+  }
+
+  // Add bearer override parameter to docs (e.g., access_token for SSO)
+  if (hasBearerOverride) {
+    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+    allParams.push({ name: tokenParamName, desc: 'The bearer token for authentication.' });
+  }
+
+  if (allParams.length > 0 || isPaginated) {
+    lines.push('');
+    lines.push('        Args:');
+    for (const p of allParams) {
+      lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
+    }
+    if (isPaginated) {
+      lines.push('            limit: Maximum number of records to return.');
+      lines.push('            before: Pagination cursor for previous page.');
+      lines.push('            after: Pagination cursor for next page.');
+      lines.push('            order: Sort order.');
+    }
+    lines.push('            request_options: Per-request options (extra headers, timeout).');
+  }
+
+  if (returnType !== 'None') {
+    lines.push('');
+    lines.push('        Returns:');
+    lines.push(`            ${returnType}`);
+  }
+
+  // Per-operation error documentation from spec error responses
+  const errorRaises = buildErrorRaisesBlock(op);
+  lines.push('');
+  lines.push('        Raises:');
+  for (const line of errorRaises) {
+    lines.push(`            ${line}`);
+  }
+  lines.push('        """');
+}
+
+/**
+ * Emit the Python method body (auth override, path building, request call).
+ */
+function emitMethodBody(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  meta: SignatureMetadata,
+  isAsync: boolean,
+  modelImports: Set<string>,
+  listWrapperNames: Set<string>,
+  ctx: EmitterContext,
+): void {
+  const { pathParamNames, isArrayResponse, isRedirect, hasBearerOverride } = meta;
+  const isPaginated = plan.isPaginated;
+  const awaitPrefix = isAsync ? 'await ' : '';
+
+  // Method body — build path
+  const pathStr = buildPathString(op);
+  const httpMethod = op.httpMethod;
+
+  // Emit auth override for per-operation Bearer token security
+  if (hasBearerOverride) {
+    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+    lines.push(`        request_options = request_options or {}`);
+    lines.push(
+      `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,
+    );
+  }
+
+  if (isRedirect) {
+    // Redirect endpoint: construct URL client-side instead of making HTTP request
+    const bodyModel =
+      plan.hasBody && op.requestBody?.kind === 'model'
+        ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
+        : undefined;
+    const redirectParamEntries: { key: string; varName: string }[] = [];
+    if (bodyModel) {
+      for (const f of bodyModel.fields) {
+        redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
+      }
+    }
+    for (const param of op.queryParams) {
+      const pn = fieldName(param.name);
+      if (!redirectParamEntries.some((e) => e.varName === pn)) {
+        redirectParamEntries.push({ key: param.name, varName: pn });
+      }
+    }
+    if (redirectParamEntries.length > 0) {
+      lines.push('        params = {k: v for k, v in {');
+      for (const entry of redirectParamEntries) {
+        lines.push(`            "${entry.key}": ${entry.varName},`);
+      }
+      lines.push('        }.items() if v is not None}');
+      lines.push(`        return self._client.build_url(${pathStr}, params)`);
+    } else {
+      lines.push(`        return self._client.build_url(${pathStr})`);
+    }
+  } else if (isPaginated) {
+    const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
+    const itemTypeClass = className(resolvedItemName);
+    // Build query params dict
+    lines.push('        params = {k: v for k, v in {');
+    lines.push('            "limit": limit,');
+    lines.push('            "before": before,');
+    lines.push('            "after": after,');
+    lines.push('            "order": order,');
+    for (const param of op.queryParams) {
+      if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+      lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+    }
+    lines.push('        }.items() if v is not None}');
+    lines.push(`        return ${awaitPrefix}self._client.request_page(`);
+    lines.push(`            method="${httpMethod}",`);
+    lines.push(`            path=${pathStr},`);
+    lines.push(`            model=${itemTypeClass},`);
+    lines.push('            params=params,');
+    lines.push('            request_options=request_options,');
+    lines.push('        )');
+  } else if (plan.isDelete) {
+    // Build body dict if the DELETE has a request body
+    const deleteBodyFieldNames = new Set<string>();
+    if (plan.hasBody && op.requestBody) {
+      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+      if (bodyModel) {
+        const bodyFields = bodyModel.fields;
+        for (const f of bodyFields) deleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
+        const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
+        if (bodyFields.length > 0 && hasOptionalBodyFields) {
+          lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
+          for (const f of bodyFields) {
+            lines.push(
+              `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
+            );
+          }
+          lines.push('        }.items() if v is not None}');
+        } else if (bodyFields.length > 0) {
+          lines.push('        body: Dict[str, Any] = {');
+          for (const f of bodyFields) {
+            lines.push(
+              `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
+            );
+          }
+          lines.push('        }');
+        }
+      }
+    }
+    // Build query params dict if any exist alongside the body/path
+    const deleteHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, deleteBodyFieldNames);
+    lines.push(`        ${awaitPrefix}self._client.request(`);
+    lines.push(`            method="${httpMethod}",`);
+    lines.push(`            path=${pathStr},`);
+    if (plan.hasBody && op.requestBody) {
+      lines.push('            body=body,');
+    }
+    if (deleteHasParams) {
+      lines.push('            params=params,');
+    }
+    lines.push('            request_options=request_options,');
+    lines.push('        )');
+  } else if (plan.hasBody && op.requestBody) {
+    const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+    // Build body dict
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    const bodyFieldNamesSet = new Set<string>();
+    if (bodyModel) {
+      const bodyFields = bodyModel.fields;
+      for (const f of bodyFields) bodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
+      const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
+      if (bodyFields.length > 0 && hasOptionalBodyFields) {
+        lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
+        for (const f of bodyFields) {
+          lines.push(
+            `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
+          );
+        }
+        lines.push('        }.items() if v is not None}');
+      } else if (bodyFields.length > 0) {
+        lines.push('        body: Dict[str, Any] = {');
+        for (const f of bodyFields) {
+          lines.push(
+            `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
+          );
+        }
+        lines.push('        }');
+      } else {
+        lines.push('        body: Dict[str, Any] = {}');
+      }
+    } else {
+      // Union or non-model body — convert model instances to dicts
+      lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
+    }
+    // Build query params dict if any exist alongside the body
+    const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
+    const bodyVarName = bodyModel ? 'body' : '_body';
+    if (isArrayResponse) {
+      // Array response with body: request without model, then deserialize each item
+      const itemModel = className(plan.responseModelName!);
+      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`            method="${httpMethod}",`);
+      lines.push(`            path=${pathStr},`);
+      lines.push(`            body=${bodyVarName},`);
+      if (bodyHasParams) {
+        lines.push('            params=params,');
+      }
+      if (plan.isIdempotentPost) {
+        lines.push('            idempotency_key=idempotency_key,');
+      }
+      lines.push('            request_options=request_options,');
+      lines.push('        )');
+      lines.push(
+        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+      );
+    } else {
+      const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
+      lines.push(`        ${bodyReturnPrefix}${awaitPrefix}self._client.request(`);
+      lines.push(`            method="${httpMethod}",`);
+      lines.push(`            path=${pathStr},`);
+      lines.push(`            body=${bodyVarName},`);
+      if (bodyHasParams) {
+        lines.push('            params=params,');
+      }
+      if (responseModel !== 'None') {
+        lines.push(`            model=${responseModel},`);
+      }
+      if (plan.isIdempotentPost) {
+        lines.push('            idempotency_key=idempotency_key,');
+      }
+      lines.push('            request_options=request_options,');
+      lines.push('        )');
+    }
+  } else {
+    // GET or similar with query params
+    const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+    if (plan.hasQueryParams) {
+      const hasOptionalQueryParams = op.queryParams.some((p) => !p.required);
+      if (hasOptionalQueryParams) {
+        lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
+        for (const param of op.queryParams) {
+          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+        }
+        lines.push('        }.items() if v is not None}');
+      } else {
+        lines.push('        params: Dict[str, Any] = {');
+        for (const param of op.queryParams) {
+          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+        }
+        lines.push('        }');
+      }
+    }
+    if (isArrayResponse) {
+      // Array response: request without model, then deserialize each item
+      const itemModel = className(plan.responseModelName!);
+      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`            method="${httpMethod}",`);
+      lines.push(`            path=${pathStr},`);
+      if (plan.hasQueryParams) {
+        lines.push('            params=params,');
+      }
+      lines.push('            request_options=request_options,');
+      lines.push('        )');
+      lines.push(
+        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
+      );
+    } else {
+      const returnPrefix = responseModel !== 'None' ? 'return ' : '';
+      lines.push(`        ${returnPrefix}${awaitPrefix}self._client.request(`);
+      lines.push(`            method="${httpMethod}",`);
+      lines.push(`            path=${pathStr},`);
+      if (plan.hasQueryParams) {
+        lines.push('            params=params,');
+      }
+      if (responseModel !== 'None') {
+        lines.push(`            model=${responseModel},`);
+      }
+      lines.push('            request_options=request_options,');
+      lines.push('        )');
+    }
+  }
+}
+
+// ─── Main generator ──────────────────────────────────────────────────
 
 /**
  * Generate Python resource class files from IR Service definitions.
@@ -194,13 +714,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     }
     lines.push('from .._types import RequestOptions');
 
+    // --- Generate sync class ---
     lines.push('');
     lines.push('');
     lines.push(`class ${resourceClassName}:`);
     if (service.description) {
       lines.push(`    """${service.description}"""`);
     } else {
-      // Split on camelCase boundaries while preserving acronyms
       let readable = resourceClassName.replace(/([a-z])([A-Z])/g, '$1 $2');
       readable = readable.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
       lines.push(`    """${readable} API resources."""`);
@@ -210,458 +730,30 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('        self._client = client');
 
     const emittedMethods = new Set<string>();
-
     for (const op of service.operations) {
       const plan = planOperation(op);
       const method = resolveMethodName(op, service, ctx);
-
-      // Skip duplicate method names (multiple operations mapping to the same name)
       if (emittedMethods.has(method)) continue;
       emittedMethods.add(method);
-      const isDelete = plan.isDelete;
-      const isPaginated = plan.isPaginated;
 
       lines.push('');
-      lines.push(`    def ${method}(`);
-      lines.push('        self,');
-
-      // Path params as positional args
-      for (const param of op.pathParams) {
-        const paramName = fieldName(param.name);
-        const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-        lines.push(`        ${paramName}: ${paramType},`);
-      }
-
-      lines.push('        *,');
-
-      const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-
-      // Request body fields as keyword args (rename fields that clash with path params)
-      if (plan.hasBody && op.requestBody) {
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        if (bodyModel) {
-          const reqFields = bodyModel.fields.filter((f) => f.required);
-          const optFields = bodyModel.fields.filter((f) => !f.required);
-          for (const f of reqFields) {
-            lines.push(`        ${bodyParamName(f, pathParamNames)}: ${mapTypeRefUnquoted(f.type, specEnumNames)},`);
-          }
-          for (const f of optFields) {
-            const innerType =
-              f.type.kind === 'nullable'
-                ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
-                : mapTypeRefUnquoted(f.type, specEnumNames);
-            lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
-          }
-        } else if (op.requestBody.kind === 'union') {
-          // Union body — accept any of the variant models or a plain dict
-          const variantModels = (op.requestBody.variants ?? [])
-            .filter((v: any) => v.kind === 'model')
-            .map((v: any) => className(v.name));
-          // Add variant models to imports
-          for (const vm of variantModels) {
-            modelImports.add(vm);
-          }
-          if (variantModels.length > 0) {
-            const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
-            lines.push(`        body: ${unionType},`);
-          } else {
-            lines.push('        body: Dict[str, Any],');
-          }
-        } else {
-          // Non-model body — use generic dict
-          lines.push('        body: Optional[Dict[str, Any]] = None,');
-        }
-      }
-
-      // Query params for non-paginated methods
-      if (plan.hasQueryParams && !isPaginated) {
-        for (const param of op.queryParams) {
-          const paramName = fieldName(param.name);
-          if (pathParamNames.has(paramName)) continue;
-          // Skip query params that collide with body field names (using possibly-renamed names)
-          if (plan.hasBody && op.requestBody?.kind === 'model') {
-            const bodyModel = ctx.spec.models.find(
-              (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-            );
-            if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
-          }
-          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-          if (param.required) {
-            lines.push(`        ${paramName}: ${paramType},`);
-          } else {
-            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
-          }
-        }
-      }
-
-      // Pagination params
-      if (isPaginated) {
-        lines.push('        limit: Optional[int] = None,');
-        lines.push('        before: Optional[str] = None,');
-        lines.push('        after: Optional[str] = None,');
-        // Use typed enum for order param if the spec provides one, otherwise fall back to str
-        const orderParam = op.queryParams.find((p) => p.name === 'order');
-        const orderType =
-          orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames) : 'str';
-        lines.push(`        order: Optional[${orderType}] = None,`);
-        // Additional non-pagination query params
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          const paramName = fieldName(param.name);
-          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-          if (param.required) {
-            lines.push(`        ${paramName}: ${paramType},`);
-          } else {
-            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
-          }
-        }
-      }
-
-      // Idempotency key for idempotent POSTs
-      if (plan.isIdempotentPost) {
-        lines.push('        idempotency_key: Optional[str] = None,');
-      }
-
-      // Per-operation Bearer token auth (e.g., SSO.get_profile uses access_token instead of API key)
-      const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
-      if (hasBearerOverride) {
-        const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
-        lines.push(`        ${fieldName(tokenParamName)}: str,`);
-      }
-
-      lines.push('        request_options: Optional[RequestOptions] = None,');
-
-      // Detect array response type
-      const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
-      const isRedirect = isRedirectEndpoint(op);
-
-      // Return type
-      let returnType: string;
-      if (isDelete) {
-        returnType = 'None';
-      } else if (isRedirect) {
-        returnType = 'str';
-      } else if (isPaginated) {
-        const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-        returnType = `SyncPage[${className(resolvedItem)}]`;
-      } else if (isArrayResponse) {
-        returnType = `List[${className(plan.responseModelName!)}]`;
-      } else if (plan.responseModelName) {
-        returnType = className(plan.responseModelName);
-      } else {
-        returnType = 'None';
-      }
-
-      lines.push(`    ) -> ${returnType}:`);
-
-      // Docstring
-      if (op.description) {
-        lines.push(`        """${op.description}`);
-      } else {
-        lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
-      }
-
-      // Args section
-      const allParams: { name: string; desc?: string }[] = op.pathParams.map((p) => ({
-        name: fieldName(p.name),
-        desc: p.description,
-      }));
-
-      // Add body model fields to docs
-      if (plan.hasBody && op.requestBody) {
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        if (bodyModel) {
-          for (const f of bodyModel.fields) {
-            allParams.push({ name: bodyParamName(f, pathParamNames), desc: f.description });
-          }
-        }
-      }
-
-      // Add query params for non-paginated methods
-      if (plan.hasQueryParams && !isPaginated) {
-        for (const param of op.queryParams) {
-          const pn = fieldName(param.name);
-          if (pathParamNames.has(pn)) continue;
-          // Skip params already documented from body fields
-          if (allParams.some((p) => p.name === pn)) continue;
-          allParams.push({ name: pn, desc: param.description });
-        }
-      }
-
-      // Add extra non-standard pagination query params
-      if (isPaginated) {
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          allParams.push({ name: fieldName(param.name), desc: param.description });
-        }
-      }
-
-      if (allParams.length > 0 || isPaginated) {
-        lines.push('');
-        lines.push('        Args:');
-        for (const p of allParams) {
-          lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
-        }
-        if (isPaginated) {
-          lines.push('            limit: Maximum number of records to return.');
-          lines.push('            before: Pagination cursor for previous page.');
-          lines.push('            after: Pagination cursor for next page.');
-          lines.push('            order: Sort order.');
-        }
-        lines.push('            request_options: Per-request options (extra headers, timeout).');
-      }
-
-      if (returnType !== 'None') {
-        lines.push('');
-        lines.push('        Returns:');
-        lines.push(`            ${returnType}`);
-      }
-
-      // Per-operation error documentation from spec error responses
-      const errorRaises = buildErrorRaisesBlock(op);
-      lines.push('');
-      lines.push('        Raises:');
-      for (const line of errorRaises) {
-        lines.push(`            ${line}`);
-      }
-      lines.push('        """');
-
-      // Method body — build path
-      const pathStr = buildPathString(op);
-      const httpMethod = op.httpMethod;
-
-      // Emit auth override for per-operation Bearer token security
-      if (hasBearerOverride) {
-        const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
-        lines.push(`        request_options = request_options or {}`);
-        lines.push(
-          `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,
-        );
-      }
-
-      if (isRedirect) {
-        // Redirect endpoint: construct URL client-side instead of making HTTP request
-        const bodyModel =
-          plan.hasBody && op.requestBody?.kind === 'model'
-            ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
-            : undefined;
-        const redirectParamEntries: { key: string; varName: string }[] = [];
-        if (bodyModel) {
-          for (const f of bodyModel.fields) {
-            redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
-          }
-        }
-        for (const param of op.queryParams) {
-          const pn = fieldName(param.name);
-          if (!redirectParamEntries.some((e) => e.varName === pn)) {
-            redirectParamEntries.push({ key: param.name, varName: pn });
-          }
-        }
-        if (redirectParamEntries.length > 0) {
-          lines.push('        params = {k: v for k, v in {');
-          for (const entry of redirectParamEntries) {
-            lines.push(`            "${entry.key}": ${entry.varName},`);
-          }
-          lines.push('        }.items() if v is not None}');
-          lines.push(`        return self._client.build_url(${pathStr}, params)`);
-        } else {
-          lines.push(`        return self._client.build_url(${pathStr})`);
-        }
-      } else if (isPaginated) {
-        const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-        const itemTypeClass = className(resolvedItemName);
-        // Build query params dict
-        lines.push('        params = {k: v for k, v in {');
-        lines.push('            "limit": limit,');
-        lines.push('            "before": before,');
-        lines.push('            "after": after,');
-        lines.push('            "order": order,');
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-        }
-        lines.push('        }.items() if v is not None}');
-        lines.push(`        return self._client.request_page(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        lines.push(`            model=${itemTypeClass},`);
-        lines.push('            params=params,');
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
-      } else if (isDelete) {
-        // Build body dict if the DELETE has a request body
-        const deleteBodyFieldNames = new Set<string>();
-        if (plan.hasBody && op.requestBody) {
-          const bodyModel = ctx.spec.models.find(
-            (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-          );
-          if (bodyModel) {
-            const bodyFields = bodyModel.fields;
-            for (const f of bodyFields) deleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
-            const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-            if (bodyFields.length > 0 && hasOptionalBodyFields) {
-              lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-              for (const f of bodyFields) {
-                lines.push(
-                  `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-                );
-              }
-              lines.push('        }.items() if v is not None}');
-            } else if (bodyFields.length > 0) {
-              lines.push('        body: Dict[str, Any] = {');
-              for (const f of bodyFields) {
-                lines.push(
-                  `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-                );
-              }
-              lines.push('        }');
-            }
-          }
-        }
-        // Build query params dict if any exist alongside the body/path
-        const deleteHasParams =
-          plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, deleteBodyFieldNames);
-        lines.push(`        self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        if (plan.hasBody && op.requestBody) {
-          lines.push('            body=body,');
-        }
-        if (deleteHasParams) {
-          lines.push('            params=params,');
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
-      } else if (plan.hasBody && op.requestBody) {
-        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
-        // Build body dict
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        const bodyFieldNamesSet = new Set<string>();
-        if (bodyModel) {
-          const bodyFields = bodyModel.fields;
-          for (const f of bodyFields) bodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
-          const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-          if (bodyFields.length > 0 && hasOptionalBodyFields) {
-            lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-            for (const f of bodyFields) {
-              lines.push(
-                `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-              );
-            }
-            lines.push('        }.items() if v is not None}');
-          } else if (bodyFields.length > 0) {
-            lines.push('        body: Dict[str, Any] = {');
-            for (const f of bodyFields) {
-              lines.push(
-                `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-              );
-            }
-            lines.push('        }');
-          } else {
-            lines.push('        body: Dict[str, Any] = {}');
-          }
-        } else {
-          // Union or non-model body — convert model instances to dicts
-          lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
-        }
-        // Build query params dict if any exist alongside the body
-        const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
-        const bodyVarName = bodyModel ? 'body' : '_body';
-        if (isArrayResponse) {
-          // Array response with body: request without model, then deserialize each item
-          const itemModel = className(plan.responseModelName!);
-          lines.push(`        raw = self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          lines.push(`            body=${bodyVarName},`);
-          if (bodyHasParams) {
-            lines.push('            params=params,');
-          }
-          if (plan.isIdempotentPost) {
-            lines.push('            idempotency_key=idempotency_key,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-          lines.push(
-            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-          );
-        } else {
-          const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
-          lines.push(`        ${bodyReturnPrefix}self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          lines.push(`            body=${bodyVarName},`);
-          if (bodyHasParams) {
-            lines.push('            params=params,');
-          }
-          if (responseModel !== 'None') {
-            lines.push(`            model=${responseModel},`);
-          }
-          if (plan.isIdempotentPost) {
-            lines.push('            idempotency_key=idempotency_key,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-        }
-      } else {
-        // GET or similar with query params
-        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
-        if (plan.hasQueryParams) {
-          const hasOptionalQueryParams = op.queryParams.some((p) => !p.required);
-          if (hasOptionalQueryParams) {
-            lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
-            for (const param of op.queryParams) {
-              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-            }
-            lines.push('        }.items() if v is not None}');
-          } else {
-            lines.push('        params: Dict[str, Any] = {');
-            for (const param of op.queryParams) {
-              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-            }
-            lines.push('        }');
-          }
-        }
-        if (isArrayResponse) {
-          // Array response: request without model, then deserialize each item
-          const itemModel = className(plan.responseModelName!);
-          lines.push('        raw = self._client.request(');
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          if (plan.hasQueryParams) {
-            lines.push('            params=params,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-          lines.push(
-            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-          );
-        } else {
-          const returnPrefix = responseModel !== 'None' ? 'return ' : '';
-          lines.push(`        ${returnPrefix}self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          if (plan.hasQueryParams) {
-            lines.push('            params=params,');
-          }
-          if (responseModel !== 'None') {
-            lines.push(`            model=${responseModel},`);
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-        }
-      }
+      const meta = emitMethodSignature(
+        lines,
+        op,
+        plan,
+        method,
+        false,
+        specEnumNames,
+        modelImports,
+        listWrapperNames,
+        ctx,
+      );
+      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
+      emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
     }
 
-    // --- Generate async variant ---
+    // --- Generate async class ---
     const asyncClassName = `Async${resourceClassName}`;
-
     lines.push('');
     lines.push('');
     lines.push(`class ${asyncClassName}:`);
@@ -677,427 +769,26 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('        self._client = client');
 
     const asyncEmittedMethods = new Set<string>();
-
     for (const op of service.operations) {
       const plan = planOperation(op);
       const method = resolveMethodName(op, service, ctx);
-
       if (asyncEmittedMethods.has(method)) continue;
       asyncEmittedMethods.add(method);
-      const isDelete = plan.isDelete;
-      const isPaginated = plan.isPaginated;
 
       lines.push('');
-      lines.push(`    async def ${method}(`);
-      lines.push('        self,');
-
-      for (const param of op.pathParams) {
-        const paramName = fieldName(param.name);
-        const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-        lines.push(`        ${paramName}: ${paramType},`);
-      }
-
-      lines.push('        *,');
-      const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-
-      if (plan.hasBody && op.requestBody) {
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        if (bodyModel) {
-          const reqFields = bodyModel.fields.filter((f) => f.required);
-          const optFields = bodyModel.fields.filter((f) => !f.required);
-          for (const f of reqFields) {
-            lines.push(`        ${bodyParamName(f, pathParamNames)}: ${mapTypeRefUnquoted(f.type, specEnumNames)},`);
-          }
-          for (const f of optFields) {
-            const innerType =
-              f.type.kind === 'nullable'
-                ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
-                : mapTypeRefUnquoted(f.type, specEnumNames);
-            lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
-          }
-        } else if (op.requestBody.kind === 'union') {
-          const variantModels = (op.requestBody.variants ?? [])
-            .filter((v: any) => v.kind === 'model')
-            .map((v: any) => className(v.name));
-          if (variantModels.length > 0) {
-            const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
-            lines.push(`        body: ${unionType},`);
-          } else {
-            lines.push('        body: Dict[str, Any],');
-          }
-        } else {
-          lines.push('        body: Optional[Dict[str, Any]] = None,');
-        }
-      }
-
-      if (plan.hasQueryParams && !isPaginated) {
-        for (const param of op.queryParams) {
-          const paramName = fieldName(param.name);
-          if (pathParamNames.has(paramName)) continue;
-          if (plan.hasBody && op.requestBody?.kind === 'model') {
-            const bodyModel = ctx.spec.models.find(
-              (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-            );
-            if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
-          }
-          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-          if (param.required) {
-            lines.push(`        ${paramName}: ${paramType},`);
-          } else {
-            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
-          }
-        }
-      }
-
-      if (isPaginated) {
-        lines.push('        limit: Optional[int] = None,');
-        lines.push('        before: Optional[str] = None,');
-        lines.push('        after: Optional[str] = None,');
-        const asyncOrderParam = op.queryParams.find((p) => p.name === 'order');
-        const asyncOrderType =
-          asyncOrderParam && asyncOrderParam.type.kind === 'enum'
-            ? mapTypeRefUnquoted(asyncOrderParam.type, specEnumNames)
-            : 'str';
-        lines.push(`        order: Optional[${asyncOrderType}] = None,`);
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          const paramName = fieldName(param.name);
-          const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-          if (param.required) {
-            lines.push(`        ${paramName}: ${paramType},`);
-          } else {
-            lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
-          }
-        }
-      }
-
-      if (plan.isIdempotentPost) {
-        lines.push('        idempotency_key: Optional[str] = None,');
-      }
-
-      // Per-operation Bearer token auth (async)
-      const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth');
-      if (hasBearerOverride) {
-        const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
-        lines.push(`        ${fieldName(tokenParamName)}: str,`);
-      }
-
-      lines.push('        request_options: Optional[RequestOptions] = None,');
-
-      // Detect array response type (async)
-      const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
-      const isRedirect = isRedirectEndpoint(op);
-
-      let returnType: string;
-      if (isDelete) {
-        returnType = 'None';
-      } else if (isRedirect) {
-        returnType = 'str';
-      } else if (isPaginated) {
-        const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-        returnType = `AsyncPage[${className(resolvedItem)}]`;
-      } else if (isArrayResponse) {
-        returnType = `List[${className(plan.responseModelName!)}]`;
-      } else if (plan.responseModelName) {
-        returnType = className(plan.responseModelName);
-      } else {
-        returnType = 'None';
-      }
-
-      lines.push(`    ) -> ${returnType}:`);
-
-      // Async docstring (matches sync version with Args/Returns)
-      if (op.description) {
-        lines.push(`        """${op.description}`);
-      } else {
-        lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
-      }
-
-      // Args section
-      const asyncAllParams: { name: string; desc?: string }[] = op.pathParams.map((p) => ({
-        name: fieldName(p.name),
-        desc: p.description,
-      }));
-
-      if (plan.hasBody && op.requestBody) {
-        const asyncBodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        if (asyncBodyModel) {
-          for (const f of asyncBodyModel.fields) {
-            asyncAllParams.push({ name: bodyParamName(f, pathParamNames), desc: f.description });
-          }
-        }
-      }
-
-      if (plan.hasQueryParams && !isPaginated) {
-        for (const param of op.queryParams) {
-          const pn = fieldName(param.name);
-          if (pathParamNames.has(pn)) continue;
-          if (asyncAllParams.some((p) => p.name === pn)) continue;
-          asyncAllParams.push({ name: pn, desc: param.description });
-        }
-      }
-
-      if (isPaginated) {
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          asyncAllParams.push({ name: fieldName(param.name), desc: param.description });
-        }
-      }
-
-      if (asyncAllParams.length > 0 || isPaginated) {
-        lines.push('');
-        lines.push('        Args:');
-        for (const p of asyncAllParams) {
-          lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
-        }
-        if (isPaginated) {
-          lines.push('            limit: Maximum number of records to return.');
-          lines.push('            before: Pagination cursor for previous page.');
-          lines.push('            after: Pagination cursor for next page.');
-          lines.push('            order: Sort order.');
-        }
-        lines.push('            request_options: Per-request options (extra headers, timeout).');
-      }
-
-      if (returnType !== 'None') {
-        lines.push('');
-        lines.push('        Returns:');
-        lines.push(`            ${returnType}`);
-      }
-
-      // Per-operation error documentation from spec error responses
-      const asyncErrorRaises = buildErrorRaisesBlock(op);
-      lines.push('');
-      lines.push('        Raises:');
-      for (const line of asyncErrorRaises) {
-        lines.push(`            ${line}`);
-      }
-      lines.push('        """');
-
-      const pathStr = buildPathString(op);
-      const httpMethod = op.httpMethod;
-
-      // Emit auth override for per-operation Bearer token security (async)
-      if (hasBearerOverride) {
-        const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
-        lines.push(`        request_options = request_options or {}`);
-        lines.push(
-          `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,
-        );
-      }
-
-      if (isRedirect) {
-        // Redirect endpoint: construct URL client-side (async version, same logic)
-        const bodyModel =
-          plan.hasBody && op.requestBody?.kind === 'model'
-            ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
-            : undefined;
-        const redirectParamEntries: { key: string; varName: string }[] = [];
-        if (bodyModel) {
-          for (const f of bodyModel.fields) {
-            redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
-          }
-        }
-        for (const param of op.queryParams) {
-          const pn = fieldName(param.name);
-          if (!redirectParamEntries.some((e) => e.varName === pn)) {
-            redirectParamEntries.push({ key: param.name, varName: pn });
-          }
-        }
-        if (redirectParamEntries.length > 0) {
-          lines.push('        params = {k: v for k, v in {');
-          for (const entry of redirectParamEntries) {
-            lines.push(`            "${entry.key}": ${entry.varName},`);
-          }
-          lines.push('        }.items() if v is not None}');
-          lines.push(`        return self._client.build_url(${pathStr}, params)`);
-        } else {
-          lines.push(`        return self._client.build_url(${pathStr})`);
-        }
-      } else if (isPaginated) {
-        const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-        const itemTypeClass = className(resolvedItemName);
-        lines.push('        params = {k: v for k, v in {');
-        lines.push('            "limit": limit,');
-        lines.push('            "before": before,');
-        lines.push('            "after": after,');
-        lines.push('            "order": order,');
-        for (const param of op.queryParams) {
-          if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-        }
-        lines.push('        }.items() if v is not None}');
-        lines.push(`        return await self._client.request_page(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        lines.push(`            model=${itemTypeClass},`);
-        lines.push('            params=params,');
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
-      } else if (isDelete) {
-        const asyncDeleteBodyFieldNames = new Set<string>();
-        if (plan.hasBody && op.requestBody) {
-          const bodyModel = ctx.spec.models.find(
-            (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-          );
-          if (bodyModel) {
-            const bodyFields = bodyModel.fields;
-            for (const f of bodyFields) asyncDeleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
-            const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-            if (bodyFields.length > 0 && hasOptionalBodyFields) {
-              lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-              for (const f of bodyFields) {
-                lines.push(
-                  `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-                );
-              }
-              lines.push('        }.items() if v is not None}');
-            } else if (bodyFields.length > 0) {
-              lines.push('        body: Dict[str, Any] = {');
-              for (const f of bodyFields) {
-                lines.push(
-                  `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-                );
-              }
-              lines.push('        }');
-            }
-          }
-        }
-        const asyncDeleteHasParams =
-          plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, asyncDeleteBodyFieldNames);
-        lines.push(`        await self._client.request(`);
-        lines.push(`            method="${httpMethod}",`);
-        lines.push(`            path=${pathStr},`);
-        if (plan.hasBody && op.requestBody) {
-          lines.push('            body=body,');
-        }
-        if (asyncDeleteHasParams) {
-          lines.push('            params=params,');
-        }
-        lines.push('            request_options=request_options,');
-        lines.push('        )');
-      } else if (plan.hasBody && op.requestBody) {
-        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
-        const asyncBodyFieldNamesSet = new Set<string>();
-        if (bodyModel) {
-          const bodyFields = bodyModel.fields;
-          for (const f of bodyFields) asyncBodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
-          const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-          if (bodyFields.length > 0 && hasOptionalBodyFields) {
-            lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-            for (const f of bodyFields) {
-              lines.push(
-                `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-              );
-            }
-            lines.push('        }.items() if v is not None}');
-          } else if (bodyFields.length > 0) {
-            lines.push('        body: Dict[str, Any] = {');
-            for (const f of bodyFields) {
-              lines.push(
-                `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-              );
-            }
-            lines.push('        }');
-          } else {
-            lines.push('        body: Dict[str, Any] = {}');
-          }
-        } else {
-          lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
-        }
-        const asyncBodyHasParams =
-          plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, asyncBodyFieldNamesSet);
-        const asyncBodyVarName = bodyModel ? 'body' : '_body';
-        if (isArrayResponse) {
-          // Array response with body: request without model, then deserialize each item
-          const itemModel = className(plan.responseModelName!);
-          lines.push(`        raw = await self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          lines.push(`            body=${asyncBodyVarName},`);
-          if (asyncBodyHasParams) {
-            lines.push('            params=params,');
-          }
-          if (plan.isIdempotentPost) {
-            lines.push('            idempotency_key=idempotency_key,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-          lines.push(
-            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-          );
-        } else {
-          const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
-          lines.push(`        ${bodyReturnPrefix}await self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          lines.push(`            body=${asyncBodyVarName},`);
-          if (asyncBodyHasParams) {
-            lines.push('            params=params,');
-          }
-          if (responseModel !== 'None') {
-            lines.push(`            model=${responseModel},`);
-          }
-          if (plan.isIdempotentPost) {
-            lines.push('            idempotency_key=idempotency_key,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-        }
-      } else {
-        const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
-        if (plan.hasQueryParams) {
-          const hasOptionalQueryParams = op.queryParams.some((p) => !p.required);
-          if (hasOptionalQueryParams) {
-            lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
-            for (const param of op.queryParams) {
-              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-            }
-            lines.push('        }.items() if v is not None}');
-          } else {
-            lines.push('        params: Dict[str, Any] = {');
-            for (const param of op.queryParams) {
-              lines.push(`            "${param.name}": ${fieldName(param.name)},`);
-            }
-            lines.push('        }');
-          }
-        }
-        if (isArrayResponse) {
-          // Array response: request without model, then deserialize each item
-          const itemModel = className(plan.responseModelName!);
-          lines.push('        raw = await self._client.request(');
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          if (plan.hasQueryParams) {
-            lines.push('            params=params,');
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-          lines.push(
-            `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-          );
-        } else {
-          const returnPrefix = responseModel !== 'None' ? 'return ' : '';
-          lines.push(`        ${returnPrefix}await self._client.request(`);
-          lines.push(`            method="${httpMethod}",`);
-          lines.push(`            path=${pathStr},`);
-          if (plan.hasQueryParams) {
-            lines.push('            params=params,');
-          }
-          if (responseModel !== 'None') {
-            lines.push(`            model=${responseModel},`);
-          }
-          lines.push('            request_options=request_options,');
-          lines.push('        )');
-        }
-      }
+      const meta = emitMethodSignature(
+        lines,
+        op,
+        plan,
+        method,
+        true,
+        specEnumNames,
+        modelImports,
+        listWrapperNames,
+        ctx,
+      );
+      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
+      emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
     }
 
     files.push({
@@ -1110,6 +801,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
   return files;
 }
+
+// ─── Existing shared helpers ─────────────────────────────────────────
 
 /**
  * Emit a `params` dict from query params (for methods that also have a body or DELETE).
@@ -1171,11 +864,7 @@ function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: bo
 /**
  * Resolve the item type name for a paginated operation, unwrapping list wrappers.
  */
-export function resolvePageItemName(
-  itemType: import('@workos/oagen').TypeRef,
-  listWrapperNames: Set<string>,
-  ctx: EmitterContext,
-): string {
+export function resolvePageItemName(itemType: TypeRef, listWrapperNames: Set<string>, ctx: EmitterContext): string {
   if (itemType.kind === 'model') {
     if (listWrapperNames.has(itemType.name)) {
       const wrapperModel = ctx.spec.models.find((m) => m.name === itemType.name);
