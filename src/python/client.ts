@@ -577,7 +577,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('');
   lines.push('class WorkOS:');
-  lines.push(`    """${ctx.namespacePascal} API client."""`);
+  lines.push('    """WorkOS API client."""');
   lines.push('');
   lines.push('    def __init__(');
   lines.push('        self,');
@@ -812,7 +812,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('');
   lines.push('class AsyncWorkOS:');
-  lines.push(`    """${ctx.namespacePascal} API client (async)."""`);
+  lines.push('    """WorkOS API client (async)."""');
   lines.push('');
   lines.push('    def __init__(');
   lines.push('        self,');
@@ -1123,7 +1123,7 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const lines: string[] = [];
 
-  lines.push(`"""${ctx.namespacePascal} Python SDK."""`);
+  lines.push('"""WorkOS Python SDK."""');
   lines.push('');
   // P0-5 + P1-1: import both sync and async clients
   lines.push('from ._client import AsyncWorkOS, WorkOS');
@@ -1182,7 +1182,7 @@ build-backend = "hatchling.build"
 [project]
 name = "${ctx.namespace}"
 version = "0.1.0"
-description = "${ctx.namespacePascal} Python SDK"
+description = "WorkOS Python SDK"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.25.0",
