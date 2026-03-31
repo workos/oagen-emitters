@@ -431,27 +431,12 @@ function tokenizeModelName(name: string): string[] {
     .filter((part) => !['dto', 'request', 'response', 'params', 'param', 'model'].includes(part));
 }
 
-function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
+function isOptionalField(_modelName: string, field: Model['fields'][number], _ctx: EmitterContext): boolean {
   // A field is optional (gets = None default) only if it's not required or deprecated.
   // Nullable-required fields (required: true, type: nullable) are NOT optional —
   // they must appear in the API response (value can be null, but key must be present).
+  // The spec's required status always takes precedence over the old SDK's API surface.
   if (!field.required || field.deprecated) return true;
-  return isBaselineOptionalField(modelName, field.name, ctx);
-}
-
-function isBaselineOptionalField(modelName: string, fieldName: string, ctx: EmitterContext): boolean {
-  const candidateModelNames = new Set<string>([modelName, className(modelName)]);
-  const overlayName = ctx.overlayLookup?.modelNameByIR.get(modelName);
-  if (overlayName) candidateModelNames.add(overlayName);
-
-  for (const candidate of candidateModelNames) {
-    const iface = ctx.apiSurface?.interfaces[candidate];
-    if (iface) {
-      const field = iface.fields[fieldName] ?? iface.fields[fieldName.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)];
-      if (field?.optional) return true;
-    }
-  }
-
   return false;
 }
 
