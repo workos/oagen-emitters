@@ -91,8 +91,10 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   conftestLines.push('');
   conftestLines.push('@pytest.fixture');
   conftestLines.push('def workos():');
-  conftestLines.push('    """Create a WorkOS client for testing."""');
-  conftestLines.push('    return WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push('    """Create a WorkOS client for testing with guaranteed cleanup."""');
+  conftestLines.push('    client = WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push('    yield client');
+  conftestLines.push('    client.close()');
   conftestLines.push('');
   conftestLines.push('');
   conftestLines.push('@pytest.fixture');
@@ -132,7 +134,7 @@ function generateServiceTest(
   lines.push('import json');
   lines.push('');
   lines.push('import pytest');
-  lines.push(`from ${ctx.namespace} import WorkOS`);
+  lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
   lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
 
@@ -221,10 +223,17 @@ function generateServiceTest(
   const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
-    const method = resolveMethodName(op, service, ctx);
+    let method = resolveMethodName(op, service, ctx);
 
-    // Skip duplicate method names (match resource class deduplication)
-    if (emittedTestMethods.has(method)) continue;
+    // On name collision, fall back to the full snake_case operation name (match resource dedup)
+    if (emittedTestMethods.has(method)) {
+      const fallback = toSnakeCase(op.name);
+      if (fallback !== method && !emittedTestMethods.has(fallback)) {
+        method = fallback;
+      } else {
+        continue;
+      }
+    }
     emittedTestMethods.add(method);
 
     const isDelete = plan.isDelete;
@@ -346,8 +355,8 @@ function generateServiceTest(
     }
   }
 
-  // Add an error test for the first non-delete operation
-  const firstNonDelete = service.operations.find((op) => !planOperation(op).isDelete);
+  // Add an error test for the first non-delete, non-redirect operation
+  const firstNonDelete = service.operations.find((op) => !planOperation(op).isDelete && !isRedirectEndpoint(op));
   if (firstNonDelete) {
     const method = resolveMethodName(firstNonDelete, service, ctx);
     lines.push('');
@@ -363,28 +372,34 @@ function generateServiceTest(
     lines.push('');
     lines.push(`    def test_${method}_not_found(self, httpx_mock):`);
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-    lines.push('        httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
-    lines.push('        with pytest.raises(NotFoundError):');
-    lines.push(`            workos.${propName}.${method}(${args})`);
-    lines.push('        workos.close()');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
+    lines.push('            with pytest.raises(NotFoundError):');
+    lines.push(`                workos.${propName}.${method}(${args})`);
+    lines.push('        finally:');
+    lines.push('            workos.close()');
 
     lines.push('');
     lines.push(`    def test_${method}_rate_limited(self, httpx_mock):`);
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
     lines.push(
-      '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
+      '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
     );
-    lines.push('        with pytest.raises(RateLimitExceededError):');
-    lines.push(`            workos.${propName}.${method}(${args})`);
-    lines.push('        workos.close()');
+    lines.push('            with pytest.raises(RateLimitExceededError):');
+    lines.push(`                workos.${propName}.${method}(${args})`);
+    lines.push('        finally:');
+    lines.push('            workos.close()');
 
     lines.push('');
     lines.push(`    def test_${method}_server_error(self, httpx_mock):`);
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-    lines.push('        httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
-    lines.push('        with pytest.raises(ServerError):');
-    lines.push(`            workos.${propName}.${method}(${args})`);
-    lines.push('        workos.close()');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
+    lines.push('            with pytest.raises(ServerError):');
+    lines.push(`                workos.${propName}.${method}(${args})`);
+    lines.push('        finally:');
+    lines.push('            workos.close()');
   }
 
   // --- Async test class ---
@@ -396,9 +411,16 @@ function generateServiceTest(
   const asyncEmittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
-    const method = resolveMethodName(op, service, ctx);
+    let method = resolveMethodName(op, service, ctx);
 
-    if (asyncEmittedTestMethods.has(method)) continue;
+    if (asyncEmittedTestMethods.has(method)) {
+      const fallback = toSnakeCase(op.name);
+      if (fallback !== method && !asyncEmittedTestMethods.has(fallback)) {
+        method = fallback;
+      } else {
+        continue;
+      }
+    }
     asyncEmittedTestMethods.add(method);
 
     const isDelete = plan.isDelete;
@@ -425,28 +447,36 @@ function generateServiceTest(
       if (fixtureName) {
         lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+        lines.push('        assert isinstance(page, AsyncPage)');
         lines.push('        assert isinstance(page.data, list)');
       } else {
         lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
-        lines.push('        assert isinstance(page.data, list)');
+        lines.push('        assert isinstance(page, AsyncPage)');
       }
     } else if (isDelete) {
+      const deletePath = buildExpectedPath(op);
       lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(status_code=204)');
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert result is None');
+      lines.push('        request = httpx_mock.get_request()');
+      lines.push(`        assert request.method == "DELETE"`);
+      lines.push(`        assert request.url.path.endswith("/${deletePath}")`);
     } else if (isRedirectEndpoint(op)) {
       lines.push(`    async def test_${method}(self, async_workos):`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert isinstance(result, str)');
       lines.push('        assert result.startswith("http")');
     } else if (isAsyncArrayResponse) {
+      const modelClass = className(plan.responseModelName!);
       const fixtureName = `${fileName(plan.responseModelName!)}.json`;
       lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert isinstance(result, list)');
+      lines.push(`        assert len(result) == 1`);
+      lines.push(`        assert isinstance(result[0], ${modelClass})`);
     } else if (plan.responseModelName) {
       const modelName = plan.responseModelName;
       const fixtureName = `${fileName(modelName)}.json`;
@@ -455,11 +485,67 @@ function generateServiceTest(
       lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push(`        assert isinstance(result, ${modelClass})`);
+      // Field-value assertions
+      const assertFields = pickAssertableFields(modelName, spec);
+      for (const af of assertFields) {
+        const op_ = af.isBool ? 'is' : '==';
+        lines.push(`        assert result.${af.field} ${op_} ${af.value}`);
+      }
+      // Request assertions
+      const expectedPath = buildExpectedPath(op);
+      lines.push('        request = httpx_mock.get_request()');
+      lines.push(`        assert request.method == "${op.httpMethod.toUpperCase()}"`);
+      lines.push(`        assert request.url.path.endswith("/${expectedPath}")`);
     } else {
+      const voidPath = buildExpectedPath(op);
       lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(json={})');
       lines.push(`        await async_workos.${propName}.${method}(${asyncArgs})`);
+      lines.push('        request = httpx_mock.get_request()');
+      lines.push(`        assert request.method == "${op.httpMethod.toUpperCase()}"`);
+      lines.push(`        assert request.url.path.endswith("/${voidPath}")`);
     }
+  }
+
+  // Async error tests for the first non-delete operation
+  const asyncFirstNonDelete = service.operations.find((op) => !planOperation(op).isDelete && !isRedirectEndpoint(op));
+  if (asyncFirstNonDelete) {
+    const asyncErrMethod = resolveMethodName(asyncFirstNonDelete, service, ctx);
+    const asyncErrArgs = buildTestArgs(asyncFirstNonDelete, spec);
+    lines.push('');
+    lines.push(`    async def test_${asyncErrMethod}_unauthorized(self, async_workos, httpx_mock):`);
+    lines.push('        httpx_mock.add_response(status_code=401, json={"message": "Unauthorized"})');
+    lines.push('        with pytest.raises(AuthenticationError):');
+    lines.push(`            await async_workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
+    lines.push('');
+    lines.push(`    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
+    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
+    lines.push('            with pytest.raises(NotFoundError):');
+    lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
+    lines.push('        finally:');
+    lines.push('            await workos.close()');
+    lines.push('');
+    lines.push(`    async def test_${asyncErrMethod}_rate_limited(self, httpx_mock):`);
+    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push(
+      '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
+    );
+    lines.push('            with pytest.raises(RateLimitExceededError):');
+    lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
+    lines.push('        finally:');
+    lines.push('            await workos.close()');
+    lines.push('');
+    lines.push(`    async def test_${asyncErrMethod}_server_error(self, httpx_mock):`);
+    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
+    lines.push('            with pytest.raises(ServerError):');
+    lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
+    lines.push('        finally:');
+    lines.push('            await workos.close()');
   }
 
   return {
@@ -859,10 +945,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push('    async def test_documented_import_surface_exposes_resources(self):');
   lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test")');
   for (const path of [...new Set(accessPaths.values())].sort()) {
-    lines.push('        try:');
-    lines.push(`            assert client.${path} is not None`);
-    lines.push('        except NotImplementedError:');
-    lines.push('            pass  # Some modules not yet available in async client');
+    lines.push(`        assert client.${path} is not None`);
   }
   lines.push('        await client.close()');
 
