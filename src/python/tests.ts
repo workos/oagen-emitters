@@ -919,8 +919,11 @@ function expectedQueryEncodingValue(ref: TypeRef, name: string): string | number
     }
     case 'nullable':
       return expectedQueryEncodingValue(ref.inner, name);
-    case 'literal':
-      return ref.value ?? `value_${name}`;
+    case 'literal': {
+      const v = ref.value;
+      if (typeof v === 'boolean') return v ? 'true' : 'false';
+      return v ?? `value_${name}`;
+    }
     default:
       return `value_${name}`;
   }
