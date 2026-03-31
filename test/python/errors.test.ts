@@ -26,28 +26,29 @@ describe('generateErrors', () => {
     const content = files[0].content;
 
     // Base error
-    expect(content).toContain('class WorkOSError(Exception):');
+    expect(content).toContain('class BaseRequestException(Exception):');
     expect(content).toContain('self.status_code = status_code');
     expect(content).toContain('self.request_id = request_id');
 
     // Specific errors
-    expect(content).toContain('class BadRequestError(WorkOSError):');
-    expect(content).toContain('class AuthenticationError(WorkOSError):');
-    expect(content).toContain('class ForbiddenError(WorkOSError):');
-    expect(content).toContain('class NotFoundError(WorkOSError):');
-    expect(content).toContain('class ConflictError(WorkOSError):');
-    expect(content).toContain('class UnprocessableEntityError(WorkOSError):');
-    expect(content).toContain('class RateLimitExceededError(WorkOSError):');
-    expect(content).toContain('class ServerError(WorkOSError):');
-    expect(content).toContain('class ConfigurationError(WorkOSError):');
-    expect(content).toContain('class WorkOSConnectionError(WorkOSError):');
-    expect(content).toContain('class WorkOSTimeoutError(WorkOSError):');
+    expect(content).toContain('class BadRequestException(BaseRequestException):');
+    expect(content).toContain('class AuthenticationException(BaseRequestException):');
+    expect(content).toContain('class AuthorizationException(BaseRequestException):');
+    expect(content).toContain('class NotFoundException(BaseRequestException):');
+    expect(content).toContain('class ConflictException(BaseRequestException):');
+    expect(content).toContain('class UnprocessableEntityException(BaseRequestException):');
+    expect(content).toContain('class RateLimitExceededException(BaseRequestException):');
+    expect(content).toContain('class ServerException(BaseRequestException):');
+    expect(content).toContain('class ConfigurationException(BaseRequestException):');
+    expect(content).toContain('class WorkOSConnectionException(BaseRequestException):');
+    expect(content).toContain('class WorkOSTimeoutException(BaseRequestException):');
+    expect(content).toContain('class EmailVerificationRequiredException(AuthorizationException):');
 
     // Status code mapping
-    expect(content).toContain('STATUS_CODE_TO_ERROR');
-    expect(content).toContain('400: BadRequestError');
-    expect(content).toContain('403: ForbiddenError');
-    expect(content).toContain('429: RateLimitExceededError');
+    expect(content).toContain('STATUS_CODE_TO_EXCEPTION');
+    expect(content).toContain('400: BadRequestException');
+    expect(content).toContain('403: AuthorizationException');
+    expect(content).toContain('429: RateLimitExceededException');
   });
 
   it('marks files as overwriteExisting', () => {

@@ -12,7 +12,7 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
 from typing import Any, Dict, Optional, Type
 
 
-class WorkOSError(Exception):
+class BaseRequestException(Exception):
     """Base exception for all WorkOS errors."""
 
     message: str
@@ -47,7 +47,7 @@ class WorkOSError(Exception):
         self.request_method = request_method
 
 
-class BadRequestError(WorkOSError):
+class BadRequestException(BaseRequestException):
     """400 Bad Request."""
 
     def __init__(
@@ -73,7 +73,7 @@ class BadRequestError(WorkOSError):
         )
 
 
-class AuthenticationError(WorkOSError):
+class AuthenticationException(BaseRequestException):
     """401 Unauthorized."""
 
     def __init__(
@@ -99,7 +99,7 @@ class AuthenticationError(WorkOSError):
         )
 
 
-class ForbiddenError(WorkOSError):
+class AuthorizationException(BaseRequestException):
     """403 Forbidden."""
 
     def __init__(
@@ -125,7 +125,36 @@ class ForbiddenError(WorkOSError):
         )
 
 
-class NotFoundError(WorkOSError):
+class EmailVerificationRequiredException(AuthorizationException):
+    """Raised when email verification is required before authentication."""
+
+    email_verification_id: Optional[str]
+
+    def __init__(
+        self,
+        message: str = "Email verification required",
+        *,
+        email_verification_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        code: Optional[str] = None,
+        param: Optional[str] = None,
+        raw_body: Optional[str] = None,
+        request_url: Optional[str] = None,
+        request_method: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            message,
+            request_id=request_id,
+            code=code,
+            param=param,
+            raw_body=raw_body,
+            request_url=request_url,
+            request_method=request_method,
+        )
+        self.email_verification_id = email_verification_id
+
+
+class NotFoundException(BaseRequestException):
     """404 Not Found."""
 
     def __init__(
@@ -151,7 +180,7 @@ class NotFoundError(WorkOSError):
         )
 
 
-class ConflictError(WorkOSError):
+class ConflictException(BaseRequestException):
     """409 Conflict."""
 
     def __init__(
@@ -177,7 +206,7 @@ class ConflictError(WorkOSError):
         )
 
 
-class UnprocessableEntityError(WorkOSError):
+class UnprocessableEntityException(BaseRequestException):
     """422 Unprocessable Entity."""
 
     def __init__(
@@ -203,7 +232,7 @@ class UnprocessableEntityError(WorkOSError):
         )
 
 
-class RateLimitExceededError(WorkOSError):
+class RateLimitExceededException(BaseRequestException):
     """429 Rate Limited."""
 
     retry_after: Optional[float]
@@ -233,7 +262,7 @@ class RateLimitExceededError(WorkOSError):
         self.retry_after = retry_after
 
 
-class ServerError(WorkOSError):
+class ServerException(BaseRequestException):
     """500+ Server Error."""
 
     def __init__(
@@ -260,35 +289,35 @@ class ServerError(WorkOSError):
         )
 
 
-class ConfigurationError(WorkOSError):
+class ConfigurationException(BaseRequestException):
     """Missing or invalid configuration."""
 
     def __init__(self, message: str = "Configuration error") -> None:
         super().__init__(message)
 
 
-class WorkOSConnectionError(WorkOSError):
+class WorkOSConnectionException(BaseRequestException):
     """Raised when the SDK cannot connect to the API (DNS failure, connection refused, etc.)."""
 
     def __init__(self, message: str = "Connection failed") -> None:
         super().__init__(message)
 
 
-class WorkOSTimeoutError(WorkOSError):
+class WorkOSTimeoutException(BaseRequestException):
     """Raised when the API request times out."""
 
     def __init__(self, message: str = "Request timed out") -> None:
         super().__init__(message)
 
 
-STATUS_CODE_TO_ERROR: Dict[int, Type[WorkOSError]] = {
-    400: BadRequestError,
-    401: AuthenticationError,
-    403: ForbiddenError,
-    404: NotFoundError,
-    409: ConflictError,
-    422: UnprocessableEntityError,
-    429: RateLimitExceededError,
+STATUS_CODE_TO_EXCEPTION: Dict[int, Type[BaseRequestException]] = {
+    400: BadRequestException,
+    401: AuthenticationException,
+    403: AuthorizationException,
+    404: NotFoundException,
+    409: ConflictException,
+    422: UnprocessableEntityException,
+    429: RateLimitExceededException,
 }`;
 
   files.push({
