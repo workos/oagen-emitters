@@ -15,17 +15,17 @@ Fresh Scenario B design — no existing SDK to preserve.
 
 ## Naming Conventions
 
-| Concept          | Convention   | Example                                  |
-| ---------------- | ------------ | ---------------------------------------- |
-| Class            | PascalCase   | `Organization`, `UserManagement`         |
-| Method           | snake_case   | `list_organizations`, `create_organization` |
-| Field            | snake_case   | `allow_profiles_outside_organization`    |
-| File             | snake_case   | `organization.py`                        |
-| Directory        | snake_case   | `organizations/`, `user_management/`     |
-| Module           | snake_case   | `workos.organizations`                   |
-| Service property | snake_case   | `workos.organizations`, `workos.user_management` |
-| Enum member      | UPPER_SNAKE  | `OrganizationDomainVerificationStrategy.DNS` |
-| Package          | snake_case   | `workos`                                 |
+| Concept          | Convention  | Example                                          |
+| ---------------- | ----------- | ------------------------------------------------ |
+| Class            | PascalCase  | `Organization`, `UserManagement`                 |
+| Method           | snake_case  | `list_organizations`, `create_organization`      |
+| Field            | snake_case  | `allow_profiles_outside_organization`            |
+| File             | snake_case  | `organization.py`                                |
+| Directory        | snake_case  | `organizations/`, `user_management/`             |
+| Module           | snake_case  | `workos.organizations`                           |
+| Service property | snake_case  | `workos.organizations`, `workos.user_management` |
+| Enum member      | UPPER_SNAKE | `OrganizationDomainVerificationStrategy.DNS`     |
+| Package          | snake_case  | `workos`                                         |
 
 ### Overlay Resolution
 
@@ -33,24 +33,24 @@ All service-derived names are resolved through the overlay before falling back t
 
 ## Type Mapping
 
-| IR TypeRef                | Python Type                  |
-| ------------------------- | ---------------------------- |
-| `string`                  | `str`                        |
-| `string` (date)           | `str`                        |
-| `string` (date-time)      | `str`                        |
-| `string` (uuid)           | `str`                        |
-| `string` (binary)         | `bytes`                      |
-| `integer`                 | `int`                        |
-| `number`                  | `float`                      |
-| `boolean`                 | `bool`                       |
-| `unknown`                 | `Any`                        |
-| `array(T)`                | `List[T]`                    |
-| `model(Name)`             | `Name`                       |
-| `enum(Name)`              | `Name`                       |
-| `nullable(T)`             | `Optional[T]`                |
-| `union(V1,V2)`            | `Union[V1, V2]`              |
-| `map(V)`                  | `Dict[str, V]`               |
-| `literal(v)`              | `Literal["v"]`               |
+| IR TypeRef           | Python Type     |
+| -------------------- | --------------- |
+| `string`             | `str`           |
+| `string` (date)      | `str`           |
+| `string` (date-time) | `str`           |
+| `string` (uuid)      | `str`           |
+| `string` (binary)    | `bytes`         |
+| `integer`            | `int`           |
+| `number`             | `float`         |
+| `boolean`            | `bool`          |
+| `unknown`            | `Any`           |
+| `array(T)`           | `List[T]`       |
+| `model(Name)`        | `Name`          |
+| `enum(Name)`         | `Name`          |
+| `nullable(T)`        | `Optional[T]`   |
+| `union(V1,V2)`       | `Union[V1, V2]` |
+| `map(V)`             | `Dict[str, V]`  |
+| `literal(v)`         | `Literal["v"]`  |
 
 ## Model Pattern
 
@@ -494,18 +494,18 @@ class TestOrganizations:
 
 ## Structural Guidelines
 
-| Category          | Choice                      |
-| ----------------- | --------------------------- |
-| Testing Framework | pytest                      |
-| HTTP Mocking      | pytest-httpx                |
-| Documentation     | Google-style docstrings     |
-| Type Signatures   | Inline type annotations     |
-| Linting           | ruff                        |
-| Formatting        | ruff format                 |
-| HTTP Client       | httpx                       |
-| JSON Parsing      | Built-in json               |
-| Package Manager   | pip / pyproject.toml        |
-| Build Tool        | hatchling                   |
-| Models            | dataclasses                 |
-| Enums             | str, Enum (Python 3.9+)     |
+| Category          | Choice                                             |
+| ----------------- | -------------------------------------------------- |
+| Testing Framework | pytest                                             |
+| HTTP Mocking      | pytest-httpx                                       |
+| Documentation     | Google-style docstrings                            |
+| Type Signatures   | Inline type annotations                            |
+| Linting           | ruff                                               |
+| Formatting        | ruff format                                        |
+| HTTP Client       | httpx                                              |
+| JSON Parsing      | Built-in json                                      |
+| Package Manager   | pip / pyproject.toml                               |
+| Build Tool        | hatchling                                          |
+| Models            | dataclasses                                        |
+| Enums             | str, Enum (Python 3.9+)                            |
 | Python Version    | >= 3.9 (uses `from __future__ import annotations`) |
