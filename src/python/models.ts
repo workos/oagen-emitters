@@ -204,7 +204,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
       const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
-      const deserExpr = deserializeField(field.type, accessor, isRequired, modelMap);
+      // For deserialization expressions, nullable types must always handle None
+      // even when the field itself is required (the key must be present, but value can be null).
+      const deserRequired = isRequired && field.type.kind !== 'nullable';
+      const deserExpr = deserializeField(field.type, accessor, deserRequired, modelMap);
       lines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
@@ -225,14 +228,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const wireKey = field.name;
       const isRequired = !isOptionalField(model.name, field, ctx);
 
-      if (isRequired) {
+      const isNullable = field.type.kind === 'nullable';
+      if (isRequired && !isNullable) {
+        // Required non-nullable: always serialize directly
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
         lines.push(`        result["${wireKey}"] = ${serExpr}`);
       } else {
-        const serExpr = serializeField(
-          field.type.kind === 'nullable' ? field.type.inner : field.type,
-          `self.${pyFieldName}`,
-        );
+        // Nullable (required or optional) or non-nullable optional: guard against None
+        const innerType = isNullable ? field.type.inner : field.type;
+        const serExpr = serializeField(innerType, `self.${pyFieldName}`);
         lines.push(`        if self.${pyFieldName} is not None:`);
         lines.push(`            result["${wireKey}"] = ${serExpr}`);
         lines.push(`        else:`);
@@ -428,7 +432,10 @@ function tokenizeModelName(name: string): string[] {
 }
 
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
-  if (!field.required || field.type.kind === 'nullable' || field.deprecated) return true;
+  // A field is optional (gets = None default) only if it's not required or deprecated.
+  // Nullable-required fields (required: true, type: nullable) are NOT optional —
+  // they must appear in the API response (value can be null, but key must be present).
+  if (!field.required || field.deprecated) return true;
   return isBaselineOptionalField(modelName, field.name, ctx);
 }
 
@@ -449,6 +456,10 @@ function isBaselineOptionalField(modelName: string, fieldName: string, ctx: Emit
 }
 
 function resolveModelFieldType(ref: any): string {
+  // Handle nullable datetime: return Optional[datetime] to preserve nullable wrapper
+  if (ref.kind === 'nullable' && isDateTimeType(ref.inner)) {
+    return 'Optional[datetime]';
+  }
   if (isDateTimeType(ref)) {
     return 'datetime';
   }
