@@ -163,8 +163,10 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) {
-    // Convert from camelCase overlay name to snake_case for Python
-    return toSnakeCase(existing.methodName);
+    // Convert from camelCase overlay name to snake_case for Python, then
+    // normalize so redundant resource nouns are still stripped (e.g.
+    // updateOrganization → update) even when the overlay is present.
+    return normalizeMethodName(toSnakeCase(existing.methodName), op);
   }
   return normalizeMethodName(toSnakeCase(op.name), op);
 }
