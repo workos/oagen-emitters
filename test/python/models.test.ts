@@ -105,8 +105,9 @@ describe('generateModels', () => {
     // from_dict method
     expect(modelFile.content).toContain('def from_dict(cls, data: Dict[str, Any])');
     expect(modelFile.content).toContain('datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))');
+    expect(modelFile.content).toContain('except (KeyError, ValueError) as e:');
     expect(modelFile.content).toContain(
-      'raise WorkOSError(f"Unexpected API response: missing field {e!s} in Organization") from e',
+      'raise WorkOSError(f"Unexpected API response while parsing Organization: {e!s}") from e',
     );
 
     // to_dict method
@@ -114,6 +115,7 @@ describe('generateModels', () => {
     expect(modelFile.content).toContain(
       'result["created_at"] = self.created_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")',
     );
+    expect(modelFile.content).toContain('result["external_id"] = None');
   });
 
   it('handles array fields with model refs', () => {
@@ -183,6 +185,54 @@ describe('generateModels', () => {
     expect(orgFile).toBeDefined();
     expect(orgFile!.content).toContain('domains: List["OrganizationDomain"]');
     expect(orgFile!.content).toContain('OrganizationDomain.from_dict(cast(Dict[str, Any], item))');
+    expect(orgFile!.content).not.toContain('or []');
+  });
+
+  it('omits optional non-nullable fields and preserves required nullable fields in to_dict', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'nickname',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+          },
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const modelFile = files.find((f) => f.path === 'src/workos/organizations/models/organization.py')!;
+    expect(modelFile.content).toContain('if self.nickname is not None:');
+    expect(modelFile.content).not.toContain('result["nickname"] = None');
+    expect(modelFile.content).toContain('result["external_id"] = None');
   });
 
   it('skips list wrapper and list metadata models', () => {

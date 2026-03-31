@@ -212,9 +212,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     lines.push('            )');
-    lines.push('        except KeyError as e:');
+    lines.push('        except (KeyError, ValueError) as e:');
     lines.push(
-      `            raise WorkOSError(f"Unexpected API response: missing field {e!s} in ${modelClassName}") from e`,
+      `            raise WorkOSError(f"Unexpected API response while parsing ${modelClassName}: {e!s}") from e`,
     );
 
     // to_dict instance method
@@ -233,14 +233,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         // Required non-nullable: always serialize directly
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
         lines.push(`        result["${wireKey}"] = ${serExpr}`);
-      } else {
-        // Nullable (required or optional) or non-nullable optional: guard against None
-        const innerType = isNullable ? (field.type as any).inner : field.type;
+      } else if (isNullable) {
+        // Nullable fields should round-trip explicit None as null, even when optional
+        const innerType = (field.type as any).inner;
         const serExpr = serializeField(innerType, `self.${pyFieldName}`);
         lines.push(`        if self.${pyFieldName} is not None:`);
         lines.push(`            result["${wireKey}"] = ${serExpr}`);
         lines.push(`        else:`);
         lines.push(`            result["${wireKey}"] = None`);
+      } else {
+        // Optional non-nullable fields should be omitted when unset
+        const serExpr = serializeField(field.type, `self.${pyFieldName}`);
+        lines.push(`        if self.${pyFieldName} is not None:`);
+        lines.push(`            result["${wireKey}"] = ${serExpr}`);
       }
     }
 
@@ -476,7 +481,7 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
     }
     case 'array': {
       if (ref.items.kind === 'model') {
-        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? `${accessor} or []` : '_v'})]`;
+        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
         if (isRequired) {
           return listExpr;
         }
@@ -485,7 +490,7 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
       }
       if (ref.items.kind === 'enum') {
         const enumClass = className(ref.items.name);
-        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? `${accessor} or []` : '_v'})]`;
+        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
         if (isRequired) {
           return listExpr;
         }
