@@ -176,6 +176,17 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
           lines.push(`    ${memberName} = ${valueStr}`);
         }
       }
+      if (allStrings) {
+        lines.push('');
+        lines.push('    @classmethod');
+        lines.push(`    def _missing_(cls, value: object) -> "${enumDef.name}" | None:`);
+        lines.push('        if not isinstance(value, str):');
+        lines.push('            return None');
+        lines.push('        unknown = str.__new__(cls, value)');
+        lines.push('        unknown._name_ = value.upper()');
+        lines.push('        unknown._value_ = value');
+        lines.push('        return unknown');
+      }
       lines.push('');
       lines.push(
         `${enumDef.name}Literal: TypeAlias = Literal[${uniqueValues

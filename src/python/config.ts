@@ -84,6 +84,10 @@ class SyncPage(Generic[T]):
                 break
             page = page._fetch_page(after=page.after)
 
+    def __iter__(self) -> Iterator[T]:
+        """Iterate through all items across all pages."""
+        return self.auto_paging_iter()
+
 
 @dataclass
 class AsyncPage(Generic[T]):
@@ -118,6 +122,11 @@ class AsyncPage(Generic[T]):
             if not page.has_more() or page._fetch_page is None:
                 break
             page = await page._fetch_page(after=page.after)
+
+    async def __aiter__(self) -> AsyncIterator[T]:
+        """Iterate through all items across all pages."""
+        async for item in self.auto_paging_iter():
+            yield item
 
 
 # Backward-compatible alias (v5.x naming)

@@ -61,6 +61,8 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('    ACTIVE = "active"');
     expect(files[0].content).toContain('    INACTIVE = "inactive"');
     expect(files[0].content).toContain('    PENDING = "pending"');
+    expect(files[0].content).toContain('def _missing_(cls, value: object) -> "Status" | None:');
+    expect(files[0].content).toContain('unknown = str.__new__(cls, value)');
     expect(files[0].content).toContain('StatusLiteral: TypeAlias = Literal["active", "inactive", "pending"]');
   });
 
