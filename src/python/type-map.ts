@@ -1,5 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
+import { className } from './naming.js';
 
 /**
  * Map an IR TypeRef to a Python type hint string.
@@ -9,8 +10,8 @@ export function mapTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_r, items) => `List[${items}]`,
-    model: (r) => `"${r.name}"`,
-    enum: (r) => `"${r.name}"`,
+    model: (r) => `"${className(r.name)}"`,
+    enum: (r) => `"${className(r.name)}"`,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `Optional[${inner}]`,
     literal: (r) =>
@@ -27,8 +28,8 @@ export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>): stri
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_r, items) => `List[${items}]`,
-    model: (r) => r.name,
-    enum: (r) => (knownEnums && !knownEnums.has(r.name) ? 'str' : r.name),
+    model: (r) => className(r.name),
+    enum: (r) => (knownEnums && !knownEnums.has(r.name) ? 'str' : className(r.name)),
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `Optional[${inner}]`,
     literal: (r) =>

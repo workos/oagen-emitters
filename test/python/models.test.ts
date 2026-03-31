@@ -107,7 +107,7 @@ describe('generateModels', () => {
     expect(modelFile.content).toContain('datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))');
     expect(modelFile.content).toContain('except (KeyError, ValueError) as e:');
     expect(modelFile.content).toContain(
-      'raise WorkOSError(f"Unexpected API response while parsing Organization: {e!s}") from e',
+      'raise BaseRequestException(f"Unexpected API response while parsing Organization: {e!s}") from e',
     );
 
     // to_dict method

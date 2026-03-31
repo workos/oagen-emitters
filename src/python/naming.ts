@@ -53,8 +53,40 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
 /** Suffixes stripped from spec model names before generating Python names. */
 const STRIPPED_SUFFIXES = ['Dto', 'DTO'];
 
-/** Strip internal suffixes (e.g., "Dto") from a spec name before casing. */
+/**
+ * Set of spec names that would collide with another name after suffix stripping.
+ * Populated by `initializeNaming()`.
+ */
+let unsafeToStrip = new Set<string>();
+
+/**
+ * Initialize collision detection for suffix stripping.
+ * Call once with all model + enum names before generating output.
+ */
+export function initializeNaming(specNames: string[]): void {
+  unsafeToStrip = new Set<string>();
+  const strippedToOriginals = new Map<string, string[]>();
+  for (const name of specNames) {
+    let stripped = name;
+    for (const suffix of STRIPPED_SUFFIXES) {
+      if (name.endsWith(suffix) && name.length > suffix.length) {
+        stripped = name.slice(0, -suffix.length);
+        break;
+      }
+    }
+    if (!strippedToOriginals.has(stripped)) strippedToOriginals.set(stripped, []);
+    strippedToOriginals.get(stripped)!.push(name);
+  }
+  for (const [, originals] of strippedToOriginals) {
+    if (originals.length > 1) {
+      for (const name of originals) unsafeToStrip.add(name);
+    }
+  }
+}
+
+/** Strip internal suffixes (e.g., "Dto") from a spec name, unless it would collide. */
 function stripSuffixes(name: string): string {
+  if (unsafeToStrip.has(name)) return name;
   for (const suffix of STRIPPED_SUFFIXES) {
     if (name.endsWith(suffix) && name.length > suffix.length) {
       return name.slice(0, -suffix.length);
