@@ -2,7 +2,7 @@ import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRe
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
 import { className, fileName, fieldName, resolveMethodName, buildServiceDirMap, dirToModule } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
@@ -111,6 +111,7 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
       path: 'tests/conftest.py',
       content: conftestLines.join('\n'),
       integrateTarget: true,
+      overwriteExisting: true,
     },
   ];
 }
@@ -536,9 +537,10 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
     const requestBodyName = op.requestBody.name;
     const bodyModel = spec.models.find((m) => m.name === requestBodyName);
     if (bodyModel) {
-      const reqFields = bodyModel.fields.filter((f) => f.required && !pathParamNames.has(fieldName(f.name)));
+      const reqFields = bodyModel.fields.filter((f) => f.required);
       for (const f of reqFields) {
-        args.push(`${fieldName(f.name)}=${generateTestValue(f.type, f.name)}`);
+        const paramName = bodyParamName(f, pathParamNames);
+        args.push(`${paramName}=${generateTestValue(f.type, f.name)}`);
       }
     }
   } else if (plan.hasBody && op.requestBody?.kind === 'union') {
@@ -550,6 +552,13 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
     } else {
       args.push('body={}');
     }
+  }
+
+  // Per-operation Bearer token auth (e.g., access_token for SSO)
+  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+    args.push(`${tokenParamName}="test_${tokenParamName}"`);
   }
 
   // Required query params (for all methods, including paginated)
