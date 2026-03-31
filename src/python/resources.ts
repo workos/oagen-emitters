@@ -777,6 +777,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
+
+      // Emit backward-compatible alias when normalization changed the method name
+      const unnormalized = toSnakeCase(op.name);
+      if (unnormalized !== method && !emittedMethods.has(unnormalized)) {
+        lines.push(`    ${unnormalized} = ${method}`);
+        emittedMethods.add(unnormalized);
+      }
     }
 
     // --- Generate async class ---
@@ -823,6 +830,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
+
+      // Emit backward-compatible alias when normalization changed the method name
+      const asyncUnnormalized = toSnakeCase(op.name);
+      if (asyncUnnormalized !== method && !asyncEmittedMethods.has(asyncUnnormalized)) {
+        lines.push(`    ${asyncUnnormalized} = ${method}`);
+        asyncEmittedMethods.add(asyncUnnormalized);
+      }
     }
 
     files.push({

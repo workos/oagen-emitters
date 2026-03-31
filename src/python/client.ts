@@ -17,6 +17,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateServiceInits(spec, ctx));
   files.push(...generateNamespaceAliasPackages(spec, ctx));
   files.push(...generateBarrel(spec, ctx));
+  files.push(...generateTypesCompatBarrels(spec, ctx));
   files.push(...generatePyProjectToml(ctx));
   files.push(...generatePyTyped(ctx));
 
@@ -39,6 +40,11 @@ export function groupServicesByNamespace(services: Service[], ctx: EmitterContex
   // when there is no "Directory" service to serve as the namespace base).
   const allProps = new Set(entries.map((e) => e.prop));
 
+  // Virtual namespaces: allow namespace groupings even when no base service exists.
+  // This is needed for service clusters like user_management_* where the prefix
+  // "user_management" isn't itself a service but should still form a namespace.
+  const VIRTUAL_NAMESPACES = new Set(['user_management']);
+
   // Count how many property names contain each possible underscore-delimited prefix
   const prefixCount = new Map<string, number>();
   for (const entry of entries) {
@@ -57,7 +63,11 @@ export function groupServicesByNamespace(services: Service[], ctx: EmitterContex
     const parts = entry.prop.split('_');
     for (let len = parts.length - 1; len >= 1; len--) {
       const prefix = parts.slice(0, len).join('_');
-      if ((prefixCount.get(prefix) ?? 0) >= 2 && prefix !== entry.prop && allProps.has(prefix)) {
+      if (
+        (prefixCount.get(prefix) ?? 0) >= 2 &&
+        prefix !== entry.prop &&
+        (allProps.has(prefix) || VIRTUAL_NAMESPACES.has(prefix))
+      ) {
         entryPrefix.set(entry.prop, prefix);
         break;
       }
@@ -175,7 +185,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    WorkOSTimeoutError,');
   lines.push('    STATUS_CODE_TO_ERROR,');
   lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage');
+  lines.push('from ._pagination import AsyncPage, SyncPage, WorkOSListResource');
   lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes (both sync and async)
@@ -1031,7 +1041,7 @@ function generateNamespaceAliasPackages(spec: ApiSpec, ctx: EmitterContext): Gen
     if (!ns.baseEntry && !serviceDirs.has(ns.prefix)) {
       files.push({
         path: `src/${ctx.namespace}/${ns.prefix}/__init__.py`,
-        content: ['try:', '    from ._compat import *', 'except ModuleNotFoundError:', '    pass'].join('\n'),
+        content: '',
         integrateTarget: true,
         overwriteExisting: true,
       });
@@ -1066,7 +1076,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('    WorkOSConnectionError,');
   lines.push('    WorkOSTimeoutError,');
   lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage');
+  lines.push('from ._pagination import AsyncPage, SyncPage, WorkOSListResource');
   lines.push('from ._types import RequestOptions');
   lines.push('');
   lines.push('# Backward-compatible aliases');
@@ -1093,6 +1103,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('    "WorkOSTimeoutError",');
   lines.push('    "AsyncPage",');
   lines.push('    "SyncPage",');
+  lines.push('    "WorkOSListResource",');
   lines.push(']');
 
   return [
@@ -1103,6 +1114,81 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
       overwriteExisting: true,
     },
   ];
+}
+
+/**
+ * Generate backward-compatible workos/types/{service}/ re-export barrels.
+ * In v5.x, models lived under workos.types.{module_name}. In v6.x they moved
+ * to workos.{service}.models. These barrels let old import paths keep working.
+ */
+function generateTypesCompatBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const grouping = groupServicesByNamespace(spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
+
+  // Known mappings from old types/ directory names to current service property names.
+  // These match the client property alias mappings.
+  const oldToNewProp: Record<string, string> = {
+    directory_sync: 'directories',
+    fga: 'authorization',
+    mfa: 'multi_factor_auth',
+    portal: 'admin_portal',
+    connect: 'workos_connect',
+  };
+
+  // Collect all service dirs by their property name
+  const propToDir = new Map<string, string>();
+  for (const entry of grouping.standalone) {
+    propToDir.set(entry.prop, serviceDirMap.get(entry.service.name) ?? entry.prop);
+  }
+  for (const ns of grouping.namespaces) {
+    if (ns.baseEntry) {
+      propToDir.set(servicePropertyName(ns.baseEntry.resolvedName), ns.prefix);
+    }
+    for (const entry of ns.entries) {
+      const fullProp = `${ns.prefix}_${entry.subProp}`;
+      propToDir.set(fullProp, serviceDirMap.get(entry.service.name) ?? `${ns.prefix}/${entry.subProp}`);
+    }
+  }
+
+  // Generate types/{prop}/__init__.py for each service that has models
+  const emittedTypeDirs = new Set<string>();
+  for (const [prop, dir] of propToDir) {
+    if (emittedTypeDirs.has(prop)) continue;
+    emittedTypeDirs.add(prop);
+    const dotModule = dirToModule(dir);
+    files.push({
+      path: `src/${ctx.namespace}/types/${prop}/__init__.py`,
+      content: `from ${ctx.namespace}.${dotModule}.models import *  # noqa: F401,F403`,
+      integrateTarget: true,
+      overwriteExisting: true,
+    });
+  }
+
+  // Generate aliases for old names (e.g., types/directory_sync/ → types/directories/)
+  for (const [oldName, newProp] of Object.entries(oldToNewProp)) {
+    if (emittedTypeDirs.has(oldName)) continue;
+    const dir = propToDir.get(newProp);
+    if (!dir) continue;
+    emittedTypeDirs.add(oldName);
+    const dotModule = dirToModule(dir);
+    files.push({
+      path: `src/${ctx.namespace}/types/${oldName}/__init__.py`,
+      content: `from ${ctx.namespace}.${dotModule}.models import *  # noqa: F401,F403`,
+      integrateTarget: true,
+      overwriteExisting: true,
+    });
+  }
+
+  // Generate root types/__init__.py
+  files.push({
+    path: `src/${ctx.namespace}/types/__init__.py`,
+    content: '',
+    integrateTarget: true,
+    skipIfExists: true,
+  });
+
+  return files;
 }
 
 /**
@@ -1133,6 +1219,7 @@ function buildCompatPropertyAliases(
     fga: 'authorization',
     mfa: 'multi_factor_auth',
     portal: 'admin_portal',
+    connect: 'workos_connect',
   };
 
   for (const oldProp of clientProps) {

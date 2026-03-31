@@ -117,7 +117,11 @@ class AsyncPage(Generic[T]):
                 break
             if not page.has_more() or page._fetch_page is None:
                 break
-            page = await page._fetch_page(after=page.after)`,
+            page = await page._fetch_page(after=page.after)
+
+
+# Backward-compatible alias (v5.x naming)
+WorkOSListResource = SyncPage`,
     integrateTarget: true,
     overwriteExisting: true,
   });
