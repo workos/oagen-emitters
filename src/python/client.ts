@@ -699,8 +699,10 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        await self.close()');
 
-  // Compute async not-implemented modules BEFORE generating properties
-  const asyncNotImplemented = getAsyncNotImplementedModules(ctx);
+  // All services now have generated async resource classes, so none should be
+  // marked as not-implemented.  The old surface-based detection
+  // (getAsyncNotImplementedModules) is no longer needed.
+  const asyncNotImplemented = new Set<string>();
 
   const asyncGeneratedProps = new Set<string>();
   for (const entry of standalone) {
@@ -1120,36 +1122,6 @@ function buildCompatPropertyAliases(
   }
 
   return aliases;
-}
-
-/**
- * Get the set of module names that should raise NotImplementedError on the async client.
- * These are detected by comparing sync vs async client return types in the API surface:
- * when the async return type ends in "Module" (a protocol, not an implementation),
- * the module was not implemented in the old async SDK.
- */
-function getAsyncNotImplementedModules(ctx: EmitterContext): Set<string> {
-  const notImplemented = new Set<string>();
-
-  const surfaceClasses = ctx.apiSurface?.classes ?? {};
-  const syncClient = surfaceClasses['SyncClient'];
-  const asyncClient = surfaceClasses['AsyncClient'];
-
-  if (syncClient?.methods && asyncClient?.methods) {
-    for (const methodName of Object.keys(asyncClient.methods)) {
-      const asyncOverloads = asyncClient.methods[methodName] ?? [];
-      for (const overload of asyncOverloads) {
-        const returnType = (overload as any).returnType as string | undefined;
-        // If the async return type ends with "Module" (not "Async*"),
-        // the module was not fully implemented in async.
-        if (returnType && returnType.endsWith('Module') && !returnType.startsWith('Async')) {
-          notImplemented.add(methodName);
-        }
-      }
-    }
-  }
-
-  return notImplemented;
 }
 
 function generatePyProjectToml(ctx: EmitterContext): GeneratedFile[] {
