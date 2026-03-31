@@ -235,7 +235,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         lines.push(`        result["${wireKey}"] = ${serExpr}`);
       } else {
         // Nullable (required or optional) or non-nullable optional: guard against None
-        const innerType = isNullable ? field.type.inner : field.type;
+        const innerType = isNullable ? (field.type as any).inner : field.type;
         const serExpr = serializeField(innerType, `self.${pyFieldName}`);
         lines.push(`        if self.${pyFieldName} is not None:`);
         lines.push(`            result["${wireKey}"] = ${serExpr}`);

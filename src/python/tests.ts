@@ -147,7 +147,7 @@ function generateServiceTest(
     }
     // Collect model-typed and enum-typed body fields (used as method arguments)
     if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find((m) => m.name === op.requestBody!.name);
+      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as any).name);
       if (bodyModel) {
         for (const f of bodyModel.fields) {
           if (f.type.kind === 'model') modelImports.add(f.type.name);
