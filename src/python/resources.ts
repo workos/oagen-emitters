@@ -133,6 +133,7 @@ function emitMethodSignature(
   // Pagination params
   if (isPaginated) {
     lines.push('        limit: Optional[int] = None,');
+    lines.push('        before: Optional[str] = None,');
     lines.push('        after: Optional[str] = None,');
     // Use typed enum for order param if the spec provides one, otherwise fall back to str
     const orderParam = op.queryParams.find((p) => p.name === 'order');
@@ -283,6 +284,7 @@ function emitMethodDocstring(
     }
     if (isPaginated) {
       lines.push('            limit: Maximum number of records to return.');
+      lines.push('            before: Pagination cursor for previous page.');
       lines.push('            after: Pagination cursor for next page.');
       lines.push('            order: Sort order.');
     }
@@ -369,6 +371,7 @@ function emitMethodBody(
     // Build query params dict
     lines.push('        params = {k: v for k, v in {');
     lines.push('            "limit": limit,');
+    lines.push('            "before": before,');
     lines.push('            "after": after,');
     lines.push('            "order": order,');
     for (const param of op.queryParams) {

@@ -60,6 +60,11 @@ class SyncPage(Generic[T]):
     _fetch_page: Optional[Callable[..., "SyncPage[T]"]] = field(default=None, repr=False)
 
     @property
+    def before(self) -> Optional[str]:
+        """Cursor for the previous page, if available."""
+        return self.list_metadata.get("before")
+
+    @property
     def after(self) -> Optional[str]:
         """Cursor for the next page, if available."""
         return self.list_metadata.get("after")
@@ -87,6 +92,11 @@ class AsyncPage(Generic[T]):
     data: List[T]
     list_metadata: Dict[str, Any]
     _fetch_page: Optional[Callable[..., Awaitable["AsyncPage[T]"]]] = field(default=None, repr=False)
+
+    @property
+    def before(self) -> Optional[str]:
+        """Cursor for the previous page, if available."""
+        return self.list_metadata.get("before")
 
     @property
     def after(self) -> Optional[str]:
