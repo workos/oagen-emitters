@@ -12,6 +12,24 @@ import {
 import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 
+const LEGACY_COMPAT_ACCESSORS: Record<
+  string,
+  { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string }
+> = {
+  passwordless: {
+    syncModule: 'passwordless',
+    syncClass: 'Passwordless',
+    asyncModule: 'passwordless',
+    asyncClass: 'AsyncPasswordless',
+  },
+  vault: {
+    syncModule: 'vault',
+    syncClass: 'Vault',
+    asyncModule: 'vault',
+    asyncClass: 'AsyncVault',
+  },
+};
+
 /**
  * Generate the main Python client class, barrel __init__.py files,
  * and project scaffolding (pyproject.toml, py.typed).
@@ -610,6 +628,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`    def ${alias.name}(self) -> Any:`);
     if (alias.target) {
       lines.push(`        return self.${alias.target}`);
+    } else if (alias.legacy) {
+      lines.push(`        from .${alias.legacy.syncModule} import ${alias.legacy.syncClass}`);
+      lines.push(`        return ${alias.legacy.syncClass}(self)`);
     } else {
       lines.push(
         `        raise NotImplementedError("${alias.name} is not available in the generated SDK compatibility layer")`,
@@ -844,6 +865,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       lines.push(`    def ${alias.name}(self) -> Any:`);
       if (alias.target) {
         lines.push(`        return self.${alias.target}`);
+      } else if (alias.legacy) {
+        lines.push(`        from .${alias.legacy.asyncModule} import ${alias.legacy.asyncClass}`);
+        lines.push(`        return ${alias.legacy.asyncClass}(self)`);
       } else {
         lines.push(
           `        raise NotImplementedError("${alias.name} is not available in the generated SDK compatibility layer")`,
@@ -1442,8 +1466,16 @@ function generateTypesCompatBarrels(spec: ApiSpec, ctx: EmitterContext): Generat
 function buildCompatPropertyAliases(
   ctx: EmitterContext,
   generatedProps: Set<string>,
-): { name: string; target: string | null }[] {
-  const aliases: { name: string; target: string | null }[] = [];
+): {
+  name: string;
+  target: string | null;
+  legacy?: { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string };
+}[] {
+  const aliases: {
+    name: string;
+    target: string | null;
+    legacy?: { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string };
+  }[] = [];
 
   // Read the old client property names from the API surface
   const surfaceClasses = ctx.apiSurface?.classes ?? {};
@@ -1471,9 +1503,11 @@ function buildCompatPropertyAliases(
     const target = knownMappings[oldProp];
     if (target && generatedProps.has(target)) {
       aliases.push({ name: oldProp, target });
+    } else if (LEGACY_COMPAT_ACCESSORS[oldProp]) {
+      aliases.push({ name: oldProp, target: null, legacy: LEGACY_COMPAT_ACCESSORS[oldProp] });
     } else {
-      // For properties without a direct mapping (e.g., passwordless, vault, connect),
-      // generate a stub property that returns a truthy placeholder.
+      // For properties without a direct mapping or a known legacy shim,
+      // generate a stub property that fails loudly when accessed.
       aliases.push({ name: oldProp, target: null });
     }
   }

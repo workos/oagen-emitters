@@ -46,6 +46,42 @@ const ctx: EmitterContext = {
   spec,
 };
 
+const pythonCompatSurface: NonNullable<EmitterContext['apiSurface']> = {
+  language: 'python',
+  extractedFrom: 'test',
+  extractedAt: '2026-03-31T00:00:00Z',
+  classes: {
+    SyncClient: {
+      name: 'SyncClient',
+      methods: {
+        passwordless: [],
+        vault: [],
+      },
+      properties: {},
+      constructorParams: [],
+    },
+    AsyncClient: {
+      name: 'AsyncClient',
+      methods: {
+        passwordless: [],
+        vault: [],
+      },
+      properties: {},
+      constructorParams: [],
+    },
+    Client: {
+      name: 'Client',
+      methods: {},
+      properties: {},
+      constructorParams: [],
+    },
+  },
+  interfaces: {},
+  typeAliases: {},
+  enums: {},
+  exports: {},
+};
+
 describe('generateClient', () => {
   it('generates client class with resource accessors', () => {
     const files = generateClient(spec, ctx);
@@ -237,5 +273,22 @@ describe('generateClient', () => {
 
     const typesInit = files.find((f) => f.path === 'src/workos/types/user_management/__init__.py');
     expect(typesInit).toBeDefined();
+  });
+
+  it('generates lazy compat accessors for legacy hand-maintained modules', () => {
+    const files = generateClient(spec, { ...ctx, apiSurface: pythonCompatSurface });
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
+    const content = clientFile!.content;
+
+    expect(content).toContain('def passwordless(self) -> Any:');
+    expect(content).toContain('from .passwordless import Passwordless');
+    expect(content).toContain('return Passwordless(self)');
+    expect(content).toContain('from .passwordless import AsyncPasswordless');
+    expect(content).toContain('return AsyncPasswordless(self)');
+    expect(content).toContain('def vault(self) -> Any:');
+    expect(content).toContain('from .vault import Vault');
+    expect(content).toContain('return Vault(self)');
+    expect(content).toContain('from .vault import AsyncVault');
+    expect(content).toContain('return AsyncVault(self)');
   });
 });
