@@ -612,7 +612,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${nsClassName}(self)`);
     generatedProps.add(ns.prefix);
   }
-  emitCompatClientPropertyAliases(lines, generatedProps, false);
+  emitCompatClientPropertyAliases(lines, generatedProps);
   emitCompatClientAccessors(lines, false);
 
   lines.push('');
@@ -822,7 +822,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${asyncNsClassName}(self)`);
     asyncGeneratedProps.add(ns.prefix);
   }
-  emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
+  emitCompatClientPropertyAliases(lines, asyncGeneratedProps);
   emitCompatClientAccessors(lines, true);
 
   lines.push('');
@@ -1190,7 +1190,7 @@ function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
   lines.push(`        return ${vaultName}(self)`);
 }
 
-function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>, _isAsync: boolean): void {
+function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>): void {
   const aliases: Array<{ alias: string; typeName: string; returnExpr: string }> = [];
   if (generatedProps.has('multi_factor_auth') && !generatedProps.has('mfa')) {
     aliases.push({
