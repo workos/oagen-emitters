@@ -160,12 +160,38 @@ export function resolveServiceDir(resolvedServiceName: string): string {
 
 /** Resolve the SDK method name for an operation, checking overlay first. */
 export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+  const special = SPECIAL_METHOD_NAMES[`${op.httpMethod.toUpperCase()} ${op.path}`];
+  if (special) return special;
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) {
     // Convert from camelCase overlay name to snake_case for Python, then
     // normalize so redundant resource nouns are still stripped (e.g.
     // updateOrganization → update) even when the overlay is present.
+    return normalizeMethodName(toSnakeCase(existing.methodName), op);
+  }
+  return normalizeMethodName(toSnakeCase(op.name), op);
+}
+
+const SPECIAL_METHOD_NAMES: Record<string, string> = {
+  'POST /portal/generate_link': 'generate_link',
+  'GET /authorization/organizations/{organizationId}/roles': 'list_organization_roles',
+  'POST /authorization/organizations/{organizationId}/roles': 'create_organization_role',
+  'GET /authorization/organizations/{organizationId}/roles/{slug}': 'get_organization_role',
+  'PATCH /authorization/organizations/{organizationId}/roles/{slug}': 'update_organization_role',
+  'DELETE /authorization/organizations/{organizationId}/roles/{slug}': 'delete_organization_role',
+};
+
+export function resolveCompatMethodAliases(op: Operation, _service: Service, ctx: EmitterContext): string[] {
+  const canonical = resolveMethodName(op, _service, ctx);
+  const legacy = resolveLegacyMethodName(op, ctx);
+  return legacy && legacy !== canonical ? [legacy] : [];
+}
+
+function resolveLegacyMethodName(op: Operation, ctx: EmitterContext): string {
+  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+  const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
+  if (existing) {
     return normalizeMethodName(toSnakeCase(existing.methodName), op);
   }
   return normalizeMethodName(toSnakeCase(op.name), op);
@@ -231,6 +257,9 @@ function normalizeMethodName(name: string, op: Operation): string {
 
 /** Resolve the SDK class name for a service, checking overlay for existing names. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
+  if (service.name === 'portal') {
+    return 'AdminPortal';
+  }
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;

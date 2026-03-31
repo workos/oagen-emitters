@@ -287,7 +287,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const [dir, names] of [...enumsByDir].sort()) {
     lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
   }
+  lines.push('from .passwordless import AsyncPasswordless, Passwordless');
   lines.push('from .session import AsyncSession, Session');
+  lines.push('from .vault import AsyncVault, Vault');
   lines.push('');
   lines.push('try:');
   lines.push('    from importlib.metadata import version as _pkg_version');
@@ -337,6 +339,19 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       lines.push('            cookie_password=cookie_password,');
       lines.push('        )');
     }
+    if (ns.prefix === 'multi_factor_auth') {
+      lines.push('');
+      lines.push('    def verify_challenge(');
+      lines.push('        self,');
+      lines.push('        *,');
+      lines.push('        authentication_challenge_id: str,');
+      lines.push('        code: str,');
+      lines.push('        request_options: Optional[RequestOptions] = None,');
+      lines.push('    ) -> Any:');
+      lines.push(
+        '        return self.challenges.verify(authentication_challenge_id, code=code, request_options=request_options)',
+      );
+    }
   }
 
   // --- Async namespace classes ---
@@ -374,6 +389,19 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       lines.push('            session_data=sealed_session,');
       lines.push('            cookie_password=cookie_password,');
       lines.push('        )');
+    }
+    if (ns.prefix === 'multi_factor_auth') {
+      lines.push('');
+      lines.push('    async def verify_challenge(');
+      lines.push('        self,');
+      lines.push('        *,');
+      lines.push('        authentication_challenge_id: str,');
+      lines.push('        code: str,');
+      lines.push('        request_options: Optional[RequestOptions] = None,');
+      lines.push('    ) -> Any:');
+      lines.push(
+        '        return await self.challenges.verify(authentication_challenge_id, code=code, request_options=request_options)',
+      );
     }
   }
 
@@ -584,6 +612,8 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${nsClassName}(self)`);
     generatedProps.add(ns.prefix);
   }
+  emitCompatClientPropertyAliases(lines, generatedProps, false);
+  emitCompatClientAccessors(lines, false);
 
   lines.push('');
   lines.push('    @overload');
@@ -792,6 +822,8 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`        return ${asyncNsClassName}(self)`);
     asyncGeneratedProps.add(ns.prefix);
   }
+  emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
+  emitCompatClientAccessors(lines, true);
 
   lines.push('');
   lines.push('    @overload');
@@ -941,11 +973,17 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}    try:`);
   lines.push(`${indent}        body: Dict[str, Any] = response.json()`);
   lines.push(`${indent}        message: str = str(body.get("message", response.text))`);
+  lines.push(`${indent}        error = cast(Optional[str], body.get("error"))`);
+  lines.push(`${indent}        errors = body.get("errors")`);
   lines.push(`${indent}        code: Optional[str] = str(body["code"]) if "code" in body else None`);
+  lines.push(`${indent}        error_description = cast(Optional[str], body.get("error_description"))`);
   lines.push(`${indent}        param = cast(Optional[str], body.get("param"))`);
   lines.push(`${indent}    except Exception:`);
   lines.push(`${indent}        message = response.text`);
+  lines.push(`${indent}        error = None`);
+  lines.push(`${indent}        errors = None`);
   lines.push(`${indent}        code = None`);
+  lines.push(`${indent}        error_description = None`);
   lines.push(`${indent}        param = None`);
   lines.push('');
   lines.push(`${indent}    error_class = STATUS_CODE_TO_EXCEPTION.get(response.status_code)`);
@@ -960,6 +998,11 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}                request_id=request_id,`);
   lines.push(`${indent}                code=code,`);
   lines.push(`${indent}                param=param,`);
+  lines.push(`${indent}                response=response,`);
+  lines.push(`${indent}                response_json=body if 'body' in locals() else None,`);
+  lines.push(`${indent}                error=error,`);
+  lines.push(`${indent}                errors=errors,`);
+  lines.push(`${indent}                error_description=error_description,`);
   lines.push(`${indent}                raw_body=raw_body,`);
   lines.push(`${indent}                request_url=request_url,`);
   lines.push(`${indent}                request_method=request_method,`);
@@ -969,6 +1012,11 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}            request_id=request_id,`);
   lines.push(`${indent}            code=code,`);
   lines.push(`${indent}            param=param,`);
+  lines.push(`${indent}            response=response,`);
+  lines.push(`${indent}            response_json=body if 'body' in locals() else None,`);
+  lines.push(`${indent}            error=error,`);
+  lines.push(`${indent}            errors=errors,`);
+  lines.push(`${indent}            error_description=error_description,`);
   lines.push(`${indent}            raw_body=raw_body,`);
   lines.push(`${indent}            request_url=request_url,`);
   lines.push(`${indent}            request_method=request_method,`);
@@ -981,6 +1029,11 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}            request_id=request_id,`);
   lines.push(`${indent}            code=code,`);
   lines.push(`${indent}            param=param,`);
+  lines.push(`${indent}            response=response,`);
+  lines.push(`${indent}            response_json=body if 'body' in locals() else None,`);
+  lines.push(`${indent}            error=error,`);
+  lines.push(`${indent}            errors=errors,`);
+  lines.push(`${indent}            error_description=error_description,`);
   lines.push(`${indent}            raw_body=raw_body,`);
   lines.push(`${indent}            request_url=request_url,`);
   lines.push(`${indent}            request_method=request_method,`);
@@ -992,6 +1045,11 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}        request_id=request_id,`);
   lines.push(`${indent}        code=code,`);
   lines.push(`${indent}        param=param,`);
+  lines.push(`${indent}        response=response,`);
+  lines.push(`${indent}        response_json=body if 'body' in locals() else None,`);
+  lines.push(`${indent}        error=error,`);
+  lines.push(`${indent}        errors=errors,`);
+  lines.push(`${indent}        error_description=error_description,`);
   lines.push(`${indent}        raw_body=raw_body,`);
   lines.push(`${indent}        request_url=request_url,`);
   lines.push(`${indent}        request_method=request_method,`);
@@ -1116,6 +1174,37 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
       overwriteExisting: true,
     },
   ];
+}
+
+function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
+  const resourceName = isAsync ? 'AsyncPasswordless' : 'Passwordless';
+  lines.push('');
+  lines.push('    @functools.cached_property');
+  lines.push(`    def passwordless(self) -> ${resourceName}:`);
+  lines.push(`        return ${resourceName}(self)`);
+
+  const vaultName = isAsync ? 'AsyncVault' : 'Vault';
+  lines.push('');
+  lines.push('    @functools.cached_property');
+  lines.push(`    def vault(self) -> ${vaultName}:`);
+  lines.push(`        return ${vaultName}(self)`);
+}
+
+function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>, _isAsync: boolean): void {
+  const aliases: Array<{ alias: string; typeName: string; returnExpr: string }> = [];
+  if (generatedProps.has('multi_factor_auth') && !generatedProps.has('mfa')) {
+    aliases.push({
+      alias: 'mfa',
+      typeName: 'Any',
+      returnExpr: 'self.multi_factor_auth',
+    });
+  }
+  for (const alias of aliases) {
+    lines.push('');
+    lines.push('    @functools.cached_property');
+    lines.push(`    def ${alias.alias}(self) -> ${alias.typeName}:`);
+    lines.push(`        return ${alias.returnExpr}`);
+  }
 }
 
 function generatePyProjectToml(ctx: EmitterContext): GeneratedFile[] {

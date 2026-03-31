@@ -24,12 +24,16 @@ export function mapTypeRef(ref: TypeRef): string {
  * Map an IR TypeRef to a plain Python type string (no quotes around model/enum refs).
  * Used for import collection and direct type references.
  */
-export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>): string {
+export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allowRawEnumStrings = false): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_r, items) => `List[${items}]`,
     model: (r) => className(r.name),
-    enum: (r) => (knownEnums && !knownEnums.has(r.name) ? 'str' : className(r.name)),
+    enum: (r) => {
+      if (knownEnums && !knownEnums.has(r.name)) return 'str';
+      const enumType = className(r.name);
+      return allowRawEnumStrings ? `Union[${enumType}, str]` : enumType;
+    },
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `Optional[${inner}]`,
     literal: (r) =>

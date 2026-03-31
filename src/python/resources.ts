@@ -13,6 +13,7 @@ import {
   fieldName,
   resolveServiceDir,
   resolveMethodName,
+  resolveCompatMethodAliases,
   resolveClassName,
   buildServiceDirMap,
   dirToModule,
@@ -64,6 +65,7 @@ function emitMethodSignature(
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   const defKeyword = isAsync ? 'async def' : 'def';
+  const usesClientCredentialDefaults = usesClientCredentialsFromClient(op);
 
   lines.push(`    ${defKeyword} ${method}(`);
   lines.push('        self,');
@@ -71,7 +73,7 @@ function emitMethodSignature(
   // Path params as positional args
   for (const param of op.pathParams) {
     const paramName = fieldName(param.name);
-    const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
+    const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
     lines.push(`        ${paramName}: ${paramType},`);
   }
 
@@ -86,13 +88,18 @@ function emitMethodSignature(
       const reqFields = bodyModel.fields.filter((f) => f.required);
       const optFields = bodyModel.fields.filter((f) => !f.required);
       for (const f of reqFields) {
-        lines.push(`        ${bodyParamName(f, pathParamNames)}: ${mapTypeRefUnquoted(f.type, specEnumNames)},`);
+        const fieldType = mapTypeRefUnquoted(f.type, specEnumNames, true);
+        if (usesClientCredentialDefaults && (f.name === 'client_id' || f.name === 'client_secret')) {
+          lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${fieldType}] = None,`);
+        } else {
+          lines.push(`        ${bodyParamName(f, pathParamNames)}: ${fieldType},`);
+        }
       }
       for (const f of optFields) {
         const innerType =
           f.type.kind === 'nullable'
-            ? mapTypeRefUnquoted(f.type.inner, specEnumNames)
-            : mapTypeRefUnquoted(f.type, specEnumNames);
+            ? mapTypeRefUnquoted(f.type.inner, specEnumNames, true)
+            : mapTypeRefUnquoted(f.type, specEnumNames, true);
         lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
       }
     } else if (op.requestBody.kind === 'union') {
@@ -128,8 +135,10 @@ function emitMethodSignature(
         );
         if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
       }
-      const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
-      if (param.required) {
+      const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
+      if (usesClientCredentialDefaults && (param.name === 'client_id' || param.name === 'client_secret')) {
+        lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+      } else if (param.required) {
         lines.push(`        ${paramName}: ${paramType},`);
       } else {
         lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
@@ -145,13 +154,13 @@ function emitMethodSignature(
     // Use typed enum for order param if the spec provides one, otherwise fall back to str
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     const orderType =
-      orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames) : 'str';
+      orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames, true) : 'str';
     lines.push(`        order: Optional[${orderType}] = None,`);
     // Additional non-pagination query params
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       const paramName = fieldName(param.name);
-      const paramType = mapTypeRefUnquoted(param.type, specEnumNames);
+      const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
       if (param.required) {
         lines.push(`        ${paramName}: ${paramType},`);
       } else {
@@ -332,6 +341,7 @@ function emitMethodBody(
   const { pathParamNames, isArrayResponse, isRedirect, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
+  const usesClientCredentialDefaults = usesClientCredentialsFromClient(op);
 
   // Method body — build path
   const pathStr = buildPathString(op);
@@ -368,11 +378,18 @@ function emitMethodBody(
       lines.push('        params = {k: v for k, v in {');
       for (const entry of redirectParamEntries) {
         const param = op.queryParams.find((p) => p.name === entry.key);
-        const value =
-          param && param.type.kind === 'enum' ? `${entry.varName}.value if ${entry.varName} else None` : entry.varName;
+        const value = param ? serializeParameterValue(param.type, entry.varName, false) : entry.varName;
         lines.push(`            "${entry.key}": ${value},`);
       }
       lines.push('        }.items() if v is not None}');
+      if (usesClientCredentialDefaults) {
+        if (op.queryParams.some((param) => param.name === 'client_id')) {
+          lines.push('        params["client_id"] = params.get("client_id") or self._client.client_id');
+        }
+        if (op.queryParams.some((param) => param.name === 'client_secret')) {
+          lines.push('        params["client_secret"] = params.get("client_secret") or self._client._api_key');
+        }
+      }
       lines.push(`        return self._client.build_url(${pathStr}, params)`);
     } else {
       lines.push(`        return self._client.build_url(${pathStr})`);
@@ -380,18 +397,17 @@ function emitMethodBody(
   } else if (isPaginated) {
     const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
     const itemTypeClass = className(resolvedItemName);
-    // Build query params dict
     const orderParam = op.queryParams.find((p) => p.name === 'order');
-    const orderValue = orderParam && orderParam.type.kind === 'enum' ? 'order.value if order else None' : 'order';
+    // Build query params dict
     lines.push('        params = {k: v for k, v in {');
     lines.push('            "limit": limit,');
     lines.push('            "before": before,');
     lines.push('            "after": after,');
-    lines.push(`            "order": ${orderValue},`);
+    lines.push(`            "order": ${serializeParameterValue(orderParam?.type, 'order', false)},`);
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       const pn = fieldName(param.name);
-      const value = param.type.kind === 'enum' ? `${pn}.value if ${pn} else None` : pn;
+      const value = serializeParameterValue(param.type, pn, param.required);
       lines.push(`            "${param.name}": ${value},`);
     }
     lines.push('        }.items() if v is not None}');
@@ -478,6 +494,14 @@ function emitMethodBody(
     // Build query params dict if any exist alongside the body
     const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
     const bodyVarName = bodyModel ? 'body' : '_body';
+    if (bodyModel && usesClientCredentialDefaults) {
+      if (bodyModel.fields.some((f) => f.name === 'client_id')) {
+        lines.push('        body["client_id"] = body.get("client_id") or self._client.client_id');
+      }
+      if (bodyModel.fields.some((f) => f.name === 'client_secret')) {
+        lines.push('        body["client_secret"] = body.get("client_secret") or self._client._api_key');
+      }
+    }
     if (isArrayResponse) {
       // Array response with body: request without model, then deserialize each item
       const itemModel = className(plan.responseModelName!);
@@ -523,7 +547,7 @@ function emitMethodBody(
         lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
         for (const param of op.queryParams) {
           const pn = fieldName(param.name);
-          const value = param.type.kind === 'enum' ? `${pn}.value if ${pn} else None` : pn;
+          const value = serializeParameterValue(param.type, pn, param.required);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }.items() if v is not None}');
@@ -531,10 +555,18 @@ function emitMethodBody(
         lines.push('        params: Dict[str, Any] = {');
         for (const param of op.queryParams) {
           const pn = fieldName(param.name);
-          const value = param.type.kind === 'enum' ? `${pn}.value` : pn;
+          const value = serializeParameterValue(param.type, pn, param.required);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }');
+      }
+      if (usesClientCredentialDefaults) {
+        if (op.queryParams.some((param) => param.name === 'client_id')) {
+          lines.push('        params["client_id"] = params.get("client_id") or self._client.client_id');
+        }
+        if (op.queryParams.some((param) => param.name === 'client_secret')) {
+          lines.push('        params["client_secret"] = params.get("client_secret") or self._client._api_key');
+        }
       }
     }
     if (isArrayResponse) {
@@ -788,6 +820,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
+      for (const alias of resolveCompatMethodAliases(op, service, ctx)) {
+        lines.push('');
+        emitCompatAliasMethod(lines, method, alias, op, false);
+      }
     }
 
     // --- Generate async class ---
@@ -834,6 +870,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
+      for (const alias of resolveCompatMethodAliases(op, service, ctx)) {
+        lines.push('');
+        emitCompatAliasMethod(lines, method, alias, op, true);
+      }
     }
 
     files.push({
@@ -870,13 +910,17 @@ function emitQueryParamsDict(
   if (hasOptional) {
     lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
     for (const param of queryParams) {
-      lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+      lines.push(
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required)},`,
+      );
     }
     lines.push('        }.items() if v is not None}');
   } else {
     lines.push('        params: Dict[str, Any] = {');
     for (const param of queryParams) {
-      lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+      lines.push(
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required)},`,
+      );
     }
     lines.push('        }');
   }
@@ -890,6 +934,9 @@ function emitQueryParamsDict(
  */
 function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
+  if (effectiveType.kind === 'enum') {
+    return serializeParameterValue(effectiveType, varName, isRequired);
+  }
   if (effectiveType.kind === 'model') {
     if (!isRequired) {
       return `${varName}.to_dict() if ${varName} is not None else None`;
@@ -903,6 +950,39 @@ function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: bo
     return `[item.to_dict() for item in ${varName}]`;
   }
   return varName;
+}
+
+function serializeParameterValue(type: TypeRef | undefined, varName: string, isRequired: boolean): string {
+  if (type?.kind === 'nullable') {
+    return serializeParameterValue(type.inner, varName, false);
+  }
+  if (type?.kind === 'enum') {
+    const expr = `${varName}.value if hasattr(${varName}, "value") else ${varName}`;
+    return isRequired ? expr : `${expr} if ${varName} is not None else None`;
+  }
+  return varName;
+}
+
+function usesClientCredentialsFromClient(op: Operation): boolean {
+  return op.path.startsWith('/sso/');
+}
+
+function emitCompatAliasMethod(
+  lines: string[],
+  targetMethod: string,
+  aliasMethod: string,
+  op: Operation,
+  isAsync: boolean,
+): void {
+  const defKeyword = isAsync ? 'async def' : 'def';
+  const awaitPrefix = isAsync ? 'await ' : '';
+  lines.push(`    ${defKeyword} ${aliasMethod}(self, *args: Any, **kwargs: Any) -> Any:`);
+  lines.push(`        """Compatibility alias for \`${targetMethod}\`."""`);
+  if (op.path === '/portal/generate_link') {
+    lines.push(`        return ${awaitPrefix}self.${targetMethod}(*args, **kwargs)`);
+    return;
+  }
+  lines.push(`        return ${awaitPrefix}self.${targetMethod}(*args, **kwargs)`);
 }
 
 /**
