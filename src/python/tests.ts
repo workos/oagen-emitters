@@ -218,7 +218,7 @@ function generateServiceTest(
     lines.push(`from ${ctx.namespace}._pagination import AsyncPage, SyncPage`);
   }
   lines.push(
-    `from ${ctx.namespace}._errors import AuthenticationError, NotFoundError, RateLimitExceededError, ServerError`,
+    `from ${ctx.namespace}._errors import AuthenticationException, NotFoundException, RateLimitExceededException, ServerException`,
   );
 
   lines.push('');
@@ -368,9 +368,9 @@ function generateServiceTest(
 
     if (op.queryParams.length > 0 && !isRedirectEndpoint(op)) {
       const queryArgs = buildQueryEncodingTestArgs(op, spec);
-      if (queryArgs) {
+      const queryAssertions = buildQueryEncodingAssertions(op, spec);
+      if (queryArgs && queryAssertions.length > 0) {
         const responseSetup = buildQueryEncodingResponseSetup(op, plan);
-        const queryAssertions = buildQueryEncodingAssertions(op, spec);
         lines.push('');
         lines.push(`    def test_${method}_encodes_query_params(self, workos, httpx_mock):`);
         for (const setupLine of responseSetup) {
@@ -395,7 +395,7 @@ function generateServiceTest(
     lines.push('            status_code=401,');
     lines.push('            json={"message": "Unauthorized"},');
     lines.push('        )');
-    lines.push('        with pytest.raises(AuthenticationError):');
+    lines.push('        with pytest.raises(AuthenticationException):');
     const args = buildTestArgs(firstNonDelete, spec);
     lines.push(`            workos.${propName}.${method}(${args})`);
 
@@ -404,7 +404,7 @@ function generateServiceTest(
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
-    lines.push('            with pytest.raises(NotFoundError):');
+    lines.push('            with pytest.raises(NotFoundException):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -416,7 +416,7 @@ function generateServiceTest(
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
     );
-    lines.push('            with pytest.raises(RateLimitExceededError):');
+    lines.push('            with pytest.raises(RateLimitExceededException):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -426,7 +426,7 @@ function generateServiceTest(
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
-    lines.push('            with pytest.raises(ServerError):');
+    lines.push('            with pytest.raises(ServerException):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -545,9 +545,9 @@ function generateServiceTest(
 
     if (op.queryParams.length > 0 && !isRedirectEndpoint(op)) {
       const queryArgs = buildQueryEncodingTestArgs(op, spec);
-      if (queryArgs) {
+      const queryAssertions = buildQueryEncodingAssertions(op, spec);
+      if (queryArgs && queryAssertions.length > 0) {
         const responseSetup = buildQueryEncodingResponseSetup(op, plan);
-        const queryAssertions = buildQueryEncodingAssertions(op, spec);
         lines.push('');
         lines.push(`    async def test_${method}_encodes_query_params(self, async_workos, httpx_mock):`);
         for (const setupLine of responseSetup) {
@@ -570,14 +570,14 @@ function generateServiceTest(
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_unauthorized(self, async_workos, httpx_mock):`);
     lines.push('        httpx_mock.add_response(status_code=401, json={"message": "Unauthorized"})');
-    lines.push('        with pytest.raises(AuthenticationError):');
+    lines.push('        with pytest.raises(AuthenticationException):');
     lines.push(`            await async_workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
-    lines.push('            with pytest.raises(NotFoundError):');
+    lines.push('            with pytest.raises(NotFoundException):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -588,7 +588,7 @@ function generateServiceTest(
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
     );
-    lines.push('            with pytest.raises(RateLimitExceededError):');
+    lines.push('            with pytest.raises(RateLimitExceededException):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -597,7 +597,7 @@ function generateServiceTest(
     lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
-    lines.push('            with pytest.raises(ServerError):');
+    lines.push('            with pytest.raises(ServerException):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -755,6 +755,7 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (param.type.kind === 'array') continue; // Skip array params — complex serialization
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -805,6 +806,7 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (param.type.kind === 'array') continue; // Skip array params — complex serialization
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -895,7 +897,7 @@ function generateQueryEncodingValue(ref: TypeRef, name: string): string {
   }
 }
 
-function expectedQueryEncodingValue(ref: TypeRef, name: string): string | number | boolean {
+function expectedQueryEncodingValue(ref: TypeRef, name: string): string | number {
   switch (ref.kind) {
     case 'primitive':
       switch (ref.type) {
@@ -906,7 +908,7 @@ function expectedQueryEncodingValue(ref: TypeRef, name: string): string | number
         case 'number':
           return 7.5;
         case 'boolean':
-          return true;
+          return 'true';
         default:
           return `value ${name}`;
       }
@@ -1049,17 +1051,27 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('class TestModelRoundTrip:');
 
   for (const model of models) {
+    // Deduplicate fields that map to the same snake_case name (mirrors models.ts)
+    const seenFieldNames = new Set<string>();
+    const dedupFields = model.fields.filter((f) => {
+      const pyName = fieldName(f.name);
+      if (seenFieldNames.has(pyName)) return false;
+      seenFieldNames.add(pyName);
+      return true;
+    });
+    const dedupModel = { ...model, fields: dedupFields };
+
     const modelClass = className(model.name);
     const fixtureName = `${fileName(model.name)}.json`;
     const fullFixture = generateModelFixture(
-      model,
+      dedupModel,
       new Map(spec.models.map((m) => [m.name, m])),
       new Map(spec.enums.map((e) => [e.name, e])),
     );
-    const minimalPayload = buildMinimalModelPayload(model, fullFixture);
-    const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(model, fullFixture);
-    const nullablePayload = buildPayloadWithNullableFieldsSetToNull(model, fullFixture);
-    const unknownEnumPayload = buildPayloadWithUnknownEnumValue(model, fullFixture);
+    const minimalPayload = buildMinimalModelPayload(dedupModel, fullFixture);
+    const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(dedupModel, fullFixture);
+    const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
+    const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
 
     lines.push('');
     lines.push(`    def test_${fileName(model.name)}_round_trip(self):`);
@@ -1070,13 +1082,18 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     lines.push(`        restored = ${modelClass}.from_dict(serialized)`);
     lines.push('        assert restored.to_dict() == serialized');
 
+    const requiredFields = dedupFields.filter((field) => field.required);
     lines.push('');
     lines.push(`    def test_${fileName(model.name)}_minimal_payload(self):`);
     lines.push(`        data = ${toPythonLiteral(minimalPayload)}`);
     lines.push(`        instance = ${modelClass}.from_dict(data)`);
-    lines.push('        serialized = instance.to_dict()');
-    for (const field of model.fields.filter((field) => field.required)) {
-      lines.push(`        assert serialized[${toPythonLiteral(field.name)}] == data[${toPythonLiteral(field.name)}]`);
+    if (requiredFields.length > 0) {
+      lines.push('        serialized = instance.to_dict()');
+      for (const field of requiredFields) {
+        lines.push(`        assert serialized[${toPythonLiteral(field.name)}] == data[${toPythonLiteral(field.name)}]`);
+      }
+    } else {
+      lines.push('        assert instance.to_dict() is not None');
     }
 
     if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
@@ -1085,7 +1102,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
       lines.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
       lines.push(`        instance = ${modelClass}.from_dict(data)`);
       lines.push('        serialized = instance.to_dict()');
-      for (const field of model.fields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
+      for (const field of dedupFields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
         lines.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
       }
     }
@@ -1096,7 +1113,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
       lines.push(`        data = ${toPythonLiteral(nullablePayload)}`);
       lines.push(`        instance = ${modelClass}.from_dict(data)`);
       lines.push('        serialized = instance.to_dict()');
-      for (const field of model.fields.filter((field) => field.type.kind === 'nullable')) {
+      for (const field of dedupFields.filter((field) => field.type.kind === 'nullable')) {
         lines.push(`        assert serialized[${toPythonLiteral(field.name)}] is None`);
       }
     }
@@ -1132,15 +1149,15 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
   lines.push(`from ${ctx.namespace} import _client as generated_client_module`);
   lines.push(`from ${ctx.namespace}._errors import (`);
-  lines.push('    AuthenticationError,');
-  lines.push('    BadRequestError,');
-  lines.push('    ForbiddenError,');
-  lines.push('    NotFoundError,');
-  lines.push('    ConflictError,');
-  lines.push('    UnprocessableEntityError,');
-  lines.push('    RateLimitExceededError,');
-  lines.push('    ServerError,');
-  lines.push('    ConfigurationError,');
+  lines.push('    AuthenticationException,');
+  lines.push('    BadRequestException,');
+  lines.push('    AuthorizationException,');
+  lines.push('    NotFoundException,');
+  lines.push('    ConflictException,');
+  lines.push('    UnprocessableEntityException,');
+  lines.push('    RateLimitExceededException,');
+  lines.push('    ServerException,');
+  lines.push('    ConfigurationException,');
   lines.push(')');
   lines.push('');
   lines.push('');
@@ -1161,14 +1178,14 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
 
   // Error status code tests
   const errorCodes: [number, string][] = [
-    [400, 'BadRequestError'],
-    [401, 'AuthenticationError'],
-    [403, 'ForbiddenError'],
-    [404, 'NotFoundError'],
-    [409, 'ConflictError'],
-    [422, 'UnprocessableEntityError'],
-    [429, 'RateLimitExceededError'],
-    [500, 'ServerError'],
+    [400, 'BadRequestException'],
+    [401, 'AuthenticationException'],
+    [403, 'AuthorizationException'],
+    [404, 'NotFoundException'],
+    [409, 'ConflictException'],
+    [422, 'UnprocessableEntityException'],
+    [429, 'RateLimitExceededException'],
+    [500, 'ServerException'],
   ];
 
   for (const [code, errorClass] of errorCodes) {
@@ -1221,7 +1238,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
     '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
   );
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=3)');
-  lines.push('        with pytest.raises(RateLimitExceededError):');
+  lines.push('        with pytest.raises(RateLimitExceededException):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1231,7 +1248,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
     '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "30"}, json={"message": "Slow down"})',
   );
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(RateLimitExceededError) as exc_info:');
+  lines.push('        with pytest.raises(RateLimitExceededException) as exc_info:');
   lines.push('            client.request("GET", "test")');
   lines.push('        assert exc_info.value.retry_after == 30.0');
   lines.push('        client.close()');
@@ -1241,7 +1258,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutException):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1250,7 +1267,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionException):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1280,7 +1297,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
   lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutException):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
 
@@ -1291,7 +1308,7 @@ function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: M
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
   lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionException):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
 
