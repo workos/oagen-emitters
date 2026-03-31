@@ -68,7 +68,9 @@ export const pythonEmitter: Emitter = {
     return ensureTrailingNewlines(generateConfig(ctx));
   },
 
-  generateTypeSignatures(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile[] {
+  generateTypeSignatures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    void spec;
+    void ctx;
     // Python uses inline type annotations — no separate type signature files needed
     return [];
   },

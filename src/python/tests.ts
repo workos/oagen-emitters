@@ -1141,7 +1141,8 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
 /**
  * Generate client tests: retry behavior, error raising, context manager, idempotency keys.
  */
-function generateClientTests(_spec: ApiSpec, ctx: EmitterContext, accessPaths: Map<string, string>): GeneratedFile {
+function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Map<string, string>): GeneratedFile {
+  void spec;
   const lines: string[] = [];
 
   lines.push('"""Client tests: retries, errors, context manager, idempotency."""');

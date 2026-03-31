@@ -9,14 +9,23 @@ import { className } from './naming.js';
 export function mapTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
-    array: (_r, items) => `List[${items}]`,
+    array: (ref, items) => {
+      void ref;
+      return `List[${items}]`;
+    },
     model: (r) => `"${className(r.name)}"`,
     enum: (r) => `"${className(r.name)}"`,
     union: (r, variants) => joinUnionVariants(r, variants),
-    nullable: (_r, inner) => `Optional[${inner}]`,
+    nullable: (ref, inner) => {
+      void ref;
+      return `Optional[${inner}]`;
+    },
     literal: (r) =>
       typeof r.value === 'string' ? `Literal["${r.value}"]` : r.value === null ? 'None' : `Literal[${String(r.value)}]`,
-    map: (_r, value) => `Dict[str, ${value}]`,
+    map: (ref, value) => {
+      void ref;
+      return `Dict[str, ${value}]`;
+    },
   });
 }
 
@@ -27,7 +36,10 @@ export function mapTypeRef(ref: TypeRef): string {
 export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allowRawEnumStrings = false): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
-    array: (_r, items) => `List[${items}]`,
+    array: (ref, items) => {
+      void ref;
+      return `List[${items}]`;
+    },
     model: (r) => className(r.name),
     enum: (r) => {
       if (knownEnums && !knownEnums.has(r.name)) return 'str';
@@ -35,10 +47,16 @@ export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allow
       return allowRawEnumStrings ? `Union[${enumType}, str]` : enumType;
     },
     union: (r, variants) => joinUnionVariants(r, variants),
-    nullable: (_r, inner) => `Optional[${inner}]`,
+    nullable: (ref, inner) => {
+      void ref;
+      return `Optional[${inner}]`;
+    },
     literal: (r) =>
       typeof r.value === 'string' ? `Literal["${r.value}"]` : r.value === null ? 'None' : `Literal[${String(r.value)}]`,
-    map: (_r, value) => `Dict[str, ${value}]`,
+    map: (ref, value) => {
+      void ref;
+      return `Dict[str, ${value}]`;
+    },
   });
 }
 

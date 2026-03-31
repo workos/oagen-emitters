@@ -30,29 +30,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
   const compatAliases = collectCompatEnumAliases(enums, ctx);
 
-  // Build hash for deduplication based on sorted member values
-  const enumHashMap = new Map<string, string>();
-  const hashGroups = new Map<string, string[]>();
-  for (const enumDef of enums) {
-    const hash = [...enumDef.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    enumHashMap.set(enumDef.name, hash);
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef.name);
-  }
-
-  // For identical enums, pick canonical (alphabetically first)
-  const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
+  const aliasOf = collectEnumAliasOf(enums);
 
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
@@ -82,14 +60,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
       // Also generate compat alias files for dedup aliases (they may have compat aliases too)
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+        const importLine =
+          canonicalDir === dirName
+            ? `from .${fileName(canonicalName)} import ${canonicalName}`
+            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalName}`;
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: [
-            `from .${fileName(canonicalName)} import ${canonicalName}`,
-            '',
-            `${aliasName} = ${canonicalName}`,
-            `__all__ = ["${aliasName}"]`,
-          ].join('\n'),
+          content: [importLine, '', `${aliasName} = ${canonicalName}`, `__all__ = ["${aliasName}"]`].join('\n'),
           integrateTarget: true,
           overwriteExisting: true,
         });
@@ -243,6 +220,51 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
   }
 
   return aliases;
+}
+
+function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
+  const hashGroups = new Map<string, string[]>();
+  for (const enumDef of enums) {
+    const hash = [...enumDef.values]
+      .map((v) => String(v.value))
+      .sort()
+      .join('|');
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(enumDef.name);
+  }
+
+  const aliasOf = new Map<string, string>();
+  for (const [, names] of hashGroups) {
+    if (names.length <= 1) continue;
+    const sorted = [...names].sort();
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i], canonical);
+    }
+  }
+  return aliasOf;
+}
+
+export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {
+  const enumToService = assignEnumsToServices(enums, ctx.spec.services);
+  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
+  const compatAliases = collectCompatEnumAliases(enums, ctx);
+  const symbolsByDir = new Map<string, string[]>();
+
+  for (const enumDef of enums) {
+    const service = enumToService.get(enumDef.name);
+    const dirName = resolveDir(service);
+    if (!symbolsByDir.has(dirName)) symbolsByDir.set(dirName, []);
+    symbolsByDir.get(dirName)!.push(enumDef.name);
+    for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+      symbolsByDir.get(dirName)!.push(aliasName);
+    }
+  }
+
+  return symbolsByDir;
 }
 
 function enumValueHash(enumDef: Enum): string {

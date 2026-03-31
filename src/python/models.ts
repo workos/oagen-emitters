@@ -1,9 +1,9 @@
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies, planOperation } from '@workos/oagen';
+import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName, fileName, buildServiceDirMap, dirToModule } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
-import { assignEnumsToServices, collectCompatEnumAliases } from './enums.js';
+import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -20,6 +20,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
   const modelMap = new Map(models.map((m) => [m.name, m]));
   const files: GeneratedFile[] = [];
+  const emittedModelSymbolsByDir = new Map<string, string[]>();
   const modelUsage = collectModelUsage(ctx.spec);
 
   // Build structural hashes for deduplication
@@ -76,6 +77,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         integrateTarget: true,
         overwriteExisting: true,
       });
+      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
       continue;
     }
 
@@ -257,32 +260,27 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       integrateTarget: true,
       overwriteExisting: true,
     });
+    if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+    emittedModelSymbolsByDir.get(dirName)!.push(model.name);
   }
 
   // Generate __init__.py barrel files for each models/ directory
   // Include both models and enums
   const symbolsByDir = new Map<string, string[]>();
-  for (const model of models) {
-    if (isListWrapperModel(model)) continue;
-    if (isListMetadataModel(model)) continue;
-    const service = modelToService.get(model.name);
-    const dirName = resolveDir(service);
+  for (const [dirName, names] of emittedModelSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(model.name);
+    symbolsByDir.get(key)!.push(...names);
   }
 
-  // Also include enums in the barrels
-  const compatEnumAliases = collectCompatEnumAliases(ctx.spec.enums, ctx);
-  for (const enumDef of ctx.spec.enums) {
-    const service = enumToService.get(enumDef.name);
-    const dirName = resolveDir(service);
+  // Also include enums in the barrels using the enum emitter's actual output placement.
+  const reachableEnumNames = collectReachableEnumNames(ctx);
+  const emittedEnums = ctx.spec.enums.filter((enumDef) => reachableEnumNames.has(enumDef.name));
+  const enumSymbolsByDir = collectGeneratedEnumSymbolsByDir(emittedEnums, ctx);
+  for (const [dirName, names] of enumSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(enumDef.name);
-    for (const aliasName of compatEnumAliases.get(enumDef.name) ?? []) {
-      symbolsByDir.get(key)!.push(aliasName);
-    }
+    symbolsByDir.get(key)!.push(...names);
   }
 
   // Build set of service directory model paths — these get their parent __init__.py
@@ -320,7 +318,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       files.push({
         path: `${parentDir}/__init__.py`,
         content: reExports,
-        skipIfExists: true,
+        integrateTarget: true,
+        overwriteExisting: true,
       });
     }
   }
@@ -353,6 +352,56 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
       if (ref.type === 'unknown') imports.add('Any');
       break;
   }
+}
+
+function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
+  const referencedModels = new Set<string>();
+  const referencedEnums = new Set<string>();
+
+  const collectFromTypeRef = (ref: any): void => {
+    walkTypeRef(ref, {
+      model: (r) => referencedModels.add(r.name),
+      enum: (r) => referencedEnums.add(r.name),
+    });
+  };
+
+  for (const service of ctx.spec.services) {
+    for (const op of service.operations) {
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+        collectFromTypeRef(p.type);
+      }
+      if (op.requestBody) collectFromTypeRef(op.requestBody);
+      collectFromTypeRef(op.response);
+      if (op.pagination) collectFromTypeRef(op.pagination.itemType);
+      for (const err of op.errors) {
+        if (err.type) collectFromTypeRef(err.type);
+      }
+      if (op.successResponses) {
+        for (const sr of op.successResponses) {
+          collectFromTypeRef(sr.type);
+        }
+      }
+    }
+  }
+
+  const modelsByName = new Map(ctx.spec.models.map((m) => [m.name, m]));
+  const visited = new Set<string>();
+  const queue = [...referencedModels];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const model = modelsByName.get(name);
+    if (!model) continue;
+    for (const field of model.fields) {
+      collectFromTypeRef(field.type);
+      for (const modelName of referencedModels) {
+        if (!visited.has(modelName)) queue.push(modelName);
+      }
+    }
+  }
+
+  return referencedEnums;
 }
 
 function collectModelUsage(spec: EmitterContext['spec']): {
@@ -436,7 +485,9 @@ function tokenizeModelName(name: string): string[] {
     .filter((part) => !['dto', 'request', 'response', 'params', 'param', 'model'].includes(part));
 }
 
-function isOptionalField(_modelName: string, field: Model['fields'][number], _ctx: EmitterContext): boolean {
+function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
+  void modelName;
+  void ctx;
   // A field is optional (gets = None default) only if it's not required or deprecated.
   // Nullable-required fields (required: true, type: nullable) are NOT optional —
   // they must appear in the API response (value can be null, but key must be present).

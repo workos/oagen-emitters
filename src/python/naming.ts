@@ -159,7 +159,8 @@ export function resolveServiceDir(resolvedServiceName: string): string {
 }
 
 /** Resolve the SDK method name for an operation, checking overlay first. */
-export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+export function resolveMethodName(op: Operation, service: Service, ctx: EmitterContext): string {
+  void service;
   const special = SPECIAL_METHOD_NAMES[`${op.httpMethod.toUpperCase()} ${op.path}`];
   if (special) return special;
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -182,8 +183,8 @@ const SPECIAL_METHOD_NAMES: Record<string, string> = {
   'DELETE /authorization/organizations/{organizationId}/roles/{slug}': 'delete_organization_role',
 };
 
-export function resolveCompatMethodAliases(op: Operation, _service: Service, ctx: EmitterContext): string[] {
-  const canonical = resolveMethodName(op, _service, ctx);
+export function resolveCompatMethodAliases(op: Operation, service: Service, ctx: EmitterContext): string[] {
+  const canonical = resolveMethodName(op, service, ctx);
   const legacy = resolveLegacyMethodName(op, ctx);
   return legacy && legacy !== canonical ? [legacy] : [];
 }

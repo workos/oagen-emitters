@@ -621,6 +621,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
+    lines.push('from enum import Enum');
+    lines.push('');
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
@@ -775,9 +777,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`from ${importPrefix}_pagination import AsyncPage, SyncPage`);
     }
     lines.push(`from ${importPrefix}_types import RequestOptions`);
+    lines.push('');
+    lines.push('');
+    lines.push('def _enum_value(value: Any) -> Any:');
+    lines.push('    return value.value if isinstance(value, Enum) else value');
 
     // --- Generate sync class ---
-    lines.push('');
     lines.push('');
     lines.push(`class ${resourceClassName}:`);
     if (service.description) {
@@ -957,7 +962,7 @@ function serializeParameterValue(type: TypeRef | undefined, varName: string, isR
     return serializeParameterValue(type.inner, varName, false);
   }
   if (type?.kind === 'enum') {
-    const expr = `${varName}.value if hasattr(${varName}, "value") else ${varName}`;
+    const expr = `_enum_value(${varName})`;
     return isRequired ? expr : `${expr} if ${varName} is not None else None`;
   }
   return varName;
