@@ -1,4 +1,4 @@
-import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
+import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
 import { className, fileName, fieldName, resolveMethodName, buildServiceDirMap, dirToModule } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
@@ -85,6 +85,7 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   // conftest.py with pytest fixtures — merged additively into existing conftest
   const conftestLines: string[] = [];
   conftestLines.push('import pytest');
+  conftestLines.push('import pytest_asyncio');
   conftestLines.push('');
   conftestLines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
   conftestLines.push('');
@@ -97,10 +98,14 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   conftestLines.push('    client.close()');
   conftestLines.push('');
   conftestLines.push('');
-  conftestLines.push('@pytest.fixture');
-  conftestLines.push('def async_workos():');
-  conftestLines.push('    """Create an AsyncWorkOS client for testing."""');
-  conftestLines.push('    return AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push('@pytest_asyncio.fixture');
+  conftestLines.push('async def async_workos():');
+  conftestLines.push('    """Create an AsyncWorkOS client for testing with guaranteed cleanup."""');
+  conftestLines.push('    client = AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push('    try:');
+  conftestLines.push('        yield client');
+  conftestLines.push('    finally:');
+  conftestLines.push('        await client.close()');
 
   return [
     {
@@ -266,6 +271,13 @@ function generateServiceTest(
         lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
         lines.push('        assert isinstance(page, SyncPage)');
         lines.push('        assert isinstance(page.data, list)');
+
+        lines.push('');
+        lines.push(`    def test_${method}_empty_page(self, workos, httpx_mock):`);
+        lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
+        lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
+        lines.push('        assert isinstance(page, SyncPage)');
+        lines.push('        assert page.data == []');
       } else {
         lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
         lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
@@ -352,6 +364,24 @@ function generateServiceTest(
       lines.push('        request = httpx_mock.get_request()');
       lines.push(`        assert request.method == "${op.httpMethod.toUpperCase()}"`);
       lines.push(`        assert request.url.path.endswith("/${voidPath}")`);
+    }
+
+    if (op.queryParams.length > 0 && !isRedirectEndpoint(op)) {
+      const queryArgs = buildQueryEncodingTestArgs(op, spec);
+      if (queryArgs) {
+        const responseSetup = buildQueryEncodingResponseSetup(op, plan);
+        const queryAssertions = buildQueryEncodingAssertions(op, spec);
+        lines.push('');
+        lines.push(`    def test_${method}_encodes_query_params(self, workos, httpx_mock):`);
+        for (const setupLine of responseSetup) {
+          lines.push(`        ${setupLine}`);
+        }
+        lines.push(`        workos.${propName}.${method}(${queryArgs})`);
+        lines.push('        request = httpx_mock.get_request()');
+        for (const assertion of queryAssertions) {
+          lines.push(`        ${assertion}`);
+        }
+      }
     }
   }
 
@@ -449,6 +479,13 @@ function generateServiceTest(
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
         lines.push('        assert isinstance(page, AsyncPage)');
         lines.push('        assert isinstance(page.data, list)');
+
+        lines.push('');
+        lines.push(`    async def test_${method}_empty_page(self, async_workos, httpx_mock):`);
+        lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
+        lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+        lines.push('        assert isinstance(page, AsyncPage)');
+        lines.push('        assert page.data == []');
       } else {
         lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
@@ -504,6 +541,24 @@ function generateServiceTest(
       lines.push('        request = httpx_mock.get_request()');
       lines.push(`        assert request.method == "${op.httpMethod.toUpperCase()}"`);
       lines.push(`        assert request.url.path.endswith("/${voidPath}")`);
+    }
+
+    if (op.queryParams.length > 0 && !isRedirectEndpoint(op)) {
+      const queryArgs = buildQueryEncodingTestArgs(op, spec);
+      if (queryArgs) {
+        const responseSetup = buildQueryEncodingResponseSetup(op, plan);
+        const queryAssertions = buildQueryEncodingAssertions(op, spec);
+        lines.push('');
+        lines.push(`    async def test_${method}_encodes_query_params(self, async_workos, httpx_mock):`);
+        for (const setupLine of responseSetup) {
+          lines.push(`        ${setupLine}`);
+        }
+        lines.push(`        await async_workos.${propName}.${method}(${queryArgs})`);
+        lines.push('        request = httpx_mock.get_request()');
+        for (const assertion of queryAssertions) {
+          lines.push(`        ${assertion}`);
+        }
+      }
     }
   }
 
@@ -667,6 +722,105 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
   return args.join(', ');
 }
 
+function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
+  const args: string[] = [];
+
+  for (const param of op.pathParams) {
+    args.push(`"test_${param.name}"`);
+  }
+
+  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  const plan = planOperation(op);
+
+  if (plan.hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+    for (const field of bodyModel?.fields.filter((f) => f.required) ?? []) {
+      args.push(`${bodyParamName(field, pathParamNames)}=${generateTestValue(field.type, field.name)}`);
+    }
+  } else if (plan.hasBody && op.requestBody?.kind === 'union') {
+    const variants = (op.requestBody as any).variants ?? [];
+    const firstModelVariant = variants.find((v: any) => v.kind === 'model');
+    args.push(firstModelVariant ? `body=load_fixture("${fileName(firstModelVariant.name)}.json")` : 'body={}');
+  }
+
+  if (plan.isPaginated) {
+    args.push('limit=10');
+    args.push('before="cursor before"');
+    args.push('after="cursor/after"');
+    const orderParam = op.queryParams.find((param) => param.name === 'order');
+    if (orderParam) {
+      args.push(`order=${generateQueryEncodingValue(orderParam.type, 'order')}`);
+    }
+  }
+
+  for (const param of op.queryParams) {
+    if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    const paramName = fieldName(param.name);
+    if (pathParamNames.has(paramName)) continue;
+    if (plan.hasBody && op.requestBody?.kind === 'model') {
+      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+      if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
+    }
+    args.push(`${paramName}=${generateQueryEncodingValue(param.type, param.name)}`);
+  }
+
+  return args.join(', ');
+}
+
+function buildQueryEncodingResponseSetup(op: Operation, plan: ReturnType<typeof planOperation>): string[] {
+  if (plan.isPaginated) {
+    return ['httpx_mock.add_response(json={"data": [], "list_metadata": {}})'];
+  }
+  if (plan.isDelete) {
+    return ['httpx_mock.add_response(status_code=204)'];
+  }
+  if (op.response.kind === 'array') {
+    if (op.response.items.kind === 'model') {
+      return [`httpx_mock.add_response(json=[load_fixture("${fileName(op.response.items.name)}.json")])`];
+    }
+    return ['httpx_mock.add_response(json=[])'];
+  }
+  if (plan.responseModelName) {
+    return [`httpx_mock.add_response(json=load_fixture("${fileName(plan.responseModelName)}.json"))`];
+  }
+  return ['httpx_mock.add_response(json={})'];
+}
+
+function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
+  const assertions: string[] = [];
+  const plan = planOperation(op);
+  const pathParamNames = new Set(op.pathParams.map((param) => fieldName(param.name)));
+
+  if (plan.isPaginated) {
+    assertions.push('assert request.url.params["limit"] == "10"');
+    assertions.push('assert request.url.params["before"] == "cursor before"');
+    assertions.push('assert request.url.params["after"] == "cursor/after"');
+    const orderParam = op.queryParams.find((param) => param.name === 'order');
+    if (orderParam) {
+      assertions.push(
+        `assert request.url.params["order"] == ${toPythonLiteral(expectedQueryEncodingValue(orderParam.type, 'order'))}`,
+      );
+    }
+  }
+
+  for (const param of op.queryParams) {
+    if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    const paramName = fieldName(param.name);
+    if (pathParamNames.has(paramName)) continue;
+    if (plan.hasBody && op.requestBody?.kind === 'model') {
+      const bodyModel = spec.models.find(
+        (model) => model.name === (op.requestBody as { kind: string; name: string }).name,
+      );
+      if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
+    }
+    assertions.push(
+      `assert request.url.params["${param.name}"] == ${toPythonLiteral(expectedQueryEncodingValue(param.type, param.name))}`,
+    );
+  }
+
+  return assertions;
+}
+
 /**
  * Generate a representative Python value literal for a given type, for use in tests.
  */
@@ -711,6 +865,128 @@ function generateTestValue(ref: TypeRef, name: string): string {
     default:
       return '{}';
   }
+}
+
+function generateQueryEncodingValue(ref: TypeRef, name: string): string {
+  switch (ref.kind) {
+    case 'primitive':
+      switch (ref.type) {
+        case 'string':
+          return `"${expectedQueryEncodingValue(ref, name)}"`;
+        case 'integer':
+          return '7';
+        case 'number':
+          return '7.5';
+        case 'boolean':
+          return 'True';
+        default:
+          return '{}';
+      }
+    case 'enum': {
+      const value = expectedQueryEncodingValue(ref, name);
+      return `${className(ref.name)}("${value}")`;
+    }
+    case 'nullable':
+      return generateQueryEncodingValue(ref.inner, name);
+    case 'literal':
+      return toPythonLiteral(ref.value);
+    default:
+      return generateTestValue(ref, name);
+  }
+}
+
+function expectedQueryEncodingValue(ref: TypeRef, name: string): string | number | boolean {
+  switch (ref.kind) {
+    case 'primitive':
+      switch (ref.type) {
+        case 'string':
+          return `value ${name}/test`;
+        case 'integer':
+          return 7;
+        case 'number':
+          return 7.5;
+        case 'boolean':
+          return true;
+        default:
+          return `value ${name}`;
+      }
+    case 'enum': {
+      const enumValues = (ref as any).values as (string | number)[] | undefined;
+      if (enumValues && enumValues.length > 0) return enumValues[0];
+      return `value_${name}`;
+    }
+    case 'nullable':
+      return expectedQueryEncodingValue(ref.inner, name);
+    case 'literal':
+      return ref.value ?? `value_${name}`;
+    default:
+      return `value_${name}`;
+  }
+}
+
+function buildMinimalModelPayload(model: Model, fixture: Record<string, unknown>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const field of model.fields) {
+    if (!field.required) continue;
+    if (field.type.kind === 'nullable') {
+      payload[field.name] = null;
+      continue;
+    }
+    payload[field.name] = fixture[field.name];
+  }
+  return payload;
+}
+
+function buildPayloadWithoutOptionalNonNullableFields(
+  model: Model,
+  fixture: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...fixture };
+  for (const field of model.fields) {
+    if (!field.required && field.type.kind !== 'nullable') {
+      delete payload[field.name];
+    }
+  }
+  return payload;
+}
+
+function buildPayloadWithNullableFieldsSetToNull(
+  model: Model,
+  fixture: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const nullableFields = model.fields.filter((field) => field.type.kind === 'nullable');
+  if (nullableFields.length === 0) return null;
+  const payload: Record<string, unknown> = { ...fixture };
+  for (const field of nullableFields) {
+    payload[field.name] = null;
+  }
+  return payload;
+}
+
+function buildPayloadWithUnknownEnumValue(
+  model: Model,
+  fixture: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const payload: Record<string, unknown> = { ...fixture };
+  const enumField = model.fields.find((field) => field.type.kind === 'enum');
+  if (!enumField) return null;
+  payload[enumField.name] = `unexpected_${fileName(model.name)}_${fieldName(enumField.name)}`;
+  return payload;
+}
+
+function toPythonLiteral(value: unknown): string {
+  if (value === null) return 'None';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean')
+    return JSON.stringify(value).replace('true', 'True').replace('false', 'False');
+  if (Array.isArray(value)) return `[${value.map((item) => toPythonLiteral(item)).join(', ')}]`;
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, inner]) => `${JSON.stringify(key)}: ${toPythonLiteral(inner)}`,
+    );
+    return `{${entries.join(', ')}}`;
+  }
+  return 'None';
 }
 
 /**
@@ -775,6 +1051,15 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   for (const model of models) {
     const modelClass = className(model.name);
     const fixtureName = `${fileName(model.name)}.json`;
+    const fullFixture = generateModelFixture(
+      model,
+      new Map(spec.models.map((m) => [m.name, m])),
+      new Map(spec.enums.map((e) => [e.name, e])),
+    );
+    const minimalPayload = buildMinimalModelPayload(model, fullFixture);
+    const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(model, fullFixture);
+    const nullablePayload = buildPayloadWithNullableFieldsSetToNull(model, fullFixture);
+    const unknownEnumPayload = buildPayloadWithUnknownEnumValue(model, fullFixture);
 
     lines.push('');
     lines.push(`    def test_${fileName(model.name)}_round_trip(self):`);
@@ -784,6 +1069,45 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     lines.push('        assert serialized == data');
     lines.push(`        restored = ${modelClass}.from_dict(serialized)`);
     lines.push('        assert restored.to_dict() == serialized');
+
+    lines.push('');
+    lines.push(`    def test_${fileName(model.name)}_minimal_payload(self):`);
+    lines.push(`        data = ${toPythonLiteral(minimalPayload)}`);
+    lines.push(`        instance = ${modelClass}.from_dict(data)`);
+    lines.push('        serialized = instance.to_dict()');
+    for (const field of model.fields.filter((field) => field.required)) {
+      lines.push(`        assert serialized[${toPythonLiteral(field.name)}] == data[${toPythonLiteral(field.name)}]`);
+    }
+
+    if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_omits_absent_optional_non_nullable_fields(self):`);
+      lines.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
+      lines.push(`        instance = ${modelClass}.from_dict(data)`);
+      lines.push('        serialized = instance.to_dict()');
+      for (const field of model.fields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
+        lines.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
+      }
+    }
+
+    if (nullablePayload) {
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_preserves_nullable_fields(self):`);
+      lines.push(`        data = ${toPythonLiteral(nullablePayload)}`);
+      lines.push(`        instance = ${modelClass}.from_dict(data)`);
+      lines.push('        serialized = instance.to_dict()');
+      for (const field of model.fields.filter((field) => field.type.kind === 'nullable')) {
+        lines.push(`        assert serialized[${toPythonLiteral(field.name)}] is None`);
+      }
+    }
+
+    if (unknownEnumPayload) {
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_round_trips_unknown_enum_values(self):`);
+      lines.push(`        data = ${toPythonLiteral(unknownEnumPayload)}`);
+      lines.push(`        instance = ${modelClass}.from_dict(data)`);
+      lines.push('        assert instance.to_dict() == data');
+    }
   }
 
   return {

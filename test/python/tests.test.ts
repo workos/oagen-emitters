@@ -66,8 +66,12 @@ describe('generateTests', () => {
     const conftest = files.find((f) => f.path === 'tests/conftest.py');
     expect(conftest).toBeDefined();
     expect(conftest!.content).toContain('import pytest');
+    expect(conftest!.content).toContain('import pytest_asyncio');
     expect(conftest!.content).toContain('from workos import WorkOS');
     expect(conftest!.content).toContain('@pytest.fixture');
+    expect(conftest!.content).toContain('@pytest_asyncio.fixture');
+    expect(conftest!.content).toContain('yield client');
+    expect(conftest!.content).toContain('await client.close()');
   });
 
   it('generates per-service test file', () => {
@@ -117,5 +121,98 @@ describe('generateTests', () => {
     const data = JSON.parse(fixture!.content);
     expect(data).toHaveProperty('id');
     expect(data).toHaveProperty('name');
+  });
+
+  it('generates model edge-case and query/pagination regression tests', () => {
+    const edgeModels: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'status', type: { kind: 'enum', name: 'OrganizationStatus' }, required: true },
+          { name: 'nickname', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'OrganizationList',
+        fields: [
+          { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Organization' } }, required: true },
+          { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    const edgeSpec: ApiSpec = {
+      ...spec,
+      models: edgeModels,
+      enums: [
+        {
+          name: 'OrganizationStatus',
+          values: [
+            { name: 'ACTIVE', value: 'active' },
+            { name: 'INACTIVE', value: 'inactive' },
+          ],
+        },
+      ],
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              name: 'listOrganizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                { name: 'status', type: { kind: 'enum', name: 'OrganizationStatus' }, required: false },
+                { name: 'email', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'model', name: 'OrganizationList' },
+              errors: [],
+              injectIdempotencyKey: false,
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const files = generateTests(edgeSpec, { ...ctx, spec: edgeSpec });
+    const serviceTest = files.find((f) => f.path === 'tests/test_organizations.py');
+    const roundTripTest = files.find((f) => f.path === 'tests/test_models_round_trip.py');
+
+    expect(serviceTest).toBeDefined();
+    expect(serviceTest!.content).toContain('def test_list_organizations_empty_page(');
+    expect(serviceTest!.content).toContain('def test_list_organizations_encodes_query_params(');
+    expect(serviceTest!.content).toContain('assert request.url.params["email"] == "value email/test"');
+    expect(serviceTest!.content).toContain('assert request.url.params["limit"] == "10"');
+
+    expect(roundTripTest).toBeDefined();
+    expect(roundTripTest!.content).toContain('def test_organization_minimal_payload(');
+    expect(roundTripTest!.content).toContain('def test_organization_omits_absent_optional_non_nullable_fields(');
+    expect(roundTripTest!.content).toContain('def test_organization_preserves_nullable_fields(');
+    expect(roundTripTest!.content).toContain('def test_organization_round_trips_unknown_enum_values(');
   });
 });
