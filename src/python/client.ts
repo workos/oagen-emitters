@@ -436,7 +436,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        # Ensure base_url has a trailing slash for backward compatibility');
   lines.push('        self._base_url = resolved_base_url.rstrip("/") + "/"');
   lines.push(
-    '        self._request_timeout = request_timeout if request_timeout is not None else int(os.environ.get("WORKOS_REQUEST_TIMEOUT", "25"))',
+    '        self._request_timeout = request_timeout if request_timeout is not None else int(os.environ.get("WORKOS_REQUEST_TIMEOUT", "30"))',
   );
   lines.push('        self._max_retries = max_retries');
   lines.push('        self._jwt_leeway = jwt_leeway');
@@ -566,7 +566,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            client_id: WorkOS client ID. Falls back to the WORKOS_CLIENT_ID environment variable.');
   lines.push(`            base_url: Base URL for API requests. Falls back to WORKOS_BASE_URL or "${spec.baseUrl}".`);
   lines.push(
-    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 25.',
+    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 30.',
   );
   lines.push('            jwt_leeway: JWT clock skew leeway in seconds.');
   lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');
@@ -754,7 +754,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            client_id: WorkOS client ID. Falls back to the WORKOS_CLIENT_ID environment variable.');
   lines.push(`            base_url: Base URL for API requests. Falls back to WORKOS_BASE_URL or "${spec.baseUrl}".`);
   lines.push(
-    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 25.',
+    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 30.',
   );
   lines.push('            jwt_leeway: JWT clock skew leeway in seconds.');
   lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');

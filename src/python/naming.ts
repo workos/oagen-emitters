@@ -176,11 +176,24 @@ export function resolveMethodName(op: Operation, service: Service, ctx: EmitterC
 
 const SPECIAL_METHOD_NAMES: Record<string, string> = {
   'POST /portal/generate_link': 'generate_link',
+  // Audit log exports — operationIds "exports" / "export" are confusing without a verb
+  'POST /audit_logs/exports': 'create_export',
+  'GET /audit_logs/exports/{auditLogExportId}': 'get_export',
+  // Organization roles
   'GET /authorization/organizations/{organizationId}/roles': 'list_organization_roles',
   'POST /authorization/organizations/{organizationId}/roles': 'create_organization_role',
   'GET /authorization/organizations/{organizationId}/roles/{slug}': 'get_organization_role',
   'PATCH /authorization/organizations/{organizationId}/roles/{slug}': 'update_organization_role',
   'DELETE /authorization/organizations/{organizationId}/roles/{slug}': 'delete_organization_role',
+  // Organization role permissions — without overrides these collide with env-level and
+  // fall back to long auto-generated names like "add_permission_permissions_organizations_roles"
+  'PUT /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'set_organization_role_permissions',
+  'POST /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'add_organization_role_permission',
+  'DELETE /authorization/organizations/{organizationId}/roles/{slug}/permissions/{permissionSlug}':
+    'remove_organization_role_permission',
+  // Environment role permissions
+  'PUT /authorization/roles/{slug}/permissions': 'set_environment_role_permissions',
+  'POST /authorization/roles/{slug}/permissions': 'add_environment_role_permission',
 };
 
 export function resolveCompatMethodAliases(op: Operation, service: Service, ctx: EmitterContext): string[] {
