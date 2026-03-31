@@ -3,8 +3,6 @@ import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { fileName, buildServiceDirMap, dirToModule } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
 
-const ENUM_VALUE_NORMALIZATIONS = new Map<string, string>([['GithubOAuth', 'GitHubOAuth']]);
-
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
  * preserving known acronyms instead of splitting them character-by-character.
@@ -118,7 +116,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const seenValues = new Set<string>();
       const uniqueValues: typeof enumDef.values = [];
       for (const value of enumDef.values) {
-        const valueStr = normalizeEnumValue(String(value.value));
+        const valueStr = String(value.value);
         if (!seenValues.has(valueStr)) {
           seenValues.add(valueStr);
           uniqueValues.push({ ...value, value: valueStr });
@@ -223,7 +221,7 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
   for (const baselineEnum of Object.values(ctx.apiSurface?.enums ?? {})) {
     if (irEnumNames.has(baselineEnum.name)) continue;
     const hash = Object.values(baselineEnum.members)
-      .map((value) => normalizeEnumValue(String(value)))
+      .map((value) => String(value))
       .sort()
       .join('|');
     const target = normalizedHashToEnum.get(hash);
@@ -237,13 +235,9 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
 
 function enumValueHash(enumDef: Enum): string {
   return [...enumDef.values]
-    .map((value) => normalizeEnumValue(String(value.value)))
+    .map((value) => String(value.value))
     .sort()
     .join('|');
-}
-
-function normalizeEnumValue(value: string): string {
-  return ENUM_VALUE_NORMALIZATIONS.get(value) ?? value;
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

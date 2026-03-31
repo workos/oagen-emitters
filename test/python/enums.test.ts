@@ -178,7 +178,7 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('Administrator role');
   });
 
-  it('normalizes GitHubOAuth casing', () => {
+  it('preserves canonical enum values from the spec', () => {
     const enums: Enum[] = [
       {
         name: 'Provider',
@@ -187,6 +187,7 @@ describe('generateEnums', () => {
     ];
 
     const files = generateEnums(enums, ctx);
-    expect(files[0].content).toContain('"GitHubOAuth"');
+    expect(files[0].content).toContain('"GithubOAuth"');
+    expect(files[0].content).not.toContain('"GitHubOAuth"');
   });
 });
