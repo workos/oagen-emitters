@@ -190,10 +190,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       }
     }
 
-    if (deduplicatedFields.length === 0) {
-      lines.push('    pass');
-    }
-
     // from_dict class method
     lines.push('');
     lines.push('    @classmethod');
