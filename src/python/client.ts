@@ -1,5 +1,5 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices, type Model } from '@workos/oagen';
+import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import {
   className,
