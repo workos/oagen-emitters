@@ -1,5 +1,12 @@
 import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
-import { planOperation, toPascalCase, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
+import {
+  planOperation,
+  toPascalCase,
+  toSnakeCase,
+  collectModelRefs,
+  collectEnumRefs,
+  assignModelsToServices,
+} from '@workos/oagen';
 import { mapTypeRefUnquoted } from './type-map.js';
 import {
   className,
@@ -288,7 +295,9 @@ function emitMethodDocstring(
       lines.push('            after: Pagination cursor for next page.');
       lines.push('            order: Sort order.');
     }
-    lines.push('            request_options: Per-request options (extra headers, timeout).');
+    lines.push(
+      '            request_options: Per-request options. Supports extra_headers, timeout, max_retries, and base_url override.',
+    );
   }
 
   if (returnType !== 'None') {
@@ -742,8 +751,16 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const emittedMethods = new Set<string>();
     for (const op of service.operations) {
       const plan = planOperation(op);
-      const method = resolveMethodName(op, service, ctx);
-      if (emittedMethods.has(method)) continue;
+      let method = resolveMethodName(op, service, ctx);
+      // On name collision, fall back to the full snake_case operation name
+      if (emittedMethods.has(method)) {
+        const fallback = toSnakeCase(op.name);
+        if (fallback !== method && !emittedMethods.has(fallback)) {
+          method = fallback;
+        } else {
+          continue;
+        }
+      }
       emittedMethods.add(method);
 
       lines.push('');
@@ -781,8 +798,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const asyncEmittedMethods = new Set<string>();
     for (const op of service.operations) {
       const plan = planOperation(op);
-      const method = resolveMethodName(op, service, ctx);
-      if (asyncEmittedMethods.has(method)) continue;
+      let method = resolveMethodName(op, service, ctx);
+      if (asyncEmittedMethods.has(method)) {
+        const fallback = toSnakeCase(op.name);
+        if (fallback !== method && !asyncEmittedMethods.has(fallback)) {
+          method = fallback;
+        } else {
+          continue;
+        }
+      }
       asyncEmittedMethods.add(method);
 
       lines.push('');
@@ -950,16 +974,16 @@ function buildErrorRaisesBlock(op: Operation): string[] {
         emittedCodes.add(err.statusCode);
       }
     }
-    // Always include 5xx
-    if (!emittedCodes.has(500)) {
-      lines.push('ServerError: If the server returns a 5xx error.');
-    }
   }
 
-  // Fall back to baseline if no specific errors documented
-  if (lines.length === 0) {
+  // Always include baseline errors for authenticated endpoints (401, 429, 5xx)
+  if (!emittedCodes.has(401)) {
     lines.push('AuthenticationError: If the API key is invalid (401).');
+  }
+  if (!emittedCodes.has(429)) {
     lines.push('RateLimitExceededError: If rate limited (429).');
+  }
+  if (!emittedCodes.has(500)) {
     lines.push('ServerError: If the server returns a 5xx error.');
   }
 
