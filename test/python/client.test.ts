@@ -72,15 +72,19 @@ describe('generateClient', () => {
     expect(content).toContain('def __enter__');
     // P2-3: client_id
     expect(content).toContain('client_id: Optional[str] = None,');
-    expect(content).toContain('request_timeout: int = 25,');
+    expect(content).toContain('request_timeout: Optional[int] = None,');
+    expect(content).toContain('jwt_leeway: float = 0.0,');
     expect(content).toContain('request_options.get("idempotency_key")');
     expect(content).toContain('request_options.get("max_retries")');
     expect(content).toContain('request_options.get("base_url")');
+    expect(content).toContain('WORKOS_BASE_URL');
+    expect(content).toContain('WORKOS_REQUEST_TIMEOUT');
     expect(content).toContain('request_url = str(request.url) if request is not None else None');
     expect(content).toContain('request_method = request.method if request is not None else None');
     expect(content).toContain('follow_redirects=True');
     // P3-4: Versioned User-Agent
     expect(content).toContain('workos-python/{VERSION}');
+    expect(content).toContain('def directory_sync(self) -> DirectorySyncNamespace:');
   });
 
   it('generates barrel __init__.py', () => {
@@ -174,6 +178,64 @@ describe('generateClient', () => {
   it('uses base URL from spec', () => {
     const files = generateClient(spec, ctx);
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    expect(clientFile!.content).toContain('base_url: str = "https://api.workos.com"');
+    expect(clientFile!.content).toContain('os.environ.get("WORKOS_BASE_URL", "https://api.workos.com")');
+  });
+
+  it('generates compat shim modules', () => {
+    const files = generateClient(spec, ctx);
+
+    expect(files.find((f) => f.path === 'src/workos/client.py')?.content).toContain('SyncClient = WorkOSClient');
+    expect(files.find((f) => f.path === 'src/workos/async_client.py')?.content).toContain(
+      'AsyncClient = AsyncWorkOSClient',
+    );
+    expect(files.find((f) => f.path === 'src/workos/exceptions.py')?.content).toContain('from ._errors import *');
+  });
+
+  it('generates user_management and types compatibility helpers', () => {
+    const compatSpec: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'UserManagementUsers',
+          operations: [
+            {
+              name: 'listUsers',
+              httpMethod: 'get',
+              path: '/user_management/users',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+        {
+          name: 'UserManagementAuthentication',
+          operations: [
+            {
+              name: 'authorize',
+              httpMethod: 'get',
+              path: '/user_management/authorize',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const files = generateClient(compatSpec, { ...ctx, spec: compatSpec });
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
+    expect(clientFile!.content).toContain('def load_sealed_session');
+    expect(clientFile!.content).toContain('def get_authorization_url');
+
+    const typesInit = files.find((f) => f.path === 'src/workos/types/user_management/__init__.py');
+    expect(typesInit).toBeDefined();
   });
 });
