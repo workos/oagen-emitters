@@ -1,5 +1,6 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
+import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices, type Model } from '@workos/oagen';
+import { isListWrapperModel, isListMetadataModel } from './models.js';
 import {
   className,
   fileName,
@@ -1101,10 +1102,10 @@ function emitUserManagementCompatMethods(lines: string[], asyncMode: boolean): v
   lines.push(`        ${maybeAwait}self.users.delete(user_id)`);
   lines.push('');
   lines.push(
-    `    def get_authorization_url(self, *, redirect_uri: str, domain_hint: Optional[str] = None, login_hint: Optional[str] = None, state: Optional[str] = None, provider: Optional[UserManagementAuthenticationProvider] = None, connection_id: Optional[str] = None, organization_id: Optional[str] = None, code_challenge: Optional[str] = None, code_challenge_method: Optional[Literal["S256"]] = None, provider_query_params: Optional[Dict[str, str]] = None, provider_scopes: Optional[List[str]] = None, invitation_token: Optional[str] = None, screen_hint: Optional[UserManagementAuthenticationScreenHint] = None, prompt: Optional[str] = None) -> str:`,
+    `    ${maybeAsync}def get_authorization_url(self, *, redirect_uri: str, domain_hint: Optional[str] = None, login_hint: Optional[str] = None, state: Optional[str] = None, provider: Optional[UserManagementAuthenticationProvider] = None, connection_id: Optional[str] = None, organization_id: Optional[str] = None, code_challenge: Optional[str] = None, code_challenge_method: Optional[Literal["S256"]] = None, provider_query_params: Optional[Dict[str, str]] = None, provider_scopes: Optional[List[str]] = None, invitation_token: Optional[str] = None, screen_hint: Optional[UserManagementAuthenticationScreenHint] = None, prompt: Optional[str] = None) -> str:`,
   );
   lines.push(
-    '        return self.authentication.authorize(redirect_uri=redirect_uri, client_id=self._client.client_id, response_type="code", domain_hint=domain_hint, login_hint=login_hint, state=state, provider=provider, connection_id=connection_id, organization_id=organization_id, code_challenge=code_challenge, code_challenge_method=code_challenge_method, provider_query_params=provider_query_params, provider_scopes=provider_scopes, invitation_token=invitation_token, screen_hint=screen_hint, prompt=prompt)',
+    `        return ${maybeAwait}self.authentication.authorize(redirect_uri=redirect_uri, client_id=self._client.client_id or "", response_type="code", domain_hint=domain_hint, login_hint=login_hint, state=state, provider=provider, connection_id=connection_id, organization_id=organization_id, code_challenge=code_challenge, code_challenge_method=code_challenge_method, provider_query_params=provider_query_params, provider_scopes=provider_scopes, invitation_token=invitation_token, screen_hint=screen_hint, prompt=prompt)`,
   );
   lines.push('');
   lines.push('    def get_jwks_url(self) -> str:');
@@ -1409,6 +1410,7 @@ function generateTypesCompatBarrels(spec: ApiSpec, ctx: EmitterContext): Generat
     });
 
     for (const model of ctx.spec.models) {
+      if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
       const service = modelToServiceMap.get(model.name);
       if (!service) continue;
       const dir = serviceDirMap.get(service) ?? 'common';
