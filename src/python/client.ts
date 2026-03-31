@@ -909,6 +909,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            )');
   lines.push('');
   lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
+  lines.push('');
+  lines.push('');
+  lines.push('# Top-level client aliases retained for SDK ergonomics and internal typing');
+  lines.push('WorkOS = WorkOSClient');
+  lines.push('AsyncWorkOS = AsyncWorkOSClient');
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
@@ -1078,9 +1083,14 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('from ._pagination import AsyncPage, SyncPage');
   lines.push('from ._types import RequestOptions');
   lines.push('');
+  lines.push('WorkOS = WorkOSClient');
+  lines.push('AsyncWorkOS = AsyncWorkOSClient');
+  lines.push('');
   lines.push('__all__ = [');
   lines.push('    "WorkOSClient",');
   lines.push('    "AsyncWorkOSClient",');
+  lines.push('    "WorkOS",');
+  lines.push('    "AsyncWorkOS",');
   lines.push('    "RequestOptions",');
   lines.push('    "BaseRequestException",');
   lines.push('    "AuthenticationException",');

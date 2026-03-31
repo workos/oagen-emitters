@@ -100,8 +100,8 @@ describe('generateClient', () => {
     expect(barrel!.content).toContain('from ._errors import');
     expect(barrel!.content).toContain('from ._pagination import AsyncPage, SyncPage');
     expect(barrel!.content).not.toContain('WorkOSListResource');
-    expect(barrel!.content).not.toContain('"WorkOS"');
-    expect(barrel!.content).not.toContain('"AsyncWorkOS"');
+    expect(barrel!.content).toContain('"WorkOS"');
+    expect(barrel!.content).toContain('"AsyncWorkOS"');
     expect(barrel!.content).toContain('"AuthorizationException"');
     expect(barrel!.content).toContain('"WorkOSConnectionException"');
     expect(barrel!.content).toContain('"WorkOSTimeoutException"');
