@@ -54,8 +54,8 @@ describe('generateClient', () => {
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
-    expect(content).toContain('class _BaseWorkOS:');
-    expect(content).toContain('class WorkOS(_BaseWorkOS):');
+    expect(content).toContain('class _BaseWorkOSClient:');
+    expect(content).toContain('class WorkOSClient(_BaseWorkOSClient):');
     // Lazy resource accessors via cached_property
     expect(content).toContain('@functools.cached_property');
     expect(content).toContain('def organizations(self) -> Organizations:');
@@ -66,14 +66,13 @@ describe('generateClient', () => {
     expect(content).toContain('def _parse_retry_after(');
     expect(content).toContain('def _calculate_retry_delay(');
     // P1-1: Async client
-    expect(content).toContain('class AsyncWorkOS(_BaseWorkOS):');
+    expect(content).toContain('class AsyncWorkOSClient(_BaseWorkOSClient):');
     // P0-4: Context manager
     expect(content).toContain('def close(self)');
     expect(content).toContain('def __enter__');
     // P2-3: client_id
     expect(content).toContain('client_id: Optional[str] = None,');
-    expect(content).toContain('http_client: Optional[httpx.Client] = None,');
-    expect(content).toContain('http_client: Optional[httpx.AsyncClient] = None,');
+    expect(content).toContain('request_timeout: int = 25,');
     expect(content).toContain('request_options.get("idempotency_key")');
     expect(content).toContain('request_options.get("max_retries")');
     expect(content).toContain('request_options.get("base_url")');
@@ -89,12 +88,12 @@ describe('generateClient', () => {
 
     const barrel = files.find((f) => f.path === 'src/workos/__init__.py');
     expect(barrel).toBeDefined();
-    expect(barrel!.content).toContain('from ._client import AsyncWorkOS, WorkOS');
+    expect(barrel!.content).toContain('from ._client import AsyncWorkOSClient, WorkOSClient');
     expect(barrel!.content).toContain('from ._errors import');
     expect(barrel!.content).toContain('from ._pagination import AsyncPage, SyncPage');
-    expect(barrel!.content).toContain('"ForbiddenError"');
-    expect(barrel!.content).toContain('"WorkOSConnectionError"');
-    expect(barrel!.content).toContain('"WorkOSTimeoutError"');
+    expect(barrel!.content).toContain('"AuthorizationException"');
+    expect(barrel!.content).toContain('"WorkOSConnectionException"');
+    expect(barrel!.content).toContain('"WorkOSTimeoutException"');
     expect(barrel!.overwriteExisting).toBe(true);
   });
 
