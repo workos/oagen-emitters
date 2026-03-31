@@ -46,42 +46,6 @@ const ctx: EmitterContext = {
   spec,
 };
 
-const pythonCompatSurface: NonNullable<EmitterContext['apiSurface']> = {
-  language: 'python',
-  extractedFrom: 'test',
-  extractedAt: '2026-03-31T00:00:00Z',
-  classes: {
-    SyncClient: {
-      name: 'SyncClient',
-      methods: {
-        passwordless: [],
-        vault: [],
-      },
-      properties: {},
-      constructorParams: [],
-    },
-    AsyncClient: {
-      name: 'AsyncClient',
-      methods: {
-        passwordless: [],
-        vault: [],
-      },
-      properties: {},
-      constructorParams: [],
-    },
-    Client: {
-      name: 'Client',
-      methods: {},
-      properties: {},
-      constructorParams: [],
-    },
-  },
-  interfaces: {},
-  typeAliases: {},
-  enums: {},
-  exports: {},
-};
-
 describe('generateClient', () => {
   it('generates client class with resource accessors', () => {
     const files = generateClient(spec, ctx);
@@ -120,7 +84,11 @@ describe('generateClient', () => {
     expect(content).toContain('follow_redirects=True');
     // P3-4: Versioned User-Agent
     expect(content).toContain('workos-python/{VERSION}');
-    expect(content).toContain('def directory_sync(self) -> DirectorySyncNamespace:');
+    expect(content).not.toContain('def directory_sync(self)');
+    expect(content).not.toContain('def connect(self)');
+    expect(content).not.toContain('def portal(self)');
+    expect(content).not.toContain('def mfa(self)');
+    expect(content).not.toContain('def fga(self)');
   });
 
   it('generates barrel __init__.py', () => {
@@ -131,6 +99,9 @@ describe('generateClient', () => {
     expect(barrel!.content).toContain('from ._client import AsyncWorkOSClient, WorkOSClient');
     expect(barrel!.content).toContain('from ._errors import');
     expect(barrel!.content).toContain('from ._pagination import AsyncPage, SyncPage');
+    expect(barrel!.content).not.toContain('WorkOSListResource');
+    expect(barrel!.content).not.toContain('"WorkOS"');
+    expect(barrel!.content).not.toContain('"AsyncWorkOS"');
     expect(barrel!.content).toContain('"AuthorizationException"');
     expect(barrel!.content).toContain('"WorkOSConnectionException"');
     expect(barrel!.content).toContain('"WorkOSTimeoutException"');
@@ -217,17 +188,15 @@ describe('generateClient', () => {
     expect(clientFile!.content).toContain('os.environ.get("WORKOS_BASE_URL", "https://api.workos.com")');
   });
 
-  it('generates compat shim modules', () => {
+  it('does not generate compat shim modules', () => {
     const files = generateClient(spec, ctx);
 
-    expect(files.find((f) => f.path === 'src/workos/client.py')?.content).toContain('SyncClient = WorkOSClient');
-    expect(files.find((f) => f.path === 'src/workos/async_client.py')?.content).toContain(
-      'AsyncClient = AsyncWorkOSClient',
-    );
-    expect(files.find((f) => f.path === 'src/workos/exceptions.py')?.content).toContain('from ._errors import *');
+    expect(files.find((f) => f.path === 'src/workos/client.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/workos/async_client.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/workos/exceptions.py')).toBeUndefined();
   });
 
-  it('generates user_management and types compatibility helpers', () => {
+  it('does not generate user_management helper methods or types compat barrels', () => {
     const compatSpec: ApiSpec = {
       ...spec,
       services: [
@@ -269,26 +238,11 @@ describe('generateClient', () => {
     const files = generateClient(compatSpec, { ...ctx, spec: compatSpec });
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     expect(clientFile!.content).toContain('def load_sealed_session');
-    expect(clientFile!.content).toContain('def get_authorization_url');
+    expect(clientFile!.content).not.toContain('def get_authorization_url');
+    expect(clientFile!.content).not.toContain('def get_user(');
+    expect(clientFile!.content).not.toContain('def create_user(');
 
     const typesInit = files.find((f) => f.path === 'src/workos/types/user_management/__init__.py');
-    expect(typesInit).toBeDefined();
-  });
-
-  it('generates lazy compat accessors for legacy hand-maintained modules', () => {
-    const files = generateClient(spec, { ...ctx, apiSurface: pythonCompatSurface });
-    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    const content = clientFile!.content;
-
-    expect(content).toContain('def passwordless(self) -> Any:');
-    expect(content).toContain('from .passwordless import Passwordless');
-    expect(content).toContain('return Passwordless(self)');
-    expect(content).toContain('from .passwordless import AsyncPasswordless');
-    expect(content).toContain('return AsyncPasswordless(self)');
-    expect(content).toContain('def vault(self) -> Any:');
-    expect(content).toContain('from .vault import Vault');
-    expect(content).toContain('return Vault(self)');
-    expect(content).toContain('from .vault import AsyncVault');
-    expect(content).toContain('return AsyncVault(self)');
+    expect(typesInit).toBeUndefined();
   });
 });

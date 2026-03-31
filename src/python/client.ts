@@ -1,34 +1,8 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
-import { isListWrapperModel, isListMetadataModel } from './models.js';
-import {
-  className,
-  fileName,
-  resolveServiceDir,
-  servicePropertyName,
-  buildServiceDirMap,
-  dirToModule,
-} from './naming.js';
+import { className, resolveServiceDir, servicePropertyName, buildServiceDirMap, dirToModule } from './naming.js';
 import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
-
-const LEGACY_COMPAT_ACCESSORS: Record<
-  string,
-  { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string }
-> = {
-  passwordless: {
-    syncModule: 'passwordless',
-    syncClass: 'Passwordless',
-    asyncModule: 'passwordless',
-    asyncClass: 'AsyncPasswordless',
-  },
-  vault: {
-    syncModule: 'vault',
-    syncClass: 'Vault',
-    asyncModule: 'vault',
-    asyncClass: 'AsyncVault',
-  },
-};
 
 /**
  * Generate the main Python client class, barrel __init__.py files,
@@ -40,11 +14,9 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   const files: GeneratedFile[] = [];
 
   files.push(...generateWorkOSClient(spec, ctx));
-  files.push(...generateCompatShimModules(ctx));
   files.push(...generateServiceInits(spec, ctx));
   files.push(...generateNamespaceAliasPackages(spec, ctx));
   files.push(...generateBarrel(spec, ctx));
-  files.push(...generateTypesCompatBarrels(spec, ctx));
   files.push(...generatePyProjectToml(ctx));
   files.push(...generatePyTyped(ctx));
 
@@ -212,7 +184,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    WorkOSTimeoutException,');
   lines.push('    STATUS_CODE_TO_EXCEPTION,');
   lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage, WorkOSListResource');
+  lines.push('from ._pagination import AsyncPage, SyncPage');
   lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes (both sync and async)
@@ -316,15 +288,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
   }
   lines.push('from .session import AsyncSession, Session');
-  lines.push('from .directory_users.models import DirectoryUsersOrder');
-  lines.push('from .directory_groups.models import DirectoryGroupsOrder');
-  lines.push('from .directories.models import DirectoriesOrder');
-  lines.push('from .user_management.users.models import UserManagementUsersOrder');
-  lines.push(
-    'from .user_management.authentication.models import UserManagementAuthenticationProvider, UserManagementAuthenticationScreenHint',
-  );
-  lines.push('from .common.models import CreateUserDtoPasswordHashType, UpdateUserDtoPasswordHashType');
-
   lines.push('');
   lines.push('try:');
   lines.push('    from importlib.metadata import version as _pkg_version');
@@ -366,11 +329,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     }
 
     if (ns.prefix === 'user_management') {
-      emitUserManagementCompatMethods(lines, false);
+      lines.push('');
+      lines.push('    def load_sealed_session(self, *, sealed_session: str, cookie_password: str) -> Session:');
+      lines.push('        return Session(');
+      lines.push('            client=self._client,');
+      lines.push('            session_data=sealed_session,');
+      lines.push('            cookie_password=cookie_password,');
+      lines.push('        )');
     }
   }
-
-  emitDirectorySyncCompatClass(lines, false);
 
   // --- Async namespace classes ---
   for (const ns of namespaces) {
@@ -400,11 +367,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     }
 
     if (ns.prefix === 'user_management') {
-      emitUserManagementCompatMethods(lines, true);
+      lines.push('');
+      lines.push('    def load_sealed_session(self, *, sealed_session: str, cookie_password: str) -> AsyncSession:');
+      lines.push('        return AsyncSession(');
+      lines.push('            client=self._client,');
+      lines.push('            session_data=sealed_session,');
+      lines.push('            cookie_password=cookie_password,');
+      lines.push('        )');
     }
   }
-
-  emitDirectorySyncCompatClass(lines, true);
 
   lines.push('');
   lines.push('');
@@ -612,30 +583,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push(`    def ${ns.prefix}(self) -> ${nsClassName}:`);
     lines.push(`        return ${nsClassName}(self)`);
     generatedProps.add(ns.prefix);
-  }
-
-  lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push('    def directory_sync(self) -> DirectorySyncNamespace:');
-  lines.push('        return DirectorySyncNamespace(self)');
-  generatedProps.add('directory_sync');
-
-  // Add backward-compatible property aliases from API surface
-  const compatAliases = buildCompatPropertyAliases(ctx, generatedProps);
-  for (const alias of compatAliases) {
-    lines.push('');
-    lines.push('    @functools.cached_property');
-    lines.push(`    def ${alias.name}(self) -> Any:`);
-    if (alias.target) {
-      lines.push(`        return self.${alias.target}`);
-    } else if (alias.legacy) {
-      lines.push(`        from .${alias.legacy.syncModule} import ${alias.legacy.syncClass}`);
-      lines.push(`        return ${alias.legacy.syncClass}(self)`);
-    } else {
-      lines.push(
-        `        raise NotImplementedError("${alias.name} is not available in the generated SDK compatibility layer")`,
-      );
-    }
   }
 
   lines.push('');
@@ -847,36 +794,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   }
 
   lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push('    def directory_sync(self) -> AsyncDirectorySyncNamespace:');
-  lines.push('        return AsyncDirectorySyncNamespace(self)');
-  asyncGeneratedProps.add('directory_sync');
-
-  // Add backward-compatible property aliases from API surface.
-  const asyncCompatAliases = buildCompatPropertyAliases(ctx, asyncGeneratedProps);
-  for (const alias of asyncCompatAliases) {
-    lines.push('');
-    if (asyncNotImplemented.has(alias.name)) {
-      lines.push('    @property');
-      lines.push(`    def ${alias.name}(self) -> Any:`);
-      lines.push(`        raise NotImplementedError("${alias.name} is not yet available in the async client")`);
-    } else {
-      lines.push('    @functools.cached_property');
-      lines.push(`    def ${alias.name}(self) -> Any:`);
-      if (alias.target) {
-        lines.push(`        return self.${alias.target}`);
-      } else if (alias.legacy) {
-        lines.push(`        from .${alias.legacy.asyncModule} import ${alias.legacy.asyncClass}`);
-        lines.push(`        return ${alias.legacy.asyncClass}(self)`);
-      } else {
-        lines.push(
-          `        raise NotImplementedError("${alias.name} is not available in the generated SDK compatibility layer")`,
-        );
-      }
-    }
-  }
-
-  lines.push('');
   lines.push('    @overload');
   lines.push('    async def request(');
   lines.push('        self,');
@@ -992,12 +909,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            )');
   lines.push('');
   lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
-  lines.push('');
-  lines.push('');
-  lines.push('# Backward-compatible aliases');
-  lines.push('WorkOS = WorkOSClient');
-  lines.push('AsyncWorkOS = AsyncWorkOSClient');
-
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
@@ -1082,111 +993,6 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}    )`);
 }
 
-function emitUserManagementCompatMethods(lines: string[], asyncMode: boolean): void {
-  const maybeAsync = asyncMode ? 'async ' : '';
-  const maybeAwait = asyncMode ? 'await ' : '';
-  const sessionClass = asyncMode ? 'AsyncSession' : 'Session';
-
-  lines.push('');
-  lines.push(`    def load_sealed_session(self, *, sealed_session: str, cookie_password: str) -> ${sessionClass}:`);
-  lines.push(`        return ${sessionClass}(`);
-  lines.push('            client=self._client,');
-  lines.push('            session_data=sealed_session,');
-  lines.push('            cookie_password=cookie_password,');
-  lines.push('        )');
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_user(self, user_id: str):`);
-  lines.push(`        return ${maybeAwait}self.users.get_user(user_id)`);
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_user_by_external_id(self, external_id: str):`);
-  lines.push(`        return ${maybeAwait}self.users.get_by_external_id(external_id)`);
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def list_users(self, *, email: Optional[str] = None, organization_id: Optional[str] = None, limit: Optional[int] = None, before: Optional[str] = None, after: Optional[str] = None, order: Optional[UserManagementUsersOrder] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self.users.list_users(email=email, organization_id=organization_id, limit=limit, before=before, after=after, order=order)`,
-  );
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def create_user(self, *, email: str, password: Optional[str] = None, password_hash: Optional[str] = None, password_hash_type: Optional[CreateUserDtoPasswordHashType] = None, first_name: Optional[str] = None, last_name: Optional[str] = None, email_verified: Optional[bool] = None, external_id: Optional[str] = None, metadata: Optional[Dict[str, str]] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self.users.create(email=email, password=password, password_hash=password_hash, password_hash_type=password_hash_type, first_name=first_name, last_name=last_name, email_verified=email_verified, external_id=external_id, metadata=metadata)`,
-  );
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def update_user(self, *, user_id: str, email: Optional[str] = None, first_name: Optional[str] = None, last_name: Optional[str] = None, email_verified: Optional[bool] = None, password: Optional[str] = None, password_hash: Optional[str] = None, password_hash_type: Optional[UpdateUserDtoPasswordHashType] = None, external_id: Optional[str] = None, metadata: Optional[Dict[str, str]] = None, locale: Optional[str] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self.users.update(user_id, email=email, first_name=first_name, last_name=last_name, email_verified=email_verified, password=password, password_hash=password_hash, password_hash_type=password_hash_type, external_id=external_id, metadata=metadata, locale=locale)`,
-  );
-  lines.push('');
-  lines.push(`    ${maybeAsync}def delete_user(self, user_id: str) -> None:`);
-  lines.push(`        ${maybeAwait}self.users.delete(user_id)`);
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def get_authorization_url(self, *, redirect_uri: str, domain_hint: Optional[str] = None, login_hint: Optional[str] = None, state: Optional[str] = None, provider: Optional[UserManagementAuthenticationProvider] = None, connection_id: Optional[str] = None, organization_id: Optional[str] = None, code_challenge: Optional[str] = None, code_challenge_method: Optional[Literal["S256"]] = None, provider_query_params: Optional[Dict[str, str]] = None, provider_scopes: Optional[List[str]] = None, invitation_token: Optional[str] = None, screen_hint: Optional[UserManagementAuthenticationScreenHint] = None, prompt: Optional[str] = None) -> str:`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self.authentication.authorize(redirect_uri=redirect_uri, client_id=self._client.client_id or "", response_type="code", domain_hint=domain_hint, login_hint=login_hint, state=state, provider=provider, connection_id=connection_id, organization_id=organization_id, code_challenge=code_challenge, code_challenge_method=code_challenge_method, provider_query_params=provider_query_params, provider_scopes=provider_scopes, invitation_token=invitation_token, screen_hint=screen_hint, prompt=prompt)`,
-  );
-  lines.push('');
-  lines.push('    def get_jwks_url(self) -> str:');
-  lines.push('        return self._client.build_url(f"sso/jwks/{self._client.client_id}")');
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_logout_url(self, session_id: str, return_to: Optional[str] = None) -> str:`);
-  lines.push(`        return ${maybeAwait}self.authentication.logout(session_id=session_id, return_to=return_to)`);
-}
-
-function emitDirectorySyncCompatClass(lines: string[], asyncMode: boolean): void {
-  const className = asyncMode ? 'AsyncDirectorySyncNamespace' : 'DirectorySyncNamespace';
-  const clientClass = asyncMode ? 'AsyncWorkOSClient' : 'WorkOSClient';
-  const maybeAsync = asyncMode ? 'async ' : '';
-  const maybeAwait = asyncMode ? 'await ' : '';
-
-  lines.push('');
-  lines.push('');
-  lines.push(`class ${className}(object):`);
-  lines.push(`    """Directory Sync compatibility resources${asyncMode ? ' (async)' : ''}."""`);
-  lines.push('');
-  lines.push(`    def __init__(self, client: "${clientClass}") -> None:`);
-  lines.push('        self._client = client');
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def list_users(self, *, directory_id: Optional[str] = None, group_id: Optional[str] = None, limit: Optional[int] = None, before: Optional[str] = None, after: Optional[str] = None, order: Optional[DirectoryUsersOrder] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self._client.directory_users.list(directory=directory_id, group=group_id, limit=limit, before=before, after=after, order=order)`,
-  );
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def list_groups(self, *, directory_id: Optional[str] = None, user_id: Optional[str] = None, limit: Optional[int] = None, before: Optional[str] = None, after: Optional[str] = None, order: Optional[DirectoryGroupsOrder] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self._client.directory_groups.list(directory=directory_id, user=user_id, limit=limit, before=before, after=after, order=order)`,
-  );
-  lines.push('');
-  lines.push(
-    `    ${maybeAsync}def list_directories(self, *, search: Optional[str] = None, limit: Optional[int] = None, before: Optional[str] = None, after: Optional[str] = None, organization_id: Optional[str] = None, order: Optional[DirectoriesOrder] = None, domain: Optional[str] = None):`,
-  );
-  lines.push(
-    `        return ${maybeAwait}self._client.directories.list(search=search, limit=limit, before=before, after=after, organization_id=organization_id, order=order, domain=domain)`,
-  );
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_user(self, user_id: str):`);
-  lines.push(`        return ${maybeAwait}self._client.directory_users.get(user_id)`);
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_group(self, group_id: str):`);
-  lines.push(`        return ${maybeAwait}self._client.directory_groups.get(group_id)`);
-  lines.push('');
-  lines.push(`    ${maybeAsync}def get_directory(self, directory_id: str):`);
-  lines.push(`        return ${maybeAwait}self._client.directories.get(directory_id)`);
-  lines.push('');
-  lines.push(`    ${maybeAsync}def delete_directory(self, directory_id: str) -> None:`);
-  lines.push(`        ${maybeAwait}self._client.directories.delete(directory_id)`);
-}
-
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const grouping = groupServicesByNamespace(spec.services, ctx);
@@ -1269,18 +1075,12 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('    WorkOSConnectionException,');
   lines.push('    WorkOSTimeoutException,');
   lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage, WorkOSListResource');
+  lines.push('from ._pagination import AsyncPage, SyncPage');
   lines.push('from ._types import RequestOptions');
-  lines.push('');
-  lines.push('# Backward-compatible aliases');
-  lines.push('WorkOS = WorkOSClient');
-  lines.push('AsyncWorkOS = AsyncWorkOSClient');
   lines.push('');
   lines.push('__all__ = [');
   lines.push('    "WorkOSClient",');
   lines.push('    "AsyncWorkOSClient",');
-  lines.push('    "WorkOS",');
-  lines.push('    "AsyncWorkOS",');
   lines.push('    "RequestOptions",');
   lines.push('    "BaseRequestException",');
   lines.push('    "AuthenticationException",');
@@ -1296,7 +1096,6 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('    "WorkOSTimeoutException",');
   lines.push('    "AsyncPage",');
   lines.push('    "SyncPage",');
-  lines.push('    "WorkOSListResource",');
   lines.push(']');
 
   return [
@@ -1307,212 +1106,6 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
       overwriteExisting: true,
     },
   ];
-}
-
-function generateCompatShimModules(ctx: EmitterContext): GeneratedFile[] {
-  return [
-    {
-      path: `src/${ctx.namespace}/client.py`,
-      content: [
-        'from ._client import WorkOSClient, WorkOS',
-        '',
-        'SyncClient = WorkOSClient',
-        'Client = WorkOSClient',
-        '',
-        '__all__ = ["SyncClient", "Client", "WorkOSClient", "WorkOS"]',
-      ].join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    },
-    {
-      path: `src/${ctx.namespace}/async_client.py`,
-      content: [
-        'from ._client import AsyncWorkOSClient, AsyncWorkOS',
-        '',
-        'AsyncClient = AsyncWorkOSClient',
-        '',
-        '__all__ = ["AsyncClient", "AsyncWorkOSClient", "AsyncWorkOS"]',
-      ].join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    },
-    {
-      path: `src/${ctx.namespace}/exceptions.py`,
-      content: 'from ._errors import *  # noqa: F401,F403',
-      integrateTarget: true,
-      overwriteExisting: true,
-    },
-  ];
-}
-
-/**
- * Generate backward-compatible workos/types/{service}/ re-export barrels.
- * In v5.x, models lived under workos.types.{module_name}. In v6.x they moved
- * to workos.{service}.models. These barrels let old import paths keep working.
- */
-function generateTypesCompatBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-  const files: GeneratedFile[] = [];
-  const grouping = groupServicesByNamespace(spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
-  const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-
-  // Known mappings from old types/ directory names to current service property names.
-  // These match the client property alias mappings.
-  const oldToNewProp: Record<string, string> = {
-    directory_sync: 'directories',
-    fga: 'authorization',
-    mfa: 'multi_factor_auth',
-    portal: 'admin_portal',
-    connect: 'workos_connect',
-  };
-
-  // Collect all service dirs by their property name
-  const propToDir = new Map<string, string>();
-  for (const entry of grouping.standalone) {
-    propToDir.set(entry.prop, serviceDirMap.get(entry.service.name) ?? entry.prop);
-  }
-  for (const ns of grouping.namespaces) {
-    if (ns.baseEntry) {
-      propToDir.set(servicePropertyName(ns.baseEntry.resolvedName), ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      const fullProp = `${ns.prefix}_${entry.subProp}`;
-      propToDir.set(fullProp, serviceDirMap.get(entry.service.name) ?? `${ns.prefix}/${entry.subProp}`);
-    }
-  }
-
-  const namespaceToDirs = new Map<string, Set<string>>();
-  for (const ns of grouping.namespaces) {
-    const dirs = new Set<string>();
-    if (ns.baseEntry) {
-      dirs.add(serviceDirMap.get(ns.baseEntry.service.name) ?? ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      dirs.add(serviceDirMap.get(entry.service.name) ?? `${ns.prefix}/${entry.subProp}`);
-    }
-    namespaceToDirs.set(ns.prefix, dirs);
-  }
-
-  // Generate types/{prop}/__init__.py for each service that has models
-  const emittedTypeDirs = new Set<string>();
-  for (const [prop, dir] of propToDir) {
-    if (emittedTypeDirs.has(prop)) continue;
-    emittedTypeDirs.add(prop);
-    const dotModule = dirToModule(dir);
-    files.push({
-      path: `src/${ctx.namespace}/types/${prop}/__init__.py`,
-      content: `from ${ctx.namespace}.${dotModule}.models import *  # noqa: F401,F403`,
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
-  }
-
-  // Generate aliases for old names (e.g., types/directory_sync/ → types/directories/)
-  for (const [oldName, newProp] of Object.entries(oldToNewProp)) {
-    if (emittedTypeDirs.has(oldName)) continue;
-    const dir = propToDir.get(newProp);
-    if (!dir) continue;
-    emittedTypeDirs.add(oldName);
-    const dotModule = dirToModule(dir);
-    files.push({
-      path: `src/${ctx.namespace}/types/${oldName}/__init__.py`,
-      content: `from ${ctx.namespace}.${dotModule}.models import *  # noqa: F401,F403`,
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
-  }
-
-  for (const [nsPrefix, dirs] of namespaceToDirs) {
-    files.push({
-      path: `src/${ctx.namespace}/types/${nsPrefix}/__init__.py`,
-      content: [...dirs]
-        .sort()
-        .map((dir) => `from ${ctx.namespace}.${dirToModule(dir)}.models import *  # noqa: F401,F403`)
-        .join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
-
-    for (const model of ctx.spec.models) {
-      if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
-      const service = modelToServiceMap.get(model.name);
-      if (!service) continue;
-      const dir = serviceDirMap.get(service) ?? 'common';
-      if (!dirs.has(dir)) continue;
-      files.push({
-        path: `src/${ctx.namespace}/types/${nsPrefix}/${fileName(model.name)}.py`,
-        content: `from ${ctx.namespace}.${dirToModule(dir)}.models import ${className(model.name)} as ${className(model.name)}`,
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
-    }
-  }
-
-  // Generate root types/__init__.py
-  files.push({
-    path: `src/${ctx.namespace}/types/__init__.py`,
-    content: '',
-    integrateTarget: true,
-    skipIfExists: true,
-  });
-
-  return files;
-}
-
-/**
- * Build backward-compatible property aliases from the API surface.
- * Maps old client property names to their closest matching generated property.
- */
-function buildCompatPropertyAliases(
-  ctx: EmitterContext,
-  generatedProps: Set<string>,
-): {
-  name: string;
-  target: string | null;
-  legacy?: { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string };
-}[] {
-  const aliases: {
-    name: string;
-    target: string | null;
-    legacy?: { syncModule: string; syncClass: string; asyncModule: string; asyncClass: string };
-  }[] = [];
-
-  // Read the old client property names from the API surface
-  const surfaceClasses = ctx.apiSurface?.classes ?? {};
-  const clientProps = new Set<string>();
-  for (const clsName of ['SyncClient', 'AsyncClient', 'Client']) {
-    const cls = surfaceClasses[clsName];
-    if (cls?.methods) {
-      for (const methodName of Object.keys(cls.methods)) {
-        clientProps.add(methodName);
-      }
-    }
-  }
-
-  // Known mappings from old property names to generated property names
-  const knownMappings: Record<string, string> = {
-    directory_sync: 'directories',
-    fga: 'authorization',
-    mfa: 'multi_factor_auth',
-    portal: 'admin_portal',
-    connect: 'workos_connect',
-  };
-
-  for (const oldProp of clientProps) {
-    if (generatedProps.has(oldProp)) continue; // Already exists
-    const target = knownMappings[oldProp];
-    if (target && generatedProps.has(target)) {
-      aliases.push({ name: oldProp, target });
-    } else if (LEGACY_COMPAT_ACCESSORS[oldProp]) {
-      aliases.push({ name: oldProp, target: null, legacy: LEGACY_COMPAT_ACCESSORS[oldProp] });
-    } else {
-      // For properties without a direct mapping or a known legacy shim,
-      // generate a stub property that fails loudly when accessed.
-      aliases.push({ name: oldProp, target: null });
-    }
-  }
-
-  return aliases;
 }
 
 function generatePyProjectToml(ctx: EmitterContext): GeneratedFile[] {

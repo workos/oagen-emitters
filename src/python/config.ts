@@ -126,11 +126,7 @@ class AsyncPage(Generic[T]):
     async def __aiter__(self) -> AsyncIterator[T]:
         """Iterate through all items across all pages."""
         async for item in self.auto_paging_iter():
-            yield item
-
-
-# Backward-compatible alias (v5.x naming)
-WorkOSListResource = SyncPage`,
+            yield item`,
     integrateTarget: true,
     overwriteExisting: true,
   });
