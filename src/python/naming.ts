@@ -50,9 +50,22 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
   'Callable',
 ]);
 
+/** Suffixes stripped from spec model names before generating Python names. */
+const STRIPPED_SUFFIXES = ['Dto', 'DTO'];
+
+/** Strip internal suffixes (e.g., "Dto") from a spec name before casing. */
+function stripSuffixes(name: string): string {
+  for (const suffix of STRIPPED_SUFFIXES) {
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      return name.slice(0, -suffix.length);
+    }
+  }
+  return name;
+}
+
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(name);
+  let result = toPascalCase(stripSuffixes(name));
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -64,7 +77,7 @@ export function className(name: string): string {
 
 /** snake_case file name (without extension). */
 export function fileName(name: string): string {
-  return toSnakeCase(name);
+  return toSnakeCase(stripSuffixes(name));
 }
 
 /** snake_case method name. */

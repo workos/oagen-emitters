@@ -398,7 +398,13 @@ describe('generateModels', () => {
     const files = generateModels(models, { ...ctx, spec: { ...emptySpec, services: [service], models } });
     const responseFile = files.find((f) => f.path.includes('data_integration_access_token_response.py'))!;
     expect(responseFile.content).toContain('@dataclass(slots=True)');
-    expect(responseFile.content).not.toContain('= CreateApplicationSecretDto');
+    expect(responseFile.content).not.toContain('= CreateApplicationSecret');
+    // Dto suffix should be stripped from file and class names
+    const dtoFile = files.find((f) => f.path.includes('create_application_secret.py'));
+    expect(dtoFile).toBeDefined();
+    expect(dtoFile!.content).toContain('class CreateApplicationSecret:');
+    expect(dtoFile!.content).not.toContain('Dto');
+    expect(files.every((f) => !f.path.includes('_dto.'))).toBe(true);
   });
 
   it('treats deprecated or baseline-optional fields as optional', () => {
