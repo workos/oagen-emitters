@@ -908,6 +908,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            )');
   lines.push('');
   lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
+  lines.push('');
+  lines.push('');
+  lines.push('# Backward-compatible aliases');
+  lines.push('WorkOS = WorkOSClient');
+  lines.push('AsyncWorkOS = AsyncWorkOSClient');
 
   return [
     {

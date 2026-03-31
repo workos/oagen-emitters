@@ -129,6 +129,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
       if (allStrings) {
         lines.push('from enum import Enum');
+        lines.push('from typing import Optional');
         lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         lines.push('');
@@ -179,7 +180,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (allStrings) {
         lines.push('');
         lines.push('    @classmethod');
-        lines.push(`    def _missing_(cls, value: object) -> "${enumDef.name}" | None:`);
+        lines.push(`    def _missing_(cls, value: object) -> Optional["${enumDef.name}"]:`);
         lines.push('        if not isinstance(value, str):');
         lines.push('            return None');
         lines.push('        unknown = str.__new__(cls, value)');

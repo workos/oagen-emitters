@@ -367,7 +367,10 @@ function emitMethodBody(
     if (redirectParamEntries.length > 0) {
       lines.push('        params = {k: v for k, v in {');
       for (const entry of redirectParamEntries) {
-        lines.push(`            "${entry.key}": ${entry.varName},`);
+        const param = op.queryParams.find((p) => p.name === entry.key);
+        const value =
+          param && param.type.kind === 'enum' ? `${entry.varName}.value if ${entry.varName} else None` : entry.varName;
+        lines.push(`            "${entry.key}": ${value},`);
       }
       lines.push('        }.items() if v is not None}');
       lines.push(`        return self._client.build_url(${pathStr}, params)`);
@@ -378,14 +381,18 @@ function emitMethodBody(
     const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
     const itemTypeClass = className(resolvedItemName);
     // Build query params dict
+    const orderParam = op.queryParams.find((p) => p.name === 'order');
+    const orderValue = orderParam && orderParam.type.kind === 'enum' ? 'order.value if order else None' : 'order';
     lines.push('        params = {k: v for k, v in {');
     lines.push('            "limit": limit,');
     lines.push('            "before": before,');
     lines.push('            "after": after,');
-    lines.push('            "order": order,');
+    lines.push(`            "order": ${orderValue},`);
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-      lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+      const pn = fieldName(param.name);
+      const value = param.type.kind === 'enum' ? `${pn}.value if ${pn} else None` : pn;
+      lines.push(`            "${param.name}": ${value},`);
     }
     lines.push('        }.items() if v is not None}');
     lines.push(`        return ${awaitPrefix}self._client.request_page(`);
@@ -515,13 +522,17 @@ function emitMethodBody(
       if (hasOptionalQueryParams) {
         lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
         for (const param of op.queryParams) {
-          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+          const pn = fieldName(param.name);
+          const value = param.type.kind === 'enum' ? `${pn}.value if ${pn} else None` : pn;
+          lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }.items() if v is not None}');
       } else {
         lines.push('        params: Dict[str, Any] = {');
         for (const param of op.queryParams) {
-          lines.push(`            "${param.name}": ${fieldName(param.name)},`);
+          const pn = fieldName(param.name);
+          const value = param.type.kind === 'enum' ? `${pn}.value` : pn;
+          lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }');
       }
@@ -581,7 +592,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
-    lines.push(`    from ${importPrefix}_client import AsyncWorkOS, WorkOS`);
+    lines.push(`    from ${importPrefix}_client import AsyncWorkOSClient, WorkOSClient`);
     lines.push('');
 
     // Collect all model and enum imports needed
@@ -745,7 +756,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`    """${readable} API resources."""`);
     }
     lines.push('');
-    lines.push('    def __init__(self, client: "WorkOS") -> None:');
+    lines.push('    def __init__(self, client: "WorkOSClient") -> None:');
     lines.push('        self._client = client');
 
     const emittedMethods = new Set<string>();
@@ -799,7 +810,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`    """${readable} API resources (async)."""`);
     }
     lines.push('');
-    lines.push('    def __init__(self, client: "AsyncWorkOS") -> None:');
+    lines.push('    def __init__(self, client: "AsyncWorkOSClient") -> None:');
     lines.push('        self._client = client');
 
     const asyncEmittedMethods = new Set<string>();
