@@ -38,8 +38,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 function generateTestHelper(ctx: EmitterContext): GeneratedFile {
   return {
     path: 'tests/TestHelper.php',
-    content: `<?php
-
+    content: `
 namespace Tests\\${ctx.namespacePascal};
 
 use GuzzleHttp\\Handler\\MockHandler;
@@ -85,7 +84,6 @@ function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterConte
   const propName = servicePropertyName(resourceName);
   const lines: string[] = [];
 
-  lines.push('<?php');
   lines.push('');
   lines.push(`namespace Tests\\${ctx.namespacePascal}\\Resources;`);
   lines.push('');
@@ -147,7 +145,7 @@ function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterConte
 
       const callArgs = buildTestCallArgs(op, plan, ctx);
       lines.push(`        $result = $client->${propName}()->${method}(${callArgs});`);
-      lines.push(`        $this->assertInstanceOf(\\${ctx.namespacePascal}\\Models\\${modelName}::class, $result);`);
+      lines.push(`        $this->assertInstanceOf(\\${ctx.namespacePascal}\\Resource\\${modelName}::class, $result);`);
     } else {
       // Generic response
       lines.push('        $client = $this->createMockClient([');
@@ -176,13 +174,12 @@ function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterConte
 function generateClientTest(ctx: EmitterContext): GeneratedFile {
   return {
     path: 'tests/ClientTest.php',
-    content: `<?php
-
+    content: `
 namespace Tests\\${ctx.namespacePascal};
 
 use PHPUnit\\Framework\\TestCase;
 use ${ctx.namespacePascal}\\${ctx.namespacePascal};
-use ${ctx.namespacePascal}\\Exceptions\\ConfigurationException;
+use ${ctx.namespacePascal}\\Exception\\ConfigurationException;
 
 class ClientTest extends TestCase
 {

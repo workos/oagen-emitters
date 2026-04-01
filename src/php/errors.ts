@@ -9,25 +9,39 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
 
   // Base ApiException
   files.push({
-    path: 'lib/Exceptions/ApiException.php',
-    content: `<?php
-
-namespace ${ns}\\Exceptions;
+    path: 'lib/Exception/ApiException.php',
+    content: `
+namespace ${ns}\\Exception;
 
 class ApiException extends \\Exception
 {
+    public readonly ?int $statusCode;
+    public readonly ?string $requestId;
+    public readonly ?string $apiErrorCode;
+    public readonly ?string $error;
+    public readonly ?string $errorDescription;
+    public readonly ?array $errors;
+    public readonly ?string $rawBody;
+
     public function __construct(
         string $message = '',
-        public readonly ?int $statusCode = null,
-        public readonly ?string $requestId = null,
-        public readonly ?string $code = null,
-        public readonly ?string $error = null,
-        public readonly ?string $errorDescription = null,
-        public readonly ?array $errors = null,
-        public readonly ?string $rawBody = null,
+        ?int $statusCode = null,
+        ?string $requestId = null,
+        ?string $apiErrorCode = null,
+        ?string $error = null,
+        ?string $errorDescription = null,
+        ?array $errors = null,
+        ?string $rawBody = null,
         ?\\Throwable $previous = null,
     ) {
         parent::__construct($message, $statusCode ?? 0, $previous);
+        $this->statusCode = $statusCode;
+        $this->requestId = $requestId;
+        $this->apiErrorCode = $apiErrorCode;
+        $this->error = $error;
+        $this->errorDescription = $errorDescription;
+        $this->errors = $errors;
+        $this->rawBody = $rawBody;
     }
 
     public static function fromResponse(int $statusCode, array $body, ?string $requestId = null): static
@@ -37,7 +51,7 @@ class ApiException extends \\Exception
             message: $message,
             statusCode: $statusCode,
             requestId: $requestId,
-            code: $body['code'] ?? null,
+            apiErrorCode: $body['code'] ?? null,
             error: $body['error'] ?? null,
             errorDescription: $body['error_description'] ?? null,
             errors: $body['errors'] ?? null,
@@ -71,7 +85,7 @@ class ApiException extends \\Exception
         string $message = '',
         ?int $statusCode = ${ex.status},
         ?string $requestId = null,
-        ?string $code = null,
+        ?string $apiErrorCode = null,
         ?string $error = null,
         ?string $errorDescription = null,
         ?array $errors = null,
@@ -79,16 +93,15 @@ class ApiException extends \\Exception
         ?float $retryAfter = null,
         ?\\Throwable $previous = null,
     ) {
-        parent::__construct($message, $statusCode, $requestId, $code, $error, $errorDescription, $errors, $rawBody, $previous);
+        parent::__construct($message, $statusCode, $requestId, $apiErrorCode, $error, $errorDescription, $errors, $rawBody, $previous);
         $this->retryAfter = $retryAfter;
     }`
         : '';
 
     files.push({
-      path: `lib/Exceptions/${ex.name}.php`,
-      content: `<?php
-
-namespace ${ns}\\Exceptions;
+      path: `lib/Exception/${ex.name}.php`,
+      content: `
+namespace ${ns}\\Exception;
 
 /**
  * ${ex.doc}.
@@ -103,10 +116,9 @@ class ${ex.name} extends ApiException
 
   // Non-HTTP exceptions
   files.push({
-    path: 'lib/Exceptions/ConfigurationException.php',
-    content: `<?php
-
-namespace ${ns}\\Exceptions;
+    path: 'lib/Exception/ConfigurationException.php',
+    content: `
+namespace ${ns}\\Exception;
 
 /**
  * Missing or invalid configuration.
@@ -119,10 +131,9 @@ class ConfigurationException extends \\RuntimeException
   });
 
   files.push({
-    path: 'lib/Exceptions/ConnectionException.php',
-    content: `<?php
-
-namespace ${ns}\\Exceptions;
+    path: 'lib/Exception/ConnectionException.php',
+    content: `
+namespace ${ns}\\Exception;
 
 /**
  * Raised when the SDK cannot connect to the API.
@@ -135,15 +146,68 @@ class ConnectionException extends \\RuntimeException
   });
 
   files.push({
-    path: 'lib/Exceptions/TimeoutException.php',
-    content: `<?php
-
-namespace ${ns}\\Exceptions;
+    path: 'lib/Exception/TimeoutException.php',
+    content: `
+namespace ${ns}\\Exception;
 
 /**
  * Raised when the API request times out.
  */
 class TimeoutException extends \\RuntimeException
+{
+}`,
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
+  // Baseline compat: WorkOSException interface
+  files.push({
+    path: 'lib/Exception/WorkOSException.php',
+    content: `
+namespace ${ns}\\Exception;
+
+use Throwable;
+
+interface WorkOSException extends Throwable
+{
+}`,
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
+  // Baseline compat: BaseRequestException
+  files.push({
+    path: 'lib/Exception/BaseRequestException.php',
+    content: `
+namespace ${ns}\\Exception;
+
+class BaseRequestException extends ApiException implements WorkOSException
+{
+}`,
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
+  // Baseline compat: GenericException
+  files.push({
+    path: 'lib/Exception/GenericException.php',
+    content: `
+namespace ${ns}\\Exception;
+
+class GenericException extends ApiException implements WorkOSException
+{
+}`,
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
+  // Baseline compat: UnexpectedValueException
+  files.push({
+    path: 'lib/Exception/UnexpectedValueException.php',
+    content: `
+namespace ${ns}\\Exception;
+
+class UnexpectedValueException extends \\UnexpectedValueException implements WorkOSException
 {
 }`,
     integrateTarget: true,

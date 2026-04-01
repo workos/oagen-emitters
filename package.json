@@ -44,7 +44,7 @@
     "sdk:generate:node": "oagen generate --lang node --output ./sdk-node --namespace workos --api-surface ./sdk-node-surface.json",
     "sdk:verify:node": "oagen verify --lang node --output ./sdk-node --api-surface ./sdk-node-surface.json",
     "sdk:extract:node": "oagen extract --lang node --sdk-path ../backend/workos-node --output ./sdk-node-surface.json",
-    "sdk:generate:php": "oagen generate --lang php --output ./sdk-php --namespace workos --api-surface ./sdk-php-surface.json",
+    "sdk:generate:php": "oagen generate --lang php --output ./sdk-php --namespace WorkOS --api-surface ./sdk-php-surface.json",
     "sdk:verify:php": "oagen verify --lang php --output ./sdk-php --api-surface ./sdk-php-surface.json",
     "sdk:extract:php": "oagen extract --lang php --sdk-path ../backend/workos-php --output ./sdk-php-surface.json",
     "sdk:generate:python": "oagen generate --lang python --output ./sdk-python --namespace workos --api-surface ./sdk-python-surface.json",

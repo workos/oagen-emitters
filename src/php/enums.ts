@@ -18,9 +18,8 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const backingType = allInts ? 'int' : 'string';
 
     const lines: string[] = [];
-    lines.push('<?php');
     lines.push('');
-    lines.push(`namespace ${ctx.namespacePascal}\\Enums;`);
+    lines.push(`namespace ${ctx.namespacePascal}\\Resource;`);
     lines.push('');
 
     lines.push(`enum ${phpClassName}: ${backingType}`);
@@ -29,7 +28,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // Generate cases
     const usedCaseNames = new Set<string>();
     for (const v of e.values) {
-      let caseName = toPascalCaseEnumCase(String(v.name));
+      let caseName = toEnumCaseName(String(v.name), v.value);
       // Deduplicate case names
       if (usedCaseNames.has(caseName)) {
         let suffix = 2;
@@ -48,7 +47,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('}');
 
     files.push({
-      path: `lib/Enums/${phpFileName}.php`,
+      path: `lib/Resource/${phpFileName}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,
@@ -94,9 +93,19 @@ function collectEnumRefsFromOp(op: any): string[] {
 }
 
 /**
- * Convert UPPER_SNAKE_CASE enum value name to PascalCase for PHP enum cases.
+ * Convert an enum value to a valid PHP enum case name.
+ * Uses the backing value as the case name when it's a valid PHP identifier,
+ * preserving the original casing from the API spec (e.g., 'AppleOAuth' stays as-is).
+ * Falls back to PascalCase conversion for non-identifier values.
  */
-function toPascalCaseEnumCase(name: string): string {
+function toEnumCaseName(name: string, value: string | number): string {
+  const strValue = String(value);
+  // If the value itself is a valid PHP identifier starting with uppercase, use it directly
+  if (/^[A-Z][a-zA-Z0-9]*$/.test(strValue)) {
+    return strValue;
+  }
+  // Otherwise, convert from the name (which may be UPPER_SNAKE_CASE)
+  if (!name) return name;
   return name
     .split(/[_\s-]+/)
     .filter(Boolean)

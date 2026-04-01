@@ -14,6 +14,8 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateHttpClient(ctx));
   files.push(...generateRequestOptions(ctx));
   files.push(...generatePaginatedResponse(ctx));
+  // Version.php is hand-maintained in the target repo (release-please)
+  // files.push(...generateVersion(ctx));
 
   return files;
 }
@@ -56,7 +58,6 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   groupServicesByNamespace(spec.services, ctx); // validates service grouping
   const lines: string[] = [];
 
-  lines.push('<?php');
   lines.push('');
   lines.push(`namespace ${ctx.namespacePascal};`);
   lines.push('');
@@ -93,7 +94,7 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push("        $apiKey ??= getenv('WORKOS_API_KEY') ?: '';");
   lines.push('        if (empty($apiKey)) {');
   lines.push(
-    "            throw new Exceptions\\ConfigurationException('API key is required. Set WORKOS_API_KEY or pass apiKey.');",
+    "            throw new Exception\\ConfigurationException('API key is required. Set WORKOS_API_KEY or pass apiKey.');",
   );
   lines.push('        }');
   lines.push('        $this->httpClient = new HttpClient($apiKey, $baseUrl, $timeout, $maxRetries, $handler);');
@@ -128,8 +129,7 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
 function generateHttpClient(ctx: EmitterContext): GeneratedFile[] {
   const ns = ctx.namespacePascal;
 
-  const content = `<?php
-
+  const content = `
 namespace ${ns};
 
 use GuzzleHttp\\Client;
@@ -137,17 +137,17 @@ use GuzzleHttp\\Exception\\ConnectException;
 use GuzzleHttp\\Exception\\RequestException;
 use GuzzleHttp\\HandlerStack;
 use Psr\\Http\\Message\\ResponseInterface;
-use ${ns}\\Exceptions\\ApiException;
-use ${ns}\\Exceptions\\AuthenticationException;
-use ${ns}\\Exceptions\\BadRequestException;
-use ${ns}\\Exceptions\\AuthorizationException;
-use ${ns}\\Exceptions\\ConflictException;
-use ${ns}\\Exceptions\\ConnectionException;
-use ${ns}\\Exceptions\\NotFoundException;
-use ${ns}\\Exceptions\\RateLimitExceededException;
-use ${ns}\\Exceptions\\ServerException;
-use ${ns}\\Exceptions\\TimeoutException;
-use ${ns}\\Exceptions\\UnprocessableEntityException;
+use ${ns}\\Exception\\ApiException;
+use ${ns}\\Exception\\AuthenticationException;
+use ${ns}\\Exception\\BadRequestException;
+use ${ns}\\Exception\\AuthorizationException;
+use ${ns}\\Exception\\ConflictException;
+use ${ns}\\Exception\\ConnectionException;
+use ${ns}\\Exception\\NotFoundException;
+use ${ns}\\Exception\\RateLimitExceededException;
+use ${ns}\\Exception\\ServerException;
+use ${ns}\\Exception\\TimeoutException;
+use ${ns}\\Exception\\UnprocessableEntityException;
 
 class HttpClient
 {
@@ -329,8 +329,7 @@ function generateRequestOptions(ctx: EmitterContext): GeneratedFile[] {
   return [
     {
       path: 'lib/RequestOptions.php',
-      content: `<?php
-
+      content: `
 namespace ${ctx.namespacePascal};
 
 class RequestOptions
@@ -354,8 +353,7 @@ function generatePaginatedResponse(ctx: EmitterContext): GeneratedFile[] {
   return [
     {
       path: 'lib/PaginatedResponse.php',
-      content: `<?php
-
+      content: `
 namespace ${ctx.namespacePascal};
 
 /**
@@ -386,7 +384,7 @@ class PaginatedResponse implements \\IteratorAggregate
     {
         $items = $data['data'] ?? [];
         if ($modelClass !== null && method_exists($modelClass, 'fromArray')) {
-            $items = array_map(fn (array \\$item) => $modelClass::fromArray(\\$item), $items);
+            $items = array_map(fn (array $item) => $modelClass::fromArray($item), $items);
         }
         return new static(
             data: $items,
@@ -435,6 +433,26 @@ class PaginatedResponse implements \\IteratorAggregate
 }`,
       integrateTarget: true,
       overwriteExisting: true,
+    },
+  ];
+}
+
+// oxlint-disable-next-line no-unused-vars -- kept for future use; call site is commented out
+function generateVersion(ctx: EmitterContext): GeneratedFile[] {
+  return [
+    {
+      path: 'lib/Version.php',
+      content: `
+namespace ${ctx.namespacePascal};
+
+class Version
+{
+    public const SDK_IDENTIFIER = "WorkOS PHP";
+    public const SDK_VERSION = "0.0.0";
+}`,
+      headerPlacement: 'skip',
+      integrateTarget: true,
+      skipIfExists: true,
     },
   ];
 }

@@ -30,9 +30,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     const lines: string[] = [];
 
-    lines.push('<?php');
     lines.push('');
-    lines.push(`namespace ${ctx.namespacePascal}\\Models;`);
+    lines.push(`namespace ${ctx.namespacePascal}\\Resource;`);
     lines.push('');
 
     // Collect imports
@@ -61,10 +60,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     for (let i = 0; i < allFields.length; i++) {
       const f = allFields[i];
-      const phpType = mapTypeRef(f.type);
+      let phpType = mapTypeRef(f.type);
       const phpProp = fieldName(f.name);
       const isOptional = !f.required;
       const defaultVal = isOptional ? ' = null' : '';
+
+      // Enum properties use union type to handle unknown server values
+      if (isEnumLikeType(f.type, enumNames)) {
+        phpType = `${phpType}|string`;
+      }
 
       // Use nullable prefix only if the type doesn't already have ? or is not union
       const typeHint =
@@ -93,7 +97,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpProp = fieldName(f.name);
       const wire = f.name; // Preserve original wire name for deserialization
       const comma = i < allFields.length - 1 ? ',' : ',';
-      const deserExpr = generateFromArrayExpression(f.type, `$data['${wire}']`, !f.required, ctx, enumNames);
+      const deserExpr = generateFromArrayExpression(f.type, `$data['${wire}']`, !f.required, enumNames);
       lines.push(`            ${phpProp}: ${deserExpr}${comma}`);
     }
 
@@ -107,14 +111,42 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('     */');
     lines.push('    public function toArray(): array');
     lines.push('    {');
-    lines.push('        return array_filter([');
-    for (const f of allFields) {
-      const phpProp = fieldName(f.name);
-      const wire = f.name;
-      const serExpr = generateToArrayExpression(f.type, `$this->${phpProp}`, enumNames);
-      lines.push(`            '${wire}' => ${serExpr},`);
+
+    // Required fields are always included (even when null); optional fields are filtered
+    const hasOptionalFields = allFields.some((f) => !f.required);
+
+    if (hasOptionalFields) {
+      // Start with required fields (always present)
+      lines.push('        $result = [');
+      for (const f of allFields.filter((f) => f.required)) {
+        const phpProp = fieldName(f.name);
+        const wire = f.name;
+        const serExpr = generateToArrayExpression(f.type, `$this->${phpProp}`, enumNames);
+        lines.push(`            '${wire}' => ${serExpr},`);
+      }
+      lines.push('        ];');
+      lines.push('');
+      // Merge optional fields, omitting null values
+      lines.push('        return $result + array_filter([');
+      for (const f of allFields.filter((f) => !f.required)) {
+        const phpProp = fieldName(f.name);
+        const wire = f.name;
+        const serExpr = generateToArrayExpression(f.type, `$this->${phpProp}`, enumNames);
+        lines.push(`            '${wire}' => ${serExpr},`);
+      }
+      lines.push('        ], fn ($v) => $v !== null);');
+    } else {
+      // All fields are required — no filtering needed
+      lines.push('        return [');
+      for (const f of allFields) {
+        const phpProp = fieldName(f.name);
+        const wire = f.name;
+        const serExpr = generateToArrayExpression(f.type, `$this->${phpProp}`, enumNames);
+        lines.push(`            '${wire}' => ${serExpr},`);
+      }
+      lines.push('        ];');
     }
-    lines.push('        ], fn (\\$v) => \\$v !== null);');
+
     lines.push('    }');
     lines.push('');
 
@@ -130,7 +162,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('}');
 
     files.push({
-      path: `lib/Models/${phpFileName}.php`,
+      path: `lib/Resource/${phpFileName}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,
@@ -157,7 +189,7 @@ function collectModelImports(fields: Field[], ctx: EmitterContext): string[] {
   for (const f of fields) {
     walkTypeRef(f.type, {
       enum: (ref) => {
-        imports.add(`${ctx.namespacePascal}\\Enums\\${className(ref.name)}`);
+        imports.add(`${ctx.namespacePascal}\\Resource\\${className(ref.name)}`);
       },
     });
   }
@@ -168,7 +200,6 @@ function generateFromArrayExpression(
   ref: TypeRef,
   accessor: string,
   optional: boolean,
-  _ctx: EmitterContext,
   enumNames: Set<string>,
 ): string {
   if (optional) {
@@ -176,7 +207,6 @@ function generateFromArrayExpression(
       ref.kind === 'nullable' ? ref.inner : ref,
       accessor,
       false,
-      _ctx,
       enumNames,
     );
     return `isset(${accessor}) ? ${innerExpr} : null`;
@@ -199,16 +229,16 @@ function generateFromArrayExpression(
     case 'array':
       if (ref.items.kind === 'model') {
         if (enumNames.has(ref.items.name)) {
-          return `array_map(fn (\\$item) => ${className(ref.items.name)}::tryFrom(\\$item) ?? \\$item, ${accessor})`;
+          return `array_map(fn ($item) => ${className(ref.items.name)}::tryFrom($item) ?? $item, ${accessor})`;
         }
-        return `array_map(fn (\\$item) => ${className(ref.items.name)}::fromArray(\\$item), ${accessor})`;
+        return `array_map(fn ($item) => ${className(ref.items.name)}::fromArray($item), ${accessor})`;
       }
       if (ref.items.kind === 'enum') {
-        return `array_map(fn (\\$item) => ${className(ref.items.name)}::tryFrom(\\$item) ?? \\$item, ${accessor})`;
+        return `array_map(fn ($item) => ${className(ref.items.name)}::tryFrom($item) ?? $item, ${accessor})`;
       }
       return accessor;
     case 'nullable': {
-      const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, _ctx, enumNames);
+      const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, enumNames);
       return `${accessor} !== null ? ${innerExpr} : null`;
     }
     case 'union':
@@ -238,12 +268,12 @@ function generateToArrayExpression(ref: TypeRef, accessor: string, enumNames: Se
     case 'array':
       if (ref.items.kind === 'model') {
         if (enumNames.has(ref.items.name)) {
-          return `array_map(fn (\\$item) => \\$item instanceof \\BackedEnum ? \\$item->value : \\$item, ${accessor} ?? [])`;
+          return `array_map(fn ($item) => $item instanceof \\BackedEnum ? $item->value : $item, ${accessor} ?? [])`;
         }
-        return `array_map(fn (\\$item) => \\$item->toArray(), ${accessor} ?? [])`;
+        return `array_map(fn ($item) => $item->toArray(), ${accessor} ?? [])`;
       }
       if (ref.items.kind === 'enum') {
-        return `array_map(fn (\\$item) => \\$item instanceof \\BackedEnum ? \\$item->value : \\$item, ${accessor} ?? [])`;
+        return `array_map(fn ($item) => $item instanceof \\BackedEnum ? $item->value : $item, ${accessor} ?? [])`;
       }
       return accessor;
     case 'nullable':
@@ -255,4 +285,12 @@ function generateToArrayExpression(ref: TypeRef, accessor: string, enumNames: Se
     default:
       return accessor;
   }
+}
+
+/** Check if a TypeRef is an enum type (directly or via model-ref to an enum name). */
+function isEnumLikeType(ref: TypeRef, enumNames: Set<string>): boolean {
+  if (ref.kind === 'enum') return true;
+  if (ref.kind === 'model' && enumNames.has(ref.name)) return true;
+  if (ref.kind === 'nullable') return isEnumLikeType(ref.inner, enumNames);
+  return false;
 }

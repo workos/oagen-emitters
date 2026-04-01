@@ -151,15 +151,80 @@ export function resolveMethodName(op: Operation, service: Service, ctx: EmitterC
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) {
-    return normalizeMethodName(toCamelCase(existing.methodName), op);
+    // Overlay names come from the baseline SDK — use them as-is without normalization
+    return toCamelCase(existing.methodName);
   }
   return normalizeMethodName(toCamelCase(op.name), op);
 }
 
 const SPECIAL_METHOD_NAMES: Record<string, string> = {
+  // Portal
   'POST /portal/generate_link': 'generateLink',
+  // Audit logs
+  'GET /audit_logs/actions': 'listActions',
+  'POST /audit_logs/events': 'createEvent',
   'POST /audit_logs/exports': 'createExport',
   'GET /audit_logs/exports/{auditLogExportId}': 'getExport',
+  'POST /audit_logs/actions/{actionName}/schemas': 'createSchema',
+  // Organizations
+  'GET /organizations': 'listOrganizations',
+  'POST /organizations': 'createOrganization',
+  'GET /organizations/{id}': 'getOrganization',
+  'GET /organizations/external_id/{external_id}': 'getOrganizationByExternalId',
+  // SSO
+  'GET /sso/authorize': 'getAuthorizationUrl',
+  'POST /sso/token': 'getProfileAndToken',
+  // User management
+  'GET /user_management/users': 'listUsers',
+  'POST /user_management/users': 'createUser',
+  'GET /user_management/users/{id}': 'getUser',
+  'PUT /user_management/users/{id}': 'updateUser',
+  'DELETE /user_management/users/{id}': 'deleteUser',
+  'GET /user_management/users/external_id/{external_id}': 'getUserByExternalId',
+  'POST /user_management/authenticate': 'authenticateWithCode',
+  'GET /user_management/invitations': 'listInvitations',
+  'POST /user_management/invitations': 'sendInvitation',
+  'GET /user_management/invitations/{id}': 'getInvitation',
+  'GET /user_management/invitations/by_token/{token}': 'findInvitationByToken',
+  'POST /user_management/invitations/{id}/accept': 'acceptInvitation',
+  'POST /user_management/invitations/{id}/resend': 'resendInvitation',
+  'POST /user_management/invitations/{id}/revoke': 'revokeInvitation',
+  'GET /user_management/organization_memberships': 'listOrganizationMemberships',
+  'POST /user_management/organization_memberships': 'createOrganizationMembership',
+  'GET /user_management/organization_memberships/{id}': 'getOrganizationMembership',
+  'PUT /user_management/organization_memberships/{id}': 'updateOrganizationMembership',
+  'DELETE /user_management/organization_memberships/{id}': 'deleteOrganizationMembership',
+  'PUT /user_management/organization_memberships/{id}/deactivate': 'deactivateOrganizationMembership',
+  'PUT /user_management/organization_memberships/{id}/reactivate': 'reactivateOrganizationMembership',
+  'POST /user_management/magic_auth/send_code': 'sendMagicAuthCode',
+  'GET /user_management/magic_auth/{id}': 'getMagicAuth',
+  'POST /user_management/magic_auth': 'createMagicAuth',
+  'GET /user_management/email_verification/{id}': 'getEmailVerification',
+  'POST /user_management/users/{id}/email_verification/send': 'sendVerificationEmail',
+  'POST /user_management/users/{id}/email_verification/confirm': 'verifyEmail',
+  'POST /user_management/password_reset': 'createPasswordReset',
+  'GET /user_management/password_reset/{id}': 'getPasswordReset',
+  'POST /user_management/password_reset/confirm': 'resetPassword',
+  'POST /user_management/users/{id}/password/reset': 'sendPasswordResetEmail',
+  'POST /user_management/users/{id}/auth_factors': 'enrollAuthFactor',
+  'GET /user_management/users/{id}/auth_factors': 'listAuthFactors',
+  'GET /user_management/sessions': 'listSessions',
+  'POST /user_management/sessions/{id}/revoke': 'revokeSession',
+  // Widgets
+  'POST /widgets/token': 'getToken',
+  // Connections (from baseline SSO class)
+  'GET /connections': 'listConnections',
+  'GET /connections/{id}': 'getConnection',
+  'DELETE /connections/{id}': 'deleteConnection',
+  // Directories (from baseline DirectorySync class)
+  'GET /directories': 'listDirectories',
+  'GET /directories/{id}': 'getDirectory',
+  'DELETE /directories/{id}': 'deleteDirectory',
+  'GET /directory_groups': 'listGroups',
+  'GET /directory_groups/{id}': 'getGroup',
+  'GET /directory_users': 'listUsers',
+  'GET /directory_users/{id}': 'getUser',
+  // Authorization / RBAC
   'GET /authorization/organizations/{organizationId}/roles': 'listOrganizationRoles',
   'POST /authorization/organizations/{organizationId}/roles': 'createOrganizationRole',
   'GET /authorization/organizations/{organizationId}/roles/{slug}': 'getOrganizationRole',
@@ -171,6 +236,23 @@ const SPECIAL_METHOD_NAMES: Record<string, string> = {
     'removeOrganizationRolePermission',
   'PUT /authorization/roles/{slug}/permissions': 'setEnvironmentRolePermissions',
   'POST /authorization/roles/{slug}/permissions': 'addEnvironmentRolePermission',
+  'GET /authorization/roles': 'listEnvironmentRoles',
+  'POST /authorization/roles': 'createEnvironmentRole',
+  'GET /authorization/roles/{slug}': 'getEnvironmentRole',
+  'PATCH /authorization/roles/{slug}': 'updateEnvironmentRole',
+  'GET /authorization/permissions': 'listPermissions',
+  'POST /authorization/permissions': 'createPermission',
+  'GET /authorization/permissions/{slug}': 'getPermission',
+  'PUT /authorization/permissions/{slug}': 'updatePermission',
+  'DELETE /authorization/permissions/{slug}': 'deletePermission',
+  // MFA
+  'POST /auth/factors/enroll': 'enrollFactor',
+  'POST /auth/factors/{authenticationFactorId}/challenge': 'challengeFactor',
+  'POST /auth/challenge/{authenticationChallengeId}/verify': 'verifyChallenge',
+  'GET /auth/factors/{authenticationFactorId}': 'getFactor',
+  'DELETE /auth/factors/{authenticationFactorId}': 'deleteFactor',
+  // Organization feature flags
+  'GET /organizations/{organization_id}/feature-flags': 'listOrganizationFeatureFlags',
 };
 
 /** Resolve the SDK class name for a service, checking overlay for existing names. */
@@ -197,61 +279,15 @@ export function resolveTypeName(name: string, ctx: EmitterContext): string {
 
 // ─── Method name normalization ────────────────────────────────────────
 
-function singularize(noun: string): string {
-  if (noun.endsWith('ies')) return noun.slice(0, -3) + 'y';
-  if (noun.endsWith('ses') || noun.endsWith('xes') || noun.endsWith('zes')) return noun.slice(0, -2);
-  if (noun.endsWith('s') && !noun.endsWith('ss')) return noun.slice(0, -1);
-  return noun;
-}
-
-function extractResourceNoun(op: Operation): string | null {
-  const first = op.path.replace(/^\//, '').split('/')[0];
-  if (!first) return null;
-  return singularize(toCamelCase(first));
-}
-
-function normalizeMethodName(name: string, op: Operation): string {
-  const method = op.httpMethod.toLowerCase();
-  const hasIdParam = op.pathParams.some((p) => p.name === 'id' || p.name.endsWith('Id') || p.name.endsWith('_id'));
-
+function normalizeMethodName(name: string, _op: Operation): string {
+  // For PHP backward compatibility, preserve the full method name including
+  // the resource noun (e.g., keep "listOrganizations" instead of stripping to "list").
+  // This ensures the generated SDK matches the naming conventions of the existing SDK.
   if (name === 'find') return 'get';
   if (name.startsWith('find')) {
     const rest = name.slice(4);
     if (rest.length > 0 && rest[0] === rest[0].toUpperCase()) {
       return `get${rest}`;
-    }
-  }
-
-  // For single-resource GET by ID, singularize a plural noun after "get"
-  if (method === 'get' && hasIdParam && name.startsWith('get') && name.length > 3) {
-    const noun = name.slice(3); // remove "get"
-    const lower = noun[0].toLowerCase() + noun.slice(1);
-    const singular = singularize(lower);
-    if (singular !== lower) {
-      return `get${singular[0].toUpperCase()}${singular.slice(1)}`;
-    }
-  }
-
-  // Strip redundant noun suffix that duplicates the resource path segment
-  const resourceNoun = extractResourceNoun(op);
-  if (resourceNoun) {
-    const verbs = ['create', 'update', 'delete', 'get', 'list'];
-    for (const verb of verbs) {
-      const expected = `${verb}${resourceNoun[0].toUpperCase()}${resourceNoun.slice(1)}`;
-      if (name === expected) {
-        return verb;
-      }
-    }
-    // Also check the plural form (e.g., listOrganizations → list)
-    const rawFirstSegment = op.path.replace(/^\//, '').split('/')[0];
-    if (rawFirstSegment) {
-      const pluralNoun = toCamelCase(rawFirstSegment);
-      for (const verb of ['list']) {
-        const expected = `${verb}${pluralNoun[0].toUpperCase()}${pluralNoun.slice(1)}`;
-        if (name === expected) {
-          return verb;
-        }
-      }
     }
   }
 
