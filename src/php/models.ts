@@ -155,13 +155,10 @@ export function isListMetadataModel(model: Model): boolean {
 function collectModelImports(fields: Field[], ctx: EmitterContext): string[] {
   const imports = new Set<string>();
   for (const f of fields) {
-    walkTypeRef(f.type, (ref) => {
-      if (ref.kind === 'primitive' && ref.format === 'date-time') {
-        // DateTimeImmutable is global — no import needed
-      }
-      if (ref.kind === 'enum') {
+    walkTypeRef(f.type, {
+      enum: (ref) => {
         imports.add(`${ctx.namespacePascal}\\Enums\\${className(ref.name)}`);
-      }
+      },
     });
   }
   return [...imports].sort();
@@ -211,7 +208,7 @@ function generateFromArrayExpression(
       }
       return accessor;
     case 'nullable': {
-      const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, ctx, enumNames);
+      const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, _ctx, enumNames);
       return `${accessor} !== null ? ${innerExpr} : null`;
     }
     case 'union':
