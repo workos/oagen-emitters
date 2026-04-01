@@ -184,8 +184,8 @@ function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
 // ---------------------------------------------------------------------------
 
 interface MethodResolution {
-  className: string;
-  method: string;
+  service: string; // camelCase accessor on client (e.g., "organizations")
+  method: string; // camelCase method name (e.g., "get")
   tier: ExchangeProvenance['resolutionTier'];
   confidence: number;
 }
@@ -200,14 +200,12 @@ function resolveMethod(
   if (manifest) {
     const entry = manifest.get(httpKey);
     if (entry) {
-      const className = entry.service.charAt(0).toUpperCase() + entry.service.slice(1);
-      return { className, method: entry.sdkMethod, tier: 'manifest', confidence: 1.0 };
+      return { service: entry.service, method: entry.sdkMethod, tier: 'manifest', confidence: 1.0 };
     }
   }
 
   const sdkProp = SERVICE_PROPERTY_MAP[irService] || toCamelCase(irService);
-  const className = sdkProp.charAt(0).toUpperCase() + sdkProp.slice(1);
-  return { className, method: toCamelCase(op.name), tier: 'exact', confidence: 0.8 };
+  return { service: sdkProp, method: toCamelCase(op.name), tier: 'exact', confidence: 0.8 };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,9 +276,14 @@ function buildBatchedPhpScript(
   }
   lines.push('');
 
-  // Configure SDK
-  lines.push(`${namespace}\\Client::setApiKey('${apiKey}');`);
-  lines.push(`${namespace}\\Client::setBaseUrl('http://127.0.0.1:${proxyPort}');`);
+  // Configure SDK — generated SDK uses instance-based client with Guzzle handler
+  lines.push(`use GuzzleHttp\\HandlerStack;`);
+  lines.push(`use GuzzleHttp\\Handler\\CurlHandler;`);
+  lines.push('');
+  lines.push(`$client = new ${namespace}\\${namespace}(`);
+  lines.push(`    apiKey: '${escapePhpString(apiKey)}',`);
+  lines.push(`    baseUrl: 'http://127.0.0.1:${proxyPort}',`);
+  lines.push(');');
   lines.push('');
 
   for (const call of calls) {
@@ -289,7 +292,8 @@ function buildBatchedPhpScript(
     // Marker: start
     lines.push(`fwrite(STDERR, "OAGEN_CALL_START:${index}\\n");`);
 
-    // Build arguments
+    // Build arguments — generated PHP SDK takes positional path params,
+    // then named keyword args for body fields and query params
     const phpArgs: string[] = [];
 
     for (const p of op.pathParams) {
@@ -299,33 +303,31 @@ function buildBatchedPhpScript(
 
     if (op.requestBody) {
       const payload = generatePayload(op, spec);
-      if (payload && Object.keys(payload).length > 0) {
-        phpArgs.push(phpArrayLiteral(payload));
-      } else {
-        phpArgs.push('[]');
+      if (payload && typeof payload === 'object') {
+        // Pass as named arguments (the generated SDK uses promoted properties)
+        for (const [key, value] of Object.entries(payload)) {
+          phpArgs.push(`${toCamelCase(key)}: ${phpArrayLiteral(value)}`);
+        }
       }
     }
 
     if (!op.requestBody && op.queryParams.some((p) => p.required)) {
       const queryOpts = generateQueryParams(op, spec);
-      if (Object.keys(queryOpts).length > 0) {
-        phpArgs.push(phpArrayLiteral(queryOpts));
+      for (const [key, value] of Object.entries(queryOpts)) {
+        phpArgs.push(`${toCamelCase(key)}: ${phpArrayLiteral(value)}`);
       }
     }
 
-    if (op.pagination && phpArgs.length === 0) {
-      phpArgs.push("['limit' => 1]");
-    } else if (op.pagination && !op.requestBody) {
-      const last = phpArgs[phpArgs.length - 1];
-      if (last && last.startsWith('[')) {
-        phpArgs[phpArgs.length - 1] = last.replace(/\]$/, ", 'limit' => 1]");
-      } else {
-        phpArgs.push("['limit' => 1]");
+    if (op.pagination) {
+      if (!phpArgs.some((a) => a.startsWith('limit:'))) {
+        phpArgs.push('limit: 1');
       }
     }
 
+    // The generated SDK uses $client->resource()->method(...) pattern
+    const serviceAccessor = resolution.service;
     lines.push('try {');
-    lines.push(`    $result = ${namespace}\\${resolution.className}::${resolution.method}(${phpArgs.join(', ')});`);
+    lines.push(`    $result = $client->${serviceAccessor}()->${resolution.method}(${phpArgs.join(', ')});`);
     lines.push(`    fwrite(STDERR, "OAGEN_CALL_OK:${index}\\n");`);
     lines.push('} catch (\\Throwable $e) {');
     lines.push(`    fwrite(STDERR, "OAGEN_CALL_ERROR:${index}:" . $e->getMessage() . "\\n");`);
@@ -669,7 +671,7 @@ function buildExchange(
     provenance: {
       resolutionTier: resolution.tier,
       resolutionConfidence: resolution.confidence,
-      sdkMethodName: `${resolution.className}::${resolution.method}`,
+      sdkMethodName: `${resolution.service}->${resolution.method}`,
       captureIndex: 0,
       totalCaptures: 1,
     },
