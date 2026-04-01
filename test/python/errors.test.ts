@@ -20,7 +20,7 @@ const ctx: EmitterContext = {
 describe('generateErrors', () => {
   it('generates error hierarchy', () => {
     const files = generateErrors(ctx);
-    expect(files.length).toBe(1);
+    expect(files.length).toBe(2);
     expect(files[0].path).toBe('src/workos/_errors.py');
 
     const content = files[0].content;
@@ -49,6 +49,21 @@ describe('generateErrors', () => {
     expect(content).toContain('400: BadRequestException');
     expect(content).toContain('403: AuthorizationException');
     expect(content).toContain('429: RateLimitExceededException');
+  });
+
+  it('generates exceptions.py re-export module', () => {
+    const files = generateErrors(ctx);
+    const exceptionsFile = files.find((f) => f.path === 'src/workos/exceptions.py');
+    expect(exceptionsFile).toBeDefined();
+    expect(exceptionsFile!.integrateTarget).toBe(true);
+    expect(exceptionsFile!.overwriteExisting).toBe(true);
+
+    const content = exceptionsFile!.content;
+    expect(content).toContain('from ._errors import (');
+    expect(content).toContain('BaseRequestException as BaseRequestException');
+    expect(content).toContain('AuthenticationException as AuthenticationException');
+    expect(content).toContain('ServerException as ServerException');
+    expect(content).toContain('STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION');
   });
 
   it('marks files as overwriteExisting', () => {

@@ -222,5 +222,53 @@ STATUS_CODE_TO_EXCEPTION: Dict[int, Type[BaseRequestException]] = {
     overwriteExisting: true,
   });
 
+  // Generate exceptions.py re-export so `from workos.exceptions import ...` works
+  const exceptionsReexport = `"""Backwards-compatible re-export of exception classes.
+
+Allows 'from workos.exceptions import ...' alongside the
+canonical 'from workos import ...' path.
+"""
+
+from ._errors import (
+    BaseRequestException as BaseRequestException,
+    AuthenticationException as AuthenticationException,
+    AuthorizationException as AuthorizationException,
+    BadRequestException as BadRequestException,
+    ConflictException as ConflictException,
+    ConfigurationException as ConfigurationException,
+    EmailVerificationRequiredException as EmailVerificationRequiredException,
+    NotFoundException as NotFoundException,
+    RateLimitExceededException as RateLimitExceededException,
+    ServerException as ServerException,
+    UnprocessableEntityException as UnprocessableEntityException,
+    WorkOSConnectionException as WorkOSConnectionException,
+    WorkOSTimeoutException as WorkOSTimeoutException,
+    STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION,
+)
+
+__all__ = [
+    "BaseRequestException",
+    "AuthenticationException",
+    "AuthorizationException",
+    "BadRequestException",
+    "ConflictException",
+    "ConfigurationException",
+    "EmailVerificationRequiredException",
+    "NotFoundException",
+    "RateLimitExceededException",
+    "ServerException",
+    "UnprocessableEntityException",
+    "WorkOSConnectionException",
+    "WorkOSTimeoutException",
+    "STATUS_CODE_TO_EXCEPTION",
+]`;
+
+  files.push({
+    path: `src/${namespace}/exceptions.py`,
+    content: exceptionsReexport,
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
   return files;
 }
