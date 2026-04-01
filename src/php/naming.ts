@@ -264,9 +264,19 @@ function normalizeMethodName(name: string, op: Operation): string {
  * Group services by shared camelCase prefix for nested namespaces.
  */
 export function groupServicesByNamespace(services: Service[], ctx: EmitterContext): NamespaceGrouping {
+  // Build entries, deduplicating props — when the overlay causes two services to
+  // resolve to the same accessor name (e.g., OrganizationDomains → Organizations),
+  // fall back to the IR name for the duplicate to keep both reachable.
+  const usedProps = new Set<string>();
   const entries = services.map((service) => {
     const resolvedName = resolveClassName(service, ctx);
-    return { service, prop: servicePropertyName(resolvedName), resolvedName };
+    let prop = servicePropertyName(resolvedName);
+    if (usedProps.has(prop)) {
+      // Collision — fall back to the raw IR service name
+      prop = servicePropertyName(toPascalCase(service.name));
+    }
+    usedProps.add(prop);
+    return { service, prop, resolvedName };
   });
 
   const allProps = new Set(entries.map((e) => e.prop));
