@@ -116,7 +116,7 @@ describe('generateResources', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
-    expect(result[0].content).toContain('public function get(');
+    expect(result[0].content).toContain('public function getOrganization(');
     expect(result[0].content).toContain('string $id');
     expect(result[0].content).toContain('"organizations/{$id}"');
     expect(result[0].content).toContain('Organization::fromArray($response)');
@@ -126,7 +126,7 @@ describe('generateResources', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
-    expect(result[0].content).toContain('public function list(');
+    expect(result[0].content).toContain('public function listOrganizations(');
     expect(result[0].content).toContain('?int $limit = null');
     expect(result[0].content).toContain('PaginatedResponse');
   });
@@ -135,7 +135,7 @@ describe('generateResources', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
-    expect(result[0].content).toContain('public function create(');
+    expect(result[0].content).toContain('public function createOrganization(');
     expect(result[0].content).toContain('string $name');
     expect(result[0].content).toContain('?string $slug = null');
   });

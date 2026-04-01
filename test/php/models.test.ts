@@ -39,7 +39,7 @@ describe('generateModels', () => {
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
     expect(result).toHaveLength(1);
-    expect(result[0].path).toBe('lib/Models/Organization.php');
+    expect(result[0].path).toBe('lib/Resource/Organization.php');
     expect(result[0].content).toContain('readonly class Organization');
     expect(result[0].content).toContain('public string $id,');
     expect(result[0].content).toContain('public string $name,');
@@ -126,6 +126,6 @@ describe('generateModels', () => {
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
-    expect(result[0].content).toContain('namespace WorkOS\\Models;');
+    expect(result[0].content).toContain('namespace WorkOS\\Resource;');
   });
 });

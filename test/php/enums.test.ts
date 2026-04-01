@@ -37,7 +37,7 @@ describe('generateEnums', () => {
     const result = generateEnums(enums, ctx);
 
     expect(result).toHaveLength(1);
-    expect(result[0].path).toBe('lib/Enums/OrganizationStatus.php');
+    expect(result[0].path).toBe('lib/Resource/OrganizationStatus.php');
     expect(result[0].content).toContain('enum OrganizationStatus: string');
     expect(result[0].content).toContain("case Active = 'active';");
     expect(result[0].content).toContain("case Inactive = 'inactive';");
@@ -73,7 +73,7 @@ describe('generateEnums', () => {
     initializeNaming(enums.map((e) => e.name));
     const result = generateEnums(enums, ctx);
 
-    expect(result[0].content).toContain('namespace WorkOS\\Enums;');
+    expect(result[0].content).toContain('namespace WorkOS\\Resource;');
   });
 
   it('deduplicates case names', () => {
