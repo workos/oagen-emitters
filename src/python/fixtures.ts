@@ -39,6 +39,10 @@ export function generateFixtures(spec: {
   for (const model of spec.models) {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
+    // Skip models with no fields — these are typically discriminated unions
+    // with hand-maintained @oagen-ignore overrides; generated empty fixtures
+    // would not match the override's required fields.
+    if (model.fields.length === 0) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
@@ -56,6 +60,7 @@ export function generateFixtures(spec: {
         if (itemModel) {
           const unwrapped = unwrapListModel(itemModel, modelMap);
           if (unwrapped) itemModel = unwrapped;
+          if (itemModel.fields.length === 0) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

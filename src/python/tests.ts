@@ -260,6 +260,11 @@ function generateServiceTest(
           }
         }
       }
+      // Skip fixture-based testing for models with no fields (discriminated unions)
+      if (itemName) {
+        const itemModel = spec.models.find((m) => m.name === itemName);
+        if (itemModel && itemModel.fields.length === 0) itemName = null;
+      }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
 
       const paginatedArgs = buildTestArgs(op, spec);
@@ -471,6 +476,11 @@ function generateServiceTest(
             itemName = dataField.type.items.name;
           }
         }
+      }
+      // Skip fixture-based testing for models with no fields (discriminated unions)
+      if (itemName) {
+        const itemModel = spec.models.find((m) => m.name === itemName);
+        if (itemModel && itemModel.fields.length === 0) itemName = null;
       }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
       lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
@@ -1054,6 +1064,9 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('class TestModelRoundTrip:');
 
   for (const model of models) {
+    // Skip models with no fields — these are typically discriminated unions
+    // with hand-maintained @oagen-ignore overrides whose fixtures would not match.
+    if (model.fields.length === 0) continue;
     // Deduplicate fields that map to the same snake_case name (mirrors models.ts)
     const seenFieldNames = new Set<string>();
     const dedupFields = model.fields.filter((f) => {
