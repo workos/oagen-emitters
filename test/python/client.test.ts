@@ -201,7 +201,7 @@ describe('generateClient', () => {
     expect(files.find((f) => f.path === 'src/workos/exceptions.py')).toBeUndefined();
   });
 
-  it('does not generate user_management helper methods or types compat barrels', () => {
+  it('does not generate user_management helper methods but generates types barrels', () => {
     const compatSpec: ApiSpec = {
       ...spec,
       services: [
@@ -248,6 +248,8 @@ describe('generateClient', () => {
     expect(clientFile!.content).not.toContain('def create_user(');
 
     const typesInit = files.find((f) => f.path === 'src/workos/types/user_management/__init__.py');
-    expect(typesInit).toBeUndefined();
+    expect(typesInit).toBeDefined();
+    expect(typesInit!.content).toContain('from workos.user_management.authentication.models import *');
+    expect(typesInit!.content).toContain('from workos.user_management.users.models import *');
   });
 });

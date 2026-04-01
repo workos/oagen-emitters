@@ -17,6 +17,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateServiceInits(spec, ctx));
   files.push(...generateNamespaceAliasPackages(spec, ctx));
   files.push(...generateBarrel(spec, ctx));
+  files.push(...generateTypesBarrels(spec, ctx));
   files.push(...generatePyProjectToml(ctx));
   files.push(...generatePyTyped(ctx));
 
@@ -1227,6 +1228,60 @@ function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<st
     lines.push(`    def ${alias.alias}(self) -> ${alias.typeName}:`);
     lines.push(`        return ${alias.returnExpr}`);
   }
+}
+
+/**
+ * Generate types/<service>/__init__.py re-export barrels so that
+ * `from workos.types.<service> import Model` continues to work.
+ */
+function generateTypesBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const grouping = groupServicesByNamespace(spec.services, ctx);
+  const serviceDirMap = buildServiceDirMap(grouping);
+
+  // Collect (types dir name → set of service dirs whose models should be re-exported)
+  const typesEntries = new Map<string, Set<string>>();
+
+  for (const entry of grouping.standalone) {
+    const dir = serviceDirMap.get(entry.service.name) ?? entry.prop;
+    const dirs = typesEntries.get(entry.prop) ?? new Set();
+    dirs.add(dir);
+    typesEntries.set(entry.prop, dirs);
+  }
+
+  for (const ns of grouping.namespaces) {
+    const dirs = typesEntries.get(ns.prefix) ?? new Set();
+    if (ns.baseEntry) {
+      dirs.add(serviceDirMap.get(ns.baseEntry.service.name) ?? ns.prefix);
+    }
+    for (const entry of ns.entries) {
+      dirs.add(serviceDirMap.get(entry.service.name) ?? `${ns.prefix}/${entry.subProp}`);
+    }
+    typesEntries.set(ns.prefix, dirs);
+  }
+
+  for (const [typesDir, serviceDirs] of typesEntries) {
+    const imports = [...serviceDirs]
+      .sort()
+      .map((dir) => `from ${ctx.namespace}.${dirToModule(dir)}.models import *  # noqa: F401,F403`);
+
+    files.push({
+      path: `src/${ctx.namespace}/types/${typesDir}/__init__.py`,
+      content: imports.join('\n'),
+      integrateTarget: true,
+      overwriteExisting: true,
+    });
+  }
+
+  // Root types/__init__.py
+  files.push({
+    path: `src/${ctx.namespace}/types/__init__.py`,
+    content: '',
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
+
+  return files;
 }
 
 function generatePyProjectToml(ctx: EmitterContext): GeneratedFile[] {
