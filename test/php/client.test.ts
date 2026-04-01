@@ -96,18 +96,6 @@ describe('generateClient', () => {
     expect(optionsFile!.content).toContain('$idempotencyKey');
   });
 
-  it('generates composer.json', () => {
-    initializeNaming(models.map((m) => m.name));
-    const result = generateClient(emptySpec, ctx);
-
-    const composerFile = result.find((f) => f.path === 'composer.json');
-    expect(composerFile).toBeDefined();
-    const composer = JSON.parse(composerFile!.content);
-    expect(composer.require.php).toBe('>=8.2');
-    expect(composer.require['guzzlehttp/guzzle']).toBeDefined();
-    expect(composer.autoload['psr-4']['WorkOS\\']).toBe('lib/');
-  });
-
   it('includes constructor with config options', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);

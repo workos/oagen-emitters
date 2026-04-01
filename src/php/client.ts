@@ -14,7 +14,6 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateHttpClient(ctx));
   files.push(...generateRequestOptions(ctx));
   files.push(...generatePaginatedResponse(ctx));
-  files.push(...generateComposerJson(ctx));
 
   return files;
 }
@@ -436,45 +435,6 @@ class PaginatedResponse implements \\IteratorAggregate
 }`,
       integrateTarget: true,
       overwriteExisting: true,
-    },
-  ];
-}
-
-function generateComposerJson(ctx: EmitterContext): GeneratedFile[] {
-  const composerJson = {
-    name: `workos/${ctx.namespace}-php`,
-    description: `${ctx.namespacePascal} PHP SDK`,
-    type: 'library',
-    license: 'MIT',
-    require: {
-      php: '>=8.2',
-      'guzzlehttp/guzzle': '^7.0',
-    },
-    'require-dev': {
-      'phpunit/phpunit': '^11.0',
-    },
-    autoload: {
-      'psr-4': {
-        [`${ctx.namespacePascal}\\`]: 'lib/',
-      },
-    },
-    'autoload-dev': {
-      'psr-4': {
-        [`Tests\\${ctx.namespacePascal}\\`]: 'tests/',
-      },
-    },
-    config: {
-      'sort-packages': true,
-    },
-  };
-
-  return [
-    {
-      path: 'composer.json',
-      content: JSON.stringify(composerJson, null, 4),
-      integrateTarget: false,
-      overwriteExisting: false,
-      headerPlacement: 'skip' as const,
     },
   ];
 }
