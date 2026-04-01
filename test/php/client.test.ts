@@ -108,16 +108,6 @@ describe('generateClient', () => {
     expect(composer.autoload['psr-4']['WorkOS\\']).toBe('lib/');
   });
 
-  it('generates phpunit.xml', () => {
-    initializeNaming(models.map((m) => m.name));
-    const result = generateClient(emptySpec, ctx);
-
-    const phpunitFile = result.find((f) => f.path === 'phpunit.xml');
-    expect(phpunitFile).toBeDefined();
-    expect(phpunitFile!.content).toContain('phpunit');
-    expect(phpunitFile!.content).toContain('bootstrap="vendor/autoload.php"');
-  });
-
   it('includes constructor with config options', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);

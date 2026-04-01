@@ -15,7 +15,6 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateRequestOptions(ctx));
   files.push(...generatePaginatedResponse(ctx));
   files.push(...generateComposerJson(ctx));
-  files.push(...generatePhpunitXml(ctx));
 
   return files;
 }
@@ -473,34 +472,6 @@ function generateComposerJson(ctx: EmitterContext): GeneratedFile[] {
     {
       path: 'composer.json',
       content: JSON.stringify(composerJson, null, 4),
-      integrateTarget: false,
-      overwriteExisting: false,
-      headerPlacement: 'skip' as const,
-    },
-  ];
-}
-
-function generatePhpunitXml(_ctx: EmitterContext): GeneratedFile[] {
-  return [
-    {
-      path: 'phpunit.xml',
-      content: `<?xml version="1.0" encoding="UTF-8"?>
-<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
-    bootstrap="vendor/autoload.php"
-    colors="true"
-    cacheDirectory=".phpunit.cache">
-    <testsuites>
-        <testsuite name="default">
-            <directory>tests</directory>
-        </testsuite>
-    </testsuites>
-    <source>
-        <include>
-            <directory>lib</directory>
-        </include>
-    </source>
-</phpunit>`,
       integrateTarget: false,
       overwriteExisting: false,
       headerPlacement: 'skip' as const,
