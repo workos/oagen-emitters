@@ -107,7 +107,7 @@ describe('generateResources', () => {
     const result = generateResources(services, ctx);
 
     expect(result).toHaveLength(1);
-    expect(result[0].path).toBe('src/Resources/Organizations.php');
+    expect(result[0].path).toBe('lib/Resources/Organizations.php');
     expect(result[0].content).toContain('class Organizations');
     expect(result[0].content).toContain('private readonly \\WorkOS\\HttpClient $client');
   });

@@ -49,7 +49,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const clientFile = result.find((f) => f.path === 'src/WorkOS.php');
+    const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
     expect(clientFile).toBeDefined();
     expect(clientFile!.content).toContain('class WorkOS');
     expect(clientFile!.content).toContain('namespace WorkOS;');
@@ -59,7 +59,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const clientFile = result.find((f) => f.path === 'src/WorkOS.php');
+    const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
     expect(clientFile!.content).toContain('public function organizations(): Organizations');
   });
 
@@ -67,7 +67,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const httpFile = result.find((f) => f.path === 'src/HttpClient.php');
+    const httpFile = result.find((f) => f.path === 'lib/HttpClient.php');
     expect(httpFile).toBeDefined();
     expect(httpFile!.content).toContain('class HttpClient');
     expect(httpFile!.content).toContain('use GuzzleHttp\\Client');
@@ -78,7 +78,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const paginatedFile = result.find((f) => f.path === 'src/PaginatedResponse.php');
+    const paginatedFile = result.find((f) => f.path === 'lib/PaginatedResponse.php');
     expect(paginatedFile).toBeDefined();
     expect(paginatedFile!.content).toContain('class PaginatedResponse');
     expect(paginatedFile!.content).toContain('autoPagingIterator');
@@ -89,7 +89,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const optionsFile = result.find((f) => f.path === 'src/RequestOptions.php');
+    const optionsFile = result.find((f) => f.path === 'lib/RequestOptions.php');
     expect(optionsFile).toBeDefined();
     expect(optionsFile!.content).toContain('class RequestOptions');
     expect(optionsFile!.content).toContain('$extraHeaders');
@@ -105,7 +105,7 @@ describe('generateClient', () => {
     const composer = JSON.parse(composerFile!.content);
     expect(composer.require.php).toBe('>=8.2');
     expect(composer.require['guzzlehttp/guzzle']).toBeDefined();
-    expect(composer.autoload['psr-4']['WorkOS\\']).toBe('src/');
+    expect(composer.autoload['psr-4']['WorkOS\\']).toBe('lib/');
   });
 
   it('generates phpunit.xml', () => {
@@ -122,7 +122,7 @@ describe('generateClient', () => {
     initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
-    const clientFile = result.find((f) => f.path === 'src/WorkOS.php');
+    const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
     expect(clientFile!.content).toContain('?string $apiKey = null');
     expect(clientFile!.content).toContain("string $baseUrl = 'https://api.example.com'");
     expect(clientFile!.content).toContain('int $timeout = 60');

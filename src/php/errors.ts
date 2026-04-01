@@ -9,7 +9,7 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
 
   // Base ApiException
   files.push({
-    path: 'src/Exceptions/ApiException.php',
+    path: 'lib/Exceptions/ApiException.php',
     content: `<?php
 
 namespace ${ns}\\Exceptions;
@@ -85,7 +85,7 @@ class ApiException extends \\Exception
         : '';
 
     files.push({
-      path: `src/Exceptions/${ex.name}.php`,
+      path: `lib/Exceptions/${ex.name}.php`,
       content: `<?php
 
 namespace ${ns}\\Exceptions;
@@ -103,7 +103,7 @@ class ${ex.name} extends ApiException
 
   // Non-HTTP exceptions
   files.push({
-    path: 'src/Exceptions/ConfigurationException.php',
+    path: 'lib/Exceptions/ConfigurationException.php',
     content: `<?php
 
 namespace ${ns}\\Exceptions;
@@ -119,7 +119,7 @@ class ConfigurationException extends \\RuntimeException
   });
 
   files.push({
-    path: 'src/Exceptions/ConnectionException.php',
+    path: 'lib/Exceptions/ConnectionException.php',
     content: `<?php
 
 namespace ${ns}\\Exceptions;
@@ -135,7 +135,7 @@ class ConnectionException extends \\RuntimeException
   });
 
   files.push({
-    path: 'src/Exceptions/TimeoutException.php',
+    path: 'lib/Exceptions/TimeoutException.php',
     content: `<?php
 
 namespace ${ns}\\Exceptions;

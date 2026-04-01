@@ -48,7 +48,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('}');
 
     files.push({
-      path: `src/Enums/${phpFileName}.php`,
+      path: `lib/Enums/${phpFileName}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,

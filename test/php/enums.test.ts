@@ -37,7 +37,7 @@ describe('generateEnums', () => {
     const result = generateEnums(enums, ctx);
 
     expect(result).toHaveLength(1);
-    expect(result[0].path).toBe('src/Enums/OrganizationStatus.php');
+    expect(result[0].path).toBe('lib/Enums/OrganizationStatus.php');
     expect(result[0].content).toContain('enum OrganizationStatus: string');
     expect(result[0].content).toContain("case Active = 'active';");
     expect(result[0].content).toContain("case Inactive = 'inactive';");

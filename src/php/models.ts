@@ -130,7 +130,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('}');
 
     files.push({
-      path: `src/Models/${phpFileName}.php`,
+      path: `lib/Models/${phpFileName}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,

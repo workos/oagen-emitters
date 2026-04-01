@@ -20,7 +20,7 @@ const ctx: EmitterContext = {
 describe('generateErrors', () => {
   it('generates base ApiException', () => {
     const result = generateErrors(ctx);
-    const base = result.find((f) => f.path === 'src/Exceptions/ApiException.php');
+    const base = result.find((f) => f.path === 'lib/Exceptions/ApiException.php');
     expect(base).toBeDefined();
     expect(base!.content).toContain('class ApiException extends \\Exception');
     expect(base!.content).toContain('namespace WorkOS\\Exceptions;');
@@ -33,23 +33,23 @@ describe('generateErrors', () => {
     const result = generateErrors(ctx);
     const names = result.map((f) => f.path);
 
-    expect(names).toContain('src/Exceptions/BadRequestException.php');
-    expect(names).toContain('src/Exceptions/AuthenticationException.php');
-    expect(names).toContain('src/Exceptions/AuthorizationException.php');
-    expect(names).toContain('src/Exceptions/NotFoundException.php');
-    expect(names).toContain('src/Exceptions/ConflictException.php');
-    expect(names).toContain('src/Exceptions/UnprocessableEntityException.php');
-    expect(names).toContain('src/Exceptions/RateLimitExceededException.php');
-    expect(names).toContain('src/Exceptions/ServerException.php');
+    expect(names).toContain('lib/Exceptions/BadRequestException.php');
+    expect(names).toContain('lib/Exceptions/AuthenticationException.php');
+    expect(names).toContain('lib/Exceptions/AuthorizationException.php');
+    expect(names).toContain('lib/Exceptions/NotFoundException.php');
+    expect(names).toContain('lib/Exceptions/ConflictException.php');
+    expect(names).toContain('lib/Exceptions/UnprocessableEntityException.php');
+    expect(names).toContain('lib/Exceptions/RateLimitExceededException.php');
+    expect(names).toContain('lib/Exceptions/ServerException.php');
   });
 
   it('generates non-HTTP exceptions', () => {
     const result = generateErrors(ctx);
     const names = result.map((f) => f.path);
 
-    expect(names).toContain('src/Exceptions/ConfigurationException.php');
-    expect(names).toContain('src/Exceptions/ConnectionException.php');
-    expect(names).toContain('src/Exceptions/TimeoutException.php');
+    expect(names).toContain('lib/Exceptions/ConfigurationException.php');
+    expect(names).toContain('lib/Exceptions/ConnectionException.php');
+    expect(names).toContain('lib/Exceptions/TimeoutException.php');
   });
 
   it('RateLimitExceededException has retryAfter property', () => {

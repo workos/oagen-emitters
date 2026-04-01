@@ -119,7 +119,7 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
 
   return [
     {
-      path: `src/${ctx.namespacePascal}.php`,
+      path: `lib/${ctx.namespacePascal}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,
@@ -319,7 +319,7 @@ class HttpClient
 
   return [
     {
-      path: 'src/HttpClient.php',
+      path: 'lib/HttpClient.php',
       content,
       integrateTarget: true,
       overwriteExisting: true,
@@ -330,7 +330,7 @@ class HttpClient
 function generateRequestOptions(ctx: EmitterContext): GeneratedFile[] {
   return [
     {
-      path: 'src/RequestOptions.php',
+      path: 'lib/RequestOptions.php',
       content: `<?php
 
 namespace ${ctx.namespacePascal};
@@ -355,7 +355,7 @@ class RequestOptions
 function generatePaginatedResponse(ctx: EmitterContext): GeneratedFile[] {
   return [
     {
-      path: 'src/PaginatedResponse.php',
+      path: 'lib/PaginatedResponse.php',
       content: `<?php
 
 namespace ${ctx.namespacePascal};
@@ -456,7 +456,7 @@ function generateComposerJson(ctx: EmitterContext): GeneratedFile[] {
     },
     autoload: {
       'psr-4': {
-        [`${ctx.namespacePascal}\\`]: 'src/',
+        [`${ctx.namespacePascal}\\`]: 'lib/',
       },
     },
     'autoload-dev': {
@@ -473,7 +473,7 @@ function generateComposerJson(ctx: EmitterContext): GeneratedFile[] {
     {
       path: 'composer.json',
       content: JSON.stringify(composerJson, null, 4),
-      integrateTarget: true,
+      integrateTarget: false,
       overwriteExisting: false,
       headerPlacement: 'skip' as const,
     },
@@ -497,11 +497,11 @@ function generatePhpunitXml(_ctx: EmitterContext): GeneratedFile[] {
     </testsuites>
     <source>
         <include>
-            <directory>src</directory>
+            <directory>lib</directory>
         </include>
     </source>
 </phpunit>`,
-      integrateTarget: true,
+      integrateTarget: false,
       overwriteExisting: false,
       headerPlacement: 'skip' as const,
     },

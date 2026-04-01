@@ -39,7 +39,7 @@ describe('generateModels', () => {
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
     expect(result).toHaveLength(1);
-    expect(result[0].path).toBe('src/Models/Organization.php');
+    expect(result[0].path).toBe('lib/Models/Organization.php');
     expect(result[0].content).toContain('readonly class Organization');
     expect(result[0].content).toContain('public string $id,');
     expect(result[0].content).toContain('public string $name,');

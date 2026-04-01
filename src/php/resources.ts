@@ -54,7 +54,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('}');
 
     files.push({
-      path: `src/Resources/${resourceName}.php`,
+      path: `lib/Resources/${resourceName}.php`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,
