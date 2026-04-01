@@ -180,7 +180,7 @@ class HttpClient
             'headers' => [
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-                'User-Agent' => '${ns}-php/0.1.0',
+                'User-Agent' => Version::SDK_IDENTIFIER . '/' . Version::SDK_VERSION,
             ],
             'handler' => $handler,
             'http_errors' => false,
