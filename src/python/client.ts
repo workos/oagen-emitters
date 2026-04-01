@@ -421,16 +421,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        max_retries: int = MAX_RETRIES,');
   lines.push('    ) -> None:');
   lines.push('        self._api_key = api_key or os.environ.get("WORKOS_API_KEY")');
-  lines.push('        if not self._api_key:');
-  lines.push('            raise ValueError(');
-  lines.push('                "WorkOS API key must be provided when instantiating the client "');
-  lines.push('                "or via the WORKOS_API_KEY environment variable."');
-  lines.push('            )');
   lines.push('        self.client_id = client_id or os.environ.get("WORKOS_CLIENT_ID")');
-  lines.push('        if not self.client_id:');
+  lines.push('        if not self._api_key and not self.client_id:');
   lines.push('            raise ValueError(');
-  lines.push('                "WorkOS client ID must be provided when instantiating the client "');
-  lines.push('                "or via the WORKOS_CLIENT_ID environment variable."');
+  lines.push('                "WorkOS requires either an API key or a client ID. "');
+  lines.push('                "Provide api_key / WORKOS_API_KEY for authenticated server-side usage, "');
+  lines.push('                "or client_id / WORKOS_CLIENT_ID for flows that require a client ID."');
   lines.push('            )');
   lines.push(`        resolved_base_url = base_url or os.environ.get("WORKOS_BASE_URL", "${spec.baseUrl}")`);
   lines.push('        # Ensure base_url has a trailing slash for backward compatibility');
@@ -506,6 +502,26 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                return retries');
   lines.push('        return self._max_retries');
   lines.push('');
+  lines.push('    def _require_api_key(self) -> str:');
+  lines.push('        if not self._api_key:');
+  lines.push('            raise ConfigurationException(');
+  lines.push(
+    '                "This operation requires a WorkOS API key. Provide api_key when instantiating the client "',
+  );
+  lines.push('                "or via the WORKOS_API_KEY environment variable."');
+  lines.push('            )');
+  lines.push('        return self._api_key');
+  lines.push('');
+  lines.push('    def _require_client_id(self) -> str:');
+  lines.push('        if not self.client_id:');
+  lines.push('            raise ConfigurationException(');
+  lines.push(
+    '                "This operation requires a WorkOS client ID. Provide client_id when instantiating the client "',
+  );
+  lines.push('                "or via the WORKOS_CLIENT_ID environment variable."');
+  lines.push('            )');
+  lines.push('        return self.client_id');
+  lines.push('');
   lines.push('    def _build_headers(');
   lines.push('        self,');
   lines.push('        method: str,');
@@ -513,10 +529,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        request_options: Optional[RequestOptions],');
   lines.push('    ) -> Dict[str, str]:');
   lines.push('        headers: Dict[str, str] = {');
-  lines.push('            "Authorization": f"Bearer {self._api_key}",');
   lines.push('            "Content-Type": "application/json",');
   lines.push('            "User-Agent": f"workos-python/{VERSION} python/{platform.python_version()}",');
   lines.push('        }');
+  lines.push('        if self._api_key:');
+  lines.push('            headers["Authorization"] = f"Bearer {self._api_key}"');
   lines.push('        effective_idempotency_key = idempotency_key');
   lines.push('        if effective_idempotency_key is None and request_options:');
   lines.push('            request_option_idempotency_key = request_options.get("idempotency_key")');
@@ -572,7 +589,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');
   lines.push('');
   lines.push('        Raises:');
-  lines.push('            ValueError: If api_key is not provided and WORKOS_API_KEY is not set.');
+  lines.push(
+    '            ValueError: If neither api_key nor client_id is provided, directly or via environment variables.',
+  );
   lines.push('        """');
   lines.push('        super().__init__(');
   lines.push('            api_key=api_key,');
@@ -760,7 +779,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');
   lines.push('');
   lines.push('        Raises:');
-  lines.push('            ValueError: If api_key is not provided and WORKOS_API_KEY is not set.');
+  lines.push(
+    '            ValueError: If neither api_key nor client_id is provided, directly or via environment variables.',
+  );
   lines.push('        """');
   lines.push('        super().__init__(');
   lines.push('            api_key=api_key,');

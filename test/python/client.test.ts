@@ -74,6 +74,11 @@ describe('generateClient', () => {
     expect(content).toContain('client_id: Optional[str] = None,');
     expect(content).toContain('request_timeout: Optional[int] = None,');
     expect(content).toContain('jwt_leeway: float = 0.0,');
+    expect(content).toContain('WorkOS requires either an API key or a client ID.');
+    expect(content).toContain('def _require_api_key(self) -> str:');
+    expect(content).toContain('def _require_client_id(self) -> str:');
+    expect(content).toContain('if self._api_key:');
+    expect(content).not.toContain('WorkOS client ID must be provided when instantiating the client');
     expect(content).toContain('request_options.get("idempotency_key")');
     expect(content).toContain('request_options.get("max_retries")');
     expect(content).toContain('request_options.get("base_url")');

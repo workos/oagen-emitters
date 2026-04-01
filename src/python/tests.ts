@@ -1180,17 +1180,24 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('class TestWorkOSClient:');
   lines.push('');
-  lines.push('    def test_missing_api_key_raises(self):');
+  lines.push('    def test_missing_credentials_raise(self):');
   lines.push('        with pytest.raises(ValueError):');
-  lines.push('            WorkOS(client_id="client_test")');
+  lines.push('            WorkOS()');
   lines.push('');
   lines.push('    def test_context_manager(self):');
   lines.push('        with WorkOS(api_key="sk_test_123", client_id="client_test") as client:');
   lines.push('            assert client._api_key == "sk_test_123"');
   lines.push('');
+  lines.push('    def test_api_key_only_initializes(self):');
+  lines.push('        client = WorkOS(api_key="sk_test_123")');
+  lines.push('        assert client._api_key == "sk_test_123"');
+  lines.push('        assert client.client_id is None');
+  lines.push('        client.close()');
+  lines.push('');
   lines.push('    def test_client_id_from_constructor(self):');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test_456")');
+  lines.push('        client = WorkOS(client_id="client_test_456")');
   lines.push('        assert client.client_id == "client_test_456"');
+  lines.push('        assert client._api_key is None');
   lines.push('        client.close()');
 
   // Error status code tests
@@ -1233,6 +1240,14 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('        client.request("GET", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Idempotency-Key" not in request.headers');
+  lines.push('        client.close()');
+  lines.push('');
+  lines.push('    def test_no_authorization_header_without_api_key(self, httpx_mock):');
+  lines.push('        httpx_mock.add_response(json={})');
+  lines.push('        client = WorkOS(client_id="client_test")');
+  lines.push('        client.request("GET", "test")');
+  lines.push('        request = httpx_mock.get_request()');
+  lines.push('        assert "Authorization" not in request.headers');
   lines.push('        client.close()');
   lines.push('');
   lines.push('    def test_empty_body_sends_json(self, httpx_mock):');

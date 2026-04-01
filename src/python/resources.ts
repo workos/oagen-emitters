@@ -384,10 +384,12 @@ function emitMethodBody(
       lines.push('        }.items() if v is not None}');
       if (usesClientCredentialDefaults) {
         if (op.queryParams.some((param) => param.name === 'client_id')) {
-          lines.push('        params["client_id"] = params.get("client_id") or self._client.client_id');
+          lines.push('        params["client_id"] = params.get("client_id") or self._client._require_client_id()');
         }
         if (op.queryParams.some((param) => param.name === 'client_secret')) {
-          lines.push('        params["client_secret"] = params.get("client_secret") or self._client._api_key');
+          lines.push(
+            '        params["client_secret"] = params.get("client_secret") or self._client._require_api_key()',
+          );
         }
       }
       lines.push(`        return self._client.build_url(${pathStr}, params)`);
@@ -496,10 +498,10 @@ function emitMethodBody(
     const bodyVarName = bodyModel ? 'body' : '_body';
     if (bodyModel && usesClientCredentialDefaults) {
       if (bodyModel.fields.some((f) => f.name === 'client_id')) {
-        lines.push('        body["client_id"] = body.get("client_id") or self._client.client_id');
+        lines.push('        body["client_id"] = body.get("client_id") or self._client._require_client_id()');
       }
       if (bodyModel.fields.some((f) => f.name === 'client_secret')) {
-        lines.push('        body["client_secret"] = body.get("client_secret") or self._client._api_key');
+        lines.push('        body["client_secret"] = body.get("client_secret") or self._client._require_api_key()');
       }
     }
     if (isArrayResponse) {
@@ -562,10 +564,12 @@ function emitMethodBody(
       }
       if (usesClientCredentialDefaults) {
         if (op.queryParams.some((param) => param.name === 'client_id')) {
-          lines.push('        params["client_id"] = params.get("client_id") or self._client.client_id');
+          lines.push('        params["client_id"] = params.get("client_id") or self._client._require_client_id()');
         }
         if (op.queryParams.some((param) => param.name === 'client_secret')) {
-          lines.push('        params["client_secret"] = params.get("client_secret") or self._client._api_key');
+          lines.push(
+            '        params["client_secret"] = params.get("client_secret") or self._client._require_api_key()',
+          );
         }
       }
     }
