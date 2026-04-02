@@ -1,7 +1,7 @@
 import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefDoc } from './type-map.js';
-import { className, fieldName, resolveMethodName, resolveClassName } from './naming.js';
+import { className, enumClassName, fieldName, resolveMethodName, resolveClassName } from './naming.js';
 import { isListWrapperModel } from './models.js';
 
 /**
@@ -218,19 +218,22 @@ function emitMethod(
   if (plan.hasQueryParams && !isPaginated) {
     for (const p of op.queryParams) {
       const phpName = resolveParam(nameMap, 'query', p.name);
-      lines.push(`     * @param ${mapTypeRefDoc(p.type)}|null $${phpName}`);
+      lines.push(`     * @param ${nullableDocType(mapTypeRefDoc(p.type))} $${phpName}`);
     }
   }
   if (isPaginated) {
     // Non-pagination query params (filters)
     for (const p of getNonPaginationQueryParams(op)) {
       const phpName = resolveParam(nameMap, 'query', p.name);
-      lines.push(`     * @param ${mapTypeRefDoc(p.type)}|null $${phpName}`);
+      lines.push(`     * @param ${nullableDocType(mapTypeRefDoc(p.type))} $${phpName}`);
     }
     lines.push('     * @param int|null $limit');
     lines.push('     * @param string|null $after');
     lines.push('     * @param string|null $before');
   }
+
+  // RequestOptions param doc
+  lines.push(`     * @param \\${ctx.namespacePascal}\\RequestOptions|null $options`);
 
   // Return type doc
   const isArrayResponse = !isPaginated && !isDelete && op.response.kind === 'array';
@@ -244,7 +247,13 @@ function emitMethod(
     lines.push(`     * @return array<${className(plan.responseModelName)}>`);
   } else if (plan.responseModelName) {
     lines.push(`     * @return ${className(plan.responseModelName)}`);
+  } else {
+    lines.push('     * @return array<string, mixed>');
   }
+
+  // Throws doc
+  lines.push('     *');
+  lines.push(`     * @throws \\${ctx.namespacePascal}\\Exception\\ApiException`);
   lines.push('     */');
 
   // Method signature
@@ -366,6 +375,7 @@ function buildMethodParams(op: Operation, plan: OperationPlan, ctx: EmitterConte
   }
 
   // Request body fields
+  const isUpdateOp = op.httpMethod === 'put' || op.httpMethod === 'patch';
   if (plan.hasBody && op.requestBody) {
     const bodyModel =
       op.requestBody.kind === 'model' ? ctx.spec.models.find((m) => m.name === (op.requestBody as any).name) : null;
@@ -375,6 +385,13 @@ function buildMethodParams(op: Operation, plan: OperationPlan, ctx: EmitterConte
         if (f.required) {
           const phpType = mapTypeRef(f.type);
           required.push(`${phpType} $${phpName}`);
+        } else if (isUpdateOp) {
+          // Use Undefined sentinel for update operations to distinguish "not provided" from "explicitly null"
+          const baseType = f.type.kind === 'nullable' ? mapTypeRef(f.type.inner) : mapTypeRef(f.type);
+          const nullPart = f.type.kind === 'nullable' ? '|null' : '';
+          optional.push(
+            `${baseType}${nullPart}|\\${ctx.namespacePascal}\\Undefined $${phpName} = \\${ctx.namespacePascal}\\Undefined::Value`,
+          );
         } else {
           const innerType = f.type.kind === 'nullable' ? mapTypeRef(f.type.inner) : mapTypeRef(f.type);
           optional.push(`?${innerType} $${phpName} = null`);
@@ -438,6 +455,7 @@ function buildPathExpression(op: Operation, nameMap: ParamNameMap): string {
 function emitBodyBuilder(lines: string[], op: Operation, ctx: EmitterContext, nameMap: ParamNameMap): void {
   const bodyModel =
     op.requestBody?.kind === 'model' ? ctx.spec.models.find((m) => m.name === (op.requestBody as any).name) : null;
+  const isUpdateOp = op.httpMethod === 'put' || op.httpMethod === 'patch';
 
   if (bodyModel) {
     const enumNames = new Set(ctx.spec.enums.map((e) => e.name));
@@ -452,7 +470,12 @@ function emitBodyBuilder(lines: string[], op: Operation, ctx: EmitterContext, na
         lines.push(`            '${wire}' => $${phpProp},`);
       }
     }
-    lines.push('        ], fn ($v) => $v !== null);');
+    if (isUpdateOp) {
+      // Use Undefined sentinel for update ops: preserves explicit null, strips only unprovided fields
+      lines.push(`        ], fn ($v) => !$v instanceof \\${ctx.namespacePascal}\\Undefined);`);
+    } else {
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
   } else {
     lines.push('        $body = $body ?? [];');
   }
@@ -507,6 +530,11 @@ function emitQueryBuilder(
   lines.push('        ], fn ($v) => $v !== null);');
 }
 
+/** Append |null to a PHPDoc type only if it doesn't already end with |null. */
+function nullableDocType(docType: string): string {
+  return docType.endsWith('|null') || docType === 'null' ? docType : `${docType}|null`;
+}
+
 function emitBodyParamDocs(lines: string[], op: Operation, ctx: EmitterContext, nameMap: ParamNameMap): void {
   const bodyModel =
     op.requestBody?.kind === 'model' ? ctx.spec.models.find((m) => m.name === (op.requestBody as any).name) : null;
@@ -515,7 +543,7 @@ function emitBodyParamDocs(lines: string[], op: Operation, ctx: EmitterContext, 
       const phpName = resolveParam(nameMap, 'body', f.name);
       const docType = mapTypeRefDoc(f.type);
       const isOptional = !f.required;
-      lines.push(`     * @param ${docType}${isOptional ? '|null' : ''} $${phpName}`);
+      lines.push(`     * @param ${isOptional ? nullableDocType(docType) : docType} $${phpName}`);
     }
   }
 }
@@ -556,7 +584,7 @@ function collectResourceImports(service: Service, ctx: EmitterContext): string[]
 
 function addTypeImports(ref: TypeRef, ctx: EmitterContext, imports: Set<string>): void {
   if (ref.kind === 'enum') {
-    imports.add(`${ctx.namespacePascal}\\Resource\\${className(ref.name)}`);
+    imports.add(`${ctx.namespacePascal}\\Resource\\${enumClassName(ref.name)}`);
   } else if (ref.kind === 'model') {
     imports.add(`${ctx.namespacePascal}\\Resource\\${className(ref.name)}`);
   } else if (ref.kind === 'array') {

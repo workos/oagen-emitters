@@ -7,24 +7,33 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
   const ns = ctx?.namespacePascal ?? 'WorkOS';
   const files: GeneratedFile[] = [];
 
-  // Base ApiException
+  // Base ApiException — accepts both new-style (string message) and legacy (Response object) constructors
   files.push({
     path: 'lib/Exception/ApiException.php',
     content: `
 namespace ${ns}\\Exception;
 
-class ApiException extends \\Exception
+class ApiException extends \\Exception implements WorkOSException
 {
+    public $requestId = "";
+    public $responseError;
+    public $responseErrorDescription;
+    public $responseErrors;
+    public $responseCode;
+    public $responseMessage;
+    public $response;
     public readonly ?int $statusCode;
-    public readonly ?string $requestId;
     public readonly ?string $apiErrorCode;
     public readonly ?string $error;
     public readonly ?string $errorDescription;
     public readonly ?array $errors;
     public readonly ?string $rawBody;
 
+    /**
+     * Accepts both new-style (string $message, ...) and legacy (Response $response) constructors.
+     */
     public function __construct(
-        string $message = '',
+        string|\\${ns}\\Resource\\Response $messageOrResponse = '',
         ?int $statusCode = null,
         ?string $requestId = null,
         ?string $apiErrorCode = null,
@@ -34,9 +43,33 @@ class ApiException extends \\Exception
         ?string $rawBody = null,
         ?\\Throwable $previous = null,
     ) {
-        parent::__construct($message, $statusCode ?? 0, $previous);
+        // Legacy constructor: accepts a Response object (used by Client.php / BaseRequestException)
+        if ($messageOrResponse instanceof \\${ns}\\Resource\\Response) {
+            $this->response = $messageOrResponse;
+            $responseJson = $messageOrResponse->json();
+
+            $this->requestId = $messageOrResponse->headers['x-request-id'] ?? '';
+            $this->responseError = $responseJson['error'] ?? null;
+            $this->responseErrorDescription = $responseJson['error_description'] ?? null;
+            $this->responseErrors = $responseJson['errors'] ?? null;
+            $this->responseCode = $responseJson['code'] ?? null;
+            $this->responseMessage = $responseJson['message'] ?? null;
+
+            $this->statusCode = $messageOrResponse->statusCode;
+            $this->apiErrorCode = $responseJson['code'] ?? null;
+            $this->error = $responseJson['error'] ?? null;
+            $this->errorDescription = $responseJson['error_description'] ?? null;
+            $this->errors = $responseJson['errors'] ?? null;
+            $this->rawBody = $messageOrResponse->body ?? null;
+
+            parent::__construct($messageOrResponse->body ?? '', $messageOrResponse->statusCode ?? 0);
+            return;
+        }
+
+        // New-style constructor
+        parent::__construct($messageOrResponse, $statusCode ?? 0, $previous);
         $this->statusCode = $statusCode;
-        $this->requestId = $requestId;
+        $this->requestId = $requestId ?? '';
         $this->apiErrorCode = $apiErrorCode;
         $this->error = $error;
         $this->errorDescription = $errorDescription;
@@ -48,7 +81,7 @@ class ApiException extends \\Exception
     {
         $message = $body['message'] ?? 'No message';
         return new static(
-            message: $message,
+            messageOrResponse: $message,
             statusCode: $statusCode,
             requestId: $requestId,
             apiErrorCode: $body['code'] ?? null,

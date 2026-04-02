@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, enumClassName } from './naming.js';
 
 /**
  * Map an IR TypeRef to a PHP native type hint string.
@@ -10,7 +10,7 @@ export function mapTypeRef(ref: TypeRef): string {
     primitive: mapPrimitive,
     array: (_ref, _items) => 'array',
     model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    enum: (r) => enumClassName(r.name),
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_ref, inner) => `?${inner}`,
     literal: (r) =>
@@ -37,7 +37,7 @@ export function mapTypeRefDoc(ref: TypeRef): string {
     primitive: mapPrimitive,
     array: (_ref, items) => `array<${items}>`,
     model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    enum: (r) => enumClassName(r.name),
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_ref, inner) => `${inner}|null`,
     literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : r.value === null ? 'null' : String(r.value)),

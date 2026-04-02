@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { className, fileName } from './naming.js';
+import { className, fileName, resolveEnumName } from './naming.js';
 
 /**
  * Generate PHP 8.1+ backed enum classes from IR Enum definitions.
@@ -9,9 +9,23 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
   const files: GeneratedFile[] = [];
 
+  // Collect existing enums from the surface to avoid replacing old constant-class style
+  const existingEnums = new Set<string>();
+  if (ctx.apiSurface?.enums) {
+    for (const name of Object.keys(ctx.apiSurface.enums)) {
+      existingEnums.add(name);
+    }
+  }
+
   for (const e of enums) {
     const phpClassName = className(e.name);
     const phpFileName = fileName(e.name);
+
+    // Skip enums that already exist in the target as constant-class style — preserves BC
+    if (existingEnums.has(phpClassName) || existingEnums.has(e.name)) continue;
+
+    // Skip enums that are aliased to a canonical enum (deduplication)
+    if (resolveEnumName(e.name) !== e.name) continue;
 
     // Determine backing type
     const allInts = e.values.every((v) => typeof v.value === 'number' && Number.isInteger(v.value));

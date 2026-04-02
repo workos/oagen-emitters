@@ -1,4 +1,4 @@
-import type { Operation, Service, EmitterContext } from '@workos/oagen';
+import type { Operation, Service, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 
 /** Namespace grouping result (shared with client.ts). */
@@ -80,6 +80,48 @@ export function initializeNaming(specNames: string[]): void {
       for (const name of originals) unsafeToStrip.add(name);
     }
   }
+}
+
+// ─── Enum deduplication ───────────────────────────────────────────────
+
+let enumAliasMap = new Map<string, string>();
+
+/**
+ * Initialize enum deduplication by hashing sorted enum case values.
+ * Enums with identical value sets are aliased to the one with the shortest PHP class name.
+ */
+export function initializeEnumDedup(enums: Enum[]): void {
+  enumAliasMap = new Map();
+  const groups = new Map<string, Enum[]>();
+
+  for (const e of enums) {
+    const hash = [...e.values]
+      .sort((a, b) => String(a.value).localeCompare(String(b.value)))
+      .map((v) => String(v.value))
+      .join('\0');
+    if (!groups.has(hash)) groups.set(hash, []);
+    groups.get(hash)!.push(e);
+  }
+
+  for (const [, group] of groups) {
+    if (group.length <= 1) continue;
+    // Pick shortest PHP class name as canonical
+    const sorted = [...group].sort((a, b) => className(a.name).length - className(b.name).length);
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      enumAliasMap.set(sorted[i].name, canonical.name);
+    }
+  }
+}
+
+/** Resolve an enum name to its canonical (deduplicated) name. */
+export function resolveEnumName(name: string): string {
+  return enumAliasMap.get(name) ?? name;
+}
+
+/** PHP class name for an enum, with dedup resolution + PascalCase + acronym preservation. */
+export function enumClassName(name: string): string {
+  return className(resolveEnumName(name));
 }
 
 function stripSuffixes(name: string): string {

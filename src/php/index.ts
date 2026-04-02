@@ -8,12 +8,13 @@ import { generateErrors } from './errors.js';
 import { generateConfig } from './config.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
-import { initializeNaming } from './naming.js';
+import { initializeNaming, initializeEnumDedup } from './naming.js';
 
-/** Initialize naming collision detection from spec model and enum names. */
+/** Initialize naming collision detection and enum deduplication from spec data. */
 function ensureNamingInitialized(ctx: EmitterContext): void {
   const names = [...ctx.spec.models.map((m) => m.name), ...ctx.spec.enums.map((e) => e.name)];
   initializeNaming(names);
+  initializeEnumDedup(ctx.spec.enums);
 }
 
 /** Ensure every generated file's content ends with a trailing newline. */

@@ -1,12 +1,31 @@
 import type { EmitterContext, GeneratedFile } from '@workos/oagen';
 
 /**
- * Generate PHP configuration and shared type files.
- * For PHP, the main config is handled by the client constructor.
- * This generates any additional shared utilities.
+ * Generate PHP configuration files: .php-cs-fixer.dist.php for code formatting.
  */
 export function generateConfig(_ctx?: EmitterContext): GeneratedFile[] {
-  // PHP config is handled by the client constructor and RequestOptions.
-  // No additional config files needed beyond what client.ts generates.
-  return [];
+  return [
+    {
+      path: '.php-cs-fixer.dist.php',
+      content: `<?php
+
+declare(strict_types=1);
+
+use PhpCsFixer\\Config;
+use PhpCsFixer\\Finder;
+
+return (new Config())
+    ->setRules([])
+    ->setFinder(
+        (new Finder())
+            ->in(__DIR__)
+            ->exclude(['vendor'])
+    )
+;
+`,
+      headerPlacement: 'skip',
+      integrateTarget: true,
+      skipIfExists: true,
+    },
+  ];
 }

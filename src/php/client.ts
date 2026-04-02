@@ -14,6 +14,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(...generateHttpClient(ctx));
   files.push(...generateRequestOptions(ctx));
   files.push(...generatePaginatedResponse(ctx));
+  files.push(...generateUndefined(ctx));
   // Version.php is hand-maintained in the target repo (release-please)
   // files.push(...generateVersion(ctx));
 
@@ -70,9 +71,43 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   }
   lines.push('');
 
+  lines.push('/**');
+  lines.push(` * Class ${ctx.namespacePascal}.`);
+  lines.push(' *');
+  lines.push(' * This class allows users to get and set configuration for the package.');
+  lines.push(' */');
   lines.push(`class ${ctx.namespacePascal}`);
   lines.push('{');
-  lines.push('    private HttpClient $httpClient;');
+
+  // ── Legacy static configuration properties (backwards-compatible) ──
+  lines.push('    /**');
+  lines.push('     * @var null|string WorkOS API key');
+  lines.push('     */');
+  lines.push('    private static $apiKey = null;');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @var null|string WorkOS Client ID');
+  lines.push('     */');
+  lines.push('    private static $clientId = null;');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @var string WorkOS base API URL.');
+  lines.push('     */');
+  lines.push('    private static $apiBaseUrl = "https://api.workos.com/";');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @var string SDK identifier');
+  lines.push('     */');
+  lines.push('    private static $identifier = Version::SDK_IDENTIFIER;');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @var string SDK version');
+  lines.push('     */');
+  lines.push('    private static $version = Version::SDK_VERSION;');
+  lines.push('');
+
+  // ── Instance properties for new resource-accessor pattern ──
+  lines.push('    private ?HttpClient $httpClient = null;');
 
   // Lazy resource instances
   for (const service of spec.services) {
@@ -83,7 +118,141 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   }
   lines.push('');
 
-  // Constructor
+  // ── Legacy static methods (backwards-compatible) ──
+  lines.push('    /**');
+  lines.push('     * @return null|string WorkOS API key');
+  lines.push('     */');
+  lines.push('    public static function getApiKey()');
+  lines.push('    {');
+  lines.push('        if (isset(self::$apiKey)) {');
+  lines.push('            return self::$apiKey;');
+  lines.push('        }');
+  lines.push('');
+  lines.push('        $envValue = self::getEnvVariable("WORKOS_API_KEY");');
+  lines.push('        if ($envValue) {');
+  lines.push('            self::$apiKey = $envValue;');
+  lines.push('            return self::$apiKey;');
+  lines.push('        }');
+  lines.push('');
+  lines.push('        $msg = "\\$apiKey is required";');
+  lines.push(`        throw new \\${ctx.namespacePascal}\\Exception\\ConfigurationException($msg);`);
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @param null|string $apiKey WorkOS API key');
+  lines.push('     */');
+  lines.push('    public static function setApiKey($apiKey)');
+  lines.push('    {');
+  lines.push('        self::$apiKey = $apiKey;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @throws \\WorkOS\\Exception\\ConfigurationException');
+  lines.push('     *');
+  lines.push('     * @return null|string WorkOS Client ID');
+  lines.push('     */');
+  lines.push('    public static function getClientId()');
+  lines.push('    {');
+  lines.push('        if (isset(self::$clientId)) {');
+  lines.push('            return self::$clientId;');
+  lines.push('        }');
+  lines.push('');
+  lines.push('        $envValue = self::getEnvVariable("WORKOS_CLIENT_ID");');
+  lines.push('        if ($envValue) {');
+  lines.push('            self::$clientId = $envValue;');
+  lines.push('            return self::$clientId;');
+  lines.push('        }');
+  lines.push('');
+  lines.push('        $msg = "\\$clientId is required";');
+  lines.push(`        throw new \\${ctx.namespacePascal}\\Exception\\ConfigurationException($msg);`);
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @param string $clientId WorkOS Client ID');
+  lines.push('     */');
+  lines.push('    public static function setClientId($clientId)');
+  lines.push('    {');
+  lines.push('        self::$clientId = $clientId;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @return string WorkOS base API URL');
+  lines.push('     */');
+  lines.push('    public static function getApiBaseURL()');
+  lines.push('    {');
+  lines.push('        return self::$apiBaseUrl;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @param string $apiBaseUrl WorkOS base API URL');
+  lines.push('     */');
+  lines.push('    public static function setApiBaseUrl($apiBaseUrl)');
+  lines.push('    {');
+  lines.push('        self::$apiBaseUrl = $apiBaseUrl;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @param string $identifier SDK identifier');
+  lines.push('     */');
+  lines.push('    public static function setIdentifier($identifier)');
+  lines.push('    {');
+  lines.push('        self::$identifier = $identifier;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @return string SDK identifier');
+  lines.push('     */');
+  lines.push('    public static function getIdentifier()');
+  lines.push('    {');
+  lines.push('        return self::$identifier;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @param string $version SDK version');
+  lines.push('     */');
+  lines.push('    public static function setVersion($version)');
+  lines.push('    {');
+  lines.push('        self::$version = $version;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @return string SDK version');
+  lines.push('     */');
+  lines.push('    public static function getVersion()');
+  lines.push('    {');
+  lines.push('        return self::$version;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * Get environment variable with fallback to cached config sources.');
+  lines.push('     * Checks in order: getenv(), $_ENV, $_SERVER');
+  lines.push('     *');
+  lines.push('     * @param string $key Environment variable name');
+  lines.push('     * @return string|false The environment variable value or false if not found');
+  lines.push('     */');
+  lines.push('    private static function getEnvVariable($key)');
+  lines.push('    {');
+  lines.push('        $value = getenv($key);');
+  lines.push("        if ($value !== false && $value !== '') {");
+  lines.push('            return $value;');
+  lines.push('        }');
+  lines.push('');
+  lines.push("        if (isset($_ENV[$key]) && $_ENV[$key] !== '') {");
+  lines.push('            return $_ENV[$key];');
+  lines.push('        }');
+  lines.push('');
+  lines.push("        if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') {");
+  lines.push('            return $_SERVER[$key];');
+  lines.push('        }');
+  lines.push('');
+  lines.push('        return false;');
+  lines.push('    }');
+
+  // ── New instance-based constructor ──
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * Create a new WorkOS client instance with resource accessors.');
+  lines.push('     */');
   lines.push('    public function __construct(');
   lines.push('        ?string $apiKey = null,');
   lines.push(`        string $baseUrl = '${spec.baseUrl || 'https://api.workos.com'}',`);
@@ -91,13 +260,12 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push('        int $maxRetries = 3,');
   lines.push('        ?\\GuzzleHttp\\HandlerStack $handler = null,');
   lines.push('    ) {');
-  lines.push("        $apiKey ??= getenv('WORKOS_API_KEY') ?: '';");
-  lines.push('        if (empty($apiKey)) {');
+  lines.push("        $resolvedKey = $apiKey ?? (getenv('WORKOS_API_KEY') ?: null) ?? self::$apiKey;");
+  lines.push("        if ($resolvedKey !== null && $resolvedKey !== '') {");
   lines.push(
-    "            throw new Exception\\ConfigurationException('API key is required. Set WORKOS_API_KEY or pass apiKey.');",
+    '            $this->httpClient = new HttpClient($resolvedKey, $baseUrl, $timeout, $maxRetries, $handler);',
   );
   lines.push('        }');
-  lines.push('        $this->httpClient = new HttpClient($apiKey, $baseUrl, $timeout, $maxRetries, $handler);');
   lines.push('    }');
 
   // Resource accessors
@@ -110,6 +278,11 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
     lines.push('');
     lines.push(`    public function ${methodName}(): ${resourceName}`);
     lines.push('    {');
+    lines.push(`        if ($this->httpClient === null) {`);
+    lines.push(
+      `            throw new Exception\\ConfigurationException('API key is required. Set WORKOS_API_KEY, call WorkOS::setApiKey(), or pass apiKey to the constructor.');`,
+    );
+    lines.push('        }');
     lines.push(`        return $this->${propName}Instance ??= new ${resourceName}($this->httpClient);`);
     lines.push('    }');
   }
@@ -430,6 +603,30 @@ class PaginatedResponse implements \\IteratorAggregate
     {
         return $this->autoPagingIterator();
     }
+}`,
+      integrateTarget: true,
+      overwriteExisting: true,
+    },
+  ];
+}
+
+function generateUndefined(ctx: EmitterContext): GeneratedFile[] {
+  return [
+    {
+      path: 'lib/Undefined.php',
+      content: `
+namespace ${ctx.namespacePascal};
+
+/**
+ * Sentinel enum for distinguishing "not provided" from "explicitly null".
+ *
+ * Used as the default value for optional body parameters on update (PUT/PATCH)
+ * endpoints so that omitted fields are not sent, while explicitly passing null
+ * sends a JSON null.
+ */
+enum Undefined
+{
+    case Value;
 }`,
       integrateTarget: true,
       overwriteExisting: true,
