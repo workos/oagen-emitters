@@ -139,7 +139,7 @@ namespace ${ns}\\Exception;
 /**
  * ${ex.doc}.
  */
-class ${ex.name} extends ApiException
+class ${ex.name} extends BaseRequestException
 {${retryAfterProp}
 }`,
       integrateTarget: true,
