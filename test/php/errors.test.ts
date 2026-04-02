@@ -58,20 +58,22 @@ describe('generateErrors', () => {
     expect(rateLimit!.content).toContain('$retryAfter');
   });
 
-  it('all exceptions extend ApiException', () => {
+  it('HTTP exceptions extend BaseRequestException', () => {
     const result = generateErrors(ctx);
-    const httpExceptions = result.filter(
+    const statusExceptions = result.filter(
       (f) =>
         f.path.includes('Exception/') &&
         !f.path.includes('ApiException') &&
+        !f.path.includes('BaseRequestException') &&
         !f.path.includes('ConfigurationException') &&
         !f.path.includes('ConnectionException') &&
         !f.path.includes('TimeoutException') &&
         !f.path.includes('WorkOSException') &&
+        !f.path.includes('GenericException') &&
         !f.path.includes('UnexpectedValueException'),
     );
-    for (const ex of httpExceptions) {
-      expect(ex.content).toContain('extends ApiException');
+    for (const ex of statusExceptions) {
+      expect(ex.content).toContain('extends BaseRequestException');
     }
   });
 });
