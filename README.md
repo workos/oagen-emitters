@@ -137,6 +137,61 @@ export default {
 
 See `@workos/oagen`'s `src/ir/sdk-behavior.ts` for all interfaces and default values.
 
+## Operation Hints
+
+`oagen.config.ts` defines `operationHints` and `mountRules` that control how operations are named and organized across all SDKs.
+
+### Adding a hint for a new operation
+
+When the spec adds a new endpoint and the algorithm-derived name is wrong, add an entry to `operationHints`:
+
+```ts
+const operationHints: Record<string, OperationHint> = {
+  // Override derived name
+  'GET /sso/authorize': { name: 'get_authorization_url' },
+
+  // Remount to a different service
+  'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
+};
+```
+
+### Adding a union split
+
+For endpoints that accept a discriminated union body (multiple request shapes), use `split`:
+
+```ts
+'POST /user_management/authenticate': {
+  split: [
+    {
+      name: 'authenticate_with_password',
+      targetVariant: 'PasswordSessionAuthenticateRequest',
+      defaults: { grant_type: 'password' },
+      inferFromClient: ['client_id', 'client_secret'],
+      exposedParams: ['email', 'password', 'invitation_token'],
+    },
+    // ... more variants
+  ],
+},
+```
+
+### Mount rules
+
+Instead of adding `mountOn` to every operation individually, use `mountRules` for service-level remounting:
+
+```ts
+const mountRules: Record<string, string> = {
+  Connections: 'SSO',           // All Connections ops → SSO namespace
+  DirectoryGroups: 'DirectorySync',
+  UserManagementUsers: 'UserManagement',
+};
+```
+
+### Reviewing operations
+
+```bash
+npx oagen resolve --spec ../openapi-spec/spec/open-api-spec.yaml --format table
+```
+
 ## Adding a new language
 
 Use the oagen skills:
