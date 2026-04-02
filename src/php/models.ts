@@ -319,7 +319,7 @@ function generateFromArrayExpression(
       return accessor;
     case 'nullable': {
       const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, enumNames);
-      return `${accessor} !== null ? ${innerExpr} : null`;
+      return `isset(${accessor}) && ${accessor} !== null ? ${innerExpr} : null`;
     }
     case 'union':
     case 'map':
