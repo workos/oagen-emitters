@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateManifest } from '../../src/python/manifest.js';
 import type { ApiSpec, EmitterContext, Service, Model } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
 const models: Model[] = [
   {
@@ -51,6 +52,7 @@ const spec: ApiSpec = {
   services,
   models,
   enums: [],
+  sdk: defaultSdkBehavior(),
 };
 
 const ctx: EmitterContext = {

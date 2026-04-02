@@ -1,5 +1,11 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { planOperation, collectModelRefs, collectEnumRefs, assignModelsToServices } from '@workos/oagen';
+import type { ApiSpec, EmitterContext, GeneratedFile, Service, SdkBehavior } from '@workos/oagen';
+import {
+  planOperation,
+  collectModelRefs,
+  collectEnumRefs,
+  assignModelsToServices,
+  defaultSdkBehavior,
+} from '@workos/oagen';
 import { className, resolveServiceDir, servicePropertyName, buildServiceDirMap, dirToModule } from './naming.js';
 import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
@@ -142,6 +148,7 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 }
 
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const sdk: SdkBehavior = ctx.spec.sdk ?? defaultSdkBehavior();
   const lines: string[] = [];
   const { standalone, namespaces } = groupServicesByNamespace(spec.services, ctx);
 
@@ -298,11 +305,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('except Exception:');
   lines.push('    VERSION = "0.0.0"');
   lines.push('');
-  lines.push('RETRY_STATUS_CODES = {429, 500, 502, 503, 504}');
-  lines.push('MAX_RETRIES = 3');
-  lines.push('INITIAL_RETRY_DELAY = 0.5');
-  lines.push('MAX_RETRY_DELAY = 8.0');
-  lines.push('RETRY_MULTIPLIER = 2.0');
+  lines.push(`RETRY_STATUS_CODES = {${sdk.retry.retryableStatusCodes.join(', ')}}`);
+  lines.push(`MAX_RETRIES = ${sdk.retry.maxRetries}`);
+  lines.push(`INITIAL_RETRY_DELAY = ${sdk.retry.backoff.initialDelay}`);
+  lines.push(`MAX_RETRY_DELAY = ${sdk.retry.backoff.maxDelay}`);
+  lines.push(`RETRY_MULTIPLIER = ${sdk.retry.backoff.multiplier}`);
 
   // --- Sync namespace classes ---
   for (const ns of namespaces) {
@@ -432,8 +439,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push(`        resolved_base_url = base_url or os.environ.get("WORKOS_BASE_URL", "${spec.baseUrl}")`);
   lines.push('        # Ensure base_url has a trailing slash for backward compatibility');
   lines.push('        self._base_url = resolved_base_url.rstrip("/") + "/"');
+  const timeoutEnvVar = sdk.timeout.timeoutEnvVar ?? 'WORKOS_REQUEST_TIMEOUT';
   lines.push(
-    '        self._request_timeout = request_timeout if request_timeout is not None else int(os.environ.get("WORKOS_REQUEST_TIMEOUT", "30"))',
+    `        self._request_timeout = request_timeout if request_timeout is not None else int(os.environ.get("${timeoutEnvVar}", "${sdk.timeout.defaultTimeoutSeconds}"))`,
   );
   lines.push('        self._max_retries = max_retries');
   lines.push('        self._jwt_leeway = jwt_leeway');
@@ -584,10 +592,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            client_id: WorkOS client ID. Falls back to the WORKOS_CLIENT_ID environment variable.');
   lines.push(`            base_url: Base URL for API requests. Falls back to WORKOS_BASE_URL or "${spec.baseUrl}".`);
   lines.push(
-    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 30.',
+    `            request_timeout: HTTP request timeout in seconds. Falls back to ${timeoutEnvVar} or ${sdk.timeout.defaultTimeoutSeconds}.`,
   );
   lines.push('            jwt_leeway: JWT clock skew leeway in seconds.');
-  lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');
+  lines.push(
+    `            max_retries: Maximum number of retries for failed requests. Defaults to ${sdk.retry.maxRetries}.`,
+  );
   lines.push('');
   lines.push('        Raises:');
   lines.push(
@@ -774,10 +784,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            client_id: WorkOS client ID. Falls back to the WORKOS_CLIENT_ID environment variable.');
   lines.push(`            base_url: Base URL for API requests. Falls back to WORKOS_BASE_URL or "${spec.baseUrl}".`);
   lines.push(
-    '            request_timeout: HTTP request timeout in seconds. Falls back to WORKOS_REQUEST_TIMEOUT or 30.',
+    `            request_timeout: HTTP request timeout in seconds. Falls back to ${timeoutEnvVar} or ${sdk.timeout.defaultTimeoutSeconds}.`,
   );
   lines.push('            jwt_leeway: JWT clock skew leeway in seconds.');
-  lines.push('            max_retries: Maximum number of retries for failed requests. Defaults to 3.');
+  lines.push(
+    `            max_retries: Maximum number of retries for failed requests. Defaults to ${sdk.retry.maxRetries}.`,
+  );
   lines.push('');
   lines.push('        Raises:');
   lines.push(

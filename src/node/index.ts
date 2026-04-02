@@ -55,8 +55,8 @@ export const nodeEmitter: Emitter = {
     return ensureTrailingNewlines(generateErrors(ctx));
   },
 
-  generateConfig(_ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines([...generateConfig(), ...generateCommon()]);
+  generateConfig(ctx: EmitterContext): GeneratedFile[] {
+    return ensureTrailingNewlines([...generateConfig(), ...generateCommon(ctx)]);
   },
 
   generateTypeSignatures(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile[] {

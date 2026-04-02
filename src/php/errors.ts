@@ -1,11 +1,46 @@
-import type { EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { EmitterContext, GeneratedFile, SdkBehavior } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
+
+/** Standard HTTP reason phrases for doc comments. */
+const HTTP_STATUS_REASONS: Record<number, string> = {
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  422: 'Unprocessable Entity',
+  429: 'Rate Limited',
+};
 
 /**
  * Generate PHP exception class hierarchy.
  */
 export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
   const ns = ctx?.namespacePascal ?? 'WorkOS';
+  const sdk: SdkBehavior = ctx?.spec.sdk ?? defaultSdkBehavior();
   const files: GeneratedFile[] = [];
+
+  // Build the PHP expression for the error doc URL with "See" prefix.
+  // The template has {code} as a placeholder — we replace it with PHP string concatenation.
+  // e.g. 'https://workos.com/docs/errors/{code}' → "' — See: https://workos.com/docs/errors/' . $code"
+  const errorDocUrl = sdk.errors.errorDocUrlTemplate;
+  let errorDocSeeExpr: string;
+  if (errorDocUrl) {
+    const parts = errorDocUrl.split('{code}');
+    if (parts.length === 2) {
+      if (parts[1] === '') {
+        // Template ends with {code}: include prefix in single string
+        errorDocSeeExpr = `' — See: ${parts[0]}' . $code`;
+      } else {
+        errorDocSeeExpr = `' — See: ${parts[0]}' . $code . '${parts[1]}'`;
+      }
+    } else {
+      // No {code} placeholder — use literal
+      errorDocSeeExpr = `' — See: ${errorDocUrl}'`;
+    }
+  } else {
+    errorDocSeeExpr = "' — See: https://workos.com/docs/errors/' . $code";
+  }
 
   // Base ApiException — accepts both new-style (string message) and legacy (Response object) constructors
   files.push({
@@ -77,9 +112,29 @@ class ApiException extends \\Exception implements WorkOSException
         $this->rawBody = $rawBody;
     }
 
+    public function __toString(): string
+    {
+        $parts = [static::class];
+        if ($this->statusCode !== null) {
+            $parts[] = "[{$this->statusCode}]";
+        }
+        if ($this->requestId !== '' && $this->requestId !== null) {
+            $parts[] = "(Request: {$this->requestId})";
+        }
+        if ($this->apiErrorCode !== null) {
+            $parts[] = "Code: {$this->apiErrorCode}";
+        }
+        $parts[] = $this->getMessage();
+        return implode(' ', $parts);
+    }
+
     public static function fromResponse(int $statusCode, array $body, ?string $requestId = null): static
     {
         $message = $body['message'] ?? 'No message';
+        $code = $body['code'] ?? null;
+        if ($code !== null) {
+            $message .= ${errorDocSeeExpr};
+        }
         return new static(
             messageOrResponse: $message,
             statusCode: $statusCode,
@@ -96,16 +151,14 @@ class ApiException extends \\Exception implements WorkOSException
     overwriteExisting: true,
   });
 
-  // Status-code-specific exceptions
+  // Status-code-specific exceptions — generated from sdk.errors.statusCodeMap
   const exceptions: { name: string; doc: string; status: number }[] = [
-    { name: 'BadRequestException', doc: '400 Bad Request', status: 400 },
-    { name: 'AuthenticationException', doc: '401 Unauthorized', status: 401 },
-    { name: 'AuthorizationException', doc: '403 Forbidden', status: 403 },
-    { name: 'NotFoundException', doc: '404 Not Found', status: 404 },
-    { name: 'ConflictException', doc: '409 Conflict', status: 409 },
-    { name: 'UnprocessableEntityException', doc: '422 Unprocessable Entity', status: 422 },
-    { name: 'RateLimitExceededException', doc: '429 Rate Limited', status: 429 },
-    { name: 'ServerException', doc: '500+ Server Error', status: 500 },
+    ...Object.entries(sdk.errors.statusCodeMap).map(([code, kind]) => ({
+      name: `${kind}Exception`,
+      doc: `${code} ${HTTP_STATUS_REASONS[Number(code)] ?? kind}`,
+      status: Number(code),
+    })),
+    { name: `${sdk.errors.serverErrorKind}Exception`, doc: '500+ Server Error', status: 500 },
   ];
 
   for (const ex of exceptions) {
@@ -250,13 +303,13 @@ class UnexpectedValueException extends \\UnexpectedValueException implements Wor
   return files;
 }
 
-/** Map from status code to exception class name. */
-export const STATUS_CODE_EXCEPTIONS: Record<number, string> = {
-  400: 'BadRequestException',
-  401: 'AuthenticationException',
-  403: 'AuthorizationException',
-  404: 'NotFoundException',
-  409: 'ConflictException',
-  422: 'UnprocessableEntityException',
-  429: 'RateLimitExceededException',
-};
+/** Build status code to exception class name map from SDK behavior. */
+export function buildStatusCodeExceptions(sdk?: SdkBehavior): Record<number, string> {
+  const behavior = sdk ?? defaultSdkBehavior();
+  return Object.fromEntries(
+    Object.entries(behavior.errors.statusCodeMap).map(([code, kind]) => [Number(code), `${kind}Exception`]),
+  );
+}
+
+/** Map from status code to exception class name (default behavior). */
+export const STATUS_CODE_EXCEPTIONS: Record<number, string> = buildStatusCodeExceptions();

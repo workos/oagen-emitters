@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/node/client.js';
 import { isServiceCoveredByExisting } from '../../src/node/utils.js';
 import type { EmitterContext, ApiSpec, Service, Model, Enum } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 import type { ApiSurface } from '@workos/oagen/compat';
 
 const service: Service = {
@@ -46,6 +47,7 @@ const spec: ApiSpec = {
   services: [service],
   models: [model],
   enums: [],
+  sdk: defaultSdkBehavior(),
 };
 
 const ctx: EmitterContext = {
@@ -146,6 +148,7 @@ describe('generateClient', () => {
       services: [mfaService],
       models: [mfaModel],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     const overlayCtx: EmitterContext = {
@@ -261,6 +264,7 @@ describe('generateClient', () => {
       services: [eventService],
       models: [eventModel, otherModel],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     const surface: ApiSurface = {
@@ -324,6 +328,7 @@ describe('generateClient', () => {
           ],
         },
       ],
+      sdk: defaultSdkBehavior(),
     };
 
     const surface: ApiSurface = {
@@ -454,6 +459,7 @@ describe('generateClient', () => {
       services: [service, enumService, dirService],
       models: [model],
       enums: [enumDef, aliasEnumDef],
+      sdk: defaultSdkBehavior(),
     };
     const enumCtx: EmitterContext = {
       namespace: 'workos',
@@ -575,6 +581,7 @@ describe('generateClient', () => {
       services: [connectionsService, radarService],
       models: [connectionModel, radarModel],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     const coveredCtx: EmitterContext = {
@@ -715,6 +722,7 @@ describe('generateClient', () => {
       services: [partialService],
       models: [dirModel],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     const partialCtx: EmitterContext = {
@@ -818,6 +826,7 @@ describe('generateClient', () => {
       services: [mfaService],
       models: [mfaModel],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     const namingOnlyCtx: EmitterContext = {
@@ -859,6 +868,7 @@ describe('isServiceCoveredByExisting', () => {
     services: [],
     models: [],
     enums: [],
+    sdk: defaultSdkBehavior(),
   };
 
   it('returns false when no overlay is provided', () => {

@@ -23,6 +23,7 @@ import {
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
+import { buildNodeStatusExceptions } from './sdk-errors.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -63,15 +64,9 @@ export function resolveResourceClassName(service: Service, ctx: EmitterContext):
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
 const PAGINATION_PARAM_NAMES = new Set(['limit', 'before', 'after', 'order']);
 
-/** Map HTTP status codes to their corresponding exception class names for @throws docs. */
-const STATUS_TO_EXCEPTION_NAME: Record<number, string> = {
-  400: 'BadRequestException',
-  401: 'UnauthorizedException',
-  404: 'NotFoundException',
-  409: 'ConflictException',
-  422: 'UnprocessableEntityException',
-  429: 'RateLimitExceededException',
-};
+/** Map HTTP status codes to their corresponding exception class names for @throws docs.
+ *  Built from sdk.errors.statusCodeMap with Node-specific naming overrides. */
+const STATUS_TO_EXCEPTION_NAME: Record<number, string> = buildNodeStatusExceptions();
 
 /**
  * Compute the options interface name for a paginated method.

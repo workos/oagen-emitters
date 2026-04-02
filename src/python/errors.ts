@@ -1,10 +1,12 @@
-import type { EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { EmitterContext, GeneratedFile, SdkBehavior } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
 /**
  * Generate Python error/exception classes.
  */
 export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
   const namespace = ctx?.namespace ?? 'workos';
+  const sdk: SdkBehavior = ctx?.spec.sdk ?? defaultSdkBehavior();
   const files: GeneratedFile[] = [];
 
   const errorsContent = `from __future__ import annotations
@@ -206,13 +208,9 @@ class WorkOSTimeoutException(BaseRequestException):
 
 
 STATUS_CODE_TO_EXCEPTION: Dict[int, Type[BaseRequestException]] = {
-    400: BadRequestException,
-    401: AuthenticationException,
-    403: AuthorizationException,
-    404: NotFoundException,
-    409: ConflictException,
-    422: UnprocessableEntityException,
-    429: RateLimitExceededException,
+${Object.entries(sdk.errors.statusCodeMap)
+  .map(([code, kind]) => `    ${code}: ${kind}Exception,`)
+  .join('\n')}
 }`;
 
   files.push({

@@ -56,6 +56,7 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 }
 
 function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const sdk = ctx.spec.sdk;
   groupServicesByNamespace(spec.services, ctx); // validates service grouping
   const lines: string[] = [];
 
@@ -78,6 +79,14 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push(' */');
   lines.push(`class ${ctx.namespacePascal}`);
   lines.push('{');
+
+  // ── App info for User-Agent enrichment ──
+  lines.push('    /** @var array{name: string, version?: string, url?: string}|null */');
+  lines.push('    private static ?array $appInfo = null;');
+  lines.push('');
+  lines.push('    /** @var \\Psr\\Log\\LoggerInterface|null */');
+  lines.push('    private static ?\\Psr\\Log\\LoggerInterface $logger = null;');
+  lines.push('');
 
   // ── Legacy static configuration properties (backwards-compatible) ──
   lines.push('    /**');
@@ -224,6 +233,49 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push('    }');
   lines.push('');
   lines.push('    /**');
+  lines.push('     * Set a PSR-3 logger for SDK debug output.');
+  lines.push('     *');
+  lines.push('     * @param \\Psr\\Log\\LoggerInterface $logger');
+  lines.push('     */');
+  lines.push('    public static function setLogger(\\Psr\\Log\\LoggerInterface $logger): void');
+  lines.push('    {');
+  lines.push('        self::$logger = $logger;');
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @return \\Psr\\Log\\LoggerInterface|null');
+  lines.push('     */');
+  lines.push('    public static function getLogger(): ?\\Psr\\Log\\LoggerInterface');
+  lines.push('    {');
+  lines.push('        return self::$logger;');
+  lines.push('    }');
+  lines.push('');
+
+  lines.push('    /**');
+  lines.push('     * Set app information for User-Agent enrichment.');
+  lines.push('     * Plugin and integration authors can use this to identify their code in API logs.');
+  lines.push('     *');
+  lines.push('     * @param string $name Application name');
+  lines.push('     * @param string|null $version Application version');
+  lines.push('     * @param string|null $url Application URL');
+  lines.push('     */');
+  lines.push('    public static function setAppInfo(string $name, ?string $version = null, ?string $url = null): void');
+  lines.push('    {');
+  lines.push(
+    "        self::$appInfo = array_filter(['name' => $name, 'version' => $version, 'url' => $url], fn ($v) => $v !== null);",
+  );
+  lines.push('    }');
+  lines.push('');
+  lines.push('    /**');
+  lines.push('     * @return array{name: string, version?: string, url?: string}|null');
+  lines.push('     */');
+  lines.push('    public static function getAppInfo(): ?array');
+  lines.push('    {');
+  lines.push('        return self::$appInfo;');
+  lines.push('    }');
+  lines.push('');
+
+  lines.push('    /**');
   lines.push('     * Get environment variable with fallback to cached config sources.');
   lines.push('     * Checks in order: getenv(), $_ENV, $_SERVER');
   lines.push('     *');
@@ -256,14 +308,17 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push('    public function __construct(');
   lines.push('        ?string $apiKey = null,');
   lines.push(`        string $baseUrl = '${spec.baseUrl || 'https://api.workos.com'}',`);
-  lines.push('        int $timeout = 60,');
-  lines.push('        int $maxRetries = 3,');
+  lines.push(`        int $timeout = ${sdk.timeout.defaultTimeoutSeconds},`);
+  lines.push(`        int $maxRetries = ${sdk.retry.maxRetries},`);
   lines.push('        ?\\GuzzleHttp\\HandlerStack $handler = null,');
+  lines.push('        bool $enableTelemetry = true,');
+  lines.push('        ?\\Psr\\Log\\LoggerInterface $logger = null,');
   lines.push('    ) {');
   lines.push("        $resolvedKey = $apiKey ?? (getenv('WORKOS_API_KEY') ?: null) ?? self::$apiKey;");
   lines.push("        if ($resolvedKey !== null && $resolvedKey !== '') {");
+  lines.push('            $resolvedLogger = $logger ?? self::$logger;');
   lines.push(
-    '            $this->httpClient = new HttpClient($resolvedKey, $baseUrl, $timeout, $maxRetries, $handler);',
+    '            $this->httpClient = new HttpClient($resolvedKey, $baseUrl, $timeout, $maxRetries, $handler, $enableTelemetry, $resolvedLogger);',
   );
   lines.push('        }');
   lines.push('    }');
@@ -301,6 +356,32 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
 
 function generateHttpClient(ctx: EmitterContext): GeneratedFile[] {
   const ns = ctx.namespacePascal;
+  const sdk = ctx.spec.sdk;
+
+  // Generate use statements from status code map
+  const statusCodeUseStatements = Object.values(sdk.errors.statusCodeMap)
+    .map((kind) => `use ${ns}\\Exception\\${kind}Exception;`)
+    .join('\n');
+
+  // Generate STATUS_CODE_EXCEPTIONS map from sdk policy
+  const statusCodeEntries = Object.entries(sdk.errors.statusCodeMap)
+    .map(([code, kind]) => `        ${code} => ${kind}Exception::class,`)
+    .join('\n');
+
+  // Generate AI_AGENT_ENV_VARS from sdk policy
+  const aiAgentEntries = sdk.userAgent.aiAgentEnvVars
+    .map((entry) => `        '${entry.envVar}' => '${entry.agentName}',`)
+    .join('\n');
+
+  // Generate REQUEST_OPTIONS_KEYS from sdk policy
+  const requestOptionsKeys = sdk.requestGuard.optionKeys.map((k) => `'${k}'`).join(', ');
+
+  // Pre-compute backoff formula for PHP: min(initialDelay * pow(multiplier, $attempt), maxDelay)
+  // When initialDelay is 1, omit the "1 * " prefix to match: pow(multiplier, $attempt)
+  const { initialDelay, multiplier, maxDelay, jitterFactor } = sdk.retry.backoff;
+  const backoffBase =
+    initialDelay === 1 ? `pow(${multiplier}, $attempt)` : `${initialDelay} * pow(${multiplier}, $attempt)`;
+  const backoffExpr = `min(${backoffBase}, ${maxDelay})`;
 
   const content = `
 namespace ${ns};
@@ -311,33 +392,34 @@ use GuzzleHttp\\Exception\\RequestException;
 use GuzzleHttp\\HandlerStack;
 use Psr\\Http\\Message\\ResponseInterface;
 use ${ns}\\Exception\\ApiException;
-use ${ns}\\Exception\\AuthenticationException;
-use ${ns}\\Exception\\BadRequestException;
-use ${ns}\\Exception\\AuthorizationException;
-use ${ns}\\Exception\\ConflictException;
+${statusCodeUseStatements}
 use ${ns}\\Exception\\ConnectionException;
-use ${ns}\\Exception\\NotFoundException;
-use ${ns}\\Exception\\RateLimitExceededException;
 use ${ns}\\Exception\\ServerException;
 use ${ns}\\Exception\\TimeoutException;
-use ${ns}\\Exception\\UnprocessableEntityException;
+use Psr\\Log\\LoggerInterface;
+use Psr\\Log\\NullLogger;
 
 class HttpClient
 {
     private Client $client;
     private int $maxRetries;
+    private string $userAgent;
+    private bool $enableTelemetry;
+    private LoggerInterface $logger;
+
+    /** @var array{requestId: string, durationMs: int}|null */
+    private ?array $lastRequestMetrics = null;
 
     private const STATUS_CODE_EXCEPTIONS = [
-        400 => BadRequestException::class,
-        401 => AuthenticationException::class,
-        403 => AuthorizationException::class,
-        404 => NotFoundException::class,
-        409 => ConflictException::class,
-        422 => UnprocessableEntityException::class,
-        429 => RateLimitExceededException::class,
+${statusCodeEntries}
     ];
 
-    private const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+    private const RETRYABLE_STATUS_CODES = [${sdk.retry.retryableStatusCodes.join(', ')}];
+
+    /** AI agent environment variables to detect. */
+    private const AI_AGENT_ENV_VARS = [
+${aiAgentEntries}
+    ];
 
     public function __construct(
         private readonly string $apiKey,
@@ -345,20 +427,55 @@ class HttpClient
         int $timeout,
         int $maxRetries,
         ?HandlerStack $handler = null,
+        bool $enableTelemetry = true,
+        ?LoggerInterface $logger = null,
     ) {
         $this->maxRetries = $maxRetries;
+        $this->enableTelemetry = $enableTelemetry;
+        $this->logger = $logger ?? new NullLogger();
+        $this->userAgent = self::buildUserAgent();
         $this->client = new Client([
             'base_uri' => rtrim($baseUrl, '/') . '/',
             'timeout' => $timeout,
             'headers' => [
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-                'User-Agent' => Version::SDK_IDENTIFIER . '/' . Version::SDK_VERSION,
+                'User-Agent' => $this->userAgent,
             ],
             'handler' => $handler,
             'http_errors' => false,
         ]);
     }
+
+    private static function buildUserAgent(): string
+    {
+        $ua = Version::SDK_IDENTIFIER . '/' . Version::SDK_VERSION;
+
+        // Append app info if set
+        $appInfo = ${ns}::getAppInfo();
+        if ($appInfo !== null) {
+            $ua .= ' ' . $appInfo['name'];
+            if (isset($appInfo['version'])) {
+                $ua .= '/' . $appInfo['version'];
+            }
+            if (isset($appInfo['url'])) {
+                $ua .= ' (' . $appInfo['url'] . ')';
+            }
+        }
+
+        // Detect AI agents
+        foreach (self::AI_AGENT_ENV_VARS as $envVar => $agentName) {
+            if (getenv($envVar) !== false && getenv($envVar) !== '') {
+                $ua .= ' AIAgent/' . $agentName;
+                break;
+            }
+        }
+
+        return $ua;
+    }
+
+    /** Keys that belong in RequestOptions, not in params. */
+    private const REQUEST_OPTIONS_KEYS = [${requestOptionsKeys}];
 
     /**
      * @param array<string, mixed>|null $query
@@ -373,6 +490,18 @@ class HttpClient
         ?array $body = null,
         ?RequestOptions $options = null,
     ): array {
+        // Guard: detect RequestOptions keys accidentally passed as params
+        foreach ([$query ?? [], $body ?? []] as $params) {
+            foreach (self::REQUEST_OPTIONS_KEYS as $optKey) {
+                if (array_key_exists($optKey, $params)) {
+                    throw new \\InvalidArgumentException(
+                        "Found '{$optKey}' in request params. This key belongs in RequestOptions, not in the params array. "
+                        . "Use: new RequestOptions({$optKey}: ...) instead."
+                    );
+                }
+            }
+        }
+
         $guzzleOptions = [];
 
         if ($query !== null && count($query) > 0) {
@@ -392,8 +521,19 @@ class HttpClient
                 $guzzleOptions['timeout'] = $options->timeout;
             }
             if ($options->idempotencyKey !== null) {
-                $extraHeaders['Idempotency-Key'] = $options->idempotencyKey;
+                $extraHeaders['${sdk.idempotency.headerName}'] = $options->idempotencyKey;
             }
+            if ($options->apiKey !== null) {
+                $extraHeaders['Authorization'] = 'Bearer ' . $options->apiKey;
+            }
+        }
+
+        // Telemetry header: send previous request's ID + latency
+        if ($this->enableTelemetry && $this->lastRequestMetrics !== null) {
+            $extraHeaders['${sdk.telemetry.headerName}'] = json_encode([
+                'last_request_id' => $this->lastRequestMetrics['requestId'],
+                'last_request_duration_ms' => $this->lastRequestMetrics['durationMs'],
+            ]);
         }
 
         if (count($extraHeaders) > 0) {
@@ -401,6 +541,12 @@ class HttpClient
         }
 
         $maxRetries = $options?->maxRetries ?? $this->maxRetries;
+
+        // Auto-generate idempotency key for retryable POST requests without one
+        $hasIdempotencyKey = isset($guzzleOptions['headers']['${sdk.idempotency.headerName}']);
+        if (${sdk.idempotency.autoGenerateForPost ? "strtoupper($method) === 'POST' && " : ''}$maxRetries > 0 && !$hasIdempotencyKey) {
+            $guzzleOptions['headers']['${sdk.idempotency.headerName}'] = self::generateUuidV4();
+        }
 
         return $this->requestWithRetry($method, $path, $guzzleOptions, $maxRetries);
     }
@@ -413,8 +559,28 @@ class HttpClient
         $attempt = 0;
         while (true) {
             try {
+                $this->logger->debug('WorkOS API request', ['method' => $method, 'path' => $path]);
+                $startTime = hrtime(true);
                 $response = $this->client->request($method, $path, $options);
+                $durationMs = (int) ((hrtime(true) - $startTime) / 1_000_000);
                 $statusCode = $response->getStatusCode();
+
+                // Record telemetry
+                $requestId = $response->getHeaderLine('${sdk.telemetry.requestIdHeader}');
+                if ($requestId !== '') {
+                    $this->lastRequestMetrics = [
+                        'requestId' => $requestId,
+                        'durationMs' => $durationMs,
+                    ];
+                }
+
+                $this->logger->debug('WorkOS API response', [
+                    'method' => $method,
+                    'path' => $path,
+                    'status' => $statusCode,
+                    'request_id' => $requestId ?: null,
+                    'duration_ms' => $durationMs,
+                ]);
 
                 if ($statusCode >= 200 && $statusCode < 300) {
                     $responseBody = (string) $response->getBody();
@@ -426,18 +592,43 @@ class HttpClient
 
                 if (in_array($statusCode, self::RETRYABLE_STATUS_CODES) && $attempt < $maxRetries) {
                     $retryAfter = $this->getRetryDelay($response, $attempt);
+                    if ($statusCode === 429) {
+                        $this->logger->warning('WorkOS API rate limited', [
+                            'path' => $path,
+                            'retry_after' => $retryAfter,
+                            'request_id' => $requestId ?: null,
+                        ]);
+                    }
+                    $this->logger->info('WorkOS API retrying request', [
+                        'attempt' => $attempt + 1,
+                        'max_retries' => $maxRetries,
+                        'backoff_seconds' => $retryAfter,
+                    ]);
                     usleep((int) ($retryAfter * 1_000_000));
                     $attempt++;
                     continue;
                 }
 
+                $this->logger->error('WorkOS API non-retryable error', [
+                    'status' => $statusCode,
+                    'path' => $path,
+                    'request_id' => $requestId ?: null,
+                ]);
+
                 $this->throwForStatus($response);
             } catch (ConnectException $e) {
                 if ($attempt < $maxRetries) {
-                    usleep((int) ($this->calculateBackoff($attempt) * 1_000_000));
+                    $backoff = $this->calculateBackoff($attempt);
+                    $this->logger->info('WorkOS API retrying after connection error', [
+                        'attempt' => $attempt + 1,
+                        'max_retries' => $maxRetries,
+                        'backoff_seconds' => $backoff,
+                    ]);
+                    usleep((int) ($backoff * 1_000_000));
                     $attempt++;
                     continue;
                 }
+                $this->logger->error('WorkOS API connection failed', ['message' => $e->getMessage()]);
                 if (str_contains($e->getMessage(), 'timed out')) {
                     throw new TimeoutException($e->getMessage(), $e);
                 }
@@ -450,7 +641,7 @@ class HttpClient
     {
         $statusCode = $response->getStatusCode();
         $body = json_decode((string) $response->getBody(), true) ?? [];
-        $requestId = $response->getHeaderLine('X-Request-ID') ?: null;
+        $requestId = $response->getHeaderLine('${sdk.telemetry.requestIdHeader}') ?: null;
 
         $exceptionClass = self::STATUS_CODE_EXCEPTIONS[$statusCode] ?? null;
 
@@ -482,9 +673,17 @@ class HttpClient
 
     private function calculateBackoff(int $attempt): float
     {
-        $base = min(pow(2, $attempt), 30);
-        $jitter = $base * (mt_rand() / mt_getrandmax()) * 0.5;
+        $base = ${backoffExpr};
+        $jitter = $base * (mt_rand() / mt_getrandmax()) * ${jitterFactor};
         return $base + $jitter;
+    }
+
+    private static function generateUuidV4(): string
+    {
+        $data = random_bytes(16);
+        $data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
+        $data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
 }`;
 
@@ -514,6 +713,7 @@ class RequestOptions
         public readonly ?string $idempotencyKey = null,
         public readonly ?int $maxRetries = null,
         public readonly ?string $baseUrl = null,
+        public readonly ?string $apiKey = null,
     ) {}
 }`,
       integrateTarget: true,
@@ -579,6 +779,23 @@ class PaginatedResponse implements \\IteratorAggregate
     public function hasMore(): bool
     {
         return $this->after() !== null;
+    }
+
+    /**
+     * Serialize the current page to a wire-format array, including metadata.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        $data = array_map(
+            fn ($item) => method_exists($item, 'toArray') ? $item->toArray() : $item,
+            $this->data,
+        );
+        return [
+            'data' => $data,
+            'list_metadata' => $this->listMetadata,
+        ];
     }
 
     /**

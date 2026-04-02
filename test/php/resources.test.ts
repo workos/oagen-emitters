@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 import { generateResources } from '../../src/php/resources.js';
 import { initializeNaming } from '../../src/php/naming.js';
 
@@ -89,6 +90,7 @@ const emptySpec: ApiSpec = {
   services,
   models,
   enums: [],
+  sdk: defaultSdkBehavior(),
 };
 
 const ctx: EmitterContext = {

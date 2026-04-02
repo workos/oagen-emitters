@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateClient } from '../../src/python/client.js';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
 const models: Model[] = [
   {
@@ -38,6 +39,7 @@ const spec: ApiSpec = {
   services,
   models,
   enums: [],
+  sdk: defaultSdkBehavior(),
 };
 
 const ctx: EmitterContext = {

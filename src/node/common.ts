@@ -1,10 +1,12 @@
-import type { GeneratedFile } from '@workos/oagen';
+import type { EmitterContext, GeneratedFile, SdkBehavior } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
-export function generateCommon(): GeneratedFile[] {
+export function generateCommon(ctx?: EmitterContext): GeneratedFile[] {
+  const sdk: SdkBehavior = ctx?.spec.sdk ?? defaultSdkBehavior();
   return [
     {
       path: 'src/common/utils/pagination.ts',
-      content: paginationContent(),
+      content: paginationContent(sdk.pagination.autoPageDelayMs),
       skipIfExists: true,
       integrateTarget: false,
     },
@@ -29,7 +31,7 @@ export function generateCommon(): GeneratedFile[] {
   ];
 }
 
-function paginationContent(): string {
+function paginationContent(autoPageDelayMs: number): string {
   return `import type { PaginationOptions } from '../interfaces/pagination-options.interface';
 
 export interface ListMetadata {
@@ -85,8 +87,7 @@ export class AutoPaginatable<
     });
     yield result.data;
     if (result.listMetadata.after) {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      yield* this.generatePages({ after: result.listMetadata.after });
+${autoPageDelayMs > 0 ? `      await new Promise((resolve) => setTimeout(resolve, ${autoPageDelayMs}));\n` : ''}      yield* this.generatePages({ after: result.listMetadata.after });
     }
   }
 

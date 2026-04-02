@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateResources, resolveResourceClassName, hasCompatibleConstructor } from '../../src/node/resources.js';
 import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -9,6 +10,7 @@ const emptySpec: ApiSpec = {
   services: [],
   models: [],
   enums: [],
+  sdk: defaultSdkBehavior(),
 };
 
 const ctx: EmitterContext = {
