@@ -227,7 +227,7 @@ function generateServiceTest(
     lines.push(`from ${ctx.namespace}._pagination import AsyncPage, SyncPage`);
   }
   lines.push(
-    `from ${ctx.namespace}._errors import AuthenticationError, NotFoundError, RateLimitExceededError, ServerError`,
+    `from ${ctx.namespace}._errors import AuthenticationError, BadRequestError, NotFoundError, RateLimitExceededError, ServerError, UnprocessableEntityError`,
   );
 
   lines.push('');
@@ -446,6 +446,35 @@ function generateServiceTest(
     lines.push('            workos.close()');
   }
 
+  // Add 400/422 error tests for the first write (POST/PUT/PATCH) operation
+  const firstWriteOp = service.operations.find(
+    (op) => ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase()) && !isRedirectEndpoint(op),
+  );
+  if (firstWriteOp) {
+    const writeMethod = resolveMethodName(firstWriteOp, service, ctx);
+    const writeArgs = buildTestArgs(firstWriteOp, spec);
+
+    lines.push('');
+    lines.push(`    def test_${writeMethod}_bad_request(self, httpx_mock):`);
+    lines.push('        workos = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=400, json={"message": "Bad request"})');
+    lines.push('            with pytest.raises(BadRequestError):');
+    lines.push(`                workos.${propName}.${writeMethod}(${writeArgs})`);
+    lines.push('        finally:');
+    lines.push('            workos.close()');
+
+    lines.push('');
+    lines.push(`    def test_${writeMethod}_unprocessable(self, httpx_mock):`);
+    lines.push('        workos = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=422, json={"message": "Unprocessable"})');
+    lines.push('            with pytest.raises(UnprocessableEntityError):');
+    lines.push(`                workos.${propName}.${writeMethod}(${writeArgs})`);
+    lines.push('        finally:');
+    lines.push('            workos.close()');
+  }
+
   // --- Async test class ---
   lines.push('');
   lines.push('');
@@ -618,6 +647,35 @@ function generateServiceTest(
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
     lines.push('            with pytest.raises(ServerError):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
+    lines.push('        finally:');
+    lines.push('            await workos.close()');
+  }
+
+  // Async 400/422 error tests for the first write operation
+  const asyncFirstWriteOp = service.operations.find(
+    (op) => ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase()) && !isRedirectEndpoint(op),
+  );
+  if (asyncFirstWriteOp) {
+    const asyncWriteMethod = resolveMethodName(asyncFirstWriteOp, service, ctx);
+    const asyncWriteArgs = buildTestArgs(asyncFirstWriteOp, spec);
+
+    lines.push('');
+    lines.push(`    async def test_${asyncWriteMethod}_bad_request(self, httpx_mock):`);
+    lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=400, json={"message": "Bad request"})');
+    lines.push('            with pytest.raises(BadRequestError):');
+    lines.push(`                await workos.${propName}.${asyncWriteMethod}(${asyncWriteArgs})`);
+    lines.push('        finally:');
+    lines.push('            await workos.close()');
+
+    lines.push('');
+    lines.push(`    async def test_${asyncWriteMethod}_unprocessable(self, httpx_mock):`);
+    lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        try:');
+    lines.push('            httpx_mock.add_response(status_code=422, json={"message": "Unprocessable"})');
+    lines.push('            with pytest.raises(UnprocessableEntityError):');
+    lines.push(`                await workos.${propName}.${asyncWriteMethod}(${asyncWriteArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
   }
@@ -1329,6 +1387,20 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
     lines.push(`        assert client.${path} is not None`);
   }
   lines.push('        await client.close()');
+
+  // Async error status code tests — mirror the sync ones
+  for (const [code, errorClass] of errorCodes) {
+    lines.push('');
+    lines.push(`    async def test_raises_${code}(self, httpx_mock):`);
+    lines.push('        httpx_mock.add_response(');
+    lines.push(`            status_code=${code},`);
+    lines.push('            json={"message": "Error"},');
+    lines.push('        )');
+    lines.push('        client = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push(`        with pytest.raises(${errorClass}):`);
+    lines.push('            await client.request("GET", "test")');
+    lines.push('        await client.close()');
+  }
 
   lines.push('');
   lines.push('    async def test_timeout_error_is_wrapped(self, httpx_mock, monkeypatch):');

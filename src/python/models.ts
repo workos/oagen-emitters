@@ -103,6 +103,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const hasOptional = deduplicatedFields.some((f) => isOptionalField(model.name, f, ctx));
     if (hasOptional) typingImports.add('Optional');
     const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
+    const usesEnum = deps.enums.size > 0;
 
     lines.push('from __future__ import annotations');
     lines.push('');
@@ -110,11 +111,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (usesDateTime) {
       lines.push('from datetime import datetime');
     }
+    if (usesEnum) {
+      lines.push('from enum import Enum');
+    }
     lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
-    lines.push(`from ${ctx.namespace}._errors import WorkOSError`);
+    lines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
     if (usesDateTime) {
-      lines.push(`from ${ctx.namespace}._types import _parse_datetime`);
+      lines.push(`from ${ctx.namespace}._types import _format_datetime, _parse_datetime`);
     }
 
     // Import referenced models from their service's models package
@@ -213,9 +217,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('            )');
     lines.push('        except (KeyError, ValueError) as e:');
-    lines.push(
-      `            raise WorkOSError(f"Unexpected API response while parsing ${modelClassName}: {e!s}") from e`,
-    );
+    lines.push(`            _raise_deserialize_error("${modelClassName}", e)`);
 
     // to_dict instance method
     lines.push('');
@@ -570,14 +572,19 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
 
 function serializeField(ref: any, accessor: string): string {
   if (isDateTimeType(ref)) {
-    return `${accessor}.isoformat(timespec="milliseconds").replace("+00:00", "Z")`;
+    return `_format_datetime(${accessor})`;
   }
   switch (ref.kind) {
     case 'model':
       return `${accessor}.to_dict()`;
+    case 'enum':
+      return `${accessor}.value if isinstance(${accessor}, Enum) else ${accessor}`;
     case 'array': {
       if (ref.items.kind === 'model') {
         return `[item.to_dict() for item in ${accessor}]`;
+      }
+      if (ref.items.kind === 'enum') {
+        return `[item.value if isinstance(item, Enum) else item for item in ${accessor}]`;
       }
       return accessor;
     }

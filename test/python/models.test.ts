@@ -107,16 +107,13 @@ describe('generateModels', () => {
     // from_dict method
     expect(modelFile.content).toContain('def from_dict(cls, data: Dict[str, Any])');
     expect(modelFile.content).toContain('_parse_datetime(data["created_at"])');
-    expect(modelFile.content).toContain('except (KeyError, ValueError) as e:');
-    expect(modelFile.content).toContain(
-      'raise WorkOSError(f"Unexpected API response while parsing Organization: {e!s}") from e',
-    );
+    expect(modelFile.content).toContain('_raise_deserialize_error("Organization", e)');
+    expect(modelFile.content).toContain('from workos._types import _raise_deserialize_error');
 
     // to_dict method
     expect(modelFile.content).toContain('def to_dict(self) -> Dict[str, Any]:');
-    expect(modelFile.content).toContain(
-      'result["created_at"] = self.created_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")',
-    );
+    expect(modelFile.content).toContain('result["created_at"] = _format_datetime(self.created_at)');
+    expect(modelFile.content).toContain('from workos._types import _format_datetime, _parse_datetime');
     expect(modelFile.content).toContain('result["external_id"] = None');
   });
 

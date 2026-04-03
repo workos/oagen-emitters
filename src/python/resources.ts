@@ -225,9 +225,13 @@ function emitMethodDocstring(
   const { returnType, pathParamNames, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
 
-  // Description
+  // Description — indent continuation lines to align with the opening `"""`
   if (op.description) {
-    lines.push(`        """${op.description}`);
+    const descLines = op.description.split('\n');
+    const indentedDesc = descLines
+      .map((line, i) => (i === 0 ? line : line.trim() === '' ? '' : `        ${line}`))
+      .join('\n');
+    lines.push(`        """${indentedDesc}`);
   } else {
     lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
   }
@@ -298,7 +302,7 @@ function emitMethodDocstring(
       lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
     }
     if (isPaginated) {
-      lines.push('            limit: Maximum number of records to return.');
+      lines.push('            limit: Maximum number of records to return (1-100, default: 10).');
       lines.push('            before: Pagination cursor for previous page.');
       lines.push('            after: Pagination cursor for next page.');
       lines.push('            order: Sort order.');

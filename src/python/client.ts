@@ -366,13 +366,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const clsName = className(resolvedName);
     const prop = servicePropertyName(resolvedName);
+    const readable = clsName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${prop}(self) -> ${clsName}:`);
+    lines.push(`        """${readable} API resources."""`);
     lines.push(`        return ${clsName}(self)`);
     generatedProps.add(prop);
   }
-  emitCompatClientPropertyAliases(lines, generatedProps);
+  emitCompatClientPropertyAliases(lines, generatedProps, false);
   emitCompatClientAccessors(lines, false);
 
   lines.push('');
@@ -455,6 +457,27 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
   lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
+  lines.push('');
+  lines.push('    def request_raw(');
+  lines.push('        self,');
+  lines.push('        method: str,');
+  lines.push('        path: str,');
+  lines.push('        *,');
+  lines.push('        params: Optional[Dict[str, Any]] = None,');
+  lines.push('        body: Optional[Dict[str, Any]] = None,');
+  lines.push('        idempotency_key: Optional[str] = None,');
+  lines.push('        request_options: Optional[RequestOptions] = None,');
+  lines.push('    ) -> Dict[str, Any]:');
+  lines.push('        """Make an HTTP request without model deserialization.');
+  lines.push('');
+  lines.push('        Returns the raw JSON dict. Use this when you need the raw');
+  lines.push('        response without mapping through a model class.');
+  lines.push('        """');
+  lines.push('        result = self.request(');
+  lines.push('            method=method, path=path, params=params, body=body,');
+  lines.push('            idempotency_key=idempotency_key, request_options=request_options,');
+  lines.push('        )');
+  lines.push('        return result if isinstance(result, dict) else {}');
   lines.push('');
   lines.push('    def request_page(');
   lines.push('        self,');
@@ -551,13 +574,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const clsName = className(resolvedName);
     const prop = servicePropertyName(resolvedName);
+    const readable = clsName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${prop}(self) -> Async${clsName}:`);
+    lines.push(`        """${readable} API resources."""`);
     lines.push(`        return Async${clsName}(self)`);
     asyncGeneratedProps.add(prop);
   }
-  emitCompatClientPropertyAliases(lines, asyncGeneratedProps);
+  emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
   emitCompatClientAccessors(lines, true);
 
   lines.push('');
@@ -640,6 +665,27 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                    continue');
   lines.push('                raise WorkOSError(f"Network error: {e}") from e');
   lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
+  lines.push('');
+  lines.push('    async def request_raw(');
+  lines.push('        self,');
+  lines.push('        method: str,');
+  lines.push('        path: str,');
+  lines.push('        *,');
+  lines.push('        params: Optional[Dict[str, Any]] = None,');
+  lines.push('        body: Optional[Dict[str, Any]] = None,');
+  lines.push('        idempotency_key: Optional[str] = None,');
+  lines.push('        request_options: Optional[RequestOptions] = None,');
+  lines.push('    ) -> Dict[str, Any]:');
+  lines.push('        """Make an async HTTP request without model deserialization.');
+  lines.push('');
+  lines.push('        Returns the raw JSON dict. Use this when you need the raw');
+  lines.push('        response without mapping through a model class.');
+  lines.push('        """');
+  lines.push('        result = await self.request(');
+  lines.push('            method=method, path=path, params=params, body=body,');
+  lines.push('            idempotency_key=idempotency_key, request_options=request_options,');
+  lines.push('        )');
+  lines.push('        return result if isinstance(result, dict) else {}');
   lines.push('');
   lines.push('    async def request_page(');
   lines.push('        self,');
@@ -826,6 +872,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('from ._client import AsyncWorkOSClient, WorkOSClient');
   lines.push('from ._errors import WorkOSError');
   lines.push('from ._pagination import AsyncPage, ListMetadata, SyncPage');
+  lines.push('from .public_client import create_public_client');
   lines.push('from ._types import RequestOptions');
   lines.push('');
   lines.push('__all__ = [');
@@ -836,6 +883,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('    "AsyncPage",');
   lines.push('    "ListMetadata",');
   lines.push('    "RequestOptions",');
+  lines.push('    "create_public_client",');
   lines.push(']');
 
   return [
@@ -873,19 +921,22 @@ function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
   lines.push('        return PKCE()');
 }
 
-function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>): void {
-  const aliases: Array<{ alias: string; typeName: string; returnExpr: string }> = [];
+function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>, isAsync: boolean): void {
+  const aliases: Array<{ alias: string; typeName: string; returnExpr: string; docstring: string }> = [];
   if (generatedProps.has('multi_factor_auth') && !generatedProps.has('mfa')) {
+    const mfaType = isAsync ? 'AsyncMultiFactorAuth' : 'MultiFactorAuth';
     aliases.push({
       alias: 'mfa',
-      typeName: 'Any',
+      typeName: mfaType,
       returnExpr: 'self.multi_factor_auth',
+      docstring: '"""Alias for multi_factor_auth."""',
     });
   }
   for (const alias of aliases) {
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${alias.alias}(self) -> ${alias.typeName}:`);
+    lines.push(`        ${alias.docstring}`);
     lines.push(`        return ${alias.returnExpr}`);
   }
 }
