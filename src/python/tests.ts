@@ -1,7 +1,6 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
-import { className, fileName, fieldName, resolveMethodName, buildServiceDirMap, dirToModule } from './naming.js';
-import { groupServicesByNamespace } from './client.js';
+import { className, fileName, fieldName, resolveMethodName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
@@ -181,18 +180,17 @@ function generateServiceTest(
 
   // Group imports by their actual service directory (models may live in different services)
   const modelToServiceMap = assignModelsToServices(spec.models, spec.services);
-  const grouping = groupServicesByNamespace(spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const mountDirMap = buildMountDirMap(ctx);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);
-    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
+    return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';
   };
 
   // Group enum imports by service directory
   const enumToServiceMap = assignEnumsToServices(spec.enums, spec.services);
   const resolveEnumDir = (enumName: string) => {
     const svc = enumToServiceMap.get(enumName);
-    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
+    return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';
   };
 
   const importsByDir = new Map<string, string[]>();
@@ -1033,8 +1031,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   if (models.length === 0) return null;
 
   const modelToService = assignModelsToServices(spec.models, spec.services);
-  const roundTripGrouping = groupServicesByNamespace(spec.services, ctx);
-  const roundTripDirMap = buildServiceDirMap(roundTripGrouping);
+  const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';
 

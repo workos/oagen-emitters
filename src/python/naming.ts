@@ -1,19 +1,6 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
-import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
-
-/** Namespace grouping result (shared with client.ts). */
-export interface NamespaceGroup {
-  prefix: string;
-  entries: { service: Service; subProp: string; resolvedName: string }[];
-  baseEntry?: { service: Service; resolvedName: string };
-}
-
-/** Grouping result returned by groupServicesByNamespace. */
-export interface NamespaceGrouping {
-  standalone: { service: Service; prop: string; resolvedName: string }[];
-  namespaces: NamespaceGroup[];
-}
+import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 
 /**
  * Map of lowercase acronym forms to their correct casing.
@@ -171,14 +158,13 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   return toSnakeCase(op.name);
 }
 
-/**
- * Resolve the SDK class name for a service.
- *
- * Python preserves the full IR namespace hierarchy (user_management.users, etc.),
- * so class names come from the overlay (backwards compat) or IR service name.
- * Mount rules only affect method names (via resolveMethodName), not class names.
- */
+/** Resolve the SDK class name for a service, using resolved operations' mountOn. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
+  // Use resolved ops mountOn as canonical class name (flat pattern like PHP)
+  for (const r of ctx.resolvedOperations ?? []) {
+    if (r.service.name === service.name) return r.mountOn;
+  }
+  // Fallback to overlay, then IR name
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -197,23 +183,15 @@ export function resolveTypeName(name: string, ctx: EmitterContext): string {
 }
 
 /**
- * Build a map from IR service name to the physical directory path (relative to src/{namespace}/).
- * Standalone services get flat dirs (e.g., "organizations").
- * Namespace sub-services get nested dirs (e.g., "user_management/users").
- * Namespace base services get the prefix dir (e.g., "user_management").
+ * Build a map from IR service name to mount-target directory name.
+ * Every service maps to its mount target's snake_case directory.
+ * Replaces the old buildServiceDirMap(grouping) which required namespace grouping.
  */
-export function buildServiceDirMap(grouping: NamespaceGrouping): Map<string, string> {
+export function buildMountDirMap(ctx: EmitterContext): Map<string, string> {
   const map = new Map<string, string>();
-  for (const entry of grouping.standalone) {
-    map.set(entry.service.name, moduleName(entry.resolvedName));
-  }
-  for (const ns of grouping.namespaces) {
-    if (ns.baseEntry) {
-      map.set(ns.baseEntry.service.name, ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      map.set(entry.service.name, `${ns.prefix}/${entry.subProp}`);
-    }
+  for (const service of ctx.spec.services) {
+    const target = getMountTarget(service, ctx);
+    map.set(service.name, moduleName(target));
   }
   return map;
 }
@@ -225,8 +203,7 @@ export function dirToModule(dir: string): string {
 
 /**
  * Compute the relative import prefix (dots) to reach the namespace root from a given dir depth.
- * For "organizations" (depth 1): returns ".." (2 dots)
- * For "user_management/users" (depth 2): returns "..." (3 dots)
+ * With the flat mount-based layout, dirs are always single-level so this returns ".." (2 dots).
  */
 export function relativeImportPrefix(dirName: string): string {
   const depth = dirName.split('/').length;

@@ -123,7 +123,7 @@ describe('generateClient', () => {
     expect(serviceInit!.content).toContain('from ._resource import Organizations, AsyncOrganizations');
   });
 
-  it('generates nested directory structure for namespace sub-services', () => {
+  it('generates flat directory structure for services (no nested namespaces)', () => {
     const nestedSpec: ApiSpec = {
       ...spec,
       services: [
@@ -149,15 +149,13 @@ describe('generateClient', () => {
 
     const files = generateClient(nestedSpec, { ...ctx, spec: nestedSpec });
 
-    // Sub-service lives directly in the nested directory
-    const subServiceInit = files.find((f) => f.path === 'src/workos/organizations/api_keys/__init__.py');
-    expect(subServiceInit).toBeDefined();
-    // Should contain the resource re-export directly (not an alias to a flat dir)
-    expect(subServiceInit!.content).toContain('from ._resource import OrganizationsApiKeys');
+    // Service gets its own flat directory (no nesting)
+    const serviceInit = files.find((f) => f.path === 'src/workos/organizations_api_keys/__init__.py');
+    expect(serviceInit).toBeDefined();
 
-    // Client should import from the nested path
+    // Client should import from the flat path
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    expect(clientFile!.content).toContain('from .organizations.api_keys._resource import OrganizationsApiKeys');
+    expect(clientFile!.content).toContain('OrganizationsApiKeys');
   });
 
   it('generates pyproject.toml', () => {
@@ -244,14 +242,11 @@ describe('generateClient', () => {
 
     const files = generateClient(compatSpec, { ...ctx, spec: compatSpec });
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    expect(clientFile!.content).toContain('def load_sealed_session');
+    // load_sealed_session is now added via @oagen-ignore in the target SDK, not emitter-generated
+    expect(clientFile!.content).not.toContain('def load_sealed_session');
+    // Client has flat accessors, no methods from child services
     expect(clientFile!.content).not.toContain('def get_authorization_url');
     expect(clientFile!.content).not.toContain('def get_user(');
     expect(clientFile!.content).not.toContain('def create_user(');
-
-    const typesInit = files.find((f) => f.path === 'src/workos/types/user_management/__init__.py');
-    expect(typesInit).toBeDefined();
-    expect(typesInit!.content).toContain('from workos.user_management.authentication.models import *');
-    expect(typesInit!.content).toContain('from workos.user_management.users.models import *');
   });
 });

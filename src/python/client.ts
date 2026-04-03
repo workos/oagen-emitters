@@ -1,13 +1,6 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, SdkBehavior } from '@workos/oagen';
-import {
-  planOperation,
-  collectModelRefs,
-  collectEnumRefs,
-  assignModelsToServices,
-  defaultSdkBehavior,
-} from '@workos/oagen';
-import { className, resolveServiceDir, servicePropertyName, buildServiceDirMap, dirToModule } from './naming.js';
-import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
+import { toPascalCase, defaultSdkBehavior } from '@workos/oagen';
+import { resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
@@ -22,7 +15,6 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 
   files.push(...generateWorkOSClient(spec, ctx));
   files.push(...generateServiceInits(spec, ctx));
-  files.push(...generateNamespaceAliasPackages(spec, ctx));
   files.push(...generateBarrel(spec, ctx));
   files.push(...generateTypesBarrels(spec, ctx));
   files.push(...generatePyProjectToml(ctx));
@@ -32,112 +24,34 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 }
 
 /**
- * Group services by shared snake_case prefix for nested namespaces.
- * Services sharing a common prefix (e.g., user_management_users, user_management_invitations)
- * are grouped under a namespace (user_management) with sub-properties (users, invitations).
+ * Deduplicate services by mount target. Multiple IR services may mount to the
+ * same target (e.g., Applications + ApplicationClientSecrets -> Connect).
+ * Returns one representative service per unique mount target, using the service
+ * whose PascalCase name matches the target (if any), or the first one found.
  */
-export function groupServicesByNamespace(services: Service[], ctx: EmitterContext): NamespaceGrouping {
-  const entries = services.map((service) => {
-    const resolvedName = resolveResourceClassName(service, ctx);
-    return { service, prop: servicePropertyName(resolvedName), resolvedName };
-  });
-
-  // Build the set of all actual service property names — only these can serve as namespace prefixes.
-  // This prevents over-aggressive grouping (e.g., "directory" grouping "directory_groups"
-  // when there is no "Directory" service to serve as the namespace base).
-  const allProps = new Set(entries.map((e) => e.prop));
-
-  // Virtual namespaces: allow namespace groupings even when no base service exists.
-  // This is needed for service clusters like user_management_* where the prefix
-  // "user_management" isn't itself a service but should still form a namespace.
-  const VIRTUAL_NAMESPACES = new Set(['user_management']);
-
-  // Count how many property names contain each possible underscore-delimited prefix
-  const prefixCount = new Map<string, number>();
-  for (const entry of entries) {
-    prefixCount.set(entry.prop, (prefixCount.get(entry.prop) || 0) + 1);
-    const parts = entry.prop.split('_');
-    for (let len = 1; len < parts.length; len++) {
-      const prefix = parts.slice(0, len).join('_');
-      prefixCount.set(prefix, (prefixCount.get(prefix) || 0) + 1);
+function deduplicateByMount(services: Service[], ctx: EmitterContext): Service[] {
+  const byTarget = new Map<string, Service>();
+  for (const s of services) {
+    const target = getMountTarget(s, ctx);
+    const existing = byTarget.get(target);
+    if (!existing || toPascalCase(s.name) === target) {
+      byTarget.set(target, s);
     }
   }
-
-  // For each entry, find the longest prefix shared by 2+ entries (that isn't the full name)
-  // AND corresponds to an actual service property name.
-  const entryPrefix = new Map<string, string>();
-  for (const entry of entries) {
-    const parts = entry.prop.split('_');
-    for (let len = parts.length - 1; len >= 1; len--) {
-      const prefix = parts.slice(0, len).join('_');
-      if (
-        (prefixCount.get(prefix) ?? 0) >= 2 &&
-        prefix !== entry.prop &&
-        (allProps.has(prefix) || VIRTUAL_NAMESPACES.has(prefix))
-      ) {
-        entryPrefix.set(entry.prop, prefix);
-        break;
-      }
-    }
-  }
-
-  const namespacesMap = new Map<string, NamespaceGroup['entries']>();
-  const standalone: typeof entries = [];
-
-  for (const entry of entries) {
-    const prefix = entryPrefix.get(entry.prop);
-    if (prefix) {
-      if (!namespacesMap.has(prefix)) namespacesMap.set(prefix, []);
-      const subProp = entry.prop.slice(prefix.length + 1);
-      namespacesMap.get(prefix)!.push({ service: entry.service, subProp, resolvedName: entry.resolvedName });
-    } else {
-      standalone.push(entry);
-    }
-  }
-
-  // Detect standalones whose property name collides with a namespace prefix.
-  // Remove them from standalone and attach as baseEntry on the namespace.
-  const namespacePrefixes = new Set(namespacesMap.keys());
-  const colliding = new Map<string, (typeof entries)[0]>();
-  const filteredStandalone = standalone.filter((entry) => {
-    if (namespacePrefixes.has(entry.prop)) {
-      colliding.set(entry.prop, entry);
-      return false;
-    }
-    return true;
-  });
-
-  const namespaces: NamespaceGroup[] = [...namespacesMap].map(([prefix, nsEntries]) => ({
-    prefix,
-    entries: nsEntries,
-    baseEntry: colliding.get(prefix)
-      ? { service: colliding.get(prefix)!.service, resolvedName: colliding.get(prefix)!.resolvedName }
-      : undefined,
-  }));
-  return { standalone: filteredStandalone, namespaces };
+  return [...byTarget.values()];
 }
 
 export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext): Map<string, string> {
-  // Only group top-level services (not mounted sub-services)
-  const topLevel = clientServices(services, ctx);
-  const { standalone, namespaces } = groupServicesByNamespace(topLevel, ctx);
+  const topLevel = deduplicateByMount(services, ctx);
   const paths = new Map<string, string>();
 
-  for (const entry of standalone) {
-    paths.set(entry.service.name, entry.prop);
+  for (const service of topLevel) {
+    const resolvedName = resolveResourceClassName(service, ctx);
+    const prop = servicePropertyName(resolvedName);
+    paths.set(service.name, prop);
   }
 
-  for (const ns of namespaces) {
-    if (ns.baseEntry) {
-      paths.set(ns.baseEntry.service.name, ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      paths.set(entry.service.name, `${ns.prefix}.${entry.subProp}`);
-    }
-  }
-
-  // Build a reverse map: mount target name → access path (for targets that
-  // don't match any IR service name, e.g., "Connect" has no IR service named "Connect")
+  // Build reverse map: mount target name -> access path
   const targetPaths = new Map<string, string>();
   for (const service of topLevel) {
     const target = getMountTarget(service, ctx);
@@ -151,25 +65,15 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
     if (paths.has(service.name)) continue;
     const mountTarget = getMountTarget(service, ctx);
     const targetPath = targetPaths.get(mountTarget) ?? paths.get(mountTarget);
-    if (targetPath) {
-      paths.set(service.name, targetPath);
-    }
+    if (targetPath) paths.set(service.name, targetPath);
   }
 
   return paths;
 }
 
-/**
- * Return services as-is. Mount rules affect method naming and the smoke manifest,
- * but the Python client preserves the full namespace hierarchy from IR services.
- */
-function clientServices(services: Service[], _ctx: EmitterContext): Service[] {
-  return services;
-}
-
 function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): void {
-  const topLevelServices = clientServices(spec.services, ctx);
-  const accessPaths = buildServiceAccessPaths(topLevelServices, ctx);
+  const topLevelServices = deduplicateByMount(spec.services, ctx);
+  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
   const unreachableServices = topLevelServices
     .filter((service) => service.operations.length > 0 && !accessPaths.has(service.name))
     .map((service) => service.name);
@@ -182,17 +86,7 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const sdk: SdkBehavior = ctx.spec.sdk ?? defaultSdkBehavior();
   const lines: string[] = [];
-  const topLevelServices = clientServices(spec.services, ctx);
-  const { standalone, namespaces } = groupServicesByNamespace(topLevelServices, ctx);
-
-  const listWrapperNames = new Set<string>();
-  for (const m of ctx.spec.models) {
-    const dataField = m.fields.find((f) => f.name === 'data');
-    const hasListMeta = m.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-    if (dataField && hasListMeta && dataField.type.kind === 'array') {
-      listWrapperNames.add(m.name);
-    }
-  }
+  const topLevelServices = deduplicateByMount(spec.services, ctx);
 
   // --- Imports ---
   lines.push('from __future__ import annotations');
@@ -229,104 +123,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes (both sync and async)
-  const serviceDirMap = buildServiceDirMap({ standalone, namespaces });
-  for (const service of spec.services) {
+  const serviceDirMap = buildMountDirMap(ctx);
+  for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     lines.push(`from .${dirToModule(dirName)}._resource import ${resolvedName}, Async${resolvedName}`);
-  }
-
-  // Collect model/enum imports needed by namespace delegate method signatures
-  const delegateModelImports = new Set<string>();
-  const delegateEnumImports = new Set<string>();
-  for (const ns of namespaces) {
-    if (!ns.baseEntry) continue;
-    const baseSvc = ns.baseEntry.service;
-    for (const op of baseSvc.operations) {
-      const plan = planOperation(op);
-      if (plan.responseModelName && !listWrapperNames.has(plan.responseModelName)) {
-        delegateModelImports.add(plan.responseModelName);
-      }
-      if (op.pagination?.itemType.kind === 'model') {
-        let paginationItemName = op.pagination.itemType.name;
-        if (listWrapperNames.has(paginationItemName)) {
-          const wrapperModel = ctx.spec.models.find((m) => m.name === paginationItemName);
-          const dataField = wrapperModel?.fields.find((f) => f.name === 'data');
-          if (dataField?.type.kind === 'array' && dataField.type.items.kind === 'model') {
-            paginationItemName = dataField.type.items.name;
-          }
-        }
-        delegateModelImports.add(paginationItemName);
-      }
-      if (op.requestBody?.kind === 'model') {
-        const requestBodyName = op.requestBody.name;
-        delegateModelImports.add(requestBodyName);
-        const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
-        if (bodyModel) {
-          for (const f of bodyModel.fields) {
-            for (const ref of collectModelRefs(f.type)) delegateModelImports.add(ref);
-            for (const ref of collectEnumRefs(f.type)) delegateEnumImports.add(ref);
-          }
-        }
-      }
-      if (op.requestBody?.kind === 'union') {
-        for (const v of (op.requestBody as any).variants ?? []) {
-          if (v.kind === 'model') delegateModelImports.add(v.name);
-        }
-      }
-      for (const p of [...op.pathParams, ...op.queryParams]) {
-        for (const ref of collectEnumRefs(p.type)) delegateEnumImports.add(ref);
-      }
-    }
-  }
-
-  // Emit model imports grouped by service directory
-  const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
-  const resolveModelDir = (modelName: string) => {
-    const svc = modelToServiceMap.get(modelName);
-    return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
-  };
-
-  const modelsByDir = new Map<string, string[]>();
-  for (const name of [...delegateModelImports].sort()) {
-    const dir = resolveModelDir(name);
-    if (!modelsByDir.has(dir)) modelsByDir.set(dir, []);
-    modelsByDir.get(dir)!.push(className(name));
-  }
-  for (const [dir, names] of [...modelsByDir].sort()) {
-    lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
-  }
-
-  // Emit enum imports grouped by service directory
-  const enumToServiceMap = new Map<string, string>();
-  for (const e of ctx.spec.enums) {
-    for (const svc of ctx.spec.services) {
-      for (const op of svc.operations) {
-        const refs = new Set<string>();
-        const allTypeRefs = [
-          op.response,
-          ...(op.requestBody ? [op.requestBody] : []),
-          ...op.pathParams.map((p) => p.type),
-          ...op.queryParams.map((p) => p.type),
-        ];
-        for (const typeRef of allTypeRefs) {
-          for (const ref of collectEnumRefs(typeRef)) refs.add(ref);
-        }
-        if (refs.has(e.name) && !enumToServiceMap.has(e.name)) {
-          enumToServiceMap.set(e.name, svc.name);
-        }
-      }
-    }
-  }
-  const enumsByDir = new Map<string, string[]>();
-  for (const name of [...delegateEnumImports].sort()) {
-    const enumSvc = enumToServiceMap.get(name);
-    const dir = enumSvc ? (serviceDirMap.get(enumSvc) ?? 'common') : 'common';
-    if (!enumsByDir.has(dir)) enumsByDir.set(dir, []);
-    enumsByDir.get(dir)!.push(className(name));
-  }
-  for (const [dir, names] of [...enumsByDir].sort()) {
-    lines.push(`from .${dirToModule(dir)}.models import ${names.join(', ')}`);
   }
   lines.push('from .passwordless import AsyncPasswordless, Passwordless');
   lines.push('from .session import AsyncSession, Session');
@@ -343,108 +144,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push(`INITIAL_RETRY_DELAY = ${sdk.retry.backoff.initialDelay}`);
   lines.push(`MAX_RETRY_DELAY = ${sdk.retry.backoff.maxDelay}`);
   lines.push(`RETRY_MULTIPLIER = ${sdk.retry.backoff.multiplier}`);
-
-  // --- Sync namespace classes ---
-  for (const ns of namespaces) {
-    const nsClassName = className(ns.prefix) + 'Namespace';
-    const baseClass = ns.baseEntry ? ns.baseEntry.resolvedName : 'object';
-    lines.push('');
-    lines.push('');
-    lines.push(`class ${nsClassName}(${baseClass}):`);
-    lines.push(`    """${className(ns.prefix)} resources."""`);
-    lines.push('');
-    lines.push('    def __init__(self, client: "WorkOSClient") -> None:');
-    if (ns.baseEntry) {
-      lines.push('        super().__init__(client)');
-    } else {
-      lines.push('        self._client = client');
-    }
-
-    if (ns.baseEntry) {
-      lines.push('');
-    }
-
-    for (const entry of ns.entries) {
-      lines.push('');
-      lines.push('    @functools.cached_property');
-      lines.push(`    def ${entry.subProp}(self) -> ${entry.resolvedName}:`);
-      lines.push(`        return ${entry.resolvedName}(self._client)`);
-    }
-
-    if (ns.prefix === 'user_management') {
-      lines.push('');
-      lines.push('    def load_sealed_session(self, *, sealed_session: str, cookie_password: str) -> Session:');
-      lines.push('        return Session(');
-      lines.push('            client=self._client,');
-      lines.push('            session_data=sealed_session,');
-      lines.push('            cookie_password=cookie_password,');
-      lines.push('        )');
-    }
-    if (ns.prefix === 'multi_factor_auth') {
-      lines.push('');
-      lines.push('    def verify_challenge(');
-      lines.push('        self,');
-      lines.push('        *,');
-      lines.push('        authentication_challenge_id: str,');
-      lines.push('        code: str,');
-      lines.push('        request_options: Optional[RequestOptions] = None,');
-      lines.push('    ) -> Any:');
-      lines.push(
-        '        return self.challenges.verify(authentication_challenge_id, code=code, request_options=request_options)',
-      );
-    }
-  }
-
-  // --- Async namespace classes ---
-  for (const ns of namespaces) {
-    const asyncNsClassName = 'Async' + className(ns.prefix) + 'Namespace';
-    const baseClass = ns.baseEntry ? `Async${ns.baseEntry.resolvedName}` : 'object';
-    lines.push('');
-    lines.push('');
-    lines.push(`class ${asyncNsClassName}(${baseClass}):`);
-    lines.push(`    """${className(ns.prefix)} resources (async)."""`);
-    lines.push('');
-    lines.push('    def __init__(self, client: "AsyncWorkOSClient") -> None:');
-    if (ns.baseEntry) {
-      lines.push('        super().__init__(client)');
-    } else {
-      lines.push('        self._client = client');
-    }
-
-    if (ns.baseEntry) {
-      lines.push('');
-    }
-
-    for (const entry of ns.entries) {
-      lines.push('');
-      lines.push('    @functools.cached_property');
-      lines.push(`    def ${entry.subProp}(self) -> Async${entry.resolvedName}:`);
-      lines.push(`        return Async${entry.resolvedName}(self._client)`);
-    }
-
-    if (ns.prefix === 'user_management') {
-      lines.push('');
-      lines.push('    def load_sealed_session(self, *, sealed_session: str, cookie_password: str) -> AsyncSession:');
-      lines.push('        return AsyncSession(');
-      lines.push('            client=self._client,');
-      lines.push('            session_data=sealed_session,');
-      lines.push('            cookie_password=cookie_password,');
-      lines.push('        )');
-    }
-    if (ns.prefix === 'multi_factor_auth') {
-      lines.push('');
-      lines.push('    async def verify_challenge(');
-      lines.push('        self,');
-      lines.push('        *,');
-      lines.push('        authentication_challenge_id: str,');
-      lines.push('        code: str,');
-      lines.push('        request_options: Optional[RequestOptions] = None,');
-      lines.push('    ) -> Any:');
-      lines.push(
-        '        return await self.challenges.verify(authentication_challenge_id, code=code, request_options=request_options)',
-      );
-    }
-  }
 
   lines.push('');
   lines.push('');
@@ -659,21 +358,14 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Collect all generated property names
   const generatedProps = new Set<string>();
-  for (const entry of standalone) {
+  for (const service of topLevelServices) {
+    const resolvedName = resolveResourceClassName(service, ctx);
+    const prop = servicePropertyName(resolvedName);
     lines.push('');
     lines.push('    @functools.cached_property');
-    lines.push(`    def ${entry.prop}(self) -> ${entry.resolvedName}:`);
-    lines.push(`        return ${entry.resolvedName}(self)`);
-    generatedProps.add(entry.prop);
-  }
-
-  for (const ns of namespaces) {
-    const nsClassName = className(ns.prefix) + 'Namespace';
-    lines.push('');
-    lines.push('    @functools.cached_property');
-    lines.push(`    def ${ns.prefix}(self) -> ${nsClassName}:`);
-    lines.push(`        return ${nsClassName}(self)`);
-    generatedProps.add(ns.prefix);
+    lines.push(`    def ${prop}(self) -> ${resolvedName}:`);
+    lines.push(`        return ${resolvedName}(self)`);
+    generatedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, generatedProps);
   emitCompatClientAccessors(lines, false);
@@ -849,45 +541,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
   lines.push('        await self.close()');
 
-  // All services now have generated async resource classes, so none should be
-  // marked as not-implemented.  The old surface-based detection
-  // (getAsyncNotImplementedModules) is no longer needed.
-  const asyncNotImplemented = new Set<string>();
-
   const asyncGeneratedProps = new Set<string>();
-  for (const entry of standalone) {
-    // Skip generating real property if it will be overridden as not-implemented
-    if (asyncNotImplemented.has(entry.prop)) {
-      asyncGeneratedProps.add(entry.prop);
-      lines.push('');
-      lines.push('    @property');
-      lines.push(`    def ${entry.prop}(self) -> Any:`);
-      lines.push(`        raise NotImplementedError("${entry.prop} is not yet available in the async client")`);
-      continue;
-    }
+  for (const service of topLevelServices) {
+    const resolvedName = resolveResourceClassName(service, ctx);
+    const prop = servicePropertyName(resolvedName);
     lines.push('');
     lines.push('    @functools.cached_property');
-    lines.push(`    def ${entry.prop}(self) -> Async${entry.resolvedName}:`);
-    lines.push(`        return Async${entry.resolvedName}(self)`);
-    asyncGeneratedProps.add(entry.prop);
-  }
-
-  for (const ns of namespaces) {
-    const asyncNsClassName = 'Async' + className(ns.prefix) + 'Namespace';
-    // Skip generating real property if it will be overridden as not-implemented
-    if (asyncNotImplemented.has(ns.prefix)) {
-      asyncGeneratedProps.add(ns.prefix);
-      lines.push('');
-      lines.push('    @property');
-      lines.push(`    def ${ns.prefix}(self) -> Any:`);
-      lines.push(`        raise NotImplementedError("${ns.prefix} is not yet available in the async client")`);
-      continue;
-    }
-    lines.push('');
-    lines.push('    @functools.cached_property');
-    lines.push(`    def ${ns.prefix}(self) -> ${asyncNsClassName}:`);
-    lines.push(`        return ${asyncNsClassName}(self)`);
-    asyncGeneratedProps.add(ns.prefix);
+    lines.push(`    def ${prop}(self) -> Async${resolvedName}:`);
+    lines.push(`        return Async${resolvedName}(self)`);
+    asyncGeneratedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, asyncGeneratedProps);
   emitCompatClientAccessors(lines, true);
@@ -1126,15 +788,14 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
 
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const grouping = groupServicesByNamespace(spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const topLevel = deduplicateByMount(spec.services, ctx);
+  const serviceDirMap = buildMountDirMap(ctx);
 
-  for (const service of spec.services) {
+  for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const lines: string[] = [];
 
-    // P3-6: explicit resource re-export + star models
     lines.push(`from ._resource import ${resolvedName}, Async${resolvedName}`);
     lines.push('from .models import *');
 
@@ -1151,35 +812,6 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       content: '',
       skipIfExists: true,
     });
-  }
-
-  return files;
-}
-
-function generateNamespaceAliasPackages(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-  const files: GeneratedFile[] = [];
-  const grouping = groupServicesByNamespace(spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
-
-  // Build set of service dir names to avoid overwriting service inits
-  const serviceDirs = new Set(serviceDirMap.values());
-
-  for (const ns of grouping.namespaces) {
-    // Only generate the namespace prefix __init__.py when there's no baseEntry AND
-    // the prefix doesn't correspond to an actual service directory (which
-    // already gets its __init__.py from generateServiceInits).
-    if (!ns.baseEntry && !serviceDirs.has(ns.prefix)) {
-      files.push({
-        path: `src/${ctx.namespace}/${ns.prefix}/__init__.py`,
-        content: '',
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
-    }
-
-    // Sub-services now live directly in their nested directory
-    // (e.g., src/workos/organizations/api_keys/), so no alias re-exports needed.
-    // We still add a _compat import for backward compatibility if present.
   }
 
   return files;
@@ -1281,28 +913,18 @@ function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<st
  */
 function generateTypesBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const grouping = groupServicesByNamespace(spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const serviceDirMap = buildMountDirMap(ctx);
 
-  // Collect (types dir name → set of service dirs whose models should be re-exported)
+  // Collect (types dir name -> set of service dirs whose models should be re-exported)
   const typesEntries = new Map<string, Set<string>>();
 
-  for (const entry of grouping.standalone) {
-    const dir = serviceDirMap.get(entry.service.name) ?? entry.prop;
-    const dirs = typesEntries.get(entry.prop) ?? new Set();
+  for (const service of spec.services) {
+    const resolvedName = resolveResourceClassName(service, ctx);
+    const prop = servicePropertyName(resolvedName);
+    const dir = serviceDirMap.get(service.name) ?? prop;
+    const dirs = typesEntries.get(prop) ?? new Set();
     dirs.add(dir);
-    typesEntries.set(entry.prop, dirs);
-  }
-
-  for (const ns of grouping.namespaces) {
-    const dirs = typesEntries.get(ns.prefix) ?? new Set();
-    if (ns.baseEntry) {
-      dirs.add(serviceDirMap.get(ns.baseEntry.service.name) ?? ns.prefix);
-    }
-    for (const entry of ns.entries) {
-      dirs.add(serviceDirMap.get(entry.service.name) ?? `${ns.prefix}/${entry.subProp}`);
-    }
-    typesEntries.set(ns.prefix, dirs);
+    typesEntries.set(prop, dirs);
   }
 
   for (const [typesDir, serviceDirs] of typesEntries) {

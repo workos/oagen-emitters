@@ -1,7 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
-import { fileName, buildServiceDirMap, dirToModule } from './naming.js';
-import { groupServicesByNamespace } from './client.js';
+import { fileName, buildMountDirMap, dirToModule } from './naming.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -23,10 +22,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (enums.length === 0) return [];
 
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
-  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
+    irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
   const compatAliases = collectCompatEnumAliases(enums, ctx);
 
@@ -247,10 +245,9 @@ function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
 
 export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {
   const enumToService = assignEnumsToServices(enums, ctx.spec.services);
-  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
+    irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const compatAliases = collectCompatEnumAliases(enums, ctx);
   const symbolsByDir = new Map<string, string[]>();
 

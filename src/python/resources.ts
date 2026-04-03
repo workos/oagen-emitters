@@ -11,14 +11,13 @@ import { mapTypeRefUnquoted } from './type-map.js';
 import {
   className,
   fieldName,
-  resolveServiceDir,
+  moduleName,
   resolveClassName,
-  buildServiceDirMap,
+  buildMountDirMap,
   dirToModule,
   relativeImportPrefix,
 } from './naming.js';
-import { groupServicesByNamespace } from './client.js';
-import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -607,21 +606,28 @@ function emitMethodBody(
 
 /**
  * Generate Python resource class files from IR Service definitions.
+ * Uses mount-based grouping: one resource file per mount target with all
+ * co-mounted operations merged (flat pattern matching PHP).
  */
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
 
   const resolvedLookup = buildResolvedLookup(ctx);
   const files: GeneratedFile[] = [];
-  const grouping = groupServicesByNamespace(services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const mountDirMap = buildMountDirMap(ctx);
+  const mountGroups = groupByMount(ctx);
 
-  for (const service of services) {
-    if (service.operations.length === 0) continue;
-    const resolvedName = resolveResourceClassName(service, ctx);
-    const allOperations = service.operations;
-    const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
-    const resourceClassName = resolvedName;
+  // Build mount group entries. When resolved operations are available, group by
+  // mount target. Otherwise fall back to one group per service (for tests).
+  const entries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : services.map((s) => ({ name: resolveClassName(s, ctx), operations: s.operations }));
+
+  for (const { name: mountName, operations: allOperations } of entries) {
+    if (allOperations.length === 0) continue;
+    const dirName = moduleName(mountName);
+    const resourceClassName = className(mountName);
     const importPrefix = relativeImportPrefix(dirName);
 
     const lines: string[] = [];
@@ -705,11 +711,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     }
     const actualModelImports = [...modelImports];
 
-    // Split imports into same-service and cross-service
+    // Split imports into same-service and cross-service (using mount-based dirs)
     const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
     const resolveModelDir = (modelName: string) => {
       const svc = modelToServiceMap.get(modelName);
-      return svc ? (serviceDirMap.get(svc) ?? 'common') : 'common';
+      return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';
     };
 
     const localModels: string[] = [];
@@ -769,7 +775,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const crossServiceEnums = new Map<string, string[]>();
     for (const name of [...enumImports].sort()) {
       const enumSvc = enumToServiceMap.get(name);
-      const enumDir = enumSvc ? (serviceDirMap.get(enumSvc) ?? 'common') : 'common';
+      const enumDir = enumSvc ? (mountDirMap.get(enumSvc) ?? 'common') : 'common';
       if (enumDir === dirName) {
         localEnums.push(name);
       } else {
@@ -794,9 +800,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // --- Generate sync class ---
     lines.push('');
     lines.push(`class ${resourceClassName}:`);
-    if (service.description) {
-      lines.push(`    """${service.description}"""`);
-    } else {
+    {
       let readable = resourceClassName.replace(/([a-z])([A-Z])/g, '$1 $2');
       readable = readable.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
       lines.push(`    """${readable} API resources."""`);
@@ -841,9 +845,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('');
     lines.push('');
     lines.push(`class ${asyncClassName}:`);
-    if (service.description) {
-      lines.push(`    """${service.description}"""`);
-    } else {
+    {
       let readable = resourceClassName.replace(/([a-z])([A-Z])/g, '$1 $2');
       readable = readable.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
       lines.push(`    """${readable} API resources (async)."""`);

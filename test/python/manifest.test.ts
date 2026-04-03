@@ -62,12 +62,13 @@ const ctx: EmitterContext = {
 };
 
 describe('generateManifest', () => {
-  it('uses dotted client access paths for namespaced resources', () => {
+  it('uses flat client access paths (no dotted namespaces)', () => {
     const files = generateManifest(spec, ctx);
     expect(files).toHaveLength(1);
 
     const manifest = JSON.parse(files[0].content) as Record<string, { sdkMethod: string; service: string }>;
     expect(manifest['GET /organizations'].service).toBe('organizations');
-    expect(manifest['GET /organizations/api_keys'].service).toBe('organizations.api_keys');
+    // Flat: no dotted access, each service has its own accessor
+    expect(manifest['GET /organizations/api_keys'].service).toBe('organizations_api_keys');
   });
 });

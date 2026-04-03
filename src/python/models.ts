@@ -1,8 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { className, fieldName, fileName, buildServiceDirMap, dirToModule } from './naming.js';
-import { groupServicesByNamespace } from './client.js';
+import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
 
 /**
@@ -14,10 +13,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const modelToService = assignModelsToServices(models, ctx.spec.services);
   const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
-  const grouping = groupServicesByNamespace(ctx.spec.services, ctx);
-  const serviceDirMap = buildServiceDirMap(grouping);
+  const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
-    irService ? (serviceDirMap.get(irService) ?? 'common') : 'common';
+    irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const modelMap = new Map(models.map((m) => [m.name, m]));
   const files: GeneratedFile[] = [];
   const emittedModelSymbolsByDir = new Map<string, string[]>();
@@ -283,7 +281,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // from generateServiceInits in client.ts, so we must not create a competing one here.
   const serviceDirModelPaths = new Set<string>();
   for (const service of ctx.spec.services) {
-    const dirName = serviceDirMap.get(service.name) ?? resolveDir(service.name);
+    const dirName = mountDirMap.get(service.name) ?? resolveDir(service.name);
     serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
   }
 
