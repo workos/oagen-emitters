@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, Operation } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
 import { className, fieldName, resolveClassName, servicePropertyName } from './naming.js';
-import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
 import { generateFixtures } from './fixtures.js';
 
 /**
@@ -28,10 +28,17 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // with a combined version supporting both legacy Client mocks and new Guzzle mocks)
   files.push(generateTargetTestHelper(ctx));
 
-  // Generate per-resource test files
-  for (const service of spec.services) {
-    if (service.operations.length === 0) continue;
-    files.push(generateResourceTest(service, spec, ctx));
+  // Generate per-mount-target test files (merges all sub-services into one file)
+  const mountGroups = groupByMount(ctx);
+  const testEntries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : spec.services.map((s) => ({ name: resolveClassName(s, ctx), operations: s.operations }));
+
+  for (const { name: mountName, operations } of testEntries) {
+    if (operations.length === 0) continue;
+    const mergedService: Service = { name: mountName, operations };
+    files.push(generateResourceTest(mergedService, spec, ctx));
   }
 
   // Generate client test

@@ -61,6 +61,10 @@ const operationHints: Record<string, OperationHint> = {
   'GET /organizations/{organizationId}/feature-flags': { name: 'list_organization_feature_flags' },
   'GET /user_management/users/{userId}/feature-flags': { name: 'list_user_feature_flags' },
 
+  // ── External ID lookups (not derivable from path) ──────────────────────
+  'GET /organizations/external_id/{external_id}': { name: 'get_organization_by_external_id' },
+  'GET /user_management/users/external_id/{external_id}': { name: 'get_user_by_external_id' },
+
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
   'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
   'PUT /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
