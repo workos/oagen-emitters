@@ -1,7 +1,6 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, SdkBehavior } from '@workos/oagen';
 import {
   planOperation,
-  toPascalCase,
   collectModelRefs,
   collectEnumRefs,
   assignModelsToServices,
