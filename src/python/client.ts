@@ -151,7 +151,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class _BaseWorkOS:');
+  lines.push('class _BaseWorkOSClient:');
   lines.push('    """Shared WorkOS client implementation."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -219,7 +219,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    @staticmethod');
   lines.push('    def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
   lines.push('        """Calculate retry delay with exponential backoff and jitter."""');
-  lines.push('        parsed_retry_after = _BaseWorkOS._parse_retry_after(retry_after)');
+  lines.push('        parsed_retry_after = _BaseWorkOSClient._parse_retry_after(retry_after)');
   lines.push('        if parsed_retry_after is not None:');
   lines.push('            return parsed_retry_after');
   lines.push('        delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
@@ -308,7 +308,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class WorkOS(_BaseWorkOS):');
+  lines.push('class WorkOSClient(_BaseWorkOSClient):');
   lines.push('    """Synchronous WorkOS API client."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -354,7 +354,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """Close the underlying HTTP client and release resources."""');
   lines.push('        self._client.close()');
   lines.push('');
-  lines.push('    def __enter__(self) -> "WorkOS":');
+  lines.push('    def __enter__(self) -> "WorkOSClient":');
   lines.push('        return self');
   lines.push('');
   lines.push('    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
@@ -494,7 +494,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class AsyncWorkOS(_BaseWorkOS):');
+  lines.push('class AsyncWorkOSClient(_BaseWorkOSClient):');
   lines.push('    """Asynchronous WorkOS API client."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -540,7 +540,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """Close the underlying HTTP client and release resources."""');
   lines.push('        await self._client.aclose()');
   lines.push('');
-  lines.push('    async def __aenter__(self) -> "AsyncWorkOS":');
+  lines.push('    async def __aenter__(self) -> "AsyncWorkOSClient":');
   lines.push('        return self');
   lines.push('');
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
@@ -720,7 +720,9 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}    error_class = STATUS_CODE_TO_ERROR.get(response.status_code)`);
   lines.push(`${indent}    if error_class:`);
   lines.push(`${indent}        if error_class is RateLimitExceededError:`);
-  lines.push(`${indent}            retry_after = _BaseWorkOS._parse_retry_after(response.headers.get("Retry-After"))`);
+  lines.push(
+    `${indent}            retry_after = _BaseWorkOSClient._parse_retry_after(response.headers.get("Retry-After"))`,
+  );
   lines.push(`${indent}            raise RateLimitExceededError(`);
   lines.push(`${indent}                message,`);
   lines.push(`${indent}                retry_after=retry_after,`);
@@ -821,14 +823,14 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
 
   lines.push('"""WorkOS Python SDK."""');
   lines.push('');
-  lines.push('from ._client import AsyncWorkOS, WorkOS');
+  lines.push('from ._client import AsyncWorkOSClient, WorkOSClient');
   lines.push('from ._errors import WorkOSError');
   lines.push('from ._pagination import AsyncPage, ListMetadata, SyncPage');
   lines.push('from ._types import RequestOptions');
   lines.push('');
   lines.push('__all__ = [');
-  lines.push('    "WorkOS",');
-  lines.push('    "AsyncWorkOS",');
+  lines.push('    "WorkOSClient",');
+  lines.push('    "AsyncWorkOSClient",');
   lines.push('    "WorkOSError",');
   lines.push('    "SyncPage",');
   lines.push('    "AsyncPage",');

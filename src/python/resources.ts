@@ -637,7 +637,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
     lines.push('');
     lines.push('if TYPE_CHECKING:');
-    lines.push(`    from ${importPrefix}_client import AsyncWorkOS, WorkOS`);
+    lines.push(`    from ${importPrefix}_client import AsyncWorkOSClient, WorkOSClient`);
     lines.push('');
 
     // Collect all model and enum imports needed
@@ -814,7 +814,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`    """${readable} API resources."""`);
     }
     lines.push('');
-    lines.push('    def __init__(self, client: "WorkOS") -> None:');
+    lines.push('    def __init__(self, client: "WorkOSClient") -> None:');
     lines.push('        self._client = client');
 
     const emittedMethods = new Set<string>();
@@ -866,7 +866,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`    """${readable} API resources (async)."""`);
     }
     lines.push('');
-    lines.push('    def __init__(self, client: "AsyncWorkOS") -> None:');
+    lines.push('    def __init__(self, client: "AsyncWorkOSClient") -> None:');
     lines.push('        self._client = client');
 
     const asyncEmittedMethods = new Set<string>();

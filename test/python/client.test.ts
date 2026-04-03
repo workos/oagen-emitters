@@ -56,8 +56,8 @@ describe('generateClient', () => {
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
-    expect(content).toContain('class _BaseWorkOS:');
-    expect(content).toContain('class WorkOS(_BaseWorkOS):');
+    expect(content).toContain('class _BaseWorkOSClient:');
+    expect(content).toContain('class WorkOSClient(_BaseWorkOSClient):');
     // Lazy resource accessors via cached_property
     expect(content).toContain('@functools.cached_property');
     expect(content).toContain('def organizations(self) -> Organizations:');
@@ -68,7 +68,7 @@ describe('generateClient', () => {
     expect(content).toContain('def _parse_retry_after(');
     expect(content).toContain('def _calculate_retry_delay(');
     // P1-1: Async client
-    expect(content).toContain('class AsyncWorkOS(_BaseWorkOS):');
+    expect(content).toContain('class AsyncWorkOSClient(_BaseWorkOSClient):');
     // P0-4: Context manager
     expect(content).toContain('def close(self)');
     expect(content).toContain('def __enter__');
@@ -103,17 +103,14 @@ describe('generateClient', () => {
 
     const barrel = files.find((f) => f.path === 'src/workos/__init__.py');
     expect(barrel).toBeDefined();
-    expect(barrel!.content).toContain('from ._client import AsyncWorkOS, WorkOS');
+    expect(barrel!.content).toContain('from ._client import AsyncWorkOSClient, WorkOSClient');
     expect(barrel!.content).toContain('from ._errors import WorkOSError');
     expect(barrel!.content).toContain('from ._pagination import AsyncPage, ListMetadata, SyncPage');
     expect(barrel!.content).not.toContain('WorkOSListResource');
-    expect(barrel!.content).toContain('"WorkOS"');
-    expect(barrel!.content).toContain('"AsyncWorkOS"');
+    expect(barrel!.content).toContain('"WorkOSClient"');
+    expect(barrel!.content).toContain('"AsyncWorkOSClient"');
     expect(barrel!.content).toContain('"WorkOSError"');
     expect(barrel!.content).toContain('"ListMetadata"');
-    // No compat aliases in greenfield project
-    expect(barrel!.content).not.toContain('WorkOSClient');
-    expect(barrel!.content).not.toContain('AsyncWorkOSClient');
     expect(barrel!.overwriteExisting).toBe(true);
   });
 

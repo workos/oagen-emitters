@@ -69,7 +69,7 @@ describe('generateTests', () => {
     expect(conftest).toBeDefined();
     expect(conftest!.content).toContain('import pytest');
     expect(conftest!.content).toContain('import pytest_asyncio');
-    expect(conftest!.content).toContain('from workos import WorkOS');
+    expect(conftest!.content).toContain('from workos import WorkOSClient');
     expect(conftest!.content).toContain('@pytest.fixture');
     expect(conftest!.content).toContain('@pytest_asyncio.fixture');
     expect(conftest!.content).toContain('yield client');

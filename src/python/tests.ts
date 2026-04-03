@@ -95,13 +95,13 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   conftestLines.push('import pytest');
   conftestLines.push('import pytest_asyncio');
   conftestLines.push('');
-  conftestLines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
+  conftestLines.push(`from ${ctx.namespace} import WorkOSClient, AsyncWorkOSClient`);
   conftestLines.push('');
   conftestLines.push('');
   conftestLines.push('@pytest.fixture');
   conftestLines.push('def workos():');
   conftestLines.push('    """Create a WorkOS client for testing with guaranteed cleanup."""');
-  conftestLines.push('    client = WorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push('    client = WorkOSClient(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
   conftestLines.push('    yield client');
   conftestLines.push('    client.close()');
   conftestLines.push('');
@@ -109,7 +109,9 @@ function generateConftest(ctx: EmitterContext): GeneratedFile[] {
   conftestLines.push('@pytest_asyncio.fixture');
   conftestLines.push('async def async_workos():');
   conftestLines.push('    """Create an AsyncWorkOS client for testing with guaranteed cleanup."""');
-  conftestLines.push('    client = AsyncWorkOS(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")');
+  conftestLines.push(
+    '    client = AsyncWorkOSClient(api_key="sk_test_Sz3IQjepeSWaI4cMS4ms4sMuU", client_id="client_test")',
+  );
   conftestLines.push('    try:');
   conftestLines.push('        yield client');
   conftestLines.push('    finally:');
@@ -147,7 +149,7 @@ function generateServiceTest(
   lines.push('import json');
   lines.push('');
   lines.push('import pytest');
-  lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
+  lines.push(`from ${ctx.namespace} import WorkOSClient, AsyncWorkOSClient`);
   lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
 
@@ -413,7 +415,7 @@ function generateServiceTest(
 
     lines.push('');
     lines.push(`    def test_${method}_not_found(self, httpx_mock):`);
-    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
     lines.push('            with pytest.raises(NotFoundError):');
@@ -423,7 +425,7 @@ function generateServiceTest(
 
     lines.push('');
     lines.push(`    def test_${method}_rate_limited(self, httpx_mock):`);
-    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
@@ -435,7 +437,7 @@ function generateServiceTest(
 
     lines.push('');
     lines.push(`    def test_${method}_server_error(self, httpx_mock):`);
-    lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
     lines.push('            with pytest.raises(ServerError):');
@@ -591,7 +593,7 @@ function generateServiceTest(
     lines.push(`            await async_workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
-    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
     lines.push('            with pytest.raises(NotFoundError):');
@@ -600,7 +602,7 @@ function generateServiceTest(
     lines.push('            await workos.close()');
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_rate_limited(self, httpx_mock):`);
-    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
@@ -611,7 +613,7 @@ function generateServiceTest(
     lines.push('            await workos.close()');
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_server_error(self, httpx_mock):`);
-    lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
     lines.push('            with pytest.raises(ServerError):');
@@ -1169,7 +1171,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('import httpx');
   lines.push('import pytest');
   lines.push('');
-  lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
+  lines.push(`from ${ctx.namespace} import WorkOSClient, AsyncWorkOSClient`);
   lines.push(`from ${ctx.namespace} import _client as generated_client_module`);
   lines.push(`from ${ctx.namespace}._errors import (`);
   lines.push('    AuthenticationError,');
@@ -1188,20 +1190,20 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('    def test_missing_credentials_raise(self):');
   lines.push('        with pytest.raises(ValueError):');
-  lines.push('            WorkOS()');
+  lines.push('            WorkOSClient()');
   lines.push('');
   lines.push('    def test_context_manager(self):');
-  lines.push('        with WorkOS(api_key="sk_test_123", client_id="client_test") as client:');
+  lines.push('        with WorkOSClient(api_key="sk_test_123", client_id="client_test") as client:');
   lines.push('            assert client._api_key == "sk_test_123"');
   lines.push('');
   lines.push('    def test_api_key_only_initializes(self):');
-  lines.push('        client = WorkOS(api_key="sk_test_123")');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123")');
   lines.push('        assert client._api_key == "sk_test_123"');
   lines.push('        assert client.client_id is None');
   lines.push('        client.close()');
   lines.push('');
   lines.push('    def test_client_id_from_constructor(self):');
-  lines.push('        client = WorkOS(client_id="client_test_456")');
+  lines.push('        client = WorkOSClient(client_id="client_test_456")');
   lines.push('        assert client.client_id == "client_test_456"');
   lines.push('        assert client._api_key is None');
   lines.push('        client.close()');
@@ -1225,7 +1227,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
     lines.push(`            status_code=${code},`);
     lines.push('            json={"message": "Error"},');
     lines.push('        )');
-    lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+    lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push(`        with pytest.raises(${errorClass}):`);
     lines.push('            client.request("GET", "test")');
     lines.push('        client.close()');
@@ -1234,7 +1236,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('    def test_idempotency_key_on_post(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("POST", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Idempotency-Key" in request.headers');
@@ -1242,7 +1244,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('    def test_no_idempotency_key_on_get(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("GET", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Idempotency-Key" not in request.headers');
@@ -1250,7 +1252,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('    def test_no_authorization_header_without_api_key(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(client_id="client_test")');
+  lines.push('        client = WorkOSClient(client_id="client_test")');
   lines.push('        client.request("GET", "test")');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert "Authorization" not in request.headers');
@@ -1258,7 +1260,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('');
   lines.push('    def test_empty_body_sends_json(self, httpx_mock):');
   lines.push('        httpx_mock.add_response(json={})');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test")');
   lines.push('        client.request("PUT", "test", body={})');
   lines.push('        request = httpx_mock.get_request()');
   lines.push('        assert request.content == b"{}"');
@@ -1275,7 +1277,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push(
     '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
   );
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=3)');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=3)');
   lines.push('        with pytest.raises(RateLimitExceededError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
@@ -1285,7 +1287,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push(
     '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "30"}, json={"message": "Slow down"})',
   );
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
   lines.push('        with pytest.raises(RateLimitExceededError) as exc_info:');
   lines.push('            client.request("GET", "test")');
   lines.push('        assert exc_info.value.retry_after == 30.0');
@@ -1295,7 +1297,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('    def test_timeout_error_is_wrapped(self, httpx_mock, monkeypatch):');
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
   lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
@@ -1304,14 +1306,14 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('    def test_connection_error_is_wrapped(self, httpx_mock, monkeypatch):');
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
   lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
   lines.push('');
   lines.push('    def test_documented_import_surface_exposes_resources(self):');
-  lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test")');
+  lines.push('        client = WorkOSClient(api_key="sk_test_123", client_id="client_test")');
   for (const path of [...new Set(accessPaths.values())].sort()) {
     lines.push(`        assert client.${path} is not None`);
   }
@@ -1322,7 +1324,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('class TestAsyncWorkOSClient:');
   lines.push('');
   lines.push('    async def test_documented_import_surface_exposes_resources(self):');
-  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test")');
+  lines.push('        client = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test")');
   for (const path of [...new Set(accessPaths.values())].sort()) {
     lines.push(`        assert client.${path} is not None`);
   }
@@ -1334,7 +1336,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('            return None');
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
-  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        client = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
   lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
@@ -1345,7 +1347,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('            return None');
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
-  lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
+  lines.push('        client = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
   lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
