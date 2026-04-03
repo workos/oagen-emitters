@@ -160,6 +160,7 @@ const mountRules: Record<string, string> = {
   Permissions: 'Authorization',
 
   // Connect sub-services → Connect
+  WorkosConnect: 'Connect',
   Applications: 'Connect',
   ApplicationClientSecrets: 'Connect',
 
