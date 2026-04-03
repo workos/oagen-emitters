@@ -2,6 +2,7 @@ import type { ApiSpec, EmitterContext, GeneratedFile, Service, Operation } from 
 import { planOperation, toCamelCase } from '@workos/oagen';
 import { className, fieldName, resolveClassName, servicePropertyName } from './naming.js';
 import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
+import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
 
 /**
@@ -30,6 +31,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Generate per-mount-target test files (merges all sub-services into one file)
   const mountGroups = groupByMount(ctx);
+  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
   const testEntries: Array<{ name: string; operations: Operation[] }> =
     mountGroups.size > 0
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
@@ -38,7 +40,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const { name: mountName, operations } of testEntries) {
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
-    files.push(generateResourceTest(mergedService, spec, ctx));
+    files.push(generateResourceTest(mergedService, spec, ctx, accessPaths));
   }
 
   // Generate client test
@@ -256,9 +258,16 @@ trait TestHelper
   };
 }
 
-function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
+function generateResourceTest(
+  service: Service,
+  spec: ApiSpec,
+  ctx: EmitterContext,
+  accessPaths: Map<string, string>,
+): GeneratedFile {
   const resourceName = resolveClassName(service, ctx);
-  const propName = servicePropertyName(resourceName);
+  const accessPath = accessPaths.get(service.name);
+  // Access paths include () like "userManagement()" — strip trailing () for template use
+  const propName = accessPath ? accessPath.replace(/\(\)$/, '') : servicePropertyName(resourceName);
   const resolvedLookup = buildResolvedLookup(ctx);
   const lines: string[] = [];
 

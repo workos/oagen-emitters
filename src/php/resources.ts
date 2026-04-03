@@ -2,7 +2,8 @@ import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, 
 import { planOperation, toCamelCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefDoc } from './type-map.js';
 import { className, enumClassName, fieldName, resolveClassName } from './naming.js';
-import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import { generateWrapperMethods } from './wrappers.js';
 import { isListWrapperModel } from './models.js';
 
 /**
@@ -107,25 +108,36 @@ export function resolveResourceClassName(service: Service, ctx: EmitterContext):
 
 /**
  * Generate PHP resource classes from IR Service definitions.
+ * Uses mount-based grouping: one resource file per mount target with all
+ * co-mounted operations merged into a single class.
  */
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
 
   const files: GeneratedFile[] = [];
   const resolvedLookup = buildResolvedLookup(ctx);
+  const mountGroups = groupByMount(ctx);
 
-  for (const service of services) {
-    if (service.operations.length === 0) continue;
+  // Build entries: when resolved operations are available, group by mount target.
+  // Otherwise fall back to one group per service.
+  const entries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
 
-    const resourceName = resolveResourceClassName(service, ctx);
+  for (const { name: mountName, operations } of entries) {
+    if (operations.length === 0) continue;
+
+    const resourceName = className(mountName);
+    const mergedService: Service = { name: mountName, operations };
     const lines: string[] = [];
 
     lines.push('');
     lines.push(`namespace ${ctx.namespacePascal}\\Resources;`);
     lines.push('');
 
-    // Collect imports
-    const imports = collectResourceImports(service, ctx);
+    // Collect imports from all operations in the mount group
+    const imports = collectResourceImports(mergedService, ctx);
     for (const imp of imports) {
       lines.push(`use ${imp};`);
     }
@@ -138,13 +150,19 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('    ) {}');
 
     // Generate methods for each operation
-    for (const op of service.operations) {
+    for (const op of operations) {
       const plan = planOperation(op);
       const resolvedName = lookupMethodName(op, resolvedLookup);
       const method = resolvedName ? toCamelCase(resolvedName) : toCamelCase(op.name);
 
       lines.push('');
-      emitMethod(lines, op, plan, method, service, ctx);
+      emitMethod(lines, op, plan, method, mergedService, ctx);
+
+      // Emit union split wrapper methods (typed convenience methods for each variant)
+      const resolved = lookupResolved(op, resolvedLookup);
+      if (resolved?.wrappers && resolved.wrappers.length > 0) {
+        lines.push(...generateWrapperMethods(resolved, ctx));
+      }
     }
 
     lines.push('}');

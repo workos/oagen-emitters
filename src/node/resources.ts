@@ -24,6 +24,8 @@ import {
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
 import { buildNodeStatusExceptions } from './sdk-errors.js';
+import { buildResolvedLookup, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -180,7 +182,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   if (services.length === 0) return [];
   const files: GeneratedFile[] = [];
 
-  for (const service of services) {
+  // Group services by mount target to avoid file path collisions when
+  // multiple IR services mount to the same resource class.
+  const mountGroups = groupByMount(ctx);
+  const mergedServices: Service[] =
+    mountGroups.size > 0 ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations })) : services;
+
+  for (const service of mergedServices) {
     if (isServiceCoveredByExisting(service, ctx)) {
       // Fully covered: generate with ALL operations so the merger's docstring
       // refresh pass can update JSDoc on existing methods.
@@ -312,6 +320,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       collectParamTypeRefs(param.type, paramEnums, paramModels);
     }
   }
+
+  // Collect response models from union split wrappers so their types and
+  // deserializers are imported alongside the primary operation models.
+  const resolvedLookup = buildResolvedLookup(ctx);
+  for (const { op } of plans) {
+    const resolved = lookupResolved(op, resolvedLookup);
+    if (resolved) {
+      for (const name of collectWrapperResponseModels(resolved)) {
+        responseModels.add(name);
+      }
+    }
+  }
+
   const allModels = new Set([...responseModels, ...requestModels, ...paramModels]);
 
   const lines: string[] = [];
@@ -484,6 +505,12 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const { op, plan, method } of plans) {
     lines.push('');
     lines.push(...renderMethod(op, plan, method, service, ctx, modelMap, specEnumNames));
+
+    // Emit union split wrapper methods (typed convenience methods for each variant)
+    const resolved = lookupResolved(op, resolvedLookup);
+    if (resolved?.wrappers && resolved.wrappers.length > 0) {
+      lines.push(...generateWrapperMethods(resolved, ctx));
+    }
   }
 
   lines.push('}');
