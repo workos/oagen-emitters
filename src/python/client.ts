@@ -131,7 +131,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
   }
+  lines.push('from .actions import Actions, AsyncActions');
   lines.push('from .passwordless import AsyncPasswordless, Passwordless');
+  lines.push('from .pkce import PKCE');
   lines.push('from .session import AsyncSession, Session');
   lines.push('from .vault import AsyncVault, Vault');
   lines.push('');
@@ -856,6 +858,17 @@ function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
   lines.push('    @functools.cached_property');
   lines.push(`    def vault(self) -> ${vaultName}:`);
   lines.push(`        return ${vaultName}(self)`);
+
+  const actionsName = isAsync ? 'AsyncActions' : 'Actions';
+  lines.push('');
+  lines.push('    @functools.cached_property');
+  lines.push(`    def actions(self) -> ${actionsName}:`);
+  lines.push(`        return ${actionsName}()`);
+
+  lines.push('');
+  lines.push('    @functools.cached_property');
+  lines.push('    def pkce(self) -> PKCE:');
+  lines.push('        return PKCE()');
 }
 
 function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<string>): void {
