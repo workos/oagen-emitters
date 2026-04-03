@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
 import { buildServiceAccessPaths } from './client.js';
-import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 
 /**
  * Generate smoke test manifest mapping HTTP operations to SDK methods.
@@ -12,7 +12,12 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const resolvedLookup = buildResolvedLookup(ctx);
 
   for (const service of spec.services) {
-    const propName = accessPaths.get(service.name);
+    // For mounted services, look up the mount target's access path
+    let propName = accessPaths.get(service.name);
+    if (!propName) {
+      const mountTarget = getMountTarget(service, ctx);
+      propName = accessPaths.get(mountTarget);
+    }
     if (!propName) {
       throw new Error(`Missing public client access path for service ${service.name}`);
     }
