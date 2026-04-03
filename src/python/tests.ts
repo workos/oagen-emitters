@@ -1268,7 +1268,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
 
   lines.push('');
   lines.push('    def test_calculate_retry_delay_uses_retry_after_seconds(self):');
-  lines.push('        assert WorkOS._calculate_retry_delay(1, "30") == 30.0');
+  lines.push('        assert WorkOSClient._calculate_retry_delay(1, "30") == 30.0');
 
   lines.push('');
   lines.push('    def test_retry_exhaustion_raises_rate_limit(self, httpx_mock, monkeypatch):');

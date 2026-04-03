@@ -38,30 +38,33 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
   'Callable',
 ]);
 
-/** Suffixes stripped from spec model names before generating Python names. */
-const STRIPPED_SUFFIXES = ['Dto', 'DTO'];
+/** Tokens removed from spec model/enum names before generating Python names. */
+const STRIPPED_TOKENS = ['Dto', 'DTO'];
 
 /**
- * Set of spec names that would collide with another name after suffix stripping.
+ * Set of spec names that would collide with another name after token stripping.
  * Populated by `initializeNaming()`.
  */
 let unsafeToStrip = new Set<string>();
 
+/** Remove all occurrences of Dto/DTO tokens from a PascalCase name. */
+function removeTokens(name: string): string {
+  let result = name;
+  for (const token of STRIPPED_TOKENS) {
+    result = result.replaceAll(token, '');
+  }
+  return result;
+}
+
 /**
- * Initialize collision detection for suffix stripping.
+ * Initialize collision detection for token stripping.
  * Call once with all model + enum names before generating output.
  */
 export function initializeNaming(specNames: string[]): void {
   unsafeToStrip = new Set<string>();
   const strippedToOriginals = new Map<string, string[]>();
   for (const name of specNames) {
-    let stripped = name;
-    for (const suffix of STRIPPED_SUFFIXES) {
-      if (name.endsWith(suffix) && name.length > suffix.length) {
-        stripped = name.slice(0, -suffix.length);
-        break;
-      }
-    }
+    const stripped = removeTokens(name);
     if (!strippedToOriginals.has(stripped)) strippedToOriginals.set(stripped, []);
     strippedToOriginals.get(stripped)!.push(name);
   }
@@ -72,20 +75,15 @@ export function initializeNaming(specNames: string[]): void {
   }
 }
 
-/** Strip internal suffixes (e.g., "Dto") from a spec name, unless it would collide. */
-function stripSuffixes(name: string): string {
+/** Strip Dto/DTO tokens from a spec name, unless it would collide. */
+function stripDtoTokens(name: string): string {
   if (unsafeToStrip.has(name)) return name;
-  for (const suffix of STRIPPED_SUFFIXES) {
-    if (name.endsWith(suffix) && name.length > suffix.length) {
-      return name.slice(0, -suffix.length);
-    }
-  }
-  return name;
+  return removeTokens(name);
 }
 
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(stripSuffixes(name));
+  let result = toPascalCase(stripDtoTokens(name));
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -97,7 +95,7 @@ export function className(name: string): string {
 
 /** snake_case file name (without extension). */
 export function fileName(name: string): string {
-  return toSnakeCase(stripSuffixes(name));
+  return toSnakeCase(stripDtoTokens(name));
 }
 
 /** snake_case method name. */

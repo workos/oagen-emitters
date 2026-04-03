@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
-import { fileName, buildMountDirMap, dirToModule } from './naming.js';
+import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -39,16 +39,18 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     if (canonicalName) {
       const canonicalService = enumToService.get(canonicalName);
       const canonicalDir = resolveDir(canonicalService);
+      const canonicalCls = className(canonicalName);
+      const aliasCls = className(enumDef.name);
       const lines: string[] = [];
       // Use explicit __all__ to prevent ruff F401 from stripping the re-export
       if (canonicalDir === dirName) {
-        lines.push(`from .${fileName(canonicalName)} import ${canonicalName}`);
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalCls}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalName}`);
+        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalCls}`);
       }
       lines.push('');
-      lines.push(`${enumDef.name} = ${canonicalName}`);
-      lines.push(`__all__ = ["${enumDef.name}"]`);
+      lines.push(`${aliasCls} = ${canonicalCls}`);
+      lines.push(`__all__ = ["${aliasCls}"]`);
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
         content: lines.join('\n'),
@@ -60,11 +62,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
         const importLine =
           canonicalDir === dirName
-            ? `from .${fileName(canonicalName)} import ${canonicalName}`
-            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalName}`;
+            ? `from .${fileName(canonicalName)} import ${canonicalCls}`
+            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalCls}`;
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: [importLine, '', `${aliasName} = ${canonicalName}`, `__all__ = ["${aliasName}"]`].join('\n'),
+          content: [importLine, '', `${aliasName} = ${canonicalCls}`, `__all__ = ["${aliasName}"]`].join('\n'),
           integrateTarget: true,
           overwriteExisting: true,
         });
@@ -73,6 +75,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       continue;
     }
 
+    const cls = className(enumDef.name);
     const lines: string[] = [];
 
     const readable = humanizeClassName(enumDef.name);
@@ -85,7 +88,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       lines.push('from typing import Union');
       lines.push('from typing_extensions import TypeAlias');
       lines.push('');
-      lines.push(`${enumDef.name}: TypeAlias = str`);
+      lines.push(`${cls}: TypeAlias = str`);
     } else {
       // Deduplicate values that produce the same string
       const seenValues = new Set<string>();
@@ -108,16 +111,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         lines.push('');
-        lines.push(`class ${enumDef.name}(str, Enum):`);
-        lines.push(`    """Known values for ${enumDef.name}."""`);
+        lines.push(`class ${cls}(str, Enum):`);
+        lines.push(`    """Known values for ${cls}."""`);
         lines.push('');
       } else if (allIntegers) {
         lines.push('from enum import IntEnum');
         lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         lines.push('');
-        lines.push(`class ${enumDef.name}(IntEnum):`);
-        lines.push(`    """Known values for ${enumDef.name}."""`);
+        lines.push(`class ${cls}(IntEnum):`);
+        lines.push(`    """Known values for ${cls}."""`);
         lines.push('');
       } else {
         // Mixed types — fall back to Union[Literal[...], str]
@@ -125,7 +128,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('from typing_extensions import Literal, TypeAlias');
         lines.push('');
         const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
-        lines.push(`${enumDef.name}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
+        lines.push(`${cls}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
           content: lines.join('\n'),
@@ -155,7 +158,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (allStrings) {
         lines.push('');
         lines.push('    @classmethod');
-        lines.push(`    def _missing_(cls, value: object) -> Optional["${enumDef.name}"]:`);
+        lines.push(`    def _missing_(cls, value: object) -> Optional["${cls}"]:`);
         lines.push('        if not isinstance(value, str):');
         lines.push('            return None');
         lines.push('        unknown = str.__new__(cls, value)');
@@ -165,7 +168,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       }
       lines.push('');
       lines.push(
-        `${enumDef.name}Literal: TypeAlias = Literal[${uniqueValues
+        `${cls}Literal: TypeAlias = Literal[${uniqueValues
           .map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)))
           .join(', ')}]`,
       );
@@ -182,9 +185,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
         content: [
-          `from .${fileName(enumDef.name)} import ${enumDef.name}`,
+          `from .${fileName(enumDef.name)} import ${cls}`,
           '',
-          `${aliasName} = ${enumDef.name}`,
+          `${aliasName} = ${cls}`,
           `__all__ = ["${aliasName}"]`,
         ].join('\n'),
         integrateTarget: true,

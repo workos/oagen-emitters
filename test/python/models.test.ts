@@ -406,7 +406,7 @@ describe('generateModels', () => {
     expect(dtoFile).toBeDefined();
     expect(dtoFile!.content).toContain('class CreateApplicationSecret:');
     expect(dtoFile!.content).not.toContain('Dto');
-    expect(files.every((f) => !f.path.includes('_dto.'))).toBe(true);
+    expect(files.every((f) => !f.path.includes('_dto'))).toBe(true);
   });
 
   it('treats deprecated or baseline-optional fields as optional', () => {
