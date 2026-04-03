@@ -27,7 +27,9 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
  * Build a map from IR service name to the public access path on the client.
  */
 export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext): Map<string, string> {
-  const { standalone, namespaces } = groupServicesByNamespace(services, ctx);
+  // Only group top-level services (not mounted sub-services)
+  const topLevel = filterMountedServices(services, ctx);
+  const { standalone, namespaces } = groupServicesByNamespace(topLevel, ctx);
   const paths = new Map<string, string>();
 
   for (const entry of standalone) {
@@ -40,6 +42,16 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
     }
     for (const entry of ns.entries) {
       paths.set(entry.service.name, `${ns.prefix}()->${entry.subProp}()`);
+    }
+  }
+
+  // Map mounted services to their mount target's access path
+  for (const service of services) {
+    if (paths.has(service.name)) continue;
+    const mountTarget = getMountTarget(service, ctx);
+    const targetPath = paths.get(mountTarget);
+    if (targetPath) {
+      paths.set(service.name, targetPath);
     }
   }
 
