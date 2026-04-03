@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, SdkBehavior } from '@workos/oagen';
 import {
   planOperation,
+  toPascalCase,
   collectModelRefs,
   collectEnumRefs,
   assignModelsToServices,
@@ -9,6 +10,7 @@ import {
 import { className, resolveServiceDir, servicePropertyName, buildServiceDirMap, dirToModule } from './naming.js';
 import type { NamespaceGroup, NamespaceGrouping } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
+import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
  * Generate the main Python client class, barrel __init__.py files,
@@ -136,9 +138,21 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
   return paths;
 }
 
+/**
+ * Filter out services whose operations are mounted on a different service.
+ * These don't get their own client accessor — they're reached via the mount target.
+ */
+function filterMountedServices(services: Service[], ctx: EmitterContext): Service[] {
+  return services.filter((s) => {
+    const mountTarget = getMountTarget(s, ctx);
+    return mountTarget === toPascalCase(s.name);
+  });
+}
+
 function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): void {
-  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
-  const unreachableServices = spec.services
+  const topLevelServices = filterMountedServices(spec.services, ctx);
+  const accessPaths = buildServiceAccessPaths(topLevelServices, ctx);
+  const unreachableServices = topLevelServices
     .filter((service) => service.operations.length > 0 && !accessPaths.has(service.name))
     .map((service) => service.name);
 
@@ -150,7 +164,8 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const sdk: SdkBehavior = ctx.spec.sdk ?? defaultSdkBehavior();
   const lines: string[] = [];
-  const { standalone, namespaces } = groupServicesByNamespace(spec.services, ctx);
+  const topLevelServices = filterMountedServices(spec.services, ctx);
+  const { standalone, namespaces } = groupServicesByNamespace(topLevelServices, ctx);
 
   const listWrapperNames = new Set<string>();
   for (const m of ctx.spec.models) {

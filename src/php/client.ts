@@ -1,6 +1,8 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import { toPascalCase } from '@workos/oagen';
 import { servicePropertyName, groupServicesByNamespace } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
+import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
  * Generate the main PHP client class, HTTP client, and project scaffolding.
@@ -44,9 +46,21 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
   return paths;
 }
 
+/**
+ * Filter out services whose operations are mounted on a different service.
+ * These don't get their own client accessor — they're reached via the mount target.
+ */
+function filterMountedServices(services: Service[], ctx: EmitterContext): Service[] {
+  return services.filter((s) => {
+    const mountTarget = getMountTarget(s, ctx);
+    return mountTarget === toPascalCase(s.name);
+  });
+}
+
 function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): void {
-  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
-  const unreachableServices = spec.services
+  const topLevelServices = filterMountedServices(spec.services, ctx);
+  const accessPaths = buildServiceAccessPaths(topLevelServices, ctx);
+  const unreachableServices = topLevelServices
     .filter((service) => service.operations.length > 0 && !accessPaths.has(service.name))
     .map((service) => service.name);
 
@@ -57,15 +71,16 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 
 function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const sdk = ctx.spec.sdk;
-  groupServicesByNamespace(spec.services, ctx); // validates service grouping
+  const topLevelServices = filterMountedServices(spec.services, ctx);
+  groupServicesByNamespace(topLevelServices, ctx); // validates service grouping
   const lines: string[] = [];
 
   lines.push('');
   lines.push(`namespace ${ctx.namespacePascal};`);
   lines.push('');
 
-  // Import resource classes
-  for (const service of spec.services) {
+  // Import resource classes (only top-level, not mounted sub-services)
+  for (const service of topLevelServices) {
     if (service.operations.length === 0) continue;
     const resourceName = resolveResourceClassName(service, ctx);
     lines.push(`use ${ctx.namespacePascal}\\Resources\\${resourceName};`);
@@ -118,8 +133,8 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   // ── Instance properties for new resource-accessor pattern ──
   lines.push('    private ?HttpClient $httpClient = null;');
 
-  // Lazy resource instances
-  for (const service of spec.services) {
+  // Lazy resource instances (only top-level services)
+  for (const service of topLevelServices) {
     if (service.operations.length === 0) continue;
     const resourceName = resolveResourceClassName(service, ctx);
     const propName = servicePropertyName(resourceName);
@@ -323,8 +338,8 @@ function generateMainClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[]
   lines.push('        }');
   lines.push('    }');
 
-  // Resource accessors
-  for (const service of spec.services) {
+  // Resource accessors (only top-level services)
+  for (const service of topLevelServices) {
     if (service.operations.length === 0) continue;
     const resourceName = resolveResourceClassName(service, ctx);
     const propName = servicePropertyName(resourceName);
