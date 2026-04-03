@@ -171,9 +171,12 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   return toSnakeCase(op.name);
 }
 
-/** Resolve the SDK class name for a service.
- * Python preserves the full namespace hierarchy, so class names come from the
- * overlay (for backwards compat) or IR service name — NOT from mount targets.
+/**
+ * Resolve the SDK class name for a service.
+ *
+ * Python preserves the full IR namespace hierarchy (user_management.users, etc.),
+ * so class names come from the overlay (backwards compat) or IR service name.
+ * Mount rules only affect method names (via resolveMethodName), not class names.
  */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
   if (ctx.overlayLookup?.methodByOperation) {
