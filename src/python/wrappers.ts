@@ -172,7 +172,7 @@ function clientFieldExpression(field: string): string {
     case 'client_id':
       return 'self._client.client_id';
     case 'client_secret':
-      return 'self._client.api_key';
+      return 'self._client._api_key';
     default:
       return `self._client.${toSnakeCase(field)}`;
   }

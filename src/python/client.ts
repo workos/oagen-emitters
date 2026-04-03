@@ -1,6 +1,6 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, SdkBehavior } from '@workos/oagen';
 import { toPascalCase, defaultSdkBehavior } from '@workos/oagen';
-import { resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
+import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
@@ -126,8 +126,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const serviceDirMap = buildMountDirMap(ctx);
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
+    const clsName = className(resolvedName);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
-    lines.push(`from .${dirToModule(dirName)}._resource import ${resolvedName}, Async${resolvedName}`);
+    lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
   }
   lines.push('from .passwordless import AsyncPasswordless, Passwordless');
   lines.push('from .session import AsyncSession, Session');
@@ -360,11 +361,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const generatedProps = new Set<string>();
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
+    const clsName = className(resolvedName);
     const prop = servicePropertyName(resolvedName);
     lines.push('');
     lines.push('    @functools.cached_property');
-    lines.push(`    def ${prop}(self) -> ${resolvedName}:`);
-    lines.push(`        return ${resolvedName}(self)`);
+    lines.push(`    def ${prop}(self) -> ${clsName}:`);
+    lines.push(`        return ${clsName}(self)`);
     generatedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, generatedProps);
@@ -544,11 +546,12 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const asyncGeneratedProps = new Set<string>();
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
+    const clsName = className(resolvedName);
     const prop = servicePropertyName(resolvedName);
     lines.push('');
     lines.push('    @functools.cached_property');
-    lines.push(`    def ${prop}(self) -> Async${resolvedName}:`);
-    lines.push(`        return Async${resolvedName}(self)`);
+    lines.push(`    def ${prop}(self) -> Async${clsName}:`);
+    lines.push(`        return Async${clsName}(self)`);
     asyncGeneratedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, asyncGeneratedProps);

@@ -40,7 +40,7 @@ const operationHints: Record<string, OperationHint> = {
   'POST /sso/token': { name: 'get_profile_and_token' },
 
   // ── SSO / JWKS (mounted on UserManagement via mountRules) ────────────────
-  'GET /sso/jwks/{id}': { name: 'get_jwks' },
+  'GET /sso/jwks/{clientId}': { name: 'get_jwks' },
 
   // ── User Management — auth ──────────────────────────────────────────────
   'GET /user_management/authorize': { name: 'get_authorization_url' },
@@ -53,6 +53,13 @@ const operationHints: Record<string, OperationHint> = {
   'PUT /user_management/organization_memberships/{id}/reactivate': {
     name: 'reactivate_organization_membership',
   },
+
+  // ── Admin Portal ────────────────────────────────────────────────────────
+  'POST /portal/generate_link': { name: 'generate_link' },
+
+  // ── Feature Flags — disambiguate co-mounted list operations ─────────────
+  'GET /organizations/{organizationId}/feature-flags': { name: 'list_organization_feature_flags' },
+  'GET /user_management/users/{userId}/feature-flags': { name: 'list_user_feature_flags' },
 
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
   'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
@@ -188,15 +195,15 @@ const mountRules: Record<string, string> = {
   UserManagementInvitations: 'UserManagement',
   UserManagementJWTTemplate: 'UserManagement',
   UserManagementMagicAuth: 'UserManagement',
-  UserManagementOrgMembership: 'UserManagement',
+  UserManagementOrganizationMembership: 'UserManagement',
   UserManagementRedirectUris: 'UserManagement',
-  UserManagementUsersAuthorizedApps: 'UserManagement',
+  UserManagementUsersAuthorizedApplications: 'UserManagement',
 
   // Pipes / Data Providers → Pipes
   UserManagementDataProviders: 'Pipes',
 
   // User Management MFA → MultiFactorAuth
-  UserManagementMFA: 'MultiFactorAuth',
+  UserManagementMultiFactorAuthentication: 'MultiFactorAuth',
 };
 
 const config: OagenConfig = {

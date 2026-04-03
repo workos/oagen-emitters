@@ -17,7 +17,8 @@ import {
   dirToModule,
   relativeImportPrefix,
 } from './naming.js';
-import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import { generateSyncWrapperMethods, generateAsyncWrapperMethods } from './wrappers.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -696,6 +697,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         }
         modelImports.add(paginationItemName);
       }
+      // Collect model imports for union split wrapper response types
+      const resolved = lookupResolved(op, resolvedLookup);
+      if (resolved?.wrappers) {
+        for (const w of resolved.wrappers) {
+          if (w.responseModelName) modelImports.add(w.responseModelName);
+        }
+      }
     }
 
     // Filter enum imports to only those that actually exist in the spec
@@ -838,6 +846,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
+
+      // Emit union split wrapper methods (e.g., authenticate_with_password)
+      const resolvedSync = lookupResolved(op, resolvedLookup);
+      if (resolvedSync?.wrappers && resolvedSync.wrappers.length > 0) {
+        lines.push(...generateSyncWrapperMethods(resolvedSync, ctx));
+        for (const w of resolvedSync.wrappers) emittedMethods.add(w.name);
+      }
     }
 
     // --- Generate async class ---
@@ -882,6 +897,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
+
+      // Emit union split wrapper methods (e.g., authenticate_with_password)
+      const resolvedAsync = lookupResolved(op, resolvedLookup);
+      if (resolvedAsync?.wrappers && resolvedAsync.wrappers.length > 0) {
+        lines.push(...generateAsyncWrapperMethods(resolvedAsync, ctx));
+        for (const w of resolvedAsync.wrappers) asyncEmittedMethods.add(w.name);
+      }
     }
 
     files.push({
