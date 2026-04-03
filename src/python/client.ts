@@ -120,7 +120,7 @@ export function groupServicesByNamespace(services: Service[], ctx: EmitterContex
 
 export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext): Map<string, string> {
   // Only group top-level services (not mounted sub-services)
-  const topLevel = filterMountedServices(services, ctx);
+  const topLevel = clientServices(services, ctx);
   const { standalone, namespaces } = groupServicesByNamespace(topLevel, ctx);
   const paths = new Map<string, string>();
 
@@ -137,11 +137,21 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
     }
   }
 
+  // Build a reverse map: mount target name → access path (for targets that
+  // don't match any IR service name, e.g., "Connect" has no IR service named "Connect")
+  const targetPaths = new Map<string, string>();
+  for (const service of topLevel) {
+    const target = getMountTarget(service, ctx);
+    if (!targetPaths.has(target) && paths.has(service.name)) {
+      targetPaths.set(target, paths.get(service.name)!);
+    }
+  }
+
   // Map mounted services to their mount target's access path
   for (const service of services) {
     if (paths.has(service.name)) continue;
     const mountTarget = getMountTarget(service, ctx);
-    const targetPath = paths.get(mountTarget);
+    const targetPath = targetPaths.get(mountTarget) ?? paths.get(mountTarget);
     if (targetPath) {
       paths.set(service.name, targetPath);
     }
@@ -151,18 +161,15 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
 }
 
 /**
- * Filter out services whose operations are mounted on a different service.
- * These don't get their own client accessor — they're reached via the mount target.
+ * Return services as-is. Mount rules affect method naming and the smoke manifest,
+ * but the Python client preserves the full namespace hierarchy from IR services.
  */
-function filterMountedServices(services: Service[], ctx: EmitterContext): Service[] {
-  return services.filter((s) => {
-    const mountTarget = getMountTarget(s, ctx);
-    return mountTarget === toPascalCase(s.name);
-  });
+function clientServices(services: Service[], _ctx: EmitterContext): Service[] {
+  return services;
 }
 
 function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): void {
-  const topLevelServices = filterMountedServices(spec.services, ctx);
+  const topLevelServices = clientServices(spec.services, ctx);
   const accessPaths = buildServiceAccessPaths(topLevelServices, ctx);
   const unreachableServices = topLevelServices
     .filter((service) => service.operations.length > 0 && !accessPaths.has(service.name))
@@ -176,7 +183,7 @@ function assertPublicClientReachability(spec: ApiSpec, ctx: EmitterContext): voi
 function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const sdk: SdkBehavior = ctx.spec.sdk ?? defaultSdkBehavior();
   const lines: string[] = [];
-  const topLevelServices = filterMountedServices(spec.services, ctx);
+  const topLevelServices = clientServices(spec.services, ctx);
   const { standalone, namespaces } = groupServicesByNamespace(topLevelServices, ctx);
 
   const listWrapperNames = new Set<string>();

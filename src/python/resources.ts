@@ -617,7 +617,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   const serviceDirMap = buildServiceDirMap(grouping);
 
   for (const service of services) {
+    if (service.operations.length === 0) continue;
     const resolvedName = resolveResourceClassName(service, ctx);
+    const allOperations = service.operations;
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const resourceClassName = resolvedName;
     const importPrefix = relativeImportPrefix(dirName);
@@ -645,7 +647,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
     }
 
-    for (const op of service.operations) {
+    for (const op of allOperations) {
       const plan = planOperation(op);
       if (plan.responseModelName && !listWrapperNames.has(plan.responseModelName)) {
         modelImports.add(plan.responseModelName);
@@ -723,13 +725,19 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
     }
 
+    // Deduplicate: skip cross-service imports for models already available locally
+    const localSet = new Set(localModels);
+
     if (localModels.length > 0) {
       lines.push(`from .models import ${localModels.map((n) => className(n)).join(', ')}`);
     }
     for (const [csDir, names] of [...crossServiceModels].sort()) {
-      lines.push(
-        `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${names.map((n) => className(n)).join(', ')}`,
-      );
+      const unique = names.filter((n) => !localSet.has(n));
+      if (unique.length > 0) {
+        lines.push(
+          `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${unique.map((n) => className(n)).join(', ')}`,
+        );
+      }
     }
 
     // Enum imports — same-service vs cross-service
@@ -779,7 +787,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
     }
 
-    const hasPaginated = service.operations.some((op) => op.pagination);
+    const hasPaginated = allOperations.some((op) => op.pagination);
     if (hasPaginated) {
       lines.push(`from ${importPrefix}_pagination import AsyncPage, SyncPage`);
     }
@@ -798,7 +806,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('        self._client = client');
 
     const emittedMethods = new Set<string>();
-    for (const op of service.operations) {
+    for (const op of allOperations) {
       const plan = planOperation(op);
       let method = lookupMethodName(op, resolvedLookup) ?? toSnakeCase(op.name);
       // On name collision, fall back to the full snake_case operation name
@@ -845,7 +853,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('        self._client = client');
 
     const asyncEmittedMethods = new Set<string>();
-    for (const op of service.operations) {
+    for (const op of allOperations) {
       const plan = planOperation(op);
       let method = lookupMethodName(op, resolvedLookup) ?? toSnakeCase(op.name);
       if (asyncEmittedMethods.has(method)) {

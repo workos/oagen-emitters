@@ -171,13 +171,11 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   return toSnakeCase(op.name);
 }
 
-/** Resolve the SDK class name for a service, using resolved operations' mountOn. */
+/** Resolve the SDK class name for a service.
+ * Python preserves the full namespace hierarchy, so class names come from the
+ * overlay (for backwards compat) or IR service name — NOT from mount targets.
+ */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
-  // Use resolved ops mountOn as canonical class name
-  for (const r of ctx.resolvedOperations ?? []) {
-    if (r.service.name === service.name) return r.mountOn;
-  }
-  // Fallback to overlay, then IR name
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
