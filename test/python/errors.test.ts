@@ -22,7 +22,7 @@ const ctx: EmitterContext = {
 describe('generateErrors', () => {
   it('generates error hierarchy', () => {
     const files = generateErrors(ctx);
-    expect(files.length).toBe(2);
+    expect(files.length).toBe(1);
     expect(files[0].path).toBe('src/workos/_errors.py');
 
     const content = files[0].content;
@@ -55,28 +55,15 @@ describe('generateErrors', () => {
     expect(content).toContain('403: AuthorizationError');
     expect(content).toContain('429: RateLimitExceededError');
 
-    // Backwards-compatible aliases
-    expect(content).toContain('BaseRequestException = WorkOSError');
-    expect(content).toContain('BadRequestException = BadRequestError');
+    // No backwards-compatible aliases (greenfield project)
+    expect(content).not.toContain('BaseRequestException');
+    expect(content).not.toContain('STATUS_CODE_TO_EXCEPTION');
   });
 
-  it('generates exceptions.py re-export module', () => {
+  it('does not generate exceptions.py re-export module', () => {
     const files = generateErrors(ctx);
     const exceptionsFile = files.find((f) => f.path === 'src/workos/exceptions.py');
-    expect(exceptionsFile).toBeDefined();
-    expect(exceptionsFile!.integrateTarget).toBe(true);
-    expect(exceptionsFile!.overwriteExisting).toBe(true);
-
-    const content = exceptionsFile!.content;
-    expect(content).toContain('from ._errors import (');
-    expect(content).toContain('WorkOSError as WorkOSError');
-    expect(content).toContain('APIError as APIError');
-    expect(content).toContain('AuthenticationError as AuthenticationError');
-    expect(content).toContain('ServerError as ServerError');
-    expect(content).toContain('STATUS_CODE_TO_ERROR as STATUS_CODE_TO_ERROR');
-    // Backwards-compat aliases are also re-exported
-    expect(content).toContain('BaseRequestException as BaseRequestException');
-    expect(content).toContain('STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION');
+    expect(exceptionsFile).toBeUndefined();
   });
 
   it('marks files as overwriteExisting', () => {

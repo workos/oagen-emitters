@@ -111,9 +111,9 @@ describe('generateClient', () => {
     expect(barrel!.content).toContain('"AsyncWorkOS"');
     expect(barrel!.content).toContain('"WorkOSError"');
     expect(barrel!.content).toContain('"ListMetadata"');
-    // Individual errors are no longer in __init__.py — access via workos._errors
-    expect(barrel!.content).not.toContain('"AuthorizationError"');
-    expect(barrel!.content).not.toContain('"WorkOSConnectionError"');
+    // No compat aliases in greenfield project
+    expect(barrel!.content).not.toContain('WorkOSClient');
+    expect(barrel!.content).not.toContain('AsyncWorkOSClient');
     expect(barrel!.overwriteExisting).toBe(true);
   });
 

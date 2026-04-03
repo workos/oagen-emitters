@@ -222,107 +222,11 @@ STATUS_CODE_TO_ERROR: Dict[int, Type[APIError]] = {
 ${Object.entries(sdk.errors.statusCodeMap)
   .map(([code, kind]) => `    ${code}: ${kind}Error,`)
   .join('\n')}
-}
-
-
-# Backwards-compatible aliases (v4 names)
-BaseRequestException = WorkOSError
-BadRequestException = BadRequestError
-AuthenticationException = AuthenticationError
-AuthorizationException = AuthorizationError
-EmailVerificationRequiredException = EmailVerificationRequiredError
-NotFoundException = NotFoundError
-ConflictException = ConflictError
-UnprocessableEntityException = UnprocessableEntityError
-RateLimitExceededException = RateLimitExceededError
-ServerException = ServerError
-ConfigurationException = ConfigurationError
-WorkOSConnectionException = WorkOSConnectionError
-WorkOSTimeoutException = WorkOSTimeoutError
-STATUS_CODE_TO_EXCEPTION = STATUS_CODE_TO_ERROR`;
+}`;
 
   files.push({
     path: `src/${namespace}/_errors.py`,
     content: errorsContent,
-    integrateTarget: true,
-    overwriteExisting: true,
-  });
-
-  // Generate exceptions.py re-export so `from workos.exceptions import ...` works
-  const exceptionsReexport = `"""Backwards-compatible re-export of exception classes.
-
-Allows 'from workos.exceptions import ...' alongside the
-canonical 'from workos._errors import ...' path.
-"""
-
-from ._errors import (
-    WorkOSError as WorkOSError,
-    APIError as APIError,
-    AuthenticationError as AuthenticationError,
-    AuthorizationError as AuthorizationError,
-    BadRequestError as BadRequestError,
-    ConflictError as ConflictError,
-    ConfigurationError as ConfigurationError,
-    EmailVerificationRequiredError as EmailVerificationRequiredError,
-    NotFoundError as NotFoundError,
-    RateLimitExceededError as RateLimitExceededError,
-    ServerError as ServerError,
-    UnprocessableEntityError as UnprocessableEntityError,
-    WorkOSConnectionError as WorkOSConnectionError,
-    WorkOSTimeoutError as WorkOSTimeoutError,
-    STATUS_CODE_TO_ERROR as STATUS_CODE_TO_ERROR,
-    # Backwards-compatible v4 aliases
-    BaseRequestException as BaseRequestException,
-    BadRequestException as BadRequestException,
-    AuthenticationException as AuthenticationException,
-    AuthorizationException as AuthorizationException,
-    EmailVerificationRequiredException as EmailVerificationRequiredException,
-    NotFoundException as NotFoundException,
-    ConflictException as ConflictException,
-    UnprocessableEntityException as UnprocessableEntityException,
-    RateLimitExceededException as RateLimitExceededException,
-    ServerException as ServerException,
-    ConfigurationException as ConfigurationException,
-    WorkOSConnectionException as WorkOSConnectionException,
-    WorkOSTimeoutException as WorkOSTimeoutException,
-    STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION,
-)
-
-__all__ = [
-    "WorkOSError",
-    "APIError",
-    "AuthenticationError",
-    "AuthorizationError",
-    "BadRequestError",
-    "ConflictError",
-    "ConfigurationError",
-    "EmailVerificationRequiredError",
-    "NotFoundError",
-    "RateLimitExceededError",
-    "ServerError",
-    "UnprocessableEntityError",
-    "WorkOSConnectionError",
-    "WorkOSTimeoutError",
-    "STATUS_CODE_TO_ERROR",
-    "BaseRequestException",
-    "BadRequestException",
-    "AuthenticationException",
-    "AuthorizationException",
-    "EmailVerificationRequiredException",
-    "NotFoundException",
-    "ConflictException",
-    "UnprocessableEntityException",
-    "RateLimitExceededException",
-    "ServerException",
-    "ConfigurationException",
-    "WorkOSConnectionException",
-    "WorkOSTimeoutException",
-    "STATUS_CODE_TO_EXCEPTION",
-]`;
-
-  files.push({
-    path: `src/${namespace}/exceptions.py`,
-    content: exceptionsReexport,
     integrateTarget: true,
     overwriteExisting: true,
   });

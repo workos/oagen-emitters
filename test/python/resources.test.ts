@@ -78,7 +78,7 @@ describe('generateResources', () => {
 
     // Class definition
     expect(content).toContain('class Organizations:');
-    expect(content).toContain('def __init__(self, client: "WorkOSClient") -> None:');
+    expect(content).toContain('def __init__(self, client: "WorkOS") -> None:');
 
     // GET method with path param
     expect(content).toContain('def get_organization(');

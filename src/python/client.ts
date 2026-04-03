@@ -674,11 +674,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('            )');
   lines.push('');
   lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
-  lines.push('');
-  lines.push('');
-  lines.push('# Backwards-compatible aliases');
-  lines.push('WorkOSClient = WorkOS');
-  lines.push('AsyncWorkOSClient = AsyncWorkOS');
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
@@ -829,15 +824,9 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   lines.push('from ._pagination import AsyncPage, ListMetadata, SyncPage');
   lines.push('from ._types import RequestOptions');
   lines.push('');
-  lines.push('# Backwards-compatible aliases');
-  lines.push('WorkOSClient = WorkOS');
-  lines.push('AsyncWorkOSClient = AsyncWorkOS');
-  lines.push('');
   lines.push('__all__ = [');
   lines.push('    "WorkOS",');
   lines.push('    "AsyncWorkOS",');
-  lines.push('    "WorkOSClient",');
-  lines.push('    "AsyncWorkOSClient",');
   lines.push('    "WorkOSError",');
   lines.push('    "SyncPage",');
   lines.push('    "AsyncPage",');
