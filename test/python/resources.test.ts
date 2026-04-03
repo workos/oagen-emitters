@@ -80,16 +80,16 @@ describe('generateResources', () => {
     expect(content).toContain('class Organizations:');
     expect(content).toContain('def __init__(self, client: "WorkOSClient") -> None:');
 
-    // GET method with path param (normalized: get_organization → get)
-    expect(content).toContain('def get(');
+    // GET method with path param
+    expect(content).toContain('def get_organization(');
     expect(content).toContain('id: str,');
     expect(content).toContain('f"organizations/{id}"');
     expect(content).toContain('model=Organization');
     // Public request methods (no underscore prefix)
     expect(content).toContain('self._client.request(');
 
-    // DELETE method returns None (normalized: delete_organization → delete)
-    expect(content).toContain('def delete(');
+    // DELETE method returns None
+    expect(content).toContain('def delete_organization(');
     expect(content).toContain(') -> None:');
   });
 

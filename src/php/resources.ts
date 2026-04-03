@@ -1,7 +1,8 @@
 import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
-import { planOperation } from '@workos/oagen';
+import { planOperation, toCamelCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefDoc } from './type-map.js';
-import { className, enumClassName, fieldName, resolveMethodName, resolveClassName } from './naming.js';
+import { className, enumClassName, fieldName, resolveClassName } from './naming.js';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 import { isListWrapperModel } from './models.js';
 
 /**
@@ -111,6 +112,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   if (services.length === 0) return [];
 
   const files: GeneratedFile[] = [];
+  const resolvedLookup = buildResolvedLookup(ctx);
 
   for (const service of services) {
     if (service.operations.length === 0) continue;
@@ -138,7 +140,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // Generate methods for each operation
     for (const op of service.operations) {
       const plan = planOperation(op);
-      const method = resolveMethodName(op, service, ctx);
+      const resolvedName = lookupMethodName(op, resolvedLookup);
+      const method = resolvedName ? toCamelCase(resolvedName) : toCamelCase(op.name);
 
       lines.push('');
       emitMethod(lines, op, plan, method, service, ctx);

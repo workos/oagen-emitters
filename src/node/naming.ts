@@ -1,5 +1,6 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from '@workos/oagen';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
 /** PascalCase class/interface name. */
 export function className(name: string): string {
@@ -67,129 +68,40 @@ export function buildServiceNameMap(services: Service[], ctx: EmitterContext): M
 }
 
 /**
- * Explicit method name overrides for operations where the spec's operationId
- * does not match the desired SDK method name and the spec cannot be changed.
- * Key: "HTTP_METHOD /path", Value: camelCase method name.
- */
-const METHOD_NAME_OVERRIDES: Record<string, string> = {
-  'POST /portal/generate_link': 'generatePortalLink',
-};
-
-/**
- * Explicit service directory overrides. Maps a resolved PascalCase service name
- * to a target directory (kebab-case). Use this when the spec's tag grouping
- * does not match the desired SDK directory layout and the spec cannot be changed.
- */
-const SERVICE_DIR_OVERRIDES: Record<string, string> = {
-  ApplicationClientSecrets: 'workos-connect',
-  Applications: 'workos-connect',
-  Connections: 'sso',
-  Directories: 'directory-sync',
-  DirectoryGroups: 'directory-sync',
-  DirectoryUsers: 'directory-sync',
-  FeatureFlagsTargets: 'feature-flags',
-  MultiFactorAuth: 'mfa',
-  MultiFactorAuthChallenges: 'mfa',
-  OrganizationsApiKeys: 'organizations',
-  WebhooksEndpoints: 'webhooks',
-  UserManagementAuthentication: 'user-management',
-  UserManagementCorsOrigins: 'user-management',
-  UserManagementDataProviders: 'user-management',
-  UserManagementInvitations: 'user-management',
-  UserManagementJWTTemplate: 'user-management',
-  UserManagementMagicAuth: 'user-management',
-  UserManagementMultiFactorAuthentication: 'user-management',
-  UserManagementOrganizationMembership: 'user-management',
-  UserManagementRedirectUris: 'user-management',
-  UserManagementSessionTokens: 'user-management',
-  UserManagementUsers: 'user-management',
-  UserManagementUsersAuthorizedApplications: 'user-management',
-  WorkOSConnect: 'workos-connect',
-};
-
-/**
- * Maps a service (by PascalCase name) to the existing hand-written class that
- * already covers its endpoints. When a service appears here:
- *   - `resolveClassName` returns the target class (so generated code merges in)
- *   - `isServiceCoveredByExisting` returns true
- *   - `hasMethodsAbsentFromBaseline` checks the target class for missing methods,
- *     so new endpoints are added to the existing class rather than silently dropped
- */
-export const SERVICE_COVERED_BY: Record<string, string> = {
-  Connections: 'SSO',
-  Directories: 'DirectorySync',
-  DirectoryGroups: 'DirectorySync',
-  DirectoryUsers: 'DirectorySync',
-  FeatureFlagsTargets: 'FeatureFlags',
-  MultiFactorAuth: 'Mfa',
-  MultiFactorAuthChallenges: 'Mfa',
-  OrganizationsApiKeys: 'Organizations',
-  UserManagementAuthentication: 'UserManagement',
-  UserManagementInvitations: 'UserManagement',
-  UserManagementMagicAuth: 'UserManagement',
-  UserManagementMultiFactorAuthentication: 'UserManagement',
-  UserManagementOrganizationMembership: 'UserManagement',
-  UserManagementUsers: 'UserManagement',
-};
-
-/**
- * Explicit class name overrides. Maps the default PascalCase service name
- * to the desired SDK class name when toPascalCase produces the wrong casing.
- */
-const CLASS_NAME_OVERRIDES: Record<string, string> = {
-  WorkosConnect: 'WorkOSConnect',
-};
-
-/**
- * Resolve the output directory for a service, checking overrides first.
- * Falls back to the standard kebab-case conversion.
+ * Resolve the output directory for a service.
+ * Mount rules already handle directory placement, so this is a simple kebab-case conversion.
  */
 export function resolveServiceDir(resolvedServiceName: string): string {
-  return SERVICE_DIR_OVERRIDES[resolvedServiceName] ?? serviceDirName(resolvedServiceName);
+  return serviceDirName(resolvedServiceName);
 }
 
-/** Resolve the SDK method name for an operation, checking overlay first. */
+/** Resolve the SDK method name for an operation, using resolved operations first. */
 export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+  const lookup = buildResolvedLookup(ctx);
+  const resolved = lookupMethodName(op, lookup);
+  if (resolved) return toCamelCase(resolved);
+  // Fallback to overlay, then spec-derived
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-  const override = METHOD_NAME_OVERRIDES[httpKey];
-  if (override) return override;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) {
-    // Fix: when the path ends with a path parameter (single-resource operation)
-    // and the overlay method name is plural, prefer the singular form.
-    // E.g., getUsers → getUser when path is /user_management/users/{id}
-    const isSingleResource = /\/\{[^}]+\}$/.test(op.path);
-    if (isSingleResource && existing.methodName.endsWith('s') && !existing.methodName.endsWith('ss')) {
-      const singular = existing.methodName.slice(0, -1);
-      // Only singularize if it looks like a typical pluralization (ends in 's')
-      // and the spec-derived name agrees it should be singular
-      const specDerived = toCamelCase(op.name);
-      if (specDerived === singular || specDerived.endsWith(singular.slice(singular.length - 4))) {
-        return singular;
-      }
-    }
-    return existing.methodName;
-  }
+  if (existing) return existing.methodName;
   return toCamelCase(op.name);
 }
 
-/** Resolve the SDK class name for a service, checking overlay for existing names. */
+/** Resolve the SDK class name for a service, using resolved ops mountOn as canonical. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
-  // Explicit coverage: this service's endpoints belong to an existing class
-  const coveredBy = SERVICE_COVERED_BY[toPascalCase(service.name)];
-  if (coveredBy) return coveredBy;
-
-  // Check overlay's methodByOperation for any operation in this service
-  // to find the existing class name
+  // Use resolved ops mountOn as canonical class name
+  for (const r of ctx.resolvedOperations ?? []) {
+    if (r.service.name === service.name) return r.mountOn;
+  }
+  // Fallback to overlay
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
       const existing = ctx.overlayLookup.methodByOperation.get(httpKey);
-      if (existing) return CLASS_NAME_OVERRIDES[existing.className] ?? existing.className;
+      if (existing) return existing.className;
     }
   }
-  const defaultName = toPascalCase(service.name);
-  return CLASS_NAME_OVERRIDES[defaultName] ?? defaultName;
+  return toPascalCase(service.name);
 }
 
 /** Resolve the interface name for a model, checking overlay first. */

@@ -1,4 +1,4 @@
-import type { Operation, Service, EmitterContext, Enum } from '@workos/oagen';
+import type { Service, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 
 /** Namespace grouping result (shared with client.ts). */
@@ -185,123 +185,13 @@ export function buildServiceNameMap(services: Service[], ctx: EmitterContext): M
   return map;
 }
 
-/** Resolve the SDK method name for an operation, checking overlay first. */
-export function resolveMethodName(op: Operation, service: Service, ctx: EmitterContext): string {
-  void service;
-  const special = SPECIAL_METHOD_NAMES[`${op.httpMethod.toUpperCase()} ${op.path}`];
-  if (special) return special;
-  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-  const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) {
-    // Overlay names come from the baseline SDK — use them as-is without normalization
-    return toCamelCase(existing.methodName);
-  }
-  return normalizeMethodName(toCamelCase(op.name), op);
-}
-
-const SPECIAL_METHOD_NAMES: Record<string, string> = {
-  // Portal
-  'POST /portal/generate_link': 'generateLink',
-  // Audit logs
-  'GET /audit_logs/actions': 'listActions',
-  'POST /audit_logs/events': 'createEvent',
-  'POST /audit_logs/exports': 'createExport',
-  'GET /audit_logs/exports/{auditLogExportId}': 'getExport',
-  'POST /audit_logs/actions/{actionName}/schemas': 'createSchema',
-  // Organizations
-  'GET /organizations': 'listOrganizations',
-  'POST /organizations': 'createOrganization',
-  'GET /organizations/{id}': 'getOrganization',
-  'GET /organizations/external_id/{external_id}': 'getOrganizationByExternalId',
-  // SSO
-  'GET /sso/authorize': 'getAuthorizationUrl',
-  'POST /sso/token': 'getProfileAndToken',
-  // User management
-  'GET /user_management/users': 'listUsers',
-  'POST /user_management/users': 'createUser',
-  'GET /user_management/users/{id}': 'getUser',
-  'PUT /user_management/users/{id}': 'updateUser',
-  'DELETE /user_management/users/{id}': 'deleteUser',
-  'GET /user_management/users/external_id/{external_id}': 'getUserByExternalId',
-  'POST /user_management/authenticate': 'authenticateWithCode',
-  'GET /user_management/invitations': 'listInvitations',
-  'POST /user_management/invitations': 'sendInvitation',
-  'GET /user_management/invitations/{id}': 'getInvitation',
-  'GET /user_management/invitations/by_token/{token}': 'findInvitationByToken',
-  'POST /user_management/invitations/{id}/accept': 'acceptInvitation',
-  'POST /user_management/invitations/{id}/resend': 'resendInvitation',
-  'POST /user_management/invitations/{id}/revoke': 'revokeInvitation',
-  'GET /user_management/organization_memberships': 'listOrganizationMemberships',
-  'POST /user_management/organization_memberships': 'createOrganizationMembership',
-  'GET /user_management/organization_memberships/{id}': 'getOrganizationMembership',
-  'PUT /user_management/organization_memberships/{id}': 'updateOrganizationMembership',
-  'DELETE /user_management/organization_memberships/{id}': 'deleteOrganizationMembership',
-  'PUT /user_management/organization_memberships/{id}/deactivate': 'deactivateOrganizationMembership',
-  'PUT /user_management/organization_memberships/{id}/reactivate': 'reactivateOrganizationMembership',
-  'POST /user_management/magic_auth/send_code': 'sendMagicAuthCode',
-  'GET /user_management/magic_auth/{id}': 'getMagicAuth',
-  'POST /user_management/magic_auth': 'createMagicAuth',
-  'GET /user_management/email_verification/{id}': 'getEmailVerification',
-  'POST /user_management/users/{id}/email_verification/send': 'sendVerificationEmail',
-  'POST /user_management/users/{id}/email_verification/confirm': 'verifyEmail',
-  'POST /user_management/password_reset': 'createPasswordReset',
-  'GET /user_management/password_reset/{id}': 'getPasswordReset',
-  'POST /user_management/password_reset/confirm': 'resetPassword',
-  'POST /user_management/users/{id}/password/reset': 'sendPasswordResetEmail',
-  'POST /user_management/users/{id}/auth_factors': 'enrollAuthFactor',
-  'GET /user_management/users/{id}/auth_factors': 'listAuthFactors',
-  'GET /user_management/sessions': 'listSessions',
-  'POST /user_management/sessions/{id}/revoke': 'revokeSession',
-  // Widgets
-  'POST /widgets/token': 'getToken',
-  // Connections (from baseline SSO class)
-  'GET /connections': 'listConnections',
-  'GET /connections/{id}': 'getConnection',
-  'DELETE /connections/{id}': 'deleteConnection',
-  // Directories (from baseline DirectorySync class)
-  'GET /directories': 'listDirectories',
-  'GET /directories/{id}': 'getDirectory',
-  'DELETE /directories/{id}': 'deleteDirectory',
-  'GET /directory_groups': 'listGroups',
-  'GET /directory_groups/{id}': 'getGroup',
-  'GET /directory_users': 'listUsers',
-  'GET /directory_users/{id}': 'getUser',
-  // Authorization / RBAC
-  'GET /authorization/organizations/{organizationId}/roles': 'listOrganizationRoles',
-  'POST /authorization/organizations/{organizationId}/roles': 'createOrganizationRole',
-  'GET /authorization/organizations/{organizationId}/roles/{slug}': 'getOrganizationRole',
-  'PATCH /authorization/organizations/{organizationId}/roles/{slug}': 'updateOrganizationRole',
-  'DELETE /authorization/organizations/{organizationId}/roles/{slug}': 'deleteOrganizationRole',
-  'PUT /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'setOrganizationRolePermissions',
-  'POST /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'addOrganizationRolePermission',
-  'DELETE /authorization/organizations/{organizationId}/roles/{slug}/permissions/{permissionSlug}':
-    'removeOrganizationRolePermission',
-  'PUT /authorization/roles/{slug}/permissions': 'setEnvironmentRolePermissions',
-  'POST /authorization/roles/{slug}/permissions': 'addEnvironmentRolePermission',
-  'GET /authorization/roles': 'listEnvironmentRoles',
-  'POST /authorization/roles': 'createEnvironmentRole',
-  'GET /authorization/roles/{slug}': 'getEnvironmentRole',
-  'PATCH /authorization/roles/{slug}': 'updateEnvironmentRole',
-  'GET /authorization/permissions': 'listPermissions',
-  'POST /authorization/permissions': 'createPermission',
-  'GET /authorization/permissions/{slug}': 'getPermission',
-  'PUT /authorization/permissions/{slug}': 'updatePermission',
-  'DELETE /authorization/permissions/{slug}': 'deletePermission',
-  // MFA
-  'POST /auth/factors/enroll': 'enrollFactor',
-  'POST /auth/factors/{authenticationFactorId}/challenge': 'challengeFactor',
-  'POST /auth/challenge/{authenticationChallengeId}/verify': 'verifyChallenge',
-  'GET /auth/factors/{authenticationFactorId}': 'getFactor',
-  'DELETE /auth/factors/{authenticationFactorId}': 'deleteFactor',
-  // Organization feature flags
-  'GET /organizations/{organization_id}/feature-flags': 'listOrganizationFeatureFlags',
-};
-
-/** Resolve the SDK class name for a service, checking overlay for existing names. */
+/** Resolve the SDK class name for a service, using resolved operations' mountOn. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
-  if (service.name === 'portal') {
-    return 'AdminPortal';
+  // Use resolved ops mountOn as canonical class name
+  for (const r of ctx.resolvedOperations ?? []) {
+    if (r.service.name === service.name) return r.mountOn;
   }
+  // Fallback to overlay, then IR name
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -317,23 +207,6 @@ export function resolveTypeName(name: string, ctx: EmitterContext): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
   return toPascalCase(name);
-}
-
-// ─── Method name normalization ────────────────────────────────────────
-
-function normalizeMethodName(name: string, _op: Operation): string {
-  // For PHP backward compatibility, preserve the full method name including
-  // the resource noun (e.g., keep "listOrganizations" instead of stripping to "list").
-  // This ensures the generated SDK matches the naming conventions of the existing SDK.
-  if (name === 'find') return 'get';
-  if (name.startsWith('find')) {
-    const rest = name.slice(4);
-    if (rest.length > 0 && rest[0] === rest[0].toUpperCase()) {
-      return `get${rest}`;
-    }
-  }
-
-  return name;
 }
 
 // ─── Service grouping ─────────────────────────────────────────────────

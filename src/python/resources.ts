@@ -12,14 +12,13 @@ import {
   className,
   fieldName,
   resolveServiceDir,
-  resolveMethodName,
-  resolveCompatMethodAliases,
   resolveClassName,
   buildServiceDirMap,
   dirToModule,
   relativeImportPrefix,
 } from './naming.js';
 import { groupServicesByNamespace } from './client.js';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -65,7 +64,7 @@ function emitMethodSignature(
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   const defKeyword = isAsync ? 'async def' : 'def';
-  const usesClientCredentialDefaults = usesClientCredentialsFromClient(op);
+  const usesClientCredentialDefaults = false;
 
   lines.push(`    ${defKeyword} ${method}(`);
   lines.push('        self,');
@@ -341,7 +340,7 @@ function emitMethodBody(
   const { pathParamNames, isArrayResponse, isRedirect, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
-  const usesClientCredentialDefaults = usesClientCredentialsFromClient(op);
+  const usesClientCredentialDefaults = false;
 
   // Method body — build path
   const pathStr = buildPathString(op);
@@ -612,6 +611,7 @@ function emitMethodBody(
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
 
+  const resolvedLookup = buildResolvedLookup(ctx);
   const files: GeneratedFile[] = [];
   const grouping = groupServicesByNamespace(services, ctx);
   const serviceDirMap = buildServiceDirMap(grouping);
@@ -800,7 +800,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const emittedMethods = new Set<string>();
     for (const op of service.operations) {
       const plan = planOperation(op);
-      let method = resolveMethodName(op, service, ctx);
+      let method = lookupMethodName(op, resolvedLookup) ?? toSnakeCase(op.name);
       // On name collision, fall back to the full snake_case operation name
       if (emittedMethods.has(method)) {
         const fallback = toSnakeCase(op.name);
@@ -826,10 +826,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
-      for (const alias of resolveCompatMethodAliases(op, service, ctx)) {
-        lines.push('');
-        emitCompatAliasMethod(lines, method, alias, op, false);
-      }
     }
 
     // --- Generate async class ---
@@ -851,7 +847,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const asyncEmittedMethods = new Set<string>();
     for (const op of service.operations) {
       const plan = planOperation(op);
-      let method = resolveMethodName(op, service, ctx);
+      let method = lookupMethodName(op, resolvedLookup) ?? toSnakeCase(op.name);
       if (asyncEmittedMethods.has(method)) {
         const fallback = toSnakeCase(op.name);
         if (fallback !== method && !asyncEmittedMethods.has(fallback)) {
@@ -876,10 +872,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       );
       emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
       emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
-      for (const alias of resolveCompatMethodAliases(op, service, ctx)) {
-        lines.push('');
-        emitCompatAliasMethod(lines, method, alias, op, true);
-      }
     }
 
     files.push({
@@ -967,28 +959,6 @@ function serializeParameterValue(type: TypeRef | undefined, varName: string, isR
     return isRequired ? expr : `${expr} if ${varName} is not None else None`;
   }
   return varName;
-}
-
-function usesClientCredentialsFromClient(op: Operation): boolean {
-  return op.path.startsWith('/sso/');
-}
-
-function emitCompatAliasMethod(
-  lines: string[],
-  targetMethod: string,
-  aliasMethod: string,
-  op: Operation,
-  isAsync: boolean,
-): void {
-  const defKeyword = isAsync ? 'async def' : 'def';
-  const awaitPrefix = isAsync ? 'await ' : '';
-  lines.push(`    ${defKeyword} ${aliasMethod}(self, *args: Any, **kwargs: Any) -> Any:`);
-  lines.push(`        """Compatibility alias for \`${targetMethod}\`."""`);
-  if (op.path === '/portal/generate_link') {
-    lines.push(`        return ${awaitPrefix}self.${targetMethod}(*args, **kwargs)`);
-    return;
-  }
-  lines.push(`        return ${awaitPrefix}self.${targetMethod}(*args, **kwargs)`);
 }
 
 /**

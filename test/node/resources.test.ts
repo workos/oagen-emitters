@@ -1673,85 +1673,57 @@ describe('partial service coverage', () => {
     expect(files[0].skipIfExists).toBe(true);
   });
 
-  it('reconciles method names against api-surface using word-set matching', () => {
+  it('uses resolved operation method names when provided', () => {
+    const op = {
+      name: 'listRolesOrganizations',
+      httpMethod: 'get' as const,
+      path: '/authorization/organizations/{organizationId}/roles',
+      pathParams: [
+        {
+          name: 'organizationId',
+          type: { kind: 'primitive' as const, type: 'string' as const },
+          required: true,
+        },
+      ],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: 'RoleList' },
+      errors: [],
+      pagination: {
+        strategy: 'cursor' as const,
+        param: 'after',
+        itemType: { kind: 'model' as const, name: 'RoleList' },
+      },
+      injectIdempotencyKey: false,
+    };
     const services: Service[] = [
       {
         name: 'Authorization',
-        operations: [
-          {
-            name: 'listRolesOrganizations',
-            httpMethod: 'get',
-            path: '/authorization/organizations/{organizationId}/roles',
-            pathParams: [
-              {
-                name: 'organizationId',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'RoleList' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor' as const,
-              param: 'after',
-              itemType: { kind: 'model' as const, name: 'RoleList' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
+        operations: [op],
       },
     ];
 
-    const ctxRecon: EmitterContext = {
+    const ctxResolved: EmitterContext = {
       ...ctx,
       spec: {
         ...emptySpec,
         services,
         models: [{ name: 'RoleList', fields: [] }],
       },
-      overlayLookup: {
-        methodByOperation: new Map(), // no overlay mapping
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          Authorization: {
-            name: 'Authorization',
-            methods: {
-              listOrganizationRoles: [
-                {
-                  name: 'listOrganizationRoles',
-                  params: [],
-                  returnType: 'void',
-                  async: true,
-                },
-              ],
-            },
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
-          },
+      resolvedOperations: [
+        {
+          operation: op,
+          service: services[0],
+          methodName: 'list_organization_roles',
+          mountOn: 'Authorization',
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      ],
     };
 
-    const files = generateResources(services, ctxRecon);
+    const files = generateResources(services, ctxResolved);
     expect(files.length).toBe(1);
     const content = files[0].content;
-    // Should use reconciled name from api-surface, not spec-derived name
+    // Should use the resolved operation name (converted to camelCase)
     expect(content).toContain('async listOrganizationRoles');
     expect(content).not.toContain('async listRolesOrganizations');
   });

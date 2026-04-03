@@ -1,5 +1,6 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -158,122 +159,25 @@ export function resolveServiceDir(resolvedServiceName: string): string {
   return moduleName(resolvedServiceName);
 }
 
-/** Resolve the SDK method name for an operation, checking overlay first. */
-export function resolveMethodName(op: Operation, service: Service, ctx: EmitterContext): string {
-  void service;
-  const special = SPECIAL_METHOD_NAMES[`${op.httpMethod.toUpperCase()} ${op.path}`];
-  if (special) return special;
+/** Resolve the SDK method name for an operation, using resolved operations first. */
+export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+  const lookup = buildResolvedLookup(ctx);
+  const resolved = lookupMethodName(op, lookup);
+  if (resolved) return resolved;
+  // Fallback to overlay, then spec-derived
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) {
-    // Convert from camelCase overlay name to snake_case for Python, then
-    // normalize so redundant resource nouns are still stripped (e.g.
-    // updateOrganization → update) even when the overlay is present.
-    return normalizeMethodName(toSnakeCase(existing.methodName), op);
-  }
-  return normalizeMethodName(toSnakeCase(op.name), op);
+  if (existing) return toSnakeCase(existing.methodName);
+  return toSnakeCase(op.name);
 }
 
-const SPECIAL_METHOD_NAMES: Record<string, string> = {
-  'POST /portal/generate_link': 'generate_link',
-  // Audit log exports — operationIds "exports" / "export" are confusing without a verb
-  'POST /audit_logs/exports': 'create_export',
-  'GET /audit_logs/exports/{auditLogExportId}': 'get_export',
-  // Organization roles
-  'GET /authorization/organizations/{organizationId}/roles': 'list_organization_roles',
-  'POST /authorization/organizations/{organizationId}/roles': 'create_organization_role',
-  'GET /authorization/organizations/{organizationId}/roles/{slug}': 'get_organization_role',
-  'PATCH /authorization/organizations/{organizationId}/roles/{slug}': 'update_organization_role',
-  'DELETE /authorization/organizations/{organizationId}/roles/{slug}': 'delete_organization_role',
-  // Organization role permissions — without overrides these collide with env-level and
-  // fall back to long auto-generated names like "add_permission_permissions_organizations_roles"
-  'PUT /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'set_organization_role_permissions',
-  'POST /authorization/organizations/{organizationId}/roles/{slug}/permissions': 'add_organization_role_permission',
-  'DELETE /authorization/organizations/{organizationId}/roles/{slug}/permissions/{permissionSlug}':
-    'remove_organization_role_permission',
-  // Environment role permissions
-  'PUT /authorization/roles/{slug}/permissions': 'set_environment_role_permissions',
-  'POST /authorization/roles/{slug}/permissions': 'add_environment_role_permission',
-};
-
-export function resolveCompatMethodAliases(op: Operation, service: Service, ctx: EmitterContext): string[] {
-  const canonical = resolveMethodName(op, service, ctx);
-  const legacy = resolveLegacyMethodName(op, ctx);
-  return legacy && legacy !== canonical ? [legacy] : [];
-}
-
-function resolveLegacyMethodName(op: Operation, ctx: EmitterContext): string {
-  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-  const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) {
-    return normalizeMethodName(toSnakeCase(existing.methodName), op);
-  }
-  return normalizeMethodName(toSnakeCase(op.name), op);
-}
-
-/**
- * Singularize a noun (naive but covers common cases).
- */
-function singularize(noun: string): string {
-  if (noun.endsWith('ies')) return noun.slice(0, -3) + 'y';
-  if (noun.endsWith('ses') || noun.endsWith('xes') || noun.endsWith('zes')) return noun.slice(0, -2);
-  if (noun.endsWith('s') && !noun.endsWith('ss')) return noun.slice(0, -1);
-  return noun;
-}
-
-/**
- * Extract the resource noun from the first path segment (e.g., "/organizations/{id}" → "organization").
- */
-function extractResourceNoun(op: Operation): string | null {
-  const first = op.path.replace(/^\//, '').split('/')[0];
-  if (!first) return null;
-  return singularize(toSnakeCase(first));
-}
-
-/**
- * Normalize a generated method name for consistency.
- *
- * Rules:
- * - If the method fetches a single resource by ID (GET with path param ending in
- *   `{id}` or `{...Id}`), ensure the noun is singular (e.g., get_users → get_user).
- * - Strip a redundant trailing noun that duplicates the resource path segment
- *   (e.g., delete_organization on /organizations/{id} → delete,
- *    update_organization → update).
- */
-function normalizeMethodName(name: string, op: Operation): string {
-  const method = op.httpMethod.toLowerCase();
-  const hasIdParam = op.pathParams.some((p) => p.name === 'id' || p.name.endsWith('Id') || p.name.endsWith('_id'));
-
-  if (name === 'find') return 'get';
-  if (name.startsWith('find_')) return `get_${name.slice('find_'.length)}`;
-
-  // For single-resource GET by ID, singularize a plural noun after "get_"
-  if (method === 'get' && hasIdParam && name.startsWith('get_') && name.endsWith('s')) {
-    const noun = name.slice(4); // remove "get_"
-    return `get_${singularize(noun)}`;
-  }
-
-  // Strip redundant noun suffix that duplicates the resource path segment.
-  // E.g., delete_organization on /organizations/{id} → delete
-  //        update_organization on /organizations/{id} → update
-  const resourceNoun = extractResourceNoun(op);
-  if (resourceNoun) {
-    const verbs = ['create', 'update', 'delete', 'get', 'list'];
-    for (const verb of verbs) {
-      if (name === `${verb}_${resourceNoun}`) {
-        return verb;
-      }
-    }
-  }
-
-  return name;
-}
-
-/** Resolve the SDK class name for a service, checking overlay for existing names. */
+/** Resolve the SDK class name for a service, using resolved operations' mountOn. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
-  if (service.name === 'portal') {
-    return 'AdminPortal';
+  // Use resolved ops mountOn as canonical class name
+  for (const r of ctx.resolvedOperations ?? []) {
+    if (r.service.name === service.name) return r.mountOn;
   }
+  // Fallback to overlay, then IR name
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;

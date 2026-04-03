@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { resolveMethodName } from './naming.js';
+import { toCamelCase } from '@workos/oagen';
 import { buildServiceAccessPaths } from './client.js';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
 /**
  * Generate smoke test manifest mapping HTTP operations to SDK methods.
@@ -8,6 +9,7 @@ import { buildServiceAccessPaths } from './client.js';
 export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const manifest: Record<string, { sdkMethod: string; service: string }> = {};
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
+  const resolvedLookup = buildResolvedLookup(ctx);
 
   for (const service of spec.services) {
     const propName = accessPaths.get(service.name);
@@ -16,7 +18,8 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     }
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-      const method = resolveMethodName(op, service, ctx);
+      const resolvedName = lookupMethodName(op, resolvedLookup);
+      const method = resolvedName ? toCamelCase(resolvedName) : toCamelCase(op.name);
       manifest[httpKey] = { sdkMethod: method, service: propName };
     }
   }

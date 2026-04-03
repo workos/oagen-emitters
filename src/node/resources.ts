@@ -87,17 +87,8 @@ function httpMethodNeedsBody(method: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Method-name reconciliation helpers
+// Method-name deduplication helpers
 // ---------------------------------------------------------------------------
-
-/** Map HTTP methods to expected CRUD verb prefixes for method name matching. */
-const HTTP_VERB_PREFIXES: Record<string, string[]> = {
-  get: ['list', 'get', 'fetch', 'retrieve', 'find'],
-  post: ['create', 'add', 'insert', 'send'],
-  put: ['set', 'update', 'replace', 'put'],
-  patch: ['update', 'patch', 'modify'],
-  delete: ['delete', 'remove', 'revoke'],
-};
 
 /** Split a camelCase/PascalCase name into lowercase word parts. */
 function splitCamelWords(name: string): string[] {
@@ -116,209 +107,6 @@ function splitCamelWords(name: string): string[] {
 /** Naive singularize: strip trailing 's' unless it ends in 'ss'. */
 function singularize(word: string): string {
   return word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
-}
-
-/**
- * Batch-reconcile generated method names against the api-surface class methods.
- *
- * When the overlay doesn't map an operation (missing from previous manifest or
- * fuzzy-matching failed), the emitter falls back to the spec-derived name which
- * often doesn't match the hand-written SDK. This function uses three passes
- * with progressive exclusion to find the best surface match:
- *
- * 1. **Overlay-resolved** — already correct, mark as taken.
- * 2. **Word-set match** — same content words regardless of order (handles
- *    `listRolesOrganizations` ↔ `listOrganizationRoles`).
- * 3. **Path-context match** — all surface-method content words appear in the
- *    operation's URL path segments (handles `findById` ↔ `getResource`).
- *
- * After each pass, matched surface methods are removed from the pool so that
- * ambiguous cases (e.g., `listEnvironmentRoles` vs `listOrganizationRoles`)
- * resolve by elimination.
- */
-function reconcileMethodNames(
-  plans: Array<{ op: Operation; plan: OperationPlan; method: string }>,
-  service: Service,
-  ctx: EmitterContext,
-): void {
-  const className = resolveResourceClassName(service, ctx);
-  const classMethods = ctx.apiSurface?.classes?.[className]?.methods;
-  if (!classMethods) return;
-
-  const available = new Set(Object.keys(classMethods));
-  const resolved = new Map<(typeof plans)[number], string>();
-
-  // Exclude surface methods that are overlay-mapped by OTHER services'
-  // operations.  This prevents the reconciliation from stealing methods
-  // that belong to a different service (e.g., `createPermission` belongs
-  // to the Permissions service, not the Authorization service).
-  const thisServicePaths = new Set(service.operations.map((op) => op.path));
-  if (ctx.overlayLookup?.methodByOperation) {
-    for (const [httpKey, info] of ctx.overlayLookup.methodByOperation) {
-      if (info.className !== className) continue; // different class
-      const path = httpKey.split(' ')[1];
-      if (thisServicePaths.has(path)) continue; // same service
-      // This method is mapped to an operation in a different service
-      available.delete(info.methodName);
-    }
-  }
-
-  // Determine which plans are already overlay-resolved
-  const overlayResolved = new Set<(typeof plans)[number]>();
-  for (const plan of plans) {
-    const httpKey = `${plan.op.httpMethod.toUpperCase()} ${plan.op.path}`;
-    if (ctx.overlayLookup?.methodByOperation?.get(httpKey)) {
-      overlayResolved.add(plan);
-      if (available.has(plan.method)) {
-        resolved.set(plan, plan.method);
-        available.delete(plan.method);
-      }
-    }
-  }
-
-  // Helper: check verb compatibility.
-  // When specVerb is provided, require the surface method to use the same verb
-  // subgroup (e.g., "list" operations only match "list" methods, not "get").
-  const verbMatches = (methodName: string, httpMethod: string, specVerb?: string): boolean => {
-    const prefixes = HTTP_VERB_PREFIXES[httpMethod] ?? [];
-    const lower = methodName.toLowerCase();
-    if (!prefixes.some((p) => lower.startsWith(p))) return false;
-    if (specVerb) {
-      const surfaceVerb = splitCamelWords(methodName)[0];
-      // "list" is a distinct verb subgroup from "get/find/fetch/retrieve"
-      if (specVerb === 'list' && surfaceVerb !== 'list') return false;
-      if (specVerb !== 'list' && surfaceVerb === 'list') return false;
-    }
-    return true;
-  };
-
-  // Pass 1: Word-set matching (handles word-order differences)
-  for (const plan of plans) {
-    if (resolved.has(plan)) continue;
-    const specVerb = splitCamelWords(plan.method)[0];
-    const specWords = splitCamelWords(plan.method).slice(1).map(singularize); // skip verb
-    const specSet = new Set(specWords);
-    if (specSet.size === 0) continue;
-
-    let match: string | null = null;
-    for (const name of available) {
-      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
-      const methodWords = splitCamelWords(name).slice(1).map(singularize);
-      if (methodWords.length !== specWords.length) continue;
-      const methodSet = new Set(methodWords);
-      if (specSet.size === methodSet.size && [...specSet].every((w) => methodSet.has(w))) {
-        if (match !== null) {
-          match = null; // ambiguous — more than one match
-          break;
-        }
-        match = name;
-      }
-    }
-    if (match) {
-      resolved.set(plan, match);
-      available.delete(match);
-    }
-  }
-
-  // Pass 2: Path-context matching (handles different naming e.g., findById → getResource)
-  // To avoid false matches (e.g., `createPermission` matching a role-permission path
-  // just because "permission" appears somewhere in the URL), require that the method's
-  // content words reference the LEAF resource of the path, not just any segment.
-  for (const plan of plans) {
-    if (resolved.has(plan)) continue;
-    const specVerb = splitCamelWords(plan.method)[0];
-    const pathSegments = plan.op.path.split('/').filter((s) => s && !s.startsWith('{'));
-    const pathWords = new Set(pathSegments.flatMap((s) => s.split('_')).map(singularize));
-    // The "leaf" words come from the last non-param segment — the most specific resource.
-    let bestMatch: string | null = null;
-    let bestLen = 0;
-    let ambiguous = false;
-    for (const name of available) {
-      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
-      const methodWords = splitCamelWords(name).slice(1).map(singularize);
-      if (methodWords.length === 0) continue;
-      // All method content words must appear in path context
-      if (!methodWords.every((w) => pathWords.has(w))) continue;
-      // For paths with 3+ non-param segments (nested sub-resources like
-      // /authorization/roles/{slug}/permissions), require at least 2 content
-      // words.  A single-word method like `createPermission` should only match
-      // a top-level path like /authorization/permissions, not a nested one.
-      if (methodWords.length < 2 && pathSegments.length > 2) continue;
-      if (methodWords.length > bestLen) {
-        bestMatch = name;
-        bestLen = methodWords.length;
-        ambiguous = false;
-      } else if (methodWords.length === bestLen) {
-        ambiguous = true;
-      }
-    }
-    if (bestMatch && !ambiguous) {
-      resolved.set(plan, bestMatch);
-      available.delete(bestMatch);
-    }
-  }
-
-  // Pass 3: Retry word-set and path-context for still-unresolved plans
-  // (earlier passes may have eliminated ambiguous candidates)
-  for (const plan of plans) {
-    if (resolved.has(plan)) continue;
-    const specVerb = splitCamelWords(plan.method)[0];
-
-    // Retry word-set
-    const specWords = splitCamelWords(plan.method).slice(1).map(singularize);
-    const specSet = new Set(specWords);
-    let match: string | null = null;
-    for (const name of available) {
-      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
-      const methodWords = splitCamelWords(name).slice(1).map(singularize);
-      if (methodWords.length !== specWords.length) continue;
-      const methodSet = new Set(methodWords);
-      if (specSet.size === methodSet.size && [...specSet].every((w) => methodSet.has(w))) {
-        if (match !== null) {
-          match = null;
-          break;
-        }
-        match = name;
-      }
-    }
-    if (match) {
-      resolved.set(plan, match);
-      available.delete(match);
-      continue;
-    }
-
-    // Retry path-context (with leaf-word check)
-    const pathSegments = plan.op.path.split('/').filter((s) => s && !s.startsWith('{'));
-    const pathWords = new Set(pathSegments.flatMap((s) => s.split('_')).map(singularize));
-    let bestMatch: string | null = null;
-    let bestLen = 0;
-    let ambiguous = false;
-    for (const name of available) {
-      if (!verbMatches(name, plan.op.httpMethod, specVerb)) continue;
-      const methodWords = splitCamelWords(name).slice(1).map(singularize);
-      if (methodWords.length === 0) continue;
-      if (!methodWords.every((w) => pathWords.has(w))) continue;
-      if (methodWords.length < 2 && pathSegments.length > 2) continue;
-      if (methodWords.length > bestLen) {
-        bestMatch = name;
-        bestLen = methodWords.length;
-        ambiguous = false;
-      } else if (methodWords.length === bestLen) {
-        ambiguous = true;
-      }
-    }
-    if (bestMatch && !ambiguous) {
-      resolved.set(plan, bestMatch);
-      available.delete(bestMatch);
-    }
-  }
-
-  // Apply resolved names (only for non-overlay plans)
-  for (const plan of plans) {
-    if (overlayResolved.has(plan)) continue;
-    const name = resolved.get(plan);
-    if (name) plan.method = name;
-  }
 }
 
 /**
@@ -436,10 +224,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     method: resolveMethodName(op, service, ctx),
   }));
 
-  // Reconcile method names against the api-surface class methods.
-  // This fixes cases where the overlay is missing mappings and the
-  // spec-derived name doesn't match the hand-written SDK name.
-  reconcileMethodNames(plans, service, ctx);
+  // Resolved operations already produce correct method names via the
+  // centralized hint map — no per-emitter reconciliation needed.
 
   // Deduplicate method names within the class (e.g., two operations both
   // resolving to "create" for different paths).

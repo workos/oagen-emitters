@@ -83,9 +83,8 @@ describe('generateTests', () => {
 
     const content = testFile!.content;
     expect(content).toContain('class TestOrganizations:');
-    // Method names normalized: get_organization → get, delete_organization → delete
-    expect(content).toContain('def test_get(');
-    expect(content).toContain('def test_delete(');
+    expect(content).toContain('def test_get_organization(');
+    expect(content).toContain('def test_delete_organization(');
     expect(content).toContain('assert result is None');
     expect(content).toContain('isinstance(result, Organization)');
   });
@@ -93,11 +92,10 @@ describe('generateTests', () => {
   it('generates error test', () => {
     const files = generateTests(spec, ctx);
     const testFile = files.find((f) => f.path === 'tests/test_organizations.py');
-    // Method names normalized: get_organization → get
-    expect(testFile!.content).toContain('def test_get_unauthorized(');
-    expect(testFile!.content).toContain('def test_get_not_found(');
-    expect(testFile!.content).toContain('def test_get_rate_limited(');
-    expect(testFile!.content).toContain('def test_get_server_error(');
+    expect(testFile!.content).toContain('def test_get_organization_unauthorized(');
+    expect(testFile!.content).toContain('def test_get_organization_not_found(');
+    expect(testFile!.content).toContain('def test_get_organization_rate_limited(');
+    expect(testFile!.content).toContain('def test_get_organization_server_error(');
     expect(testFile!.content).toContain('pytest.raises(AuthenticationException)');
   });
 

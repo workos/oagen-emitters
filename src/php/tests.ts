@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, Operation } from '@workos/oagen';
-import { planOperation } from '@workos/oagen';
-import { className, fieldName, resolveMethodName, resolveClassName, servicePropertyName } from './naming.js';
+import { planOperation, toCamelCase } from '@workos/oagen';
+import { className, fieldName, resolveClassName, servicePropertyName } from './naming.js';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 import { generateFixtures } from './fixtures.js';
 
 /**
@@ -251,6 +252,7 @@ trait TestHelper
 function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const resourceName = resolveClassName(service, ctx);
   const propName = servicePropertyName(resourceName);
+  const resolvedLookup = buildResolvedLookup(ctx);
   const lines: string[] = [];
 
   lines.push('');
@@ -266,7 +268,8 @@ function generateResourceTest(service: Service, spec: ApiSpec, ctx: EmitterConte
 
   for (const op of service.operations) {
     const plan = planOperation(op);
-    const method = resolveMethodName(op, service, ctx);
+    const resolvedName = lookupMethodName(op, resolvedLookup);
+    const method = resolvedName ? toCamelCase(resolvedName) : toCamelCase(op.name);
 
     lines.push('');
     lines.push(`    public function test${capitalize(method)}(): void`);
