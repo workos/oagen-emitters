@@ -56,8 +56,8 @@ describe('generateClient', () => {
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
-    expect(content).toContain('class _BaseWorkOSClient:');
-    expect(content).toContain('class WorkOSClient(_BaseWorkOSClient):');
+    expect(content).toContain('class _BaseWorkOS:');
+    expect(content).toContain('class WorkOS(_BaseWorkOS):');
     // Lazy resource accessors via cached_property
     expect(content).toContain('@functools.cached_property');
     expect(content).toContain('def organizations(self) -> Organizations:');
@@ -68,7 +68,7 @@ describe('generateClient', () => {
     expect(content).toContain('def _parse_retry_after(');
     expect(content).toContain('def _calculate_retry_delay(');
     // P1-1: Async client
-    expect(content).toContain('class AsyncWorkOSClient(_BaseWorkOSClient):');
+    expect(content).toContain('class AsyncWorkOS(_BaseWorkOS):');
     // P0-4: Context manager
     expect(content).toContain('def close(self)');
     expect(content).toContain('def __enter__');
@@ -103,15 +103,17 @@ describe('generateClient', () => {
 
     const barrel = files.find((f) => f.path === 'src/workos/__init__.py');
     expect(barrel).toBeDefined();
-    expect(barrel!.content).toContain('from ._client import AsyncWorkOSClient, WorkOSClient');
-    expect(barrel!.content).toContain('from ._errors import');
-    expect(barrel!.content).toContain('from ._pagination import AsyncPage, SyncPage');
+    expect(barrel!.content).toContain('from ._client import AsyncWorkOS, WorkOS');
+    expect(barrel!.content).toContain('from ._errors import WorkOSError');
+    expect(barrel!.content).toContain('from ._pagination import AsyncPage, ListMetadata, SyncPage');
     expect(barrel!.content).not.toContain('WorkOSListResource');
     expect(barrel!.content).toContain('"WorkOS"');
     expect(barrel!.content).toContain('"AsyncWorkOS"');
-    expect(barrel!.content).toContain('"AuthorizationException"');
-    expect(barrel!.content).toContain('"WorkOSConnectionException"');
-    expect(barrel!.content).toContain('"WorkOSTimeoutException"');
+    expect(barrel!.content).toContain('"WorkOSError"');
+    expect(barrel!.content).toContain('"ListMetadata"');
+    // Individual errors are no longer in __init__.py — access via workos._errors
+    expect(barrel!.content).not.toContain('"AuthorizationError"');
+    expect(barrel!.content).not.toContain('"WorkOSConnectionError"');
     expect(barrel!.overwriteExisting).toBe(true);
   });
 

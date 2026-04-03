@@ -6,6 +6,7 @@ import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import { assignEnumsToServices } from './enums.js';
+import { groupByMount } from '../shared/resolved-ops.js';
 
 /** Check if an operation is a redirect endpoint (same logic as resources.ts). */
 function isRedirectEndpoint(op: Operation): boolean {
@@ -45,9 +46,17 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Build access path map for all services
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
 
-  // Generate per-service test files
-  for (const service of spec.services) {
-    const testFile = generateServiceTest(service, spec, ctx, accessPaths);
+  // Generate per-mount-target test files (merges all sub-services into one file)
+  const mountGroups = groupByMount(ctx);
+  const testEntries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
+
+  for (const { name: mountName, operations } of testEntries) {
+    if (operations.length === 0) continue;
+    const mergedService: Service = { name: mountName, operations };
+    const testFile = generateServiceTest(mergedService, spec, ctx, accessPaths);
     if (testFile) files.push(testFile);
   }
 
@@ -216,7 +225,7 @@ function generateServiceTest(
     lines.push(`from ${ctx.namespace}._pagination import AsyncPage, SyncPage`);
   }
   lines.push(
-    `from ${ctx.namespace}._errors import AuthenticationException, NotFoundException, RateLimitExceededException, ServerException`,
+    `from ${ctx.namespace}._errors import AuthenticationError, NotFoundError, RateLimitExceededError, ServerError`,
   );
 
   lines.push('');
@@ -398,7 +407,7 @@ function generateServiceTest(
     lines.push('            status_code=401,');
     lines.push('            json={"message": "Unauthorized"},');
     lines.push('        )');
-    lines.push('        with pytest.raises(AuthenticationException):');
+    lines.push('        with pytest.raises(AuthenticationError):');
     const args = buildTestArgs(firstNonDelete, spec);
     lines.push(`            workos.${propName}.${method}(${args})`);
 
@@ -407,7 +416,7 @@ function generateServiceTest(
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
-    lines.push('            with pytest.raises(NotFoundException):');
+    lines.push('            with pytest.raises(NotFoundError):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -419,7 +428,7 @@ function generateServiceTest(
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
     );
-    lines.push('            with pytest.raises(RateLimitExceededException):');
+    lines.push('            with pytest.raises(RateLimitExceededError):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -429,7 +438,7 @@ function generateServiceTest(
     lines.push('        workos = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
-    lines.push('            with pytest.raises(ServerException):');
+    lines.push('            with pytest.raises(ServerError):');
     lines.push(`                workos.${propName}.${method}(${args})`);
     lines.push('        finally:');
     lines.push('            workos.close()');
@@ -578,14 +587,14 @@ function generateServiceTest(
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_unauthorized(self, async_workos, httpx_mock):`);
     lines.push('        httpx_mock.add_response(status_code=401, json={"message": "Unauthorized"})');
-    lines.push('        with pytest.raises(AuthenticationException):');
+    lines.push('        with pytest.raises(AuthenticationError):');
     lines.push(`            await async_workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('');
     lines.push(`    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
-    lines.push('            with pytest.raises(NotFoundException):');
+    lines.push('            with pytest.raises(NotFoundError):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -596,7 +605,7 @@ function generateServiceTest(
     lines.push(
       '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
     );
-    lines.push('            with pytest.raises(RateLimitExceededException):');
+    lines.push('            with pytest.raises(RateLimitExceededError):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -605,7 +614,7 @@ function generateServiceTest(
     lines.push('        workos = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
-    lines.push('            with pytest.raises(ServerException):');
+    lines.push('            with pytest.raises(ServerError):');
     lines.push(`                await workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('        finally:');
     lines.push('            await workos.close()');
@@ -1163,15 +1172,15 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push(`from ${ctx.namespace} import WorkOS, AsyncWorkOS`);
   lines.push(`from ${ctx.namespace} import _client as generated_client_module`);
   lines.push(`from ${ctx.namespace}._errors import (`);
-  lines.push('    AuthenticationException,');
-  lines.push('    BadRequestException,');
-  lines.push('    AuthorizationException,');
-  lines.push('    NotFoundException,');
-  lines.push('    ConflictException,');
-  lines.push('    UnprocessableEntityException,');
-  lines.push('    RateLimitExceededException,');
-  lines.push('    ServerException,');
-  lines.push('    ConfigurationException,');
+  lines.push('    AuthenticationError,');
+  lines.push('    BadRequestError,');
+  lines.push('    AuthorizationError,');
+  lines.push('    NotFoundError,');
+  lines.push('    ConflictError,');
+  lines.push('    UnprocessableEntityError,');
+  lines.push('    RateLimitExceededError,');
+  lines.push('    ServerError,');
+  lines.push('    ConfigurationError,');
   lines.push(')');
   lines.push('');
   lines.push('');
@@ -1199,14 +1208,14 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
 
   // Error status code tests
   const errorCodes: [number, string][] = [
-    [400, 'BadRequestException'],
-    [401, 'AuthenticationException'],
-    [403, 'AuthorizationException'],
-    [404, 'NotFoundException'],
-    [409, 'ConflictException'],
-    [422, 'UnprocessableEntityException'],
-    [429, 'RateLimitExceededException'],
-    [500, 'ServerException'],
+    [400, 'BadRequestError'],
+    [401, 'AuthenticationError'],
+    [403, 'AuthorizationError'],
+    [404, 'NotFoundError'],
+    [409, 'ConflictError'],
+    [422, 'UnprocessableEntityError'],
+    [429, 'RateLimitExceededError'],
+    [500, 'ServerError'],
   ];
 
   for (const [code, errorClass] of errorCodes) {
@@ -1267,7 +1276,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
     '            httpx_mock.add_response(status_code=429, headers={"Retry-After": "0"}, json={"message": "Slow down"})',
   );
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=3)');
-  lines.push('        with pytest.raises(RateLimitExceededException):');
+  lines.push('        with pytest.raises(RateLimitExceededError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1277,7 +1286,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
     '        httpx_mock.add_response(status_code=429, headers={"Retry-After": "30"}, json={"message": "Slow down"})',
   );
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(RateLimitExceededException) as exc_info:');
+  lines.push('        with pytest.raises(RateLimitExceededError) as exc_info:');
   lines.push('            client.request("GET", "test")');
   lines.push('        assert exc_info.value.retry_after == 30.0');
   lines.push('        client.close()');
@@ -1287,7 +1296,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutException):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1296,7 +1305,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('        monkeypatch.setattr(generated_client_module.time, "sleep", lambda _: None)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
   lines.push('        client = WorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionException):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
   lines.push('            client.request("GET", "test")');
   lines.push('        client.close()');
 
@@ -1326,7 +1335,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.TimeoutException("timed out"))');
   lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutException):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSTimeoutError):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
 
@@ -1337,7 +1346,7 @@ function generateClientTests(spec: ApiSpec, ctx: EmitterContext, accessPaths: Ma
   lines.push('        monkeypatch.setattr(generated_client_module.asyncio, "sleep", _sleep)');
   lines.push('        httpx_mock.add_exception(httpx.ConnectError("connect failed"))');
   lines.push('        client = AsyncWorkOS(api_key="sk_test_123", client_id="client_test", max_retries=0)');
-  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionException):');
+  lines.push('        with pytest.raises(generated_client_module.WorkOSConnectionError):');
   lines.push('            await client.request("GET", "test")');
   lines.push('        await client.close()');
 
@@ -1359,7 +1368,7 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('');
   lines.push('import pytest');
   lines.push('');
-  lines.push(`from ${ctx.namespace}._pagination import SyncPage, AsyncPage`);
+  lines.push(`from ${ctx.namespace}._pagination import SyncPage, AsyncPage, ListMetadata`);
   lines.push('from dataclasses import dataclass');
   lines.push('from typing import Any, Dict');
   lines.push('');
@@ -1381,7 +1390,7 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    def test_has_more_with_after_cursor(self):');
   lines.push('        page = SyncPage(');
   lines.push('            data=[FakeItem(id="1")],');
-  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('            list_metadata=ListMetadata(after="cursor_abc"),');
   lines.push('        )');
   lines.push('        assert page.has_more() is True');
   lines.push('        assert page.after == "cursor_abc"');
@@ -1389,14 +1398,14 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    def test_has_more_without_cursor(self):');
   lines.push('        page = SyncPage(');
   lines.push('            data=[FakeItem(id="1")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        assert page.has_more() is False');
   lines.push('');
   lines.push('    def test_auto_paging_iter_single_page(self):');
   lines.push('        page = SyncPage(');
   lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        items = list(page.auto_paging_iter())');
   lines.push('        assert len(items) == 2');
@@ -1406,11 +1415,11 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    def test_auto_paging_iter_multi_page(self):');
   lines.push('        page2 = SyncPage(');
   lines.push('            data=[FakeItem(id="3")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        page1 = SyncPage(');
   lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
-  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('            list_metadata=ListMetadata(after="cursor_abc"),');
   lines.push('            _fetch_page=lambda after=None: page2,');
   lines.push('        )');
   lines.push('        items = list(page1.auto_paging_iter())');
@@ -1424,7 +1433,7 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    async def test_has_more_with_after_cursor(self):');
   lines.push('        page = AsyncPage(');
   lines.push('            data=[FakeItem(id="1")],');
-  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('            list_metadata=ListMetadata(after="cursor_abc"),');
   lines.push('        )');
   lines.push('        assert page.has_more() is True');
   lines.push('        assert page.after == "cursor_abc"');
@@ -1432,14 +1441,14 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    async def test_has_more_without_cursor(self):');
   lines.push('        page = AsyncPage(');
   lines.push('            data=[FakeItem(id="1")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        assert page.has_more() is False');
   lines.push('');
   lines.push('    async def test_auto_paging_iter_single_page(self):');
   lines.push('        page = AsyncPage(');
   lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        items = [item async for item in page.auto_paging_iter()]');
   lines.push('        assert len(items) == 2');
@@ -1449,13 +1458,13 @@ function generatePaginationTests(ctx: EmitterContext): GeneratedFile {
   lines.push('    async def test_auto_paging_iter_multi_page(self):');
   lines.push('        page2 = AsyncPage(');
   lines.push('            data=[FakeItem(id="3")],');
-  lines.push('            list_metadata={},');
+  lines.push('            list_metadata=ListMetadata(),');
   lines.push('        )');
   lines.push('        async def _fetch(after=None):');
   lines.push('            return page2');
   lines.push('        page1 = AsyncPage(');
   lines.push('            data=[FakeItem(id="1"), FakeItem(id="2")],');
-  lines.push('            list_metadata={"after": "cursor_abc"},');
+  lines.push('            list_metadata=ListMetadata(after="cursor_abc"),');
   lines.push('            _fetch_page=_fetch,');
   lines.push('        )');
   lines.push('        items = [item async for item in page1.auto_paging_iter()]');

@@ -112,7 +112,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
-    lines.push(`from ${ctx.namespace}._errors import BaseRequestException`);
+    lines.push(`from ${ctx.namespace}._errors import WorkOSError`);
+    if (usesDateTime) {
+      lines.push(`from ${ctx.namespace}._types import _parse_datetime`);
+    }
 
     // Import referenced models from their service's models package
     if (deps.models.size > 0) {
@@ -211,7 +214,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('            )');
     lines.push('        except (KeyError, ValueError) as e:');
     lines.push(
-      `            raise BaseRequestException(f"Unexpected API response while parsing ${modelClassName}: {e!s}") from e`,
+      `            raise WorkOSError(f"Unexpected API response while parsing ${modelClassName}: {e!s}") from e`,
     );
 
     // to_dict instance method
@@ -511,11 +514,10 @@ function isDateTimeType(ref: any): boolean {
 // oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
 function deserializeField(ref: any, accessor: string, isRequired: boolean, modelMap: Map<string, Model>): string {
   if (isDateTimeType(ref)) {
-    const parseExpr = `datetime.fromisoformat(${isRequired ? accessor : '_v'}.replace("Z", "+00:00"))`;
     if (isRequired) {
-      return parseExpr;
+      return `_parse_datetime(${accessor})`;
     }
-    return `${parseExpr} if (_v := ${accessor}) is not None else None`;
+    return `_parse_datetime(_v) if (_v := ${accessor}) is not None else None`;
   }
   switch (ref.kind) {
     case 'model': {

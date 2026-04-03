@@ -105,21 +105,22 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('import httpx');
   lines.push('');
   lines.push('from ._errors import (');
-  lines.push('    BaseRequestException,');
-  lines.push('    AuthenticationException,');
-  lines.push('    BadRequestException,');
-  lines.push('    ConflictException,');
-  lines.push('    ConfigurationException,');
-  lines.push('    AuthorizationException,');
-  lines.push('    NotFoundException,');
-  lines.push('    RateLimitExceededException,');
-  lines.push('    ServerException,');
-  lines.push('    UnprocessableEntityException,');
-  lines.push('    WorkOSConnectionException,');
-  lines.push('    WorkOSTimeoutException,');
-  lines.push('    STATUS_CODE_TO_EXCEPTION,');
+  lines.push('    APIError,');
+  lines.push('    WorkOSError,');
+  lines.push('    AuthenticationError,');
+  lines.push('    BadRequestError,');
+  lines.push('    ConflictError,');
+  lines.push('    ConfigurationError,');
+  lines.push('    AuthorizationError,');
+  lines.push('    NotFoundError,');
+  lines.push('    RateLimitExceededError,');
+  lines.push('    ServerError,');
+  lines.push('    UnprocessableEntityError,');
+  lines.push('    WorkOSConnectionError,');
+  lines.push('    WorkOSTimeoutError,');
+  lines.push('    STATUS_CODE_TO_ERROR,');
   lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage');
+  lines.push('from ._pagination import AsyncPage, ListMetadata, SyncPage');
   lines.push('from ._types import D, Deserializable, RequestOptions');
 
   // Import resource classes (both sync and async)
@@ -148,7 +149,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class _BaseWorkOSClient:');
+  lines.push('class _BaseWorkOS:');
   lines.push('    """Shared WorkOS client implementation."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -216,7 +217,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('    @staticmethod');
   lines.push('    def _calculate_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:');
   lines.push('        """Calculate retry delay with exponential backoff and jitter."""');
-  lines.push('        parsed_retry_after = _BaseWorkOSClient._parse_retry_after(retry_after)');
+  lines.push('        parsed_retry_after = _BaseWorkOS._parse_retry_after(retry_after)');
   lines.push('        if parsed_retry_after is not None:');
   lines.push('            return parsed_retry_after');
   lines.push('        delay = min(INITIAL_RETRY_DELAY * (RETRY_MULTIPLIER ** attempt), MAX_RETRY_DELAY)');
@@ -246,7 +247,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('    def _require_api_key(self) -> str:');
   lines.push('        if not self._api_key:');
-  lines.push('            raise ConfigurationException(');
+  lines.push('            raise ConfigurationError(');
   lines.push(
     '                "This operation requires a WorkOS API key. Provide api_key when instantiating the client "',
   );
@@ -256,7 +257,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('');
   lines.push('    def _require_client_id(self) -> str:');
   lines.push('        if not self.client_id:');
-  lines.push('            raise ConfigurationException(');
+  lines.push('            raise ConfigurationError(');
   lines.push(
     '                "This operation requires a WorkOS client ID. Provide client_id when instantiating the client "',
   );
@@ -305,7 +306,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class WorkOSClient(_BaseWorkOSClient):');
+  lines.push('class WorkOS(_BaseWorkOS):');
   lines.push('    """Synchronous WorkOS API client."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -351,7 +352,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """Close the underlying HTTP client and release resources."""');
   lines.push('        self._client.close()');
   lines.push('');
-  lines.push('    def __enter__(self) -> "WorkOSClient":');
+  lines.push('    def __enter__(self) -> "WorkOS":');
   lines.push('        return self');
   lines.push('');
   lines.push('    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
@@ -438,20 +439,20 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                if attempt < max_retries:');
   lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise WorkOSTimeoutException(f"Request timed out: {e}") from e');
+  lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < max_retries:');
   lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise WorkOSConnectionException(f"Connection failed: {e}") from e');
+  lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < max_retries:');
   lines.push('                    time.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise BaseRequestException(f"Network error: {e}") from e');
-  lines.push('        raise BaseRequestException("Max retries exceeded") from last_error');
+  lines.push('                raise WorkOSError(f"Network error: {e}") from e');
+  lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
   lines.push('');
   lines.push('    def request_page(');
   lines.push('        self,');
@@ -474,7 +475,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
   lines.push('        raw_items: list[Any] = cast(list[Any], data.get("data") or [])');
   lines.push('        items: list[D] = [cast(D, model.from_dict(cast(Dict[str, Any], item))) for item in raw_items]');
-  lines.push('        list_metadata: Dict[str, Any] = cast(Dict[str, Any], data.get("list_metadata", {}))');
+  lines.push('        list_metadata = ListMetadata.from_dict(cast(Dict[str, Any], data.get("list_metadata", {})))');
   lines.push('');
   lines.push('        def _fetch(*, after: Optional[str] = None) -> SyncPage[D]:');
   lines.push('            next_params = {**(params or {}), "after": after}');
@@ -491,7 +492,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   lines.push('');
   lines.push('');
-  lines.push('class AsyncWorkOSClient(_BaseWorkOSClient):');
+  lines.push('class AsyncWorkOS(_BaseWorkOS):');
   lines.push('    """Asynchronous WorkOS API client."""');
   lines.push('');
   lines.push('    def __init__(');
@@ -537,7 +538,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        """Close the underlying HTTP client and release resources."""');
   lines.push('        await self._client.aclose()');
   lines.push('');
-  lines.push('    async def __aenter__(self) -> "AsyncWorkOSClient":');
+  lines.push('    async def __aenter__(self) -> "AsyncWorkOS":');
   lines.push('        return self');
   lines.push('');
   lines.push('    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:');
@@ -623,20 +624,20 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('                if attempt < max_retries:');
   lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise WorkOSTimeoutException(f"Request timed out: {e}") from e');
+  lines.push('                raise WorkOSTimeoutError(f"Request timed out: {e}") from e');
   lines.push('            except httpx.ConnectError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < max_retries:');
   lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise WorkOSConnectionException(f"Connection failed: {e}") from e');
+  lines.push('                raise WorkOSConnectionError(f"Connection failed: {e}") from e');
   lines.push('            except httpx.HTTPError as e:');
   lines.push('                last_error = e');
   lines.push('                if attempt < max_retries:');
   lines.push('                    await asyncio.sleep(self._calculate_retry_delay(attempt))');
   lines.push('                    continue');
-  lines.push('                raise BaseRequestException(f"Network error: {e}") from e');
-  lines.push('        raise BaseRequestException("Max retries exceeded") from last_error');
+  lines.push('                raise WorkOSError(f"Network error: {e}") from e');
+  lines.push('        raise WorkOSError("Max retries exceeded") from last_error');
   lines.push('');
   lines.push('    async def request_page(');
   lines.push('        self,');
@@ -659,7 +660,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        data: Dict[str, Any] = raw if isinstance(raw, dict) else {}');
   lines.push('        raw_items: list[Any] = cast(list[Any], data.get("data") or [])');
   lines.push('        items: list[D] = [cast(D, model.from_dict(cast(Dict[str, Any], item))) for item in raw_items]');
-  lines.push('        list_metadata: Dict[str, Any] = cast(Dict[str, Any], data.get("list_metadata", {}))');
+  lines.push('        list_metadata = ListMetadata.from_dict(cast(Dict[str, Any], data.get("list_metadata", {})))');
   lines.push('');
   lines.push('        async def _fetch(*, after: Optional[str] = None) -> AsyncPage[D]:');
   lines.push('            next_params = {**(params or {}), "after": after}');
@@ -675,9 +676,9 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   lines.push('        return AsyncPage(data=items, list_metadata=list_metadata, _fetch_page=_fetch)');
   lines.push('');
   lines.push('');
-  lines.push('# Top-level client aliases retained for SDK ergonomics and internal typing');
-  lines.push('WorkOS = WorkOSClient');
-  lines.push('AsyncWorkOS = AsyncWorkOSClient');
+  lines.push('# Backwards-compatible aliases');
+  lines.push('WorkOSClient = WorkOS');
+  lines.push('AsyncWorkOSClient = AsyncWorkOS');
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
@@ -719,13 +720,11 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}        error_description = None`);
   lines.push(`${indent}        param = None`);
   lines.push('');
-  lines.push(`${indent}    error_class = STATUS_CODE_TO_EXCEPTION.get(response.status_code)`);
+  lines.push(`${indent}    error_class = STATUS_CODE_TO_ERROR.get(response.status_code)`);
   lines.push(`${indent}    if error_class:`);
-  lines.push(`${indent}        if error_class is RateLimitExceededException:`);
-  lines.push(
-    `${indent}            retry_after = _BaseWorkOSClient._parse_retry_after(response.headers.get("Retry-After"))`,
-  );
-  lines.push(`${indent}            raise RateLimitExceededException(`);
+  lines.push(`${indent}        if error_class is RateLimitExceededError:`);
+  lines.push(`${indent}            retry_after = _BaseWorkOS._parse_retry_after(response.headers.get("Retry-After"))`);
+  lines.push(`${indent}            raise RateLimitExceededError(`);
   lines.push(`${indent}                message,`);
   lines.push(`${indent}                retry_after=retry_after,`);
   lines.push(`${indent}                request_id=request_id,`);
@@ -756,7 +755,7 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}        )`);
   lines.push('');
   lines.push(`${indent}    if response.status_code >= 500:`);
-  lines.push(`${indent}        raise ServerException(`);
+  lines.push(`${indent}        raise ServerError(`);
   lines.push(`${indent}            message,`);
   lines.push(`${indent}            status_code=response.status_code,`);
   lines.push(`${indent}            request_id=request_id,`);
@@ -772,7 +771,7 @@ function emitRaiseError(lines: string[], indentLevel = 1): void {
   lines.push(`${indent}            request_method=request_method,`);
   lines.push(`${indent}        )`);
   lines.push('');
-  lines.push(`${indent}    raise BaseRequestException(`);
+  lines.push(`${indent}    raise APIError(`);
   lines.push(`${indent}        message,`);
   lines.push(`${indent}        status_code=response.status_code,`);
   lines.push(`${indent}        request_id=request_id,`);
@@ -825,48 +824,25 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
 
   lines.push('"""WorkOS Python SDK."""');
   lines.push('');
-  // P0-5 + P1-1: import both sync and async clients
-  lines.push('from ._client import AsyncWorkOSClient, WorkOSClient');
-  lines.push('from ._errors import (');
-  lines.push('    BaseRequestException,');
-  lines.push('    AuthenticationException,');
-  lines.push('    BadRequestException,');
-  lines.push('    ConflictException,');
-  lines.push('    ConfigurationException,');
-  lines.push('    AuthorizationException,');
-  lines.push('    NotFoundException,');
-  lines.push('    RateLimitExceededException,');
-  lines.push('    ServerException,');
-  lines.push('    UnprocessableEntityException,');
-  lines.push('    WorkOSConnectionException,');
-  lines.push('    WorkOSTimeoutException,');
-  lines.push(')');
-  lines.push('from ._pagination import AsyncPage, SyncPage');
+  lines.push('from ._client import AsyncWorkOS, WorkOS');
+  lines.push('from ._errors import WorkOSError');
+  lines.push('from ._pagination import AsyncPage, ListMetadata, SyncPage');
   lines.push('from ._types import RequestOptions');
   lines.push('');
-  lines.push('WorkOS = WorkOSClient');
-  lines.push('AsyncWorkOS = AsyncWorkOSClient');
+  lines.push('# Backwards-compatible aliases');
+  lines.push('WorkOSClient = WorkOS');
+  lines.push('AsyncWorkOSClient = AsyncWorkOS');
   lines.push('');
   lines.push('__all__ = [');
-  lines.push('    "WorkOSClient",');
-  lines.push('    "AsyncWorkOSClient",');
   lines.push('    "WorkOS",');
   lines.push('    "AsyncWorkOS",');
-  lines.push('    "RequestOptions",');
-  lines.push('    "BaseRequestException",');
-  lines.push('    "AuthenticationException",');
-  lines.push('    "BadRequestException",');
-  lines.push('    "ConflictException",');
-  lines.push('    "ConfigurationException",');
-  lines.push('    "AuthorizationException",');
-  lines.push('    "NotFoundException",');
-  lines.push('    "RateLimitExceededException",');
-  lines.push('    "ServerException",');
-  lines.push('    "UnprocessableEntityException",');
-  lines.push('    "WorkOSConnectionException",');
-  lines.push('    "WorkOSTimeoutException",');
-  lines.push('    "AsyncPage",');
+  lines.push('    "WorkOSClient",');
+  lines.push('    "AsyncWorkOSClient",');
+  lines.push('    "WorkOSError",');
   lines.push('    "SyncPage",');
+  lines.push('    "AsyncPage",');
+  lines.push('    "ListMetadata",');
+  lines.push('    "RequestOptions",');
   lines.push(']');
 
   return [

@@ -96,7 +96,7 @@ describe('generateTests', () => {
     expect(testFile!.content).toContain('def test_get_organization_not_found(');
     expect(testFile!.content).toContain('def test_get_organization_rate_limited(');
     expect(testFile!.content).toContain('def test_get_organization_server_error(');
-    expect(testFile!.content).toContain('pytest.raises(AuthenticationException)');
+    expect(testFile!.content).toContain('pytest.raises(AuthenticationError)');
   });
 
   it('generates generated client and pagination tests', () => {

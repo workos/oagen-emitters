@@ -14,10 +14,22 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
 from typing import Any, Dict, Mapping, Optional, Type, cast
 
 
-class BaseRequestException(Exception):
-    """Base exception for all WorkOS errors."""
+class WorkOSError(Exception):
+    """Base error for all WorkOS errors."""
 
     message: str
+
+    def __init__(self, message: str = "An error occurred") -> None:
+        super().__init__(message)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class APIError(WorkOSError):
+    """Base for errors from HTTP requests."""
+
     status_code: Optional[int]
     request_id: Optional[str]
     code: Optional[str]
@@ -81,7 +93,6 @@ class BaseRequestException(Exception):
         if message is None:
             message = "No message"
         super().__init__(message)
-        self.message = message
         self.status_code = status_code
         self.request_id = request_id
         self.code = code
@@ -106,7 +117,7 @@ class BaseRequestException(Exception):
         return exception + ")"
 
 
-class BadRequestException(BaseRequestException):
+class BadRequestError(APIError):
     """400 Bad Request."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -114,7 +125,7 @@ class BadRequestException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class AuthenticationException(BaseRequestException):
+class AuthenticationError(APIError):
     """401 Unauthorized."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -122,7 +133,7 @@ class AuthenticationException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class AuthorizationException(BaseRequestException):
+class AuthorizationError(APIError):
     """403 Forbidden."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -130,7 +141,7 @@ class AuthorizationException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class EmailVerificationRequiredException(AuthorizationException):
+class EmailVerificationRequiredError(AuthorizationError):
     """Raised when email verification is required before authentication."""
 
     email_verification_id: Optional[str]
@@ -143,7 +154,7 @@ class EmailVerificationRequiredException(AuthorizationException):
         self.email_verification_id = email_verification_id
 
 
-class NotFoundException(BaseRequestException):
+class NotFoundError(APIError):
     """404 Not Found."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -151,7 +162,7 @@ class NotFoundException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class ConflictException(BaseRequestException):
+class ConflictError(APIError):
     """409 Conflict."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -159,7 +170,7 @@ class ConflictException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class UnprocessableEntityException(BaseRequestException):
+class UnprocessableEntityError(APIError):
     """422 Unprocessable Entity."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -167,7 +178,7 @@ class UnprocessableEntityException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class RateLimitExceededException(BaseRequestException):
+class RateLimitExceededError(APIError):
     """429 Rate Limited."""
 
     retry_after: Optional[float]
@@ -178,7 +189,7 @@ class RateLimitExceededException(BaseRequestException):
         self.retry_after = retry_after
 
 
-class ServerException(BaseRequestException):
+class ServerError(APIError):
     """500+ Server Error."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -186,32 +197,49 @@ class ServerException(BaseRequestException):
         super().__init__(*args, **kwargs)
 
 
-class ConfigurationException(BaseRequestException):
-    """Missing or invalid configuration."""
+class ConfigurationError(WorkOSError):
+    """Missing or invalid configuration. No request was made."""
 
     def __init__(self, message: str = "Configuration error") -> None:
         super().__init__(message)
 
 
-class WorkOSConnectionException(BaseRequestException):
+class WorkOSConnectionError(WorkOSError):
     """Raised when the SDK cannot connect to the API (DNS failure, connection refused, etc.)."""
 
     def __init__(self, message: str = "Connection failed") -> None:
         super().__init__(message)
 
 
-class WorkOSTimeoutException(BaseRequestException):
+class WorkOSTimeoutError(WorkOSError):
     """Raised when the API request times out."""
 
     def __init__(self, message: str = "Request timed out") -> None:
         super().__init__(message)
 
 
-STATUS_CODE_TO_EXCEPTION: Dict[int, Type[BaseRequestException]] = {
+STATUS_CODE_TO_ERROR: Dict[int, Type[APIError]] = {
 ${Object.entries(sdk.errors.statusCodeMap)
-  .map(([code, kind]) => `    ${code}: ${kind}Exception,`)
+  .map(([code, kind]) => `    ${code}: ${kind}Error,`)
   .join('\n')}
-}`;
+}
+
+
+# Backwards-compatible aliases (v4 names)
+BaseRequestException = WorkOSError
+BadRequestException = BadRequestError
+AuthenticationException = AuthenticationError
+AuthorizationException = AuthorizationError
+EmailVerificationRequiredException = EmailVerificationRequiredError
+NotFoundException = NotFoundError
+ConflictException = ConflictError
+UnprocessableEntityException = UnprocessableEntityError
+RateLimitExceededException = RateLimitExceededError
+ServerException = ServerError
+ConfigurationException = ConfigurationError
+WorkOSConnectionException = WorkOSConnectionError
+WorkOSTimeoutException = WorkOSTimeoutError
+STATUS_CODE_TO_EXCEPTION = STATUS_CODE_TO_ERROR`;
 
   files.push({
     path: `src/${namespace}/_errors.py`,
@@ -224,38 +252,69 @@ ${Object.entries(sdk.errors.statusCodeMap)
   const exceptionsReexport = `"""Backwards-compatible re-export of exception classes.
 
 Allows 'from workos.exceptions import ...' alongside the
-canonical 'from workos import ...' path.
+canonical 'from workos._errors import ...' path.
 """
 
 from ._errors import (
+    WorkOSError as WorkOSError,
+    APIError as APIError,
+    AuthenticationError as AuthenticationError,
+    AuthorizationError as AuthorizationError,
+    BadRequestError as BadRequestError,
+    ConflictError as ConflictError,
+    ConfigurationError as ConfigurationError,
+    EmailVerificationRequiredError as EmailVerificationRequiredError,
+    NotFoundError as NotFoundError,
+    RateLimitExceededError as RateLimitExceededError,
+    ServerError as ServerError,
+    UnprocessableEntityError as UnprocessableEntityError,
+    WorkOSConnectionError as WorkOSConnectionError,
+    WorkOSTimeoutError as WorkOSTimeoutError,
+    STATUS_CODE_TO_ERROR as STATUS_CODE_TO_ERROR,
+    # Backwards-compatible v4 aliases
     BaseRequestException as BaseRequestException,
+    BadRequestException as BadRequestException,
     AuthenticationException as AuthenticationException,
     AuthorizationException as AuthorizationException,
-    BadRequestException as BadRequestException,
-    ConflictException as ConflictException,
-    ConfigurationException as ConfigurationException,
     EmailVerificationRequiredException as EmailVerificationRequiredException,
     NotFoundException as NotFoundException,
+    ConflictException as ConflictException,
+    UnprocessableEntityException as UnprocessableEntityException,
     RateLimitExceededException as RateLimitExceededException,
     ServerException as ServerException,
-    UnprocessableEntityException as UnprocessableEntityException,
+    ConfigurationException as ConfigurationException,
     WorkOSConnectionException as WorkOSConnectionException,
     WorkOSTimeoutException as WorkOSTimeoutException,
     STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION,
 )
 
 __all__ = [
+    "WorkOSError",
+    "APIError",
+    "AuthenticationError",
+    "AuthorizationError",
+    "BadRequestError",
+    "ConflictError",
+    "ConfigurationError",
+    "EmailVerificationRequiredError",
+    "NotFoundError",
+    "RateLimitExceededError",
+    "ServerError",
+    "UnprocessableEntityError",
+    "WorkOSConnectionError",
+    "WorkOSTimeoutError",
+    "STATUS_CODE_TO_ERROR",
     "BaseRequestException",
+    "BadRequestException",
     "AuthenticationException",
     "AuthorizationException",
-    "BadRequestException",
-    "ConflictException",
-    "ConfigurationException",
     "EmailVerificationRequiredException",
     "NotFoundException",
+    "ConflictException",
+    "UnprocessableEntityException",
     "RateLimitExceededException",
     "ServerException",
-    "UnprocessableEntityException",
+    "ConfigurationException",
     "WorkOSConnectionException",
     "WorkOSTimeoutException",
     "STATUS_CODE_TO_EXCEPTION",

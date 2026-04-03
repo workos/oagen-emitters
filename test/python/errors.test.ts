@@ -27,30 +27,37 @@ describe('generateErrors', () => {
 
     const content = files[0].content;
 
-    // Base error
-    expect(content).toContain('class BaseRequestException(Exception):');
+    // Base error + API error
+    expect(content).toContain('class WorkOSError(Exception):');
+    expect(content).toContain('class APIError(WorkOSError):');
     expect(content).toContain('self.status_code = status_code');
     expect(content).toContain('self.request_id = request_id');
 
-    // Specific errors
-    expect(content).toContain('class BadRequestException(BaseRequestException):');
-    expect(content).toContain('class AuthenticationException(BaseRequestException):');
-    expect(content).toContain('class AuthorizationException(BaseRequestException):');
-    expect(content).toContain('class NotFoundException(BaseRequestException):');
-    expect(content).toContain('class ConflictException(BaseRequestException):');
-    expect(content).toContain('class UnprocessableEntityException(BaseRequestException):');
-    expect(content).toContain('class RateLimitExceededException(BaseRequestException):');
-    expect(content).toContain('class ServerException(BaseRequestException):');
-    expect(content).toContain('class ConfigurationException(BaseRequestException):');
-    expect(content).toContain('class WorkOSConnectionException(BaseRequestException):');
-    expect(content).toContain('class WorkOSTimeoutException(BaseRequestException):');
-    expect(content).toContain('class EmailVerificationRequiredException(AuthorizationException):');
+    // HTTP errors inherit from APIError
+    expect(content).toContain('class BadRequestError(APIError):');
+    expect(content).toContain('class AuthenticationError(APIError):');
+    expect(content).toContain('class AuthorizationError(APIError):');
+    expect(content).toContain('class NotFoundError(APIError):');
+    expect(content).toContain('class ConflictError(APIError):');
+    expect(content).toContain('class UnprocessableEntityError(APIError):');
+    expect(content).toContain('class RateLimitExceededError(APIError):');
+    expect(content).toContain('class ServerError(APIError):');
+
+    // Non-HTTP errors inherit from WorkOSError
+    expect(content).toContain('class ConfigurationError(WorkOSError):');
+    expect(content).toContain('class WorkOSConnectionError(WorkOSError):');
+    expect(content).toContain('class WorkOSTimeoutError(WorkOSError):');
+    expect(content).toContain('class EmailVerificationRequiredError(AuthorizationError):');
 
     // Status code mapping
-    expect(content).toContain('STATUS_CODE_TO_EXCEPTION');
-    expect(content).toContain('400: BadRequestException');
-    expect(content).toContain('403: AuthorizationException');
-    expect(content).toContain('429: RateLimitExceededException');
+    expect(content).toContain('STATUS_CODE_TO_ERROR');
+    expect(content).toContain('400: BadRequestError');
+    expect(content).toContain('403: AuthorizationError');
+    expect(content).toContain('429: RateLimitExceededError');
+
+    // Backwards-compatible aliases
+    expect(content).toContain('BaseRequestException = WorkOSError');
+    expect(content).toContain('BadRequestException = BadRequestError');
   });
 
   it('generates exceptions.py re-export module', () => {
@@ -62,9 +69,13 @@ describe('generateErrors', () => {
 
     const content = exceptionsFile!.content;
     expect(content).toContain('from ._errors import (');
+    expect(content).toContain('WorkOSError as WorkOSError');
+    expect(content).toContain('APIError as APIError');
+    expect(content).toContain('AuthenticationError as AuthenticationError');
+    expect(content).toContain('ServerError as ServerError');
+    expect(content).toContain('STATUS_CODE_TO_ERROR as STATUS_CODE_TO_ERROR');
+    // Backwards-compat aliases are also re-exported
     expect(content).toContain('BaseRequestException as BaseRequestException');
-    expect(content).toContain('AuthenticationException as AuthenticationException');
-    expect(content).toContain('ServerException as ServerException');
     expect(content).toContain('STATUS_CODE_TO_EXCEPTION as STATUS_CODE_TO_EXCEPTION');
   });
 

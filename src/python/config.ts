@@ -12,6 +12,8 @@ export function generateConfig(ctx?: EmitterContext): GeneratedFile[] {
     path: `src/${namespace}/_types.py`,
     content: `from __future__ import annotations
 
+import sys
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Protocol, TypeVar
 from typing_extensions import Self, TypedDict
@@ -39,7 +41,18 @@ def enum_value(value: Any) -> Any:
     return value.value if isinstance(value, Enum) else value
 
 
-D = TypeVar("D", bound=Deserializable)`,
+D = TypeVar("D", bound=Deserializable)
+
+
+def _parse_datetime(value: str) -> datetime:
+    """Parse an ISO 8601 datetime string, handling 'Z' suffix.
+
+    On Python 3.11+ fromisoformat handles 'Z' natively;
+    on older versions we replace 'Z' with '+00:00'.
+    """
+    if sys.version_info >= (3, 11):
+        return datetime.fromisoformat(value)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))`,
     integrateTarget: true,
     overwriteExisting: true,
   });
@@ -57,23 +70,35 @@ from ._types import Deserializable
 T = TypeVar("T", bound=Deserializable)
 
 
+@dataclass(slots=True)
+class ListMetadata:
+    """Pagination cursor metadata."""
+
+    before: Optional[str] = None
+    after: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ListMetadata":
+        return cls(before=data.get("before"), after=data.get("after"))
+
+
 @dataclass
 class SyncPage(Generic[T]):
     """A page of results with auto-pagination support."""
 
     data: List[T]
-    list_metadata: Dict[str, Any]
+    list_metadata: ListMetadata
     _fetch_page: Optional[Callable[..., "SyncPage[T]"]] = field(default=None, repr=False)
 
     @property
     def before(self) -> Optional[str]:
         """Cursor for the previous page, if available."""
-        return self.list_metadata.get("before")
+        return self.list_metadata.before
 
     @property
     def after(self) -> Optional[str]:
         """Cursor for the next page, if available."""
-        return self.list_metadata.get("after")
+        return self.list_metadata.after
 
     def has_more(self) -> bool:
         """Whether there are more pages available."""
@@ -100,18 +125,18 @@ class AsyncPage(Generic[T]):
     """A page of results with async auto-pagination support."""
 
     data: List[T]
-    list_metadata: Dict[str, Any]
+    list_metadata: ListMetadata
     _fetch_page: Optional[Callable[..., Awaitable["AsyncPage[T]"]]] = field(default=None, repr=False)
 
     @property
     def before(self) -> Optional[str]:
         """Cursor for the previous page, if available."""
-        return self.list_metadata.get("before")
+        return self.list_metadata.before
 
     @property
     def after(self) -> Optional[str]:
         """Cursor for the next page, if available."""
-        return self.list_metadata.get("after")
+        return self.list_metadata.after
 
     def has_more(self) -> bool:
         """Whether there are more pages available."""

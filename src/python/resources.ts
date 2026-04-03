@@ -1040,13 +1040,13 @@ function isRedirectEndpoint(op: Operation): boolean {
  * Falls back to a baseline set (401, 429, 5xx) when the operation has no explicit errors.
  */
 const STATUS_TO_ERROR: Record<number, string> = {
-  400: 'BadRequestException',
-  401: 'AuthenticationException',
-  403: 'AuthorizationException',
-  404: 'NotFoundException',
-  409: 'ConflictException',
-  422: 'UnprocessableEntityException',
-  429: 'RateLimitExceededException',
+  400: 'BadRequestError',
+  401: 'AuthenticationError',
+  403: 'AuthorizationError',
+  404: 'NotFoundError',
+  409: 'ConflictError',
+  422: 'UnprocessableEntityError',
+  429: 'RateLimitExceededError',
 };
 
 const STATUS_TO_DESC: Record<number, string> = {
@@ -1077,13 +1077,13 @@ function buildErrorRaisesBlock(op: Operation): string[] {
 
   // Always include baseline errors for authenticated endpoints (401, 429, 5xx)
   if (!emittedCodes.has(401)) {
-    lines.push('AuthenticationException: If the API key is invalid (401).');
+    lines.push('AuthenticationError: If the API key is invalid (401).');
   }
   if (!emittedCodes.has(429)) {
-    lines.push('RateLimitExceededException: If rate limited (429).');
+    lines.push('RateLimitExceededError: If rate limited (429).');
   }
   if (!emittedCodes.has(500)) {
-    lines.push('ServerException: If the server returns a 5xx error.');
+    lines.push('ServerError: If the server returns a 5xx error.');
   }
 
   return lines;
