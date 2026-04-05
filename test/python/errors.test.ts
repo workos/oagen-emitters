@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { pythonEmitter } from '../../src/python/index.js';
-import type { EmitterContext, ApiSpec } from '@workos/oagen';
+import type { EmitterContext } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
 const ctx: EmitterContext = {
