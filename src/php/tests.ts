@@ -1,5 +1,5 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, Model } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
+import { planOperation, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { className, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
@@ -101,33 +101,9 @@ function generateMountGroupTest(
     if (emitted.has(testName)) continue;
     emitted.add(testName);
 
-    // Skip tests for operations with model-type required body params
-    // or required params with optional-before-required ordering issues
-    const hasModelBodyParam =
-      op.requestBody?.kind === 'model' &&
-      ctx.spec.models
-        .find((m) => m.name === (op.requestBody as { name: string }).name)
-        ?.fields.some((f) => f.required && (f.type.kind === 'model' || f.type.kind === 'enum'));
-    const _hasRequiredQueryParams = op.queryParams.some((q) => q.required);
-    const hasOptionalBeforeRequired = (() => {
-      const params = buildMethodParamOrder(op, ctx);
-      let seenOptional = false;
-      for (const p of params) {
-        if (!p.required) seenOptional = true;
-        else if (seenOptional) return true;
-      }
-      return false;
-    })();
-
     lines.push('');
     lines.push(`    public function ${testName}(): void`);
     lines.push('    {');
-
-    if (hasModelBodyParam || hasOptionalBeforeRequired) {
-      lines.push("        $this->markTestSkipped('Complex parameter requirements - tested via smoke tests');");
-      lines.push('    }');
-      continue;
-    }
 
     const expectedPath = buildExpectedPath(op, ctx);
 
@@ -275,26 +251,6 @@ function buildTestArgs(op: Operation, ctx: EmitterContext): string {
   return args.join(', ');
 }
 
-/** Build a simplified param order for detecting optional-before-required issues. */
-function buildMethodParamOrder(op: Operation, ctx: EmitterContext): { name: string; required: boolean }[] {
-  const params: { name: string; required: boolean }[] = [];
-  for (const p of op.pathParams) {
-    params.push({ name: p.name, required: true });
-  }
-  if (op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
-    if (bodyModel) {
-      for (const f of bodyModel.fields) {
-        params.push({ name: f.name, required: f.required });
-      }
-    }
-  }
-  for (const q of op.queryParams) {
-    params.push({ name: q.name, required: q.required });
-  }
-  return params;
-}
-
 function generateTestValue(ref: { kind: string; type?: string; name?: string }, ctx?: EmitterContext): string {
   switch (ref.kind) {
     case 'primitive':
@@ -328,8 +284,14 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
     }
     case 'array':
       return '[]';
-    case 'model':
+    case 'model': {
+      if (ref.name) {
+        const modelClass = className(ref.name);
+        const fixtureName = toSnakeCase(ref.name);
+        return `\\WorkOS\\Resource\\${modelClass}::fromArray($this->loadFixture('${fixtureName}'))`;
+      }
       return '[]';
+    }
     default:
       return "'test_value'";
   }
