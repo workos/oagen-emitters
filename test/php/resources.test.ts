@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateResources } from '../../src/php/resources.js';
+import { generateWrapperMethods } from '../../src/php/wrappers.js';
 
 const models: Model[] = [
   {
@@ -127,6 +128,9 @@ describe('generateResources', () => {
     expect(result[0].content).toContain('public function listOrganizations(');
     expect(result[0].content).toContain('?int $limit = null');
     expect(result[0].content).toContain('PaginatedResponse');
+    expect(result[0].content).toContain('$this->client->requestPage(');
+    expect(result[0].content).toContain('modelClass: Organization::class');
+    expect(result[0].content).not.toContain('PaginatedResponse::fromArray($response, Organization::class)');
   });
 
   it('generates create method with body params', () => {
@@ -285,5 +289,41 @@ describe('generateResources', () => {
     expect(result[0].content).toContain('string $slug');
     expect(result[0].content).toContain('string $bodySlug');
     expect(result[0].content).toContain("'slug' => $bodySlug,");
+  });
+
+  it('requires inferred client credentials in wrapper methods', () => {
+    const lines = generateWrapperMethods(
+      {
+        operation: {
+          name: 'authenticate',
+          httpMethod: 'post',
+          path: '/user_management/authenticate',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+        service: services[0],
+        methodName: 'authenticate',
+        mountOn: 'Organizations',
+        wrappers: [
+          {
+            name: 'authenticate_with_password',
+            targetVariant: 'PasswordSessionAuthenticateRequest',
+            defaults: { grant_type: 'password' },
+            inferFromClient: ['client_id', 'client_secret'],
+            exposedParams: ['email'],
+          },
+        ],
+      } as never,
+      ctx,
+    ).join('\n');
+
+    expect(lines).toContain("$body['client_id'] = $this->client->requireClientId();");
+    expect(lines).toContain("$body['client_secret'] = $this->client->requireApiKey();");
+    expect(lines).not.toContain('\\WorkOS\\WorkOS::getClientId()');
+    expect(lines).not.toContain('\\WorkOS\\WorkOS::getApiKey()');
   });
 });

@@ -76,9 +76,7 @@ function emitWrapperMethod(
   // inferFromClient fields need special handling (conditional injection)
   for (const clientField of wrapper.inferFromClient ?? []) {
     const clientExpr = clientFieldExpression(clientField);
-    lines.push(`        if (${clientExpr} !== null) {`);
-    lines.push(`            $body['${clientField}'] = ${clientExpr};`);
-    lines.push('        }');
+    lines.push(`        $body['${clientField}'] = ${clientExpr};`);
   }
 
   // Delegate to HTTP client
@@ -125,9 +123,9 @@ function clientFieldExpression(field: string): string {
   // Map inferFromClient fields to the actual client/config accessors
   switch (field) {
     case 'client_id':
-      return '\\WorkOS\\WorkOS::getClientId()';
+      return '$this->client->requireClientId()';
     case 'client_secret':
-      return '\\WorkOS\\WorkOS::getApiKey()';
+      return '$this->client->requireApiKey()';
     default:
       return `$this->client->${toCamelCase(field)}`;
   }

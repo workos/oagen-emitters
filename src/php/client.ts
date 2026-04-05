@@ -91,9 +91,6 @@ function generateMainClient(
   for (const svc of services) {
     allImports.push(`use ${ns}\\Service\\${svc.name};`);
   }
-  for (const a of nonSpecAccessors) {
-    allImports.push(`use ${ns}\\${a.className};`);
-  }
   allImports.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
   for (const imp of allImports) {
     lines.push(imp);
@@ -146,9 +143,9 @@ function generateMainClient(
   lines.push('    ) {');
   lines.push("        $apiKey ??= getenv('WORKOS_API_KEY') ?: self::$apiKey ?? '';");
   lines.push("        $clientId ??= getenv('WORKOS_CLIENT_ID') ?: self::$clientId;");
-  lines.push('        self::$apiKey = $apiKey;');
-  lines.push('        self::$clientId = $clientId;');
-  lines.push('        $this->httpClient = new HttpClient($apiKey, $baseUrl, $timeout, $maxRetries, $handler);');
+  lines.push(
+    '        $this->httpClient = new HttpClient($apiKey, $clientId, $baseUrl, $timeout, $maxRetries, $handler);',
+  );
   lines.push('    }');
 
   // Resource accessors

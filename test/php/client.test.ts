@@ -70,9 +70,15 @@ describe('generateClient', () => {
     const result = generateClient(emptySpec, ctx);
 
     expect(result[0].content).toContain('?string $apiKey = null');
+    expect(result[0].content).toContain('?string $clientId = null');
     expect(result[0].content).toContain("string $baseUrl = 'https://api.example.com'");
     expect(result[0].content).toContain('int $timeout = 60');
     expect(result[0].content).toContain('int $maxRetries = 3');
+    expect(result[0].content).toContain(
+      'new HttpClient($apiKey, $clientId, $baseUrl, $timeout, $maxRetries, $handler)',
+    );
+    expect(result[0].content).not.toContain('self::$apiKey = $apiKey;');
+    expect(result[0].content).not.toContain('self::$clientId = $clientId;');
   });
 
   it('includes non-spec service accessors', () => {

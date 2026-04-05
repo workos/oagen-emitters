@@ -119,15 +119,12 @@ function generateMethod(
       }
       lines.push('        ], fn ($v) => $v !== null);');
     }
-    lines.push('        $response = $this->client->request(');
+    lines.push('        return $this->client->requestPage(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
     if (queryLines.length > 0) {
       lines.push('            query: $query,');
     }
-    lines.push('            options: $options,');
-    lines.push('        );');
-
     const itemType = op.pagination?.itemType;
     if (itemType?.kind === 'model') {
       // Unwrap list wrapper models to the inner item type
@@ -140,10 +137,10 @@ function generateMethod(
         }
       }
       const itemClass = className(resolvedName);
-      lines.push(`        return PaginatedResponse::fromArray($response, ${itemClass}::class);`);
-    } else {
-      lines.push('        return PaginatedResponse::fromArray($response);');
+      lines.push(`            modelClass: ${itemClass}::class,`);
     }
+    lines.push('            options: $options,');
+    lines.push('        );');
   } else if (plan.isDelete) {
     // Build body if the operation has a request body (e.g., DELETE with criteria)
     if (plan.hasBody) {
@@ -392,9 +389,6 @@ function collectImports(service: Service, ctx: EmitterContext): string[] {
     const plan = planOperation(op);
     if (plan.responseModelName && !plan.isPaginated) {
       imports.add(`${ns}\\Resource\\${className(plan.responseModelName)}`);
-    }
-    if (plan.isPaginated) {
-      imports.add(`${ns}\\PaginatedResponse`);
     }
     if (op.pagination?.itemType.kind === 'model') {
       // Unwrap list wrapper models to import the inner item type

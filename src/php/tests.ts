@@ -132,9 +132,18 @@ function generateMountGroupTest(
       const modelName = className(plan.responseModelName);
       const fixtureName = `${snakeName(plan.responseModelName)}`;
       lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
-      lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+      if (op.response.kind === 'array') {
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => [$fixture]]]);");
+      } else {
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+      }
       lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
-      lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
+      if (op.response.kind === 'array') {
+        lines.push('        $this->assertIsArray($result);');
+        lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
+      } else {
+        lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
+      }
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
@@ -233,9 +242,13 @@ function buildTestArgs(op: Operation, ctx: EmitterContext): string {
   if (op.requestBody?.kind === 'model') {
     const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
     if (bodyModel) {
+      const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
       for (const f of bodyModel.fields) {
         if (!f.required) continue;
-        const phpName = toCamelCase(f.name);
+        let phpName = toCamelCase(f.name);
+        if (pathParamNames.has(phpName)) {
+          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+        }
         if (usedNames.has(phpName)) continue;
         usedNames.add(phpName);
         args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
