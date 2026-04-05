@@ -326,7 +326,7 @@ function collectImports(service: Service, ctx: EmitterContext): string[] {
     }
     if (op.pagination?.itemType.kind === 'model') {
       // Unwrap list wrapper models to import the inner item type
-      const itemModel = ctx.spec.models.find((m) => m.name === op.pagination!.itemType.name);
+      const itemModel = ctx.spec.models.find((m) => m.name === (op.pagination!.itemType as { name: string }).name);
       let resolvedName = (op.pagination!.itemType as { name: string }).name;
       if (itemModel && isListWrapperModel(itemModel)) {
         const dataField = itemModel.fields.find((f) => f.name === 'data');

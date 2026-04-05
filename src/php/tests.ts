@@ -419,9 +419,9 @@ function resolveFixtureModelName(modelName: string, ctx: EmitterContext): string
 function buildExpectedPath(op: Operation, ctx: EmitterContext): string {
   let path = op.path.replace(/^\//, '');
   for (const p of op.pathParams) {
-    if (p.type.kind === 'enum' && p.type.name) {
+    if (p.type.kind === 'enum' && (p.type as { name: string }).name) {
       // Use the actual first enum backing value for the path
-      const e = ctx.spec.enums.find((en) => en.name === p.type.name);
+      const e = ctx.spec.enums.find((en) => en.name === (p.type as { name: string }).name);
       const firstValue = e?.values[0]?.value;
       path = path.replace(`{${p.name}}`, firstValue != null ? String(firstValue) : `test_${p.name}`);
     } else {
