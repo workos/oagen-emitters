@@ -15,9 +15,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   files.push(generateWorkOSClient(spec, ctx));
   files.push(...generateServiceBarrels(spec, ctx));
   files.push(generateBarrel(spec, ctx));
-  files.push(generateWorkerBarrel(spec, ctx));
-  files.push(generatePackageJson(ctx));
-  files.push(generateTsConfig());
+  // worker barrel, package.json, tsconfig.json are now hand-maintained in the target SDK
 
   return files;
 }
@@ -527,23 +525,6 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   };
 }
 
-/**
- * Generate a worker-compatible barrel file that re-exports everything from
- * the main barrel. This keeps type exports in sync automatically.
- */
-function generateWorkerBarrel(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile {
-  const lines: string[] = [];
-
-  // Re-export everything from the main index — keeps type exports in sync
-  lines.push("export * from './index';");
-
-  return {
-    path: 'src/index.worker.ts',
-    content: lines.join('\n'),
-    skipIfExists: true,
-  };
-}
-
 function findEnumService(enumName: string, services: Service[]): string | undefined {
   for (const service of services) {
     for (const op of service.operations) {
@@ -609,63 +590,4 @@ function serverConstName(description: string): string {
       .replace(/^_|_$/g, '')
       .toUpperCase()
   );
-}
-
-function generatePackageJson(ctx: EmitterContext): GeneratedFile {
-  const pkg = {
-    name: `@${ctx.namespace}/sdk`,
-    version: '0.0.0',
-    type: 'module',
-    main: 'src/index.ts',
-    types: 'src/index.ts',
-    exports: {
-      '.': './src/index.ts',
-    },
-    scripts: {
-      test: 'jest',
-      build: 'tsc',
-    },
-    devDependencies: {
-      typescript: '^5.0.0',
-      jest: '^29.0.0',
-      'jest-fetch-mock': '^3.0.0',
-      '@types/jest': '^29.0.0',
-      'ts-jest': '^29.0.0',
-    },
-  };
-
-  return {
-    path: 'package.json',
-    content: JSON.stringify(pkg, null, 2),
-    skipIfExists: true,
-    integrateTarget: false,
-  };
-}
-
-function generateTsConfig(): GeneratedFile {
-  const config = {
-    compilerOptions: {
-      target: 'ES2020',
-      module: 'CommonJS',
-      lib: ['ES2020'],
-      declaration: true,
-      strict: true,
-      exactOptionalPropertyTypes: true,
-      esModuleInterop: true,
-      skipLibCheck: true,
-      forceConsistentCasingInFileNames: true,
-      resolveJsonModule: true,
-      outDir: './lib',
-      rootDir: './src',
-    },
-    include: ['src/**/*'],
-    exclude: ['node_modules', 'lib', '**/*.spec.ts'],
-  };
-
-  return {
-    path: 'tsconfig.json',
-    content: JSON.stringify(config, null, 2),
-    skipIfExists: true,
-    integrateTarget: false,
-  };
 }
