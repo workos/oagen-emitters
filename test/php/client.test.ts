@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateClient } from '../../src/php/client.js';
-import { initializeNaming } from '../../src/php/naming.js';
 
 const models: Model[] = [
   {
@@ -48,7 +47,6 @@ const ctx: EmitterContext = {
 
 describe('generateClient', () => {
   it('generates main client class', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
@@ -58,7 +56,6 @@ describe('generateClient', () => {
   });
 
   it('generates resource accessor methods', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
@@ -66,7 +63,6 @@ describe('generateClient', () => {
   });
 
   it('generates HttpClient class', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const httpFile = result.find((f) => f.path === 'lib/HttpClient.php');
@@ -77,7 +73,6 @@ describe('generateClient', () => {
   });
 
   it('generates PaginatedResponse class', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const paginatedFile = result.find((f) => f.path === 'lib/PaginatedResponse.php');
@@ -88,7 +83,6 @@ describe('generateClient', () => {
   });
 
   it('generates RequestOptions class', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const optionsFile = result.find((f) => f.path === 'lib/RequestOptions.php');
@@ -99,7 +93,6 @@ describe('generateClient', () => {
   });
 
   it('includes constructor with config options', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateClient(emptySpec, ctx);
 
     const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
@@ -107,5 +100,17 @@ describe('generateClient', () => {
     expect(clientFile!.content).toContain("string $baseUrl = 'https://api.example.com'");
     expect(clientFile!.content).toContain('int $timeout = 60');
     expect(clientFile!.content).toContain('int $maxRetries = 3');
+  });
+
+  it('includes non-spec service accessors', () => {
+    const result = generateClient(emptySpec, ctx);
+
+    const clientFile = result.find((f) => f.path === 'lib/WorkOS.php');
+    expect(clientFile!.content).toContain('public function passwordless(): Passwordless');
+    expect(clientFile!.content).toContain('public function vault(): Vault');
+    expect(clientFile!.content).toContain('public function webhookVerification(): WebhookVerification');
+    expect(clientFile!.content).toContain('public function actions(): Actions');
+    expect(clientFile!.content).toContain('public function sessionManager(): SessionManager');
+    expect(clientFile!.content).toContain('public function pkce(): PKCEHelper');
   });
 });

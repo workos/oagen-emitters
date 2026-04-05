@@ -3,6 +3,52 @@ import { toPascalCase } from '@workos/oagen';
 import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
+import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
+
+/** Python-specific wiring for each non-spec service. */
+interface PythonNonSpecWiring {
+  /** Python import line (e.g. "from .vault import Vault, AsyncVault") */
+  importLine: string;
+  /** Property name on the client class */
+  prop: string;
+  /** Sync class name */
+  syncClass: string;
+  /** Async class name, or null if no async variant */
+  asyncClass: string | null;
+  /** Constructor expression — 'self' if the class takes the client, '' if stateless */
+  ctorArg: 'self' | '';
+}
+
+const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
+  passwordless: {
+    importLine: 'from .passwordless import AsyncPasswordless, Passwordless',
+    prop: 'passwordless',
+    syncClass: 'Passwordless',
+    asyncClass: 'AsyncPasswordless',
+    ctorArg: 'self',
+  },
+  vault: {
+    importLine: 'from .vault import AsyncVault, Vault',
+    prop: 'vault',
+    syncClass: 'Vault',
+    asyncClass: 'AsyncVault',
+    ctorArg: 'self',
+  },
+  actions: {
+    importLine: 'from .actions import Actions, AsyncActions',
+    prop: 'actions',
+    syncClass: 'Actions',
+    asyncClass: 'AsyncActions',
+    ctorArg: '',
+  },
+  pkce: {
+    importLine: 'from .pkce import PKCE',
+    prop: 'pkce',
+    syncClass: 'PKCE',
+    asyncClass: null,
+    ctorArg: '',
+  },
+};
 
 /**
  * Generate the slim Python client class (service-wiring only),
@@ -109,10 +155,11 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
   }
-  lines.push('from .actions import Actions, AsyncActions');
-  lines.push('from .passwordless import AsyncPasswordless, Passwordless');
-  lines.push('from .pkce import PKCE');
-  lines.push('from .vault import AsyncVault, Vault');
+  // Non-spec service imports (driven by shared/non-spec-services.ts)
+  for (const s of NON_SPEC_SERVICES) {
+    const w = PYTHON_NON_SPEC_WIRING[s.id];
+    if (w) lines.push(w.importLine);
+  }
   lines.push('');
   lines.push('');
 
@@ -222,28 +269,18 @@ function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<st
 }
 
 function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
-  const resourceName = isAsync ? 'AsyncPasswordless' : 'Passwordless';
-  lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push(`    def passwordless(self) -> ${resourceName}:`);
-  lines.push(`        return ${resourceName}(self)`);
+  for (const s of NON_SPEC_SERVICES) {
+    const w = PYTHON_NON_SPEC_WIRING[s.id];
+    if (!w) continue;
+    // Skip async-only services when emitting the sync client, and vice versa
+    const typeName = isAsync ? (w.asyncClass ?? w.syncClass) : w.syncClass;
+    const arg = w.ctorArg === 'self' ? 'self' : '';
 
-  const vaultName = isAsync ? 'AsyncVault' : 'Vault';
-  lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push(`    def vault(self) -> ${vaultName}:`);
-  lines.push(`        return ${vaultName}(self)`);
-
-  const actionsName = isAsync ? 'AsyncActions' : 'Actions';
-  lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push(`    def actions(self) -> ${actionsName}:`);
-  lines.push(`        return ${actionsName}()`);
-
-  lines.push('');
-  lines.push('    @functools.cached_property');
-  lines.push('    def pkce(self) -> PKCE:');
-  lines.push('        return PKCE()');
+    lines.push('');
+    lines.push('    @functools.cached_property');
+    lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
+    lines.push(`        return ${typeName}(${arg})`);
+  }
 }
 
 /**
