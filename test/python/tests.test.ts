@@ -60,20 +60,12 @@ const ctx: EmitterContext = {
 };
 
 describe('generateTests', () => {
-  it('generates conftest and helpers', () => {
+  it('does not generate conftest, helpers, client tests, or pagination tests (now @oagen-ignore-file)', () => {
     const files = generateTests(spec, ctx);
-    const helpers = files.find((f) => f.path === 'tests/generated_helpers.py');
-    expect(helpers).toBeDefined();
-    expect(helpers!.content).toContain('def load_fixture(name: str)');
-    const conftest = files.find((f) => f.path === 'tests/conftest.py');
-    expect(conftest).toBeDefined();
-    expect(conftest!.content).toContain('import pytest');
-    expect(conftest!.content).toContain('import pytest_asyncio');
-    expect(conftest!.content).toContain('from workos import WorkOSClient');
-    expect(conftest!.content).toContain('@pytest.fixture');
-    expect(conftest!.content).toContain('@pytest_asyncio.fixture');
-    expect(conftest!.content).toContain('yield client');
-    expect(conftest!.content).toContain('await client.close()');
+    expect(files.find((f) => f.path === 'tests/generated_helpers.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'tests/conftest.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'tests/test_generated_client.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'tests/test_pagination.py')).toBeUndefined();
   });
 
   it('generates per-service test file', () => {
@@ -99,17 +91,9 @@ describe('generateTests', () => {
     expect(testFile!.content).toContain('pytest.raises(AuthenticationError)');
   });
 
-  it('generates generated client and pagination tests', () => {
+  it('still generates per-service and model round-trip tests', () => {
     const files = generateTests(spec, ctx);
-    const clientTests = files.find((f) => f.path === 'tests/test_generated_client.py');
-    expect(clientTests).toBeDefined();
-    expect(clientTests!.content).toContain('test_retry_exhaustion_raises_rate_limit');
-    expect(clientTests!.content).toContain('test_timeout_error_is_wrapped');
-    expect(clientTests!.content).toContain('test_documented_import_surface_exposes_resources');
-
-    const paginationTests = files.find((f) => f.path === 'tests/test_pagination.py');
-    expect(paginationTests).toBeDefined();
-    expect(paginationTests!.content).toContain('class TestAsyncPage:');
+    expect(files.find((f) => f.path === 'tests/test_organizations.py')).toBeDefined();
   });
 
   it('generates fixture JSON files', () => {

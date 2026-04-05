@@ -15,8 +15,6 @@ import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
-import { generateErrors } from './errors.js';
-import { generateConfig } from './config.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
 import { initializeNaming } from './naming.js';
@@ -60,12 +58,14 @@ export const pythonEmitter: Emitter = {
     return ensureTrailingNewlines(generateClient(spec, ctx));
   },
 
-  generateErrors(ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateErrors(ctx));
+  generateErrors(): GeneratedFile[] {
+    // _errors.py is now hand-maintained in the target SDK (@oagen-ignore-file)
+    return [];
   },
 
-  generateConfig(ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateConfig(ctx));
+  generateConfig(): GeneratedFile[] {
+    // _types.py and _pagination.py are now hand-maintained in the target SDK (@oagen-ignore-file)
+    return [];
   },
 
   generateTypeSignatures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
