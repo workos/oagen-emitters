@@ -10,7 +10,6 @@ import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const ns = ctx.namespacePascal;
 
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec);
@@ -22,14 +21,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  // Generate TestHelper with Guzzle mock helpers.
-  // Uses headerPlacement: 'skip' because content already includes <?php.
-  files.push({
-    path: 'tests/TestHelper.php',
-    content: generateTestHelper(ns),
-    overwriteExisting: true,
-    headerPlacement: 'skip',
-  });
+  // TestHelper is now hand-maintained in the target SDK (@oagen-ignore-file).
 
   // Collect all operations per mount target using resolved per-operation mounts.
   // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
@@ -72,61 +64,6 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   });
 
   return files;
-}
-
-/**
- * Generate TestHelper trait with Guzzle MockHandler helpers.
- */
-function generateTestHelper(ns: string): string {
-  return `<?php
-
-declare(strict_types=1);
-
-namespace WorkOS;
-
-use GuzzleHttp\\Handler\\MockHandler;
-use GuzzleHttp\\HandlerStack;
-use GuzzleHttp\\Psr7\\Response;
-
-trait TestHelper
-{
-    private ?MockHandler $mockHandler = null;
-
-    protected function loadFixture(string $name): array
-    {
-        $path = __DIR__ . '/Fixtures/' . $name . '.json';
-        if (!file_exists($path)) {
-            $this->markTestSkipped("Fixture not found: {$name}.json");
-        }
-        return json_decode(file_get_contents($path), true);
-    }
-
-    protected function createMockClient(array $responses): ${ns}
-    {
-        $mockResponses = array_map(
-            fn (array $response) => new Response(
-                $response['status'] ?? 200,
-                $response['headers'] ?? [],
-                json_encode($response['body'] ?? [])
-            ),
-            $responses,
-        );
-
-        $this->mockHandler = new MockHandler($mockResponses);
-        $handler = HandlerStack::create($this->mockHandler);
-
-        return new ${ns}(
-            apiKey: 'test_api_key',
-            handler: $handler,
-        );
-    }
-
-    protected function getLastRequest(): \\Psr\\Http\\Message\\RequestInterface
-    {
-        return $this->mockHandler->getLastRequest();
-    }
-}
-`;
 }
 
 function generateMountGroupTest(
