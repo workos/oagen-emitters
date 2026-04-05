@@ -63,7 +63,7 @@ describe('generateTests', () => {
   it('generates resource test files', () => {
     const result = generateTests(spec, ctx);
 
-    const resourceTest = result.find((f) => f.path === 'tests/Resources/OrganizationsTest.php');
+    const resourceTest = result.find((f) => f.path === 'tests/Service/OrganizationsTest.php');
     expect(resourceTest).toBeDefined();
     expect(resourceTest!.content).toContain('class OrganizationsTest extends TestCase');
     expect(resourceTest!.content).toContain('use TestHelper;');

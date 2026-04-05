@@ -45,7 +45,7 @@ describe('generateModels', () => {
     expect(result[0].content).toContain('public string $id,');
     expect(result[0].content).toContain('public string $name,');
     expect(result[0].content).toContain('public ?string $slug = null,');
-    expect(result[0].content).toContain('public static function fromArray(array $data): static');
+    expect(result[0].content).toContain('public static function fromArray(array $data): self');
     expect(result[0].content).toContain('public function toArray(): array');
     expect(result[0].content).toContain('implements \\JsonSerializable');
   });
@@ -65,7 +65,7 @@ describe('generateModels', () => {
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
     expect(result[0].content).toContain('\\DateTimeImmutable $createdAt');
-    expect(result[0].content).toContain("new \\DateTimeImmutable($data['created_at'])");
+    expect(result[0].content).toContain("new \\DateTimeImmutable($data['created_at'] ?? 'now')");
   });
 
   it('handles model references in fromArray', () => {
