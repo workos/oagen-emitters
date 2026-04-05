@@ -49,15 +49,11 @@ const ctx: EmitterContext = {
 };
 
 describe('generateTests', () => {
-  it('generates test helper', () => {
+  it('does not generate TestHelper (now hand-maintained)', () => {
     const result = generateTests(spec, ctx);
 
     const helper = result.find((f) => f.path === 'tests/TestHelper.php');
-    expect(helper).toBeDefined();
-    expect(helper!.content).toContain('trait TestHelper');
-    expect(helper!.content).toContain('loadFixture');
-    expect(helper!.content).toContain('createMockClient');
-    expect(helper!.content).toContain('MockHandler');
+    expect(helper).toBeUndefined();
   });
 
   it('generates resource test files', () => {
