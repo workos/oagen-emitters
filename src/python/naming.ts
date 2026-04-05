@@ -38,52 +38,9 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
   'Callable',
 ]);
 
-/** Tokens removed from spec model/enum names before generating Python names. */
-const STRIPPED_TOKENS = ['Dto', 'DTO'];
-
-/**
- * Set of spec names that would collide with another name after token stripping.
- * Populated by `initializeNaming()`.
- */
-let unsafeToStrip = new Set<string>();
-
-/** Remove all occurrences of Dto/DTO tokens from a PascalCase name. */
-function removeTokens(name: string): string {
-  let result = name;
-  for (const token of STRIPPED_TOKENS) {
-    result = result.replaceAll(token, '');
-  }
-  return result;
-}
-
-/**
- * Initialize collision detection for token stripping.
- * Call once with all model + enum names before generating output.
- */
-export function initializeNaming(specNames: string[]): void {
-  unsafeToStrip = new Set<string>();
-  const strippedToOriginals = new Map<string, string[]>();
-  for (const name of specNames) {
-    const stripped = removeTokens(name);
-    if (!strippedToOriginals.has(stripped)) strippedToOriginals.set(stripped, []);
-    strippedToOriginals.get(stripped)!.push(name);
-  }
-  for (const [, originals] of strippedToOriginals) {
-    if (originals.length > 1) {
-      for (const name of originals) unsafeToStrip.add(name);
-    }
-  }
-}
-
-/** Strip Dto/DTO tokens from a spec name, unless it would collide. */
-function stripDtoTokens(name: string): string {
-  if (unsafeToStrip.has(name)) return name;
-  return removeTokens(name);
-}
-
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(stripDtoTokens(name));
+  let result = toPascalCase(name);
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -95,7 +52,7 @@ export function className(name: string): string {
 
 /** snake_case file name (without extension). */
 export function fileName(name: string): string {
-  return toSnakeCase(stripDtoTokens(name));
+  return toSnakeCase(name);
 }
 
 /** snake_case method name. */

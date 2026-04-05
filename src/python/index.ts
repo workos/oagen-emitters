@@ -17,14 +17,6 @@ import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
-import { initializeNaming } from './naming.js';
-
-/** Initialize naming collision detection from spec model and enum names. */
-function ensureNamingInitialized(ctx: EmitterContext): void {
-  const names = [...ctx.spec.models.map((m) => m.name), ...ctx.spec.enums.map((e) => e.name)];
-  initializeNaming(names);
-}
-
 /** Ensure every generated file's content ends with a trailing newline. */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   for (const f of files) {
@@ -39,22 +31,18 @@ export const pythonEmitter: Emitter = {
   language: 'python',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateModels(models, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateEnums(enums, ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateResources(services, ctx));
   },
 
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateClient(spec, ctx));
   },
 
@@ -76,12 +64,10 @@ export const pythonEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateTests(spec, ctx));
   },
 
   generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    ensureNamingInitialized(ctx);
     return ensureTrailingNewlines(generateManifest(spec, ctx));
   },
 

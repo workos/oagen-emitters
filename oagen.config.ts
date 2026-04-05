@@ -236,6 +236,7 @@ const config: OagenConfig = {
   },
   docUrl: 'https://workos.com/docs',
   operationIdTransform: nestjsOperationIdTransform,
+  schemaNameTransform: (name: string) => name.replace(/Dto/g, '').replace(/DTO/g, ''),
   operationHints,
   mountRules,
 };
