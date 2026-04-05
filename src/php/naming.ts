@@ -1,5 +1,6 @@
-import type { Service, EmitterContext, Enum } from '@workos/oagen';
+import type { Service, Operation, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
+import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -53,35 +54,6 @@ const PHP_RESERVED_CLASS_NAMES = new Set([
   'Bool',
 ]);
 
-/** Suffixes stripped from spec model names before generating PHP names. */
-const STRIPPED_SUFFIXES = ['Dto', 'DTO'];
-
-let unsafeToStrip = new Set<string>();
-
-/**
- * Initialize collision detection for suffix stripping.
- */
-export function initializeNaming(specNames: string[]): void {
-  unsafeToStrip = new Set<string>();
-  const strippedToOriginals = new Map<string, string[]>();
-  for (const name of specNames) {
-    let stripped = name;
-    for (const suffix of STRIPPED_SUFFIXES) {
-      if (name.endsWith(suffix) && name.length > suffix.length) {
-        stripped = name.slice(0, -suffix.length);
-        break;
-      }
-    }
-    if (!strippedToOriginals.has(stripped)) strippedToOriginals.set(stripped, []);
-    strippedToOriginals.get(stripped)!.push(name);
-  }
-  for (const [, originals] of strippedToOriginals) {
-    if (originals.length > 1) {
-      for (const name of originals) unsafeToStrip.add(name);
-    }
-  }
-}
-
 // ─── Enum deduplication ───────────────────────────────────────────────
 
 let enumAliasMap = new Map<string, string>();
@@ -124,19 +96,9 @@ export function enumClassName(name: string): string {
   return className(resolveEnumName(name));
 }
 
-function stripSuffixes(name: string): string {
-  if (unsafeToStrip.has(name)) return name;
-  for (const suffix of STRIPPED_SUFFIXES) {
-    if (name.endsWith(suffix) && name.length > suffix.length) {
-      return name.slice(0, -suffix.length);
-    }
-  }
-  return name;
-}
-
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(stripSuffixes(name));
+  let result = toPascalCase(name);
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -156,9 +118,25 @@ export function methodName(name: string): string {
   return toCamelCase(name);
 }
 
+/** Resolve the SDK method name for an operation, using resolved operations first. */
+export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+  const lookup = buildResolvedLookup(ctx);
+  const resolved = lookupMethodName(op, lookup);
+  if (resolved) return toCamelCase(resolved);
+  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
+  const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
+  if (existing) return existing.methodName;
+  return toCamelCase(op.name);
+}
+
 /** camelCase field/property name. */
 export function fieldName(name: string): string {
   return toCamelCase(name);
+}
+
+/** snake_case name for fixtures and other snake_case contexts. */
+export function snakeName(name: string): string {
+  return toSnakeCase(name);
 }
 
 /** snake_case wire name (preserves the original API field name). */

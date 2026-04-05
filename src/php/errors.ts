@@ -1,201 +1,42 @@
-import type { EmitterContext, GeneratedFile, SdkBehavior } from '@workos/oagen';
-import { defaultSdkBehavior } from '@workos/oagen';
-
-/** Standard HTTP reason phrases for doc comments. */
-const HTTP_STATUS_REASONS: Record<number, string> = {
-  400: 'Bad Request',
-  401: 'Unauthorized',
-  403: 'Forbidden',
-  404: 'Not Found',
-  409: 'Conflict',
-  422: 'Unprocessable Entity',
-  429: 'Rate Limited',
-};
+import type { EmitterContext, GeneratedFile } from '@workos/oagen';
 
 /**
- * Generate PHP exception class hierarchy.
+ * Generate PHP exception class files.
  */
-export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
-  const ns = ctx?.namespacePascal ?? 'WorkOS';
-  const sdk: SdkBehavior = ctx?.spec.sdk ?? defaultSdkBehavior();
+export function generateErrors(ctx: EmitterContext): GeneratedFile[] {
+  const ns = ctx.namespacePascal;
   const files: GeneratedFile[] = [];
 
-  // Build the PHP expression for the error doc URL with "See" prefix.
-  // The template has {code} as a placeholder — we replace it with PHP string concatenation.
-  // e.g. 'https://workos.com/docs/errors/{code}' → "' — See: https://workos.com/docs/errors/' . $code"
-  const errorDocUrl = sdk.errors.errorDocUrlTemplate;
-  let errorDocSeeExpr: string;
-  if (errorDocUrl) {
-    const parts = errorDocUrl.split('{code}');
-    if (parts.length === 2) {
-      if (parts[1] === '') {
-        // Template ends with {code}: include prefix in single string
-        errorDocSeeExpr = `' — See: ${parts[0]}' . $code`;
-      } else {
-        errorDocSeeExpr = `' — See: ${parts[0]}' . $code . '${parts[1]}'`;
-      }
-    } else {
-      // No {code} placeholder — use literal
-      errorDocSeeExpr = `' — See: ${errorDocUrl}'`;
-    }
-  } else {
-    errorDocSeeExpr = "' — See: https://workos.com/docs/errors/' . $code";
-  }
-
-  // Base ApiException — accepts both new-style (string message) and legacy (Response object) constructors
+  // Base ApiException
   files.push({
     path: 'lib/Exception/ApiException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-class ApiException extends \\Exception implements WorkOSException
-{
-    public $requestId = "";
-    public $responseError;
-    public $responseErrorDescription;
-    public $responseErrors;
-    public $responseCode;
-    public $responseMessage;
-    public $response;
-    public readonly ?int $statusCode;
-    public readonly ?string $apiErrorCode;
-    public readonly ?string $error;
-    public readonly ?string $errorDescription;
-    public readonly ?array $errors;
-    public readonly ?string $rawBody;
-
-    /**
-     * Accepts both new-style (string $message, ...) and legacy (Response $response) constructors.
-     */
-    public function __construct(
-        string|\\${ns}\\Resource\\Response $messageOrResponse = '',
-        ?int $statusCode = null,
-        ?string $requestId = null,
-        ?string $apiErrorCode = null,
-        ?string $error = null,
-        ?string $errorDescription = null,
-        ?array $errors = null,
-        ?string $rawBody = null,
-        ?\\Throwable $previous = null,
-    ) {
-        // Legacy constructor: accepts a Response object (used by Client.php / BaseRequestException)
-        if ($messageOrResponse instanceof \\${ns}\\Resource\\Response) {
-            $this->response = $messageOrResponse;
-            $responseJson = $messageOrResponse->json();
-
-            $this->requestId = $messageOrResponse->headers['x-request-id'] ?? '';
-            $this->responseError = $responseJson['error'] ?? null;
-            $this->responseErrorDescription = $responseJson['error_description'] ?? null;
-            $this->responseErrors = $responseJson['errors'] ?? null;
-            $this->responseCode = $responseJson['code'] ?? null;
-            $this->responseMessage = $responseJson['message'] ?? null;
-
-            $this->statusCode = $messageOrResponse->statusCode;
-            $this->apiErrorCode = $responseJson['code'] ?? null;
-            $this->error = $responseJson['error'] ?? null;
-            $this->errorDescription = $responseJson['error_description'] ?? null;
-            $this->errors = $responseJson['errors'] ?? null;
-            $this->rawBody = $messageOrResponse->body ?? null;
-
-            parent::__construct($messageOrResponse->body ?? '', $messageOrResponse->statusCode ?? 0);
-            return;
-        }
-
-        // New-style constructor
-        parent::__construct($messageOrResponse, $statusCode ?? 0, $previous);
-        $this->statusCode = $statusCode;
-        $this->requestId = $requestId ?? '';
-        $this->apiErrorCode = $apiErrorCode;
-        $this->error = $error;
-        $this->errorDescription = $errorDescription;
-        $this->errors = $errors;
-        $this->rawBody = $rawBody;
-    }
-
-    public function __toString(): string
-    {
-        $parts = [static::class];
-        if ($this->statusCode !== null) {
-            $parts[] = "[{$this->statusCode}]";
-        }
-        if ($this->requestId !== '' && $this->requestId !== null) {
-            $parts[] = "(Request: {$this->requestId})";
-        }
-        if ($this->apiErrorCode !== null) {
-            $parts[] = "Code: {$this->apiErrorCode}";
-        }
-        $parts[] = $this->getMessage();
-        return implode(' ', $parts);
-    }
-
-    public static function fromResponse(int $statusCode, array $body, ?string $requestId = null): static
-    {
-        $message = $body['message'] ?? 'No message';
-        $code = $body['code'] ?? null;
-        if ($code !== null) {
-            $message .= ${errorDocSeeExpr};
-        }
-        return new static(
-            messageOrResponse: $message,
-            statusCode: $statusCode,
-            requestId: $requestId,
-            apiErrorCode: $body['code'] ?? null,
-            error: $body['error'] ?? null,
-            errorDescription: $body['error_description'] ?? null,
-            errors: $body['errors'] ?? null,
-            rawBody: json_encode($body) ?: null,
-        );
-    }
-}`,
-    integrateTarget: true,
+    content: generateApiException(ns),
     overwriteExisting: true,
   });
 
-  // Status-code-specific exceptions — generated from sdk.errors.statusCodeMap
-  const exceptions: { name: string; doc: string; status: number }[] = [
-    ...Object.entries(sdk.errors.statusCodeMap).map(([code, kind]) => ({
-      name: `${kind}Exception`,
-      doc: `${code} ${HTTP_STATUS_REASONS[Number(code)] ?? kind}`,
-      status: Number(code),
-    })),
-    { name: `${sdk.errors.serverErrorKind}Exception`, doc: '500+ Server Error', status: 500 },
+  // BaseRequestException (intermediate class for HTTP exceptions)
+  files.push({
+    path: 'lib/Exception/BaseRequestException.php',
+    content: generateBaseRequestException(ns),
+    overwriteExisting: true,
+  });
+
+  // HTTP exceptions
+  const httpExceptions: { name: string; statusCode: number; extra?: string }[] = [
+    { name: 'BadRequestException', statusCode: 400 },
+    { name: 'AuthenticationException', statusCode: 401 },
+    { name: 'AuthorizationException', statusCode: 403 },
+    { name: 'NotFoundException', statusCode: 404 },
+    { name: 'ConflictException', statusCode: 409 },
+    { name: 'UnprocessableEntityException', statusCode: 422 },
+    { name: 'RateLimitExceededException', statusCode: 429, extra: 'retryAfter' },
+    { name: 'ServerException', statusCode: 500 },
   ];
 
-  for (const ex of exceptions) {
-    const retryAfterProp =
-      ex.name === 'RateLimitExceededException'
-        ? `
-    public readonly ?float $retryAfter;
-
-    public function __construct(
-        string $message = '',
-        ?int $statusCode = ${ex.status},
-        ?string $requestId = null,
-        ?string $apiErrorCode = null,
-        ?string $error = null,
-        ?string $errorDescription = null,
-        ?array $errors = null,
-        ?string $rawBody = null,
-        ?float $retryAfter = null,
-        ?\\Throwable $previous = null,
-    ) {
-        parent::__construct($message, $statusCode, $requestId, $apiErrorCode, $error, $errorDescription, $errors, $rawBody, $previous);
-        $this->retryAfter = $retryAfter;
-    }`
-        : '';
-
+  for (const ex of httpExceptions) {
     files.push({
       path: `lib/Exception/${ex.name}.php`,
-      content: `
-namespace ${ns}\\Exception;
-
-/**
- * ${ex.doc}.
- */
-class ${ex.name} extends BaseRequestException
-{${retryAfterProp}
-}`,
-      integrateTarget: true,
+      content: generateHttpException(ns, ex.name, ex.statusCode, ex.extra),
       overwriteExisting: true,
     });
   }
@@ -203,113 +44,96 @@ class ${ex.name} extends BaseRequestException
   // Non-HTTP exceptions
   files.push({
     path: 'lib/Exception/ConfigurationException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-/**
- * Missing or invalid configuration.
- */
-class ConfigurationException extends \\RuntimeException
-{
-}`,
-    integrateTarget: true,
+    content: generateSimpleException(ns, 'ConfigurationException'),
     overwriteExisting: true,
   });
-
   files.push({
     path: 'lib/Exception/ConnectionException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-/**
- * Raised when the SDK cannot connect to the API.
- */
-class ConnectionException extends \\RuntimeException
-{
-}`,
-    integrateTarget: true,
+    content: generateSimpleException(ns, 'ConnectionException'),
     overwriteExisting: true,
   });
-
   files.push({
     path: 'lib/Exception/TimeoutException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-/**
- * Raised when the API request times out.
- */
-class TimeoutException extends \\RuntimeException
-{
-}`,
-    integrateTarget: true,
-    overwriteExisting: true,
-  });
-
-  // Baseline compat: WorkOSException interface
-  files.push({
-    path: 'lib/Exception/WorkOSException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-use Throwable;
-
-interface WorkOSException extends Throwable
-{
-}`,
-    integrateTarget: true,
-    overwriteExisting: true,
-  });
-
-  // Baseline compat: BaseRequestException
-  files.push({
-    path: 'lib/Exception/BaseRequestException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-class BaseRequestException extends ApiException implements WorkOSException
-{
-}`,
-    integrateTarget: true,
-    overwriteExisting: true,
-  });
-
-  // Baseline compat: GenericException
-  files.push({
-    path: 'lib/Exception/GenericException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-class GenericException extends ApiException implements WorkOSException
-{
-}`,
-    integrateTarget: true,
-    overwriteExisting: true,
-  });
-
-  // Baseline compat: UnexpectedValueException
-  files.push({
-    path: 'lib/Exception/UnexpectedValueException.php',
-    content: `
-namespace ${ns}\\Exception;
-
-class UnexpectedValueException extends \\UnexpectedValueException implements WorkOSException
-{
-}`,
-    integrateTarget: true,
+    content: generateSimpleException(ns, 'TimeoutException'),
     overwriteExisting: true,
   });
 
   return files;
 }
 
-/** Build status code to exception class name map from SDK behavior. */
-export function buildStatusCodeExceptions(sdk?: SdkBehavior): Record<number, string> {
-  const behavior = sdk ?? defaultSdkBehavior();
-  return Object.fromEntries(
-    Object.entries(behavior.errors.statusCodeMap).map(([code, kind]) => [Number(code), `${kind}Exception`]),
+function generateApiException(ns: string): string {
+  const lines: string[] = [];
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push(`namespace ${ns}\\Exception;`);
+  lines.push('');
+  lines.push('/** @phpstan-consistent-constructor */');
+  lines.push('class ApiException extends \\Exception');
+  lines.push('{');
+  lines.push('    public function __construct(');
+  lines.push("        string $message = '',");
+  lines.push('        public readonly ?int $statusCode = null,');
+  lines.push('        public readonly ?string $requestId = null,');
+  lines.push('        ?\\Throwable $previous = null,');
+  lines.push('    ) {');
+  lines.push('        parent::__construct($message, $statusCode ?? 0, $previous);');
+  lines.push('    }');
+  lines.push('');
+  lines.push(
+    '    public static function fromResponse(int $statusCode, array $body, ?string $requestId = null): static',
   );
+  lines.push('    {');
+  lines.push("        $message = $body['message'] ?? 'Unknown error';");
+  lines.push('        return new static($message, $statusCode, $requestId);');
+  lines.push('    }');
+  lines.push('}');
+  return lines.join('\n');
 }
 
-/** Map from status code to exception class name (default behavior). */
-export const STATUS_CODE_EXCEPTIONS: Record<number, string> = buildStatusCodeExceptions();
+function generateBaseRequestException(ns: string): string {
+  const lines: string[] = [];
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push(`namespace ${ns}\\Exception;`);
+  lines.push('');
+  lines.push('class BaseRequestException extends ApiException');
+  lines.push('{');
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function generateHttpException(ns: string, name: string, statusCode: number, extra?: string): string {
+  const lines: string[] = [];
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push(`namespace ${ns}\\Exception;`);
+  lines.push('');
+  lines.push(`class ${name} extends BaseRequestException`);
+  lines.push('{');
+
+  if (extra === 'retryAfter') {
+    lines.push('    public ?int $retryAfter = null;');
+    lines.push('');
+    lines.push('    public function __construct(');
+    lines.push("        string $message = '',");
+    lines.push(`        ?int $statusCode = ${statusCode},`);
+    lines.push('        ?string $requestId = null,');
+    lines.push('        ?\\Throwable $previous = null,');
+    lines.push('        ?int $retryAfter = null,');
+    lines.push('    ) {');
+    lines.push('        parent::__construct($message, $statusCode, $requestId, $previous);');
+    lines.push('        $this->retryAfter = $retryAfter;');
+    lines.push('    }');
+  }
+
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function generateSimpleException(ns: string, name: string): string {
+  const lines: string[] = [];
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push(`namespace ${ns}\\Exception;`);
+  lines.push('');
+  lines.push(`class ${name} extends \\Exception`);
+  lines.push('{');
+  lines.push('}');
+  return lines.join('\n');
+}

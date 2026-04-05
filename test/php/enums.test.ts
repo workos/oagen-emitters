@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Enum } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateEnums } from '../../src/php/enums.js';
-import { initializeNaming } from '../../src/php/naming.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -35,7 +34,7 @@ describe('generateEnums', () => {
         ],
       },
     ];
-    initializeNaming(enums.map((e) => e.name));
+
     const result = generateEnums(enums, ctx);
 
     expect(result).toHaveLength(1);
@@ -56,7 +55,7 @@ describe('generateEnums', () => {
         ],
       },
     ];
-    initializeNaming(enums.map((e) => e.name));
+
     const result = generateEnums(enums, ctx);
 
     expect(result[0].content).toContain('enum Priority: int');
@@ -72,7 +71,7 @@ describe('generateEnums', () => {
         values: [{ name: 'ACTIVE', value: 'active' }],
       },
     ];
-    initializeNaming(enums.map((e) => e.name));
+
     const result = generateEnums(enums, ctx);
 
     expect(result[0].content).toContain('namespace WorkOS\\Resource;');
@@ -88,7 +87,7 @@ describe('generateEnums', () => {
         ],
       },
     ];
-    initializeNaming(enums.map((e) => e.name));
+
     const result = generateEnums(enums, ctx);
 
     expect(result[0].content).toContain('case FooBar =');

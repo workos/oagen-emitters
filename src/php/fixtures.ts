@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { fieldName } from './naming.js';
-import { isListWrapperModel, isListMetadataModel } from './models.js';
+import { toSnakeCase } from '@workos/oagen';
+import { isListMetadataModel, isListWrapperModel } from './models.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -77,7 +77,7 @@ export function generateFixtures(spec: {
   return files;
 }
 
-function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
+export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
   const dataField = model.fields.find((f) => f.name === 'data');
   const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
   if (dataField && hasListMetadata && dataField.type.kind === 'array') {
@@ -96,15 +96,7 @@ export function generateModelFixture(
 ): Record<string, any> {
   const fixture: Record<string, any> = {};
 
-  const seenFieldNames = new Set<string>();
-  const deduplicatedFields = model.fields.filter((f) => {
-    const phpName = fieldName(f.name);
-    if (seenFieldNames.has(phpName)) return false;
-    seenFieldNames.add(phpName);
-    return true;
-  });
-
-  for (const field of deduplicatedFields) {
+  for (const field of model.fields) {
     const wireName = field.name;
     if (field.example !== undefined) {
       fixture[wireName] = field.example;
@@ -118,14 +110,14 @@ export function generateModelFixture(
 
 function generateFieldValue(
   ref: TypeRef,
-  name: string,
+  fieldName: string,
   modelName: string,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
 ): any {
   switch (ref.kind) {
     case 'primitive':
-      return generatePrimitiveValue(ref.type, ref.format, name, modelName);
+      return generatePrimitiveValue(ref.type, ref.format, fieldName, modelName);
     case 'literal':
       return ref.value;
     case 'enum': {
@@ -144,18 +136,20 @@ function generateFieldValue(
           return e.values.map((v) => v.value);
         }
       }
-      const item = generateFieldValue(ref.items, name, modelName, modelMap, enumMap);
+      const item = generateFieldValue(ref.items, fieldName, modelName, modelMap, enumMap);
       return [item];
     }
     case 'nullable':
-      return generateFieldValue(ref.inner, name, modelName, modelMap, enumMap);
+      return generateFieldValue(ref.inner, fieldName, modelName, modelMap, enumMap);
     case 'union':
       if (ref.variants.length > 0) {
-        return generateFieldValue(ref.variants[0], name, modelName, modelMap, enumMap);
+        return generateFieldValue(ref.variants[0], fieldName, modelName, modelMap, enumMap);
       }
       return null;
     case 'map':
-      return { key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap) };
+      return {
+        key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap),
+      };
   }
 }
 
@@ -185,11 +179,4 @@ function generatePrimitiveValue(type: string, format: string | undefined, name: 
     default:
       return null;
   }
-}
-
-function toSnakeCase(str: string): string {
-  return str
-    .replace(/([A-Z])/g, '_$1')
-    .replace(/^_/, '')
-    .toLowerCase();
 }

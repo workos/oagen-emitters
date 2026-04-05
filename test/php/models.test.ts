@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels } from '../../src/php/models.js';
-import { initializeNaming } from '../../src/php/naming.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -36,7 +35,7 @@ describe('generateModels', () => {
         ],
       },
     ];
-    initializeNaming(models.map((m) => m.name));
+
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
@@ -61,7 +60,7 @@ describe('generateModels', () => {
         ],
       },
     ];
-    initializeNaming(models.map((m) => m.name));
+
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
@@ -83,7 +82,7 @@ describe('generateModels', () => {
         fields: [{ name: 'bio', type: { kind: 'primitive', type: 'string' }, required: true }],
       },
     ];
-    initializeNaming(models.map((m) => m.name));
+
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
@@ -110,7 +109,7 @@ describe('generateModels', () => {
         ],
       },
     ];
-    initializeNaming(models.map((m) => m.name));
+
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
@@ -124,7 +123,7 @@ describe('generateModels', () => {
         fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
       },
     ];
-    initializeNaming(models.map((m) => m.name));
+
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 

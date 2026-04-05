@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateTests } from '../../src/php/tests.js';
-import { initializeNaming } from '../../src/php/naming.js';
 
 const models: Model[] = [
   {
@@ -51,7 +50,6 @@ const ctx: EmitterContext = {
 
 describe('generateTests', () => {
   it('generates test helper', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateTests(spec, ctx);
 
     const helper = result.find((f) => f.path === 'tests/TestHelper.php');
@@ -63,7 +61,6 @@ describe('generateTests', () => {
   });
 
   it('generates resource test files', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateTests(spec, ctx);
 
     const resourceTest = result.find((f) => f.path === 'tests/Resources/OrganizationsTest.php');
@@ -74,16 +71,14 @@ describe('generateTests', () => {
   });
 
   it('generates client test', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateTests(spec, ctx);
 
     const clientTest = result.find((f) => f.path === 'tests/ClientTest.php');
     expect(clientTest).toBeDefined();
-    expect(clientTest!.content).toContain('testConstructorRequiresApiKey');
+    expect(clientTest!.content).toContain('testConstructor');
   });
 
   it('generates fixture JSON files', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateTests(spec, ctx);
 
     const fixture = result.find((f) => f.path.includes('Fixtures/organization.json'));

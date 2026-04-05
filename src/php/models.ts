@@ -1,262 +1,118 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
+import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { className, enumClassName, fieldName, fileName } from './naming.js';
+import { className, fieldName } from './naming.js';
 
 /**
- * Look up an existing model interface from the API surface by trying various name forms.
+ * Check if a model is a list metadata model (e.g., ListMetadata).
  */
-function findSurfaceInterface(
-  modelName: string,
-  ctx: EmitterContext,
-): { fields: Record<string, { name: string }> } | undefined {
-  const surface = ctx.apiSurface;
-  if (!surface?.interfaces) return undefined;
-
-  const phpName = className(modelName);
-  // Try exact match, then the PHP class name
-  return surface.interfaces[modelName] ?? surface.interfaces[phpName];
+export function isListMetadataModel(model: Model): boolean {
+  return /^list.?metadata$/i.test(model.name);
 }
 
 /**
- * Build RESOURCE_ATTRIBUTES and RESPONSE_TO_RESOURCE_KEY from surface data when available.
- * Falls back to generating from IR fields when no surface data exists.
+ * Check if a model is a list wrapper (has `data` array + `list_metadata`).
  */
-function buildModelAttributes(
-  model: Model,
-  deduplicatedFields: Field[],
-  ctx: EmitterContext,
-): { attributes: string[]; mapping: Array<{ wire: string; attr: string }>; isNameCollision: boolean } {
-  const surfaceIface = findSurfaceInterface(model.name, ctx);
-
-  if (surfaceIface) {
-    // Use the surface interface fields — preserves original order, key convention, and field subset
-    const surfaceFieldNames = Object.keys(surfaceIface.fields);
-    const attributes: string[] = [];
-    const mapping: Array<{ wire: string; attr: string }> = [];
-
-    // Build a map from camelCase/snake_case attr name to wire name
-    const attrToWire = new Map<string, string>();
-    for (const f of deduplicatedFields) {
-      const camelAttr = fieldName(f.name);
-      attrToWire.set(camelAttr, f.name);
-      attrToWire.set(f.name, f.name); // Also map snake_case → snake_case for identity-mapped models
-    }
-
-    for (const surfaceAttr of surfaceFieldNames) {
-      const wire = attrToWire.get(surfaceAttr);
-      if (wire) {
-        attributes.push(surfaceAttr);
-        mapping.push({ wire, attr: surfaceAttr });
-      }
-    }
-
-    // If no fields matched, this is a name collision — the surface interface represents
-    // a different model with the same name. Signal to skip generation.
-    if (attributes.length === 0) {
-      return { attributes: [], mapping: [], isNameCollision: true };
-    }
-
-    // For models with surface data, DON'T append new fields — preserve exact old field set for BC.
-    // New spec fields are still accessible via the raw response array.
-    return { attributes, mapping, isNameCollision: false };
-  }
-
-  // No surface data — generate fresh with camelCase convention (default for new models)
-  return { ...buildDefaultAttributes(deduplicatedFields), isNameCollision: false };
-}
-
-/** Generate default attributes for new models (no surface data). */
-function buildDefaultAttributes(deduplicatedFields: Field[]): {
-  attributes: string[];
-  mapping: Array<{ wire: string; attr: string }>;
-} {
-  const attributes: string[] = [];
-  const mapping: Array<{ wire: string; attr: string }> = [];
-
-  for (const f of deduplicatedFields) {
-    const attr = fieldName(f.name);
-    attributes.push(attr);
-    mapping.push({ wire: f.name, attr });
-  }
-
-  return { attributes, mapping };
-}
-
-interface FieldMapping {
-  field: Field;
-  phpName: string;
-  wireName: string;
+export function isListWrapperModel(model: Model): boolean {
+  const hasData = model.fields.some((f) => f.name === 'data' && f.type.kind === 'array');
+  const hasListMeta = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+  return hasData && hasListMeta;
 }
 
 /**
- * Resolve field mappings using surface data for BC, or default camelCase convention.
- */
-function resolveFieldMappings(model: Model, deduplicatedFields: Field[], ctx: EmitterContext): FieldMapping[] {
-  const surfaceIface = findSurfaceInterface(model.name, ctx);
-
-  if (surfaceIface) {
-    const surfaceFieldNames = Object.keys(surfaceIface.fields);
-    const fieldByWire = new Map<string, Field>();
-    const fieldByCamel = new Map<string, Field>();
-    for (const f of deduplicatedFields) {
-      fieldByWire.set(f.name, f);
-      fieldByCamel.set(fieldName(f.name), f);
-    }
-
-    const mappings: FieldMapping[] = [];
-    const used = new Set<string>();
-
-    for (const surfaceAttr of surfaceFieldNames) {
-      const byWire = fieldByWire.get(surfaceAttr);
-      const byCamel = fieldByCamel.get(surfaceAttr);
-      const field = byWire ?? byCamel;
-      if (field && !used.has(field.name)) {
-        used.add(field.name);
-        mappings.push({
-          field,
-          phpName: surfaceAttr,
-          wireName: field.name,
-        });
-      }
-    }
-
-    return mappings;
-  }
-
-  return deduplicatedFields.map((f) => ({
-    field: f,
-    phpName: fieldName(f.name),
-    wireName: f.name,
-  }));
-}
-
-/**
- * Generate PHP model classes as readonly classes with constructor promotion.
+ * Generate PHP model files from IR models.
  */
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
   const files: GeneratedFile[] = [];
-  const enumNames = new Set(ctx.spec.enums.map((e) => e.name));
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
   for (const model of models) {
-    if (isListWrapperModel(model)) continue;
     if (isListMetadataModel(model)) continue;
+    if (isListWrapperModel(model)) continue;
 
-    const phpClassName = className(model.name);
-    const phpFileName = fileName(model.name);
-
-    // Deduplicate fields that map to the same camelCase name
-    const seenFieldNames = new Set<string>();
-    const deduplicatedFields = model.fields.filter((f) => {
-      const phpName = fieldName(f.name);
-      if (seenFieldNames.has(phpName)) return false;
-      seenFieldNames.add(phpName);
-      return true;
-    });
-
-    // Name collision check via surface data
-    const { isNameCollision } = buildModelAttributes(model, deduplicatedFields, ctx);
-    if (isNameCollision) continue;
-
-    // Custom constructor: the old model has a custom constructFromResponse() override.
-    const surfaceIface = findSurfaceInterface(model.name, ctx);
-    if (surfaceIface && (surfaceIface as any).hasCustomConstructor) continue;
-
-    // Resolve field mappings (order and naming from surface data or default camelCase)
-    const fieldMappings = resolveFieldMappings(model, deduplicatedFields, ctx);
-    const required = fieldMappings.filter((m) => m.field.required);
-    const optional = fieldMappings.filter((m) => !m.field.required);
-    const ordered = [...required, ...optional];
-
+    const name = className(model.name);
     const lines: string[] = [];
 
-    lines.push('');
+    // No <?php here — the file header from fileHeader() provides it
     lines.push(`namespace ${ctx.namespacePascal}\\Resource;`);
     lines.push('');
-
-    if (model.description) {
-      lines.push('/**');
-      lines.push(` * ${model.description}`);
-      lines.push(' */');
-    }
-    lines.push(`readonly class ${phpClassName} implements \\JsonSerializable`);
+    lines.push(`readonly class ${name} implements \\JsonSerializable`);
     lines.push('{');
 
     // Constructor with promoted properties
     lines.push('    public function __construct(');
-    for (const m of ordered) {
-      const phpType = mapTypeRef(m.field.type);
-      if (m.field.required) {
-        lines.push(`        public ${phpType} $${m.phpName},`);
+    const requiredFields = model.fields.filter((f) => f.required);
+    const optionalFields = model.fields.filter((f) => !f.required);
+    // Deduplicate fields that map to the same PHP name
+    const seenNames = new Set<string>();
+    const allFields = [...requiredFields, ...optionalFields].filter((f) => {
+      const phpName = fieldName(f.name);
+      if (seenNames.has(phpName)) return false;
+      seenNames.add(phpName);
+      return true;
+    });
+
+    for (let i = 0; i < allFields.length; i++) {
+      const field = allFields[i];
+      const phpName = fieldName(field.name);
+      const phpType = mapTypeRef(field.type);
+      const isOptional = !field.required;
+      const comma = i < allFields.length - 1 ? ',' : ',';
+
+      if (isOptional) {
+        const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
+        lines.push(`        public ${nullableType} $${phpName} = null${comma}`);
       } else {
-        const isAlreadyNullable = phpType.startsWith('?');
-        const nullableType = isAlreadyNullable ? phpType : `?${phpType}`;
-        lines.push(`        public ${nullableType} $${m.phpName} = null,`);
+        lines.push(`        public ${phpType} $${phpName}${comma}`);
       }
     }
-    lines.push('    ) {}');
-    lines.push('');
+    lines.push('    ) {');
+    lines.push('    }');
 
-    // fromArray factory — deserializes from wire-format array
-    lines.push('    /**');
-    lines.push('     * @param array<string, mixed> $data');
-    lines.push('     * @return static');
-    lines.push('     */');
-    lines.push('    public static function fromArray(array $data): static');
+    // fromArray factory method
+    lines.push('');
+    lines.push(`    public static function fromArray(array $data): self`);
     lines.push('    {');
-    lines.push('        return new static(');
-    for (const m of ordered) {
-      const accessor = `$data['${m.wireName}']`;
-      const expr = generateFromArrayExpression(m.field.type, accessor, !m.field.required, enumNames);
-      lines.push(`            ${m.phpName}: ${expr},`);
+    lines.push(`        return new self(`);
+    for (let i = 0; i < allFields.length; i++) {
+      const field = allFields[i];
+      const phpName = fieldName(field.name);
+      const wireName = field.name;
+      const comma = i < allFields.length - 1 ? ',' : ',';
+      const accessor = generateFromArrayAccessor(field.type, wireName, field.required, modelMap);
+
+      lines.push(`            ${phpName}: ${accessor}${comma}`);
     }
     lines.push('        );');
     lines.push('    }');
-    lines.push('');
 
-    // constructFromResponse — BC alias for hand-written code that calls this method
-    lines.push('    /**');
-    lines.push('     * @param array<string, mixed> $data');
-    lines.push('     * @return static');
-    lines.push('     * @deprecated Use fromArray() instead.');
-    lines.push('     */');
-    lines.push('    public static function constructFromResponse(array $data): static');
-    lines.push('    {');
-    lines.push('        return static::fromArray($data);');
-    lines.push('    }');
+    // toArray method
     lines.push('');
-
-    // toArray — serializes to wire-format array
-    lines.push('    /**');
-    lines.push('     * @return array<string, mixed>');
-    lines.push('     */');
     lines.push('    public function toArray(): array');
     lines.push('    {');
     lines.push('        return [');
-    for (const m of ordered) {
-      const accessor = `$this->${m.phpName}`;
-      const expr = generateToArrayExpression(m.field.type, accessor, enumNames);
-      lines.push(`            '${m.wireName}' => ${expr},`);
+    for (const field of allFields) {
+      const phpName = fieldName(field.name);
+      const wireName = field.name;
+      const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required);
+      lines.push(`            '${wireName}' => ${serialized},`);
     }
     lines.push('        ];');
     lines.push('    }');
-    lines.push('');
 
-    // jsonSerialize — delegates to toArray for JSON encoding
-    lines.push('    /**');
-    lines.push('     * @return array<string, mixed>');
-    lines.push('     */');
+    // jsonSerialize
+    lines.push('');
     lines.push('    public function jsonSerialize(): array');
     lines.push('    {');
     lines.push('        return $this->toArray();');
     lines.push('    }');
+
     lines.push('}');
 
     files.push({
-      path: `lib/Resource/${phpFileName}.php`,
+      path: `lib/Resource/${name}.php`,
       content: lines.join('\n'),
-      integrateTarget: true,
       overwriteExisting: true,
     });
   }
@@ -264,106 +120,117 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   return files;
 }
 
-/** Check if a model is a list wrapper (has data + list_metadata fields). */
-export function isListWrapperModel(model: Model): boolean {
-  const dataField = model.fields.find((f) => f.name === 'data');
-  const hasListMeta = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  return !!(dataField && hasListMeta && dataField.type.kind === 'array');
+/**
+ * Generate the fromArray accessor expression for a field.
+ */
+function generateFromArrayAccessor(
+  ref: TypeRef,
+  wireName: string,
+  required: boolean,
+  modelMap: Map<string, Model>,
+): string {
+  if (!required) {
+    // Optional field: use ?? null or isset() for complex types
+    const inner = generateFromArrayValue(ref, `$data['${wireName}']`, modelMap, { insideIsset: true });
+    if (isComplexType(ref)) {
+      return `isset($data['${wireName}']) ? ${inner} : null`;
+    }
+    return `$data['${wireName}'] ?? null`;
+  }
+  // Required field: access directly
+  return generateFromArrayValue(ref, `$data['${wireName}']`, modelMap, { insideIsset: false });
 }
 
-/** Check if a model is a list metadata model. */
-export function isListMetadataModel(model: Model): boolean {
-  return /ListMetadata$/i.test(model.name) || model.name === 'ListMetadata';
-}
-
-function generateFromArrayExpression(
+/**
+ * Generate the fromArray value expression for a type.
+ */
+function generateFromArrayValue(
   ref: TypeRef,
   accessor: string,
-  optional: boolean,
-  enumNames: Set<string>,
+  _modelMap: Map<string, Model>,
+  opts: { insideIsset: boolean } = { insideIsset: false },
 ): string {
-  if (optional) {
-    const innerExpr = generateFromArrayExpression(
-      ref.kind === 'nullable' ? ref.inner : ref,
-      accessor,
-      false,
-      enumNames,
-    );
-    return `isset(${accessor}) ? ${innerExpr} : null`;
-  }
-
   switch (ref.kind) {
     case 'primitive':
       if (ref.format === 'date-time') {
-        return `new \\DateTimeImmutable(${accessor})`;
+        // Inside isset(), the value is guaranteed non-null — no fallback needed.
+        // Outside isset(), use ?? 'now' to handle null gracefully.
+        return opts.insideIsset
+          ? `new \\DateTimeImmutable(${accessor})`
+          : `new \\DateTimeImmutable(${accessor} ?? 'now')`;
       }
       return accessor;
-    case 'model':
-      // Parser may represent enum refs as model refs — check the enum set
-      if (enumNames.has(ref.name)) {
-        return `${enumClassName(ref.name)}::tryFrom(${accessor}) ?? ${accessor}`;
-      }
-      return `${className(ref.name)}::fromArray(${accessor})`;
-    case 'enum':
-      return `${enumClassName(ref.name)}::tryFrom(${accessor}) ?? ${accessor}`;
-    case 'array':
-      if (ref.items.kind === 'model') {
-        if (enumNames.has(ref.items.name)) {
-          return `array_map(fn ($item) => ${enumClassName(ref.items.name)}::tryFrom($item) ?? $item, ${accessor})`;
-        }
-        return `array_map(fn ($item) => ${className(ref.items.name)}::fromArray($item), ${accessor})`;
-      }
-      if (ref.items.kind === 'enum') {
-        return `array_map(fn ($item) => ${enumClassName(ref.items.name)}::tryFrom($item) ?? $item, ${accessor})`;
-      }
-      return accessor;
-    case 'nullable': {
-      const innerExpr = generateFromArrayExpression(ref.inner, accessor, false, enumNames);
-      return `isset(${accessor}) && ${accessor} !== null ? ${innerExpr} : null`;
+    case 'model': {
+      const name = className(ref.name);
+      return `${name}::fromArray(${accessor})`;
     }
-    case 'union':
-    case 'map':
-    case 'literal':
-      return accessor;
-    default:
-      return accessor;
-  }
-}
-
-function generateToArrayExpression(ref: TypeRef, accessor: string, enumNames: Set<string>): string {
-  switch (ref.kind) {
-    case 'primitive':
-      if (ref.format === 'date-time') {
-        // Use Z suffix for BC with old BaseWorkOSResource (stored raw strings with Z)
-        return `${accessor} !== null ? str_replace('+00:00', 'Z', ${accessor}->format(\\DateTimeInterface::RFC3339_EXTENDED)) : null`;
-      }
-      return accessor;
-    case 'model':
-      // Parser may represent enum refs as model refs — check the enum set
-      if (enumNames.has(ref.name)) {
-        return `${accessor} instanceof \\BackedEnum ? ${accessor}->value : ${accessor}`;
-      }
-      return `${accessor}?->toArray()`;
-    case 'enum':
-      return `${accessor} instanceof \\BackedEnum ? ${accessor}->value : ${accessor}`;
+    case 'enum': {
+      const name = className(ref.name);
+      return `${name}::tryFrom(${accessor}) ?? ${accessor}`;
+    }
     case 'array':
       if (ref.items.kind === 'model') {
-        if (enumNames.has(ref.items.name)) {
-          return `array_map(fn ($item) => $item instanceof \\BackedEnum ? $item->value : $item, ${accessor} ?? [])`;
-        }
-        return `array_map(fn ($item) => $item->toArray(), ${accessor} ?? [])`;
-      }
-      if (ref.items.kind === 'enum') {
-        return `array_map(fn ($item) => $item instanceof \\BackedEnum ? $item->value : $item, ${accessor} ?? [])`;
+        const itemName = className(ref.items.name);
+        return `array_map(fn ($item) => ${itemName}::fromArray($item), ${accessor})`;
       }
       return accessor;
     case 'nullable':
-      return generateToArrayExpression(ref.inner, accessor, enumNames);
+      return generateFromArrayValue(ref.inner, accessor, _modelMap, opts);
     case 'union':
+      return accessor;
     case 'map':
+      return accessor;
     case 'literal':
       return accessor;
+  }
+}
+
+/**
+ * Check if a TypeRef needs special handling (not a simple key access).
+ */
+function isComplexType(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'primitive':
+      return ref.format === 'date-time';
+    case 'model':
+    case 'enum':
+      return true;
+    case 'nullable':
+      return isComplexType(ref.inner);
     default:
+      return false;
+  }
+}
+
+/**
+ * Generate the toArray serialization expression for a field value.
+ */
+function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false): string {
+  const ns = nullable ? '?' : '';
+  switch (ref.kind) {
+    case 'primitive':
+      if (ref.format === 'date-time') {
+        return `${accessor}${ns}->format(\\DateTimeInterface::RFC3339_EXTENDED)`;
+      }
+      return accessor;
+    case 'model':
+      return `${accessor}${ns}->toArray()`;
+    case 'enum':
+      return nullable ? `${accessor} instanceof \\BackedEnum ? ${accessor}->value : ${accessor}` : `${accessor}->value`;
+    case 'array':
+      if (ref.items.kind === 'model') {
+        return nullable
+          ? `array_map(fn ($item) => $item->toArray(), ${accessor} ?? [])`
+          : `array_map(fn ($item) => $item->toArray(), ${accessor})`;
+      }
+      return accessor;
+    case 'nullable':
+      return generateToArrayValue(ref.inner, accessor, true);
+    case 'map':
+      return accessor;
+    case 'union':
+      return accessor;
+    case 'literal':
       return accessor;
   }
 }

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateResources } from '../../src/php/resources.js';
-import { initializeNaming } from '../../src/php/naming.js';
 
 const models: Model[] = [
   {
@@ -105,7 +104,6 @@ describe('generateResources', () => {
   });
 
   it('generates a resource class with methods', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result).toHaveLength(1);
@@ -115,7 +113,6 @@ describe('generateResources', () => {
   });
 
   it('generates GET by ID method with path interpolation', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result[0].content).toContain('public function getOrganization(');
@@ -125,7 +122,6 @@ describe('generateResources', () => {
   });
 
   it('generates paginated list method', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result[0].content).toContain('public function listOrganizations(');
@@ -134,7 +130,6 @@ describe('generateResources', () => {
   });
 
   it('generates create method with body params', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result[0].content).toContain('public function createOrganization(');
@@ -143,14 +138,12 @@ describe('generateResources', () => {
   });
 
   it('generates delete method returning void', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result[0].content).toContain('): void');
   });
 
   it('generates correct namespace', () => {
-    initializeNaming(models.map((m) => m.name));
     const result = generateResources(services, ctx);
 
     expect(result[0].content).toContain('namespace WorkOS\\Resources;');
