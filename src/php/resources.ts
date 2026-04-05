@@ -145,13 +145,52 @@ function generateMethod(
       lines.push('        return PaginatedResponse::fromArray($response);');
     }
   } else if (plan.isDelete) {
+    // Build body if the operation has a request body (e.g., DELETE with criteria)
+    if (plan.hasBody) {
+      const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
+      const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
+      const hasOptionalFields = bodyModel?.fields.some((f) => !f.required) ?? false;
+      if (hasOptionalFields) {
+        lines.push('        $body = array_filter([');
+      } else {
+        lines.push('        $body = [');
+      }
+      if (bodyModel) {
+        for (const field of bodyModel.fields) {
+          const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+          lines.push(`            '${field.name}' => $${phpName},`);
+        }
+      }
+      if (hasOptionalFields) {
+        lines.push('        ], fn ($v) => $v !== null);');
+      } else {
+        lines.push('        ];');
+      }
+    }
+    // Build query params if present
+    const deleteQueryLines = buildQueryArray(op);
+    if (deleteQueryLines.length > 0) {
+      lines.push('        $query = array_filter([');
+      for (const q of deleteQueryLines) {
+        lines.push(`            ${q}`);
+      }
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
+
     lines.push('        $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
+    if (plan.hasBody) {
+      lines.push('            body: $body,');
+    }
+    if (deleteQueryLines.length > 0) {
+      lines.push('            query: $query,');
+    }
     lines.push('            options: $options,');
     lines.push('        );');
   } else if (plan.hasBody) {
     const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
+    const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
     const hasOptionalFields = bodyModel?.fields.some((f) => !f.required) ?? false;
     if (hasOptionalFields) {
       lines.push('        $body = array_filter([');
@@ -160,7 +199,7 @@ function generateMethod(
     }
     if (bodyModel) {
       for (const field of bodyModel.fields) {
-        const phpName = fieldName(field.name);
+        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
         lines.push(`            '${field.name}' => $${phpName},`);
       }
     }
@@ -178,7 +217,11 @@ function generateMethod(
 
     if (plan.responseModelName) {
       const responseClass = className(plan.responseModelName);
-      lines.push(`        return ${responseClass}::fromArray($response);`);
+      if (op.response.kind === 'array') {
+        lines.push(`        return array_map(fn ($item) => ${responseClass}::fromArray($item), $response);`);
+      } else {
+        lines.push(`        return ${responseClass}::fromArray($response);`);
+      }
     } else {
       lines.push('        return $response;');
     }
@@ -211,7 +254,11 @@ function generateMethod(
 
     if (plan.responseModelName) {
       const responseClass = className(plan.responseModelName);
-      lines.push(`        return ${responseClass}::fromArray($response);`);
+      if (op.response.kind === 'array') {
+        lines.push(`        return array_map(fn ($item) => ${responseClass}::fromArray($item), $response);`);
+      } else {
+        lines.push(`        return ${responseClass}::fromArray($response);`);
+      }
     } else {
       lines.push('        return $response;');
     }
@@ -248,7 +295,11 @@ function buildMethodParams(
       for (const field of bodyModel.fields) {
         const phpType = mapTypeRef(field.type, { qualified: true });
         let phpName = fieldName(field.name);
-        if (usedNames.has(phpName)) continue;
+        if (usedNames.has(phpName)) {
+          // Disambiguate body field from path param with same name
+          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+          if (usedNames.has(phpName)) continue; // truly duplicate, skip
+        }
         usedNames.add(phpName);
         if (field.required) {
           required.push(`${phpType} $${phpName}`);
@@ -284,9 +335,30 @@ function getReturnType(plan: ReturnType<typeof planOperation>, ctx: EmitterConte
   if (plan.isDelete) return 'void';
   if (plan.isPaginated) return `\\${ctx.namespacePascal}\\PaginatedResponse`;
   if (plan.responseModelName) {
+    if (plan.operation.response.kind === 'array') {
+      return 'array';
+    }
     return `\\${ctx.namespacePascal}\\Resource\\${className(plan.responseModelName)}`;
   }
   return 'mixed';
+}
+
+/**
+ * Build a mapping from wire name to PHP variable name for body fields,
+ * disambiguating collisions with path param names.
+ */
+function buildBodyParamMap(op: Operation, bodyModel: Model | null): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!bodyModel) return map;
+  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  for (const field of bodyModel.fields) {
+    let phpName = fieldName(field.name);
+    if (pathParamNames.has(phpName)) {
+      phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+    }
+    map.set(field.name, phpName);
+  }
+  return map;
 }
 
 function buildPathString(op: Operation): string {

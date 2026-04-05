@@ -114,6 +114,10 @@ function generateMountGroupTest(
       lines.push('        $request = $this->getLastRequest();');
       lines.push("        $this->assertSame('DELETE', $request->getMethod());");
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
+      // Body assertions for DELETE-with-body
+      if (plan.hasBody && op.requestBody?.kind === 'model') {
+        emitBodyAssertions(lines, op, ctx);
+      }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       const fixtureName = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
       lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);

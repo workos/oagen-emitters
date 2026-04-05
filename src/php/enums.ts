@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, resolveEnumName } from './naming.js';
 
 /**
  * Generate PHP enum files from IR enums.
@@ -9,9 +9,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (enums.length === 0) return [];
 
   const files: GeneratedFile[] = [];
+  const emittedCanonical = new Set<string>();
 
   for (const e of enums) {
-    const name = className(e.name);
+    const canonical = resolveEnumName(e.name);
+    if (emittedCanonical.has(canonical)) continue; // skip aliases
+    emittedCanonical.add(canonical);
+
+    const name = className(canonical);
     const _isAllStrings = e.values.every((v) => typeof v.value === 'string');
     const isAllInts = e.values.every((v) => typeof v.value === 'number' && Number.isInteger(v.value));
     const backingType = isAllInts ? 'int' : 'string';

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Enum } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateEnums } from '../../src/php/enums.js';
+import { initializeEnumDedup } from '../../src/php/naming.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -75,6 +76,40 @@ describe('generateEnums', () => {
     const result = generateEnums(enums, ctx);
 
     expect(result[0].content).toContain('namespace WorkOS\\Resource;');
+  });
+
+  it('collapses duplicate enums with identical values into one file', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Order',
+        values: [
+          { name: 'ASC', value: 'asc' },
+          { name: 'DESC', value: 'desc' },
+        ],
+      },
+      {
+        name: 'ConnectionOrder',
+        values: [
+          { name: 'ASC', value: 'asc' },
+          { name: 'DESC', value: 'desc' },
+        ],
+      },
+      {
+        name: 'ApiKeyOrder',
+        values: [
+          { name: 'ASC', value: 'asc' },
+          { name: 'DESC', value: 'desc' },
+        ],
+      },
+    ];
+
+    // Initialize dedup before generating
+    initializeEnumDedup(enums);
+    const result = generateEnums(enums, ctx);
+
+    // Should produce only one file (the shortest name: Order)
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe('lib/Resource/Order.php');
   });
 
   it('deduplicates case names', () => {

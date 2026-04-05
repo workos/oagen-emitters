@@ -148,4 +148,142 @@ describe('generateResources', () => {
 
     expect(result[0].content).toContain('namespace WorkOS\\Service;');
   });
+
+  it('generates DELETE method with body params', () => {
+    const deleteBodyModels: Model[] = [
+      {
+        name: 'DeleteRoleAssignmentsRequest',
+        fields: [
+          {
+            name: 'permissions',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const deleteBodyServices: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'deleteRoleAssignments',
+            httpMethod: 'delete',
+            path: '/roles/{slug}/assignments',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'DeleteRoleAssignmentsRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deleteBodyServices, models: deleteBodyModels };
+    const result = generateResources(deleteBodyServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('body: $body,');
+    expect(result[0].content).toContain("'permissions' => $permissions,");
+  });
+
+  it('generates DELETE method with query params', () => {
+    const deleteQueryServices: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'deleteResource',
+            httpMethod: 'delete',
+            path: '/resources/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [{ name: 'cascade_delete', type: { kind: 'primitive', type: 'boolean' }, required: false }],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deleteQueryServices };
+    const result = generateResources(deleteQueryServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('query: $query,');
+    expect(result[0].content).toContain("'cascade_delete' => $cascadeDelete,");
+  });
+
+  it('generates array response with array_map', () => {
+    const arrayModels: Model[] = [
+      {
+        name: 'ClientSecret',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const arrayServices: Service[] = [
+      {
+        name: 'Applications',
+        operations: [
+          {
+            name: 'listClientSecrets',
+            httpMethod: 'get',
+            path: '/applications/{id}/secrets',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'ClientSecret' } },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: arrayServices, models: arrayModels };
+    const result = generateResources(arrayServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('array_map(fn ($item) => ClientSecret::fromArray($item), $response)');
+  });
+
+  it('disambiguates body field from path param with same name', () => {
+    const collisionModels: Model[] = [
+      {
+        name: 'CreateRolePermissionRequest',
+        fields: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const collisionServices: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'createRolePermissions',
+            httpMethod: 'post',
+            path: '/roles/{slug}/permissions',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateRolePermissionRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: collisionServices, models: collisionModels };
+    const result = generateResources(collisionServices, { ...ctx, spec });
+
+    // Should have both $slug (path) and $bodySlug (body) params
+    expect(result[0].content).toContain('string $slug');
+    expect(result[0].content).toContain('string $bodySlug');
+    expect(result[0].content).toContain("'slug' => $bodySlug,");
+  });
 });

@@ -6,7 +6,7 @@ import { className, fieldName } from './naming.js';
  * Check if a model is a list metadata model (e.g., ListMetadata).
  */
 export function isListMetadataModel(model: Model): boolean {
-  return /^list.?metadata$/i.test(model.name);
+  return /list.?metadata$/i.test(model.name);
 }
 
 /**
@@ -25,7 +25,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   if (models.length === 0) return [];
 
   const files: GeneratedFile[] = [];
-  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
+
+  // Emit shared JsonSerializableTrait once
+  files.push({
+    path: 'lib/Resource/JsonSerializableTrait.php',
+    content: [
+      `namespace ${ctx.namespacePascal}\\Resource;`,
+      '',
+      'trait JsonSerializableTrait',
+      '{',
+      '    public function jsonSerialize(): array',
+      '    {',
+      '        return $this->toArray();',
+      '    }',
+      '}',
+    ].join('\n'),
+    overwriteExisting: true,
+  });
 
   for (const model of models) {
     if (isListMetadataModel(model)) continue;
@@ -39,6 +55,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
     lines.push(`readonly class ${name} implements \\JsonSerializable`);
     lines.push('{');
+    lines.push('    use JsonSerializableTrait;');
+    lines.push('');
 
     // Constructor with promoted properties
     lines.push('    public function __construct(');
@@ -80,7 +98,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpName = fieldName(field.name);
       const wireName = field.name;
       const comma = i < allFields.length - 1 ? ',' : ',';
-      const accessor = generateFromArrayAccessor(field.type, wireName, field.required, modelMap);
+      const accessor = generateFromArrayAccessor(field.type, wireName, field.required);
 
       lines.push(`            ${phpName}: ${accessor}${comma}`);
     }
@@ -101,13 +119,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('        ];');
     lines.push('    }');
 
-    // jsonSerialize
-    lines.push('');
-    lines.push('    public function jsonSerialize(): array');
-    lines.push('    {');
-    lines.push('        return $this->toArray();');
-    lines.push('    }');
-
     lines.push('}');
 
     files.push({
@@ -123,41 +134,34 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 /**
  * Generate the fromArray accessor expression for a field.
  */
-function generateFromArrayAccessor(
-  ref: TypeRef,
-  wireName: string,
-  required: boolean,
-  modelMap: Map<string, Model>,
-): string {
-  if (!required) {
-    // Optional field: use ?? null or isset() for complex types
-    const inner = generateFromArrayValue(ref, `$data['${wireName}']`, modelMap, { insideIsset: true });
-    if (isComplexType(ref)) {
+function generateFromArrayAccessor(ref: TypeRef, wireName: string, required: boolean): string {
+  // For nullable types, always guard with isset() regardless of required flag
+  const isNullable = ref.kind === 'nullable';
+  if (!required || isNullable) {
+    const innerRef = isNullable ? ref.inner : ref;
+    const inner = generateFromArrayValue(innerRef, `$data['${wireName}']`);
+    if (isComplexType(innerRef)) {
       return `isset($data['${wireName}']) ? ${inner} : null`;
+    }
+    if (isNullable) {
+      return `$data['${wireName}'] ?? null`;
     }
     return `$data['${wireName}'] ?? null`;
   }
   // Required field: access directly
-  return generateFromArrayValue(ref, `$data['${wireName}']`, modelMap, { insideIsset: false });
+  return generateFromArrayValue(ref, `$data['${wireName}']`);
 }
 
 /**
  * Generate the fromArray value expression for a type.
  */
-function generateFromArrayValue(
-  ref: TypeRef,
-  accessor: string,
-  _modelMap: Map<string, Model>,
-  opts: { insideIsset: boolean } = { insideIsset: false },
-): string {
+function generateFromArrayValue(ref: TypeRef, accessor: string): string {
   switch (ref.kind) {
     case 'primitive':
       if (ref.format === 'date-time') {
-        // Inside isset(), the value is guaranteed non-null — no fallback needed.
-        // Outside isset(), use ?? 'now' to handle null gracefully.
-        return opts.insideIsset
-          ? `new \\DateTimeImmutable(${accessor})`
-          : `new \\DateTimeImmutable(${accessor} ?? 'now')`;
+        // Always access directly — nullable fields are already guarded by isset() in
+        // generateFromArrayAccessor(). Required fields should error if missing.
+        return `new \\DateTimeImmutable(${accessor})`;
       }
       return accessor;
     case 'model': {
@@ -166,7 +170,7 @@ function generateFromArrayValue(
     }
     case 'enum': {
       const name = className(ref.name);
-      return `${name}::tryFrom(${accessor}) ?? ${accessor}`;
+      return `${name}::from(${accessor})`;
     }
     case 'array':
       if (ref.items.kind === 'model') {
@@ -175,7 +179,7 @@ function generateFromArrayValue(
       }
       return accessor;
     case 'nullable':
-      return generateFromArrayValue(ref.inner, accessor, _modelMap, opts);
+      return generateFromArrayValue(ref.inner, accessor);
     case 'union':
       return accessor;
     case 'map':

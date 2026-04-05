@@ -52,29 +52,32 @@ function emitWrapperMethod(
   const responseType = op.response.kind === 'model' ? `\\${ns}\\Resource\\${className(op.response.name)}` : 'mixed';
   lines.push(`    ): ${responseType} {`);
 
-  // Build body
-  lines.push('        $body = [];');
+  // Build body using array_filter for consistency
+  const bodyEntries: string[] = [];
 
-  // Defaults
+  // Defaults (always included)
   if (wrapper.defaults) {
     for (const [key, value] of Object.entries(wrapper.defaults)) {
-      lines.push(`        $body['${key}'] = ${phpLiteral(value)};`);
+      bodyEntries.push(`'${key}' => ${phpLiteral(value)}`);
     }
-  }
-
-  // Inferred from client
-  for (const clientField of wrapper.inferFromClient ?? []) {
-    const clientExpr = clientFieldExpression(clientField);
-    lines.push(`        if (${clientExpr} !== null) {`);
-    lines.push(`            $body['${clientField}'] = ${clientExpr};`);
-    lines.push('        }');
   }
 
   // Exposed params
   for (const paramName of wrapper.exposedParams) {
-    const phpName = fieldName(paramName);
-    lines.push(`        if ($${phpName} !== null) {`);
-    lines.push(`            $body['${paramName}'] = $${phpName};`);
+    bodyEntries.push(`'${paramName}' => $${fieldName(paramName)}`);
+  }
+
+  lines.push('        $body = array_filter([');
+  for (const entry of bodyEntries) {
+    lines.push(`            ${entry},`);
+  }
+  lines.push('        ], fn ($v) => $v !== null);');
+
+  // inferFromClient fields need special handling (conditional injection)
+  for (const clientField of wrapper.inferFromClient ?? []) {
+    const clientExpr = clientFieldExpression(clientField);
+    lines.push(`        if (${clientExpr} !== null) {`);
+    lines.push(`            $body['${clientField}'] = ${clientExpr};`);
     lines.push('        }');
   }
 
