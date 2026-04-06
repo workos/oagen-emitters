@@ -3,6 +3,7 @@ import { toCamelCase } from '@workos/oagen';
 import { nodeEmitter } from './src/node/index.js';
 import { pythonEmitter } from './src/python/index.js';
 import { phpEmitter } from './src/php/index.js';
+import { goEmitter } from './src/go/index.js';
 import { nodeExtractor } from './src/compat/extractors/node.js';
 import { rubyExtractor } from './src/compat/extractors/ruby.js';
 import { pythonExtractor } from './src/compat/extractors/python.js';
@@ -211,7 +212,7 @@ const mountRules: Record<string, string> = {
 };
 
 const config: OagenConfig = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter],
+  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter],
   extractors: [
     nodeExtractor,
     rubyExtractor,

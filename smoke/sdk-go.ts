@@ -141,6 +141,43 @@ function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
 }
 
 // ---------------------------------------------------------------------------
+// Accessor map -- discover actual method names from the generated workos.go
+// ---------------------------------------------------------------------------
+
+function buildAccessorMap(sdkPath: string): Map<string, string> {
+  const map = new Map<string, string>();
+  // Find the main workos.go or *.go file that has Client methods
+  const candidates = ['workos.go'];
+  for (const fname of candidates) {
+    const fpath = resolve(sdkPath, fname);
+    if (!existsSync(fpath)) continue;
+    const content = readFileSync(fpath, 'utf-8');
+    // Match: func (c *Client) ServiceName() *serviceNameService {
+    const re = /func \(c \*Client\) (\w+)\(\)/g;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const accessor = m[1];
+      // Map by lowercase key for case-insensitive matching
+      map.set(accessor.toLowerCase(), accessor);
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolve the Go service accessor name from the manifest service name.
+ * Uses the accessor map (built from the generated SDK) for exact matching.
+ * Falls back to PascalCase for services not found in the map.
+ */
+function resolveAccessorName(manifestService: string, accessorMap: Map<string, string>): string {
+  // Try case-insensitive lookup: "sso" -> "SSO", "api_keys" -> "ApiKeys"
+  const pascalized = toPascalCase(manifestService);
+  const found = accessorMap.get(pascalized.toLowerCase());
+  if (found) return found;
+  return pascalized;
+}
+
+// ---------------------------------------------------------------------------
 // Method resolution
 // ---------------------------------------------------------------------------
 
@@ -345,15 +382,16 @@ function detectModulePath(sdkPath: string): string {
     const match = goMod.match(/^module\s+(\S+)/m);
     if (match) return match[1];
   }
-  return 'github.com/workos/workos-go/v4';
+  return 'github.com/workos/workos-go/v2';
 }
 
 function generateGoImports(
   modulePath: string,
-  servicePackages: Set<string>,
+  _servicePackages: Set<string>,
   needsJson: boolean,
-  needsServicePkg: boolean,
+  _needsServicePkg: boolean,
 ): string {
+  // New emitter: flat package -- everything lives in the root module, no sub-packages.
   const lines: string[] = [];
   lines.push('import (');
   lines.push('\t"context"');
@@ -363,20 +401,21 @@ function generateGoImports(
   lines.push('\t"fmt"');
   lines.push('\t"os"');
   lines.push('');
-  lines.push(`\tworkos "${modulePath}/pkg"`);
-  if (needsServicePkg) {
-    for (const pkg of [...servicePackages].sort()) {
-      lines.push(`\t"${modulePath}/pkg/${pkg}"`);
-    }
-  }
+  lines.push(`\t"${modulePath}"`);
   lines.push(')');
   return lines.join('\n');
 }
 
-function generateGoPayloadStruct(payload: Record<string, unknown>, optsType: string, servicePackage: string): string {
+function generateGoPayloadStruct(payload: Record<string, unknown>, paramsType: string): string {
+  // New emitter: all types in root workos package, params are pointers.
+  // Skip nested objects, arrays, and nil values since Go requires typed structs
+  // and primitive fields can't be nil.
   const lines: string[] = [];
-  lines.push(`${servicePackage}.${optsType}{`);
+  lines.push(`&workos.${paramsType}{`);
   for (const [key, value] of Object.entries(payload)) {
+    // Skip nil, nested objects, and arrays
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'object') continue;
     const goField = goFieldName(key);
     lines.push(`\t\t${goField}: ${goLiteral(value)},`);
   }
@@ -414,9 +453,9 @@ function generateGoCallBlock(
   pathParams: Record<string, string>,
   spec: any,
   callIndex: number,
+  accessorMap: Map<string, string>,
 ): string {
   const lines: string[] = [];
-  const servicePackage = goServicePackageName(resolution.service);
   const method = resolution.method;
 
   // Build arguments
@@ -427,52 +466,63 @@ function generateGoCallBlock(
     args.push(`"${pathParams[p.name] || ''}"`);
   }
 
-  // Request body opts struct
+  // Build service-prefixed params struct name (matches emitter's paramsStructName)
+  const servicePrefix = goExportedName(resolution.service);
+  const paramsTypeName = method.startsWith(servicePrefix) ? `${method}Params` : `${servicePrefix}${method}Params`;
+
+  // Request body params struct (emitter uses &workos.{ServicePrefix}{Method}Params{...})
+  const hasQueryParams = op.queryParams && op.queryParams.length > 0;
   if (op.requestBody) {
     const payload = generatePayload(op, spec);
     if (payload && Object.keys(payload).length > 0) {
-      const optsType = `${method}Opts`;
-      args.push(generateGoPayloadStruct(payload, optsType, servicePackage));
-    }
-  }
-
-  // Paginated operations: pass opts with Limit=1
-  if (op.pagination && !op.requestBody) {
-    const extraParams = op.queryParams.filter((p: any) => !['limit', 'before', 'after', 'order'].includes(p.name));
-    if (extraParams.length > 0) {
-      // Match the emitter convention: List → ListFilterOpts, others → ${method}Opts
-      const optsType = method === 'List' ? 'ListFilterOpts' : `${method}Opts`;
-      args.push(`${servicePackage}.${optsType}{Limit: 1}`);
+      args.push(generateGoPayloadStruct(payload, paramsTypeName));
     } else {
-      args.push(`${servicePackage}.ListOpts{Limit: 1}`);
+      // Even with empty payload, the method signature requires the params arg
+      args.push(`&workos.${paramsTypeName}{}`);
     }
+  } else if (op.pagination || hasQueryParams) {
+    // Paginated or query-param operations need a params struct
+    args.push(`&workos.${paramsTypeName}{}`);
   }
 
-  // Determine the service accessor on the client
-  const serviceProp = goExportedName(resolution.service);
+  // Service accessor: resolve from the generated SDK's actual accessor names
+  const serviceProp = resolveAccessorName(resolution.service, accessorMap);
 
   lines.push(`\t// Call ${callIndex}: ${op.httpMethod.toUpperCase()} ${op.path}`);
   lines.push(`\tfmt.Fprintf(os.Stderr, "CALL_START:${callIndex}\\n")`);
 
-  // Determine return type: paginated and GET-with-response return (result, error),
-  // DELETE returns just error
+  // Determine return type: paginated returns Iterator, DELETE and void/redirect return just error
   const isDelete = op.httpMethod === 'delete';
-  const hasResponse = !isDelete;
+  const isPaginated = !!op.pagination;
+  const isVoidResponse =
+    !isPaginated &&
+    !isDelete &&
+    ((op.response.kind === 'primitive' && (op.response as any).type === 'unknown') ||
+      (op.successResponses && op.successResponses.some((r: any) => r.statusCode >= 300 && r.statusCode < 400)));
 
-  if (hasResponse) {
-    lines.push(`\tresult${callIndex}, err${callIndex} := client.${serviceProp}.${method}(${args.join(', ')})`);
+  if (isPaginated) {
+    // Iterator-based: call Next() once to trigger the first HTTP request
+    lines.push(`\titer${callIndex} := client.${serviceProp}().${method}(${args.join(', ')})`);
+    lines.push(`\titer${callIndex}.Next()`);
+    lines.push(`\tif err${callIndex} := iter${callIndex}.Err(); err${callIndex} != nil {`);
+    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_ERROR:${callIndex}:%s\\n", err${callIndex}.Error())`);
+    lines.push('\t} else {');
+    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_OK:${callIndex}:\\n")`);
+    lines.push('\t}');
+  } else if (isDelete || isVoidResponse) {
+    lines.push(`\terr${callIndex} := client.${serviceProp}().${method}(${args.join(', ')})`);
+    lines.push(`\tif err${callIndex} != nil {`);
+    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_ERROR:${callIndex}:%s\\n", err${callIndex}.Error())`);
+    lines.push('\t} else {');
+    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_OK:${callIndex}:\\n")`);
+    lines.push('\t}');
+  } else {
+    lines.push(`\tresult${callIndex}, err${callIndex} := client.${serviceProp}().${method}(${args.join(', ')})`);
     lines.push(`\tif err${callIndex} != nil {`);
     lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_ERROR:${callIndex}:%s\\n", err${callIndex}.Error())`);
     lines.push('\t} else {');
     lines.push(`\t\tjsonResult${callIndex}, _ := json.Marshal(result${callIndex})`);
     lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_OK:${callIndex}:%s\\n", string(jsonResult${callIndex}))`);
-    lines.push('\t}');
-  } else {
-    lines.push(`\terr${callIndex} := client.${serviceProp}.${method}(${args.join(', ')})`);
-    lines.push(`\tif err${callIndex} != nil {`);
-    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_ERROR:${callIndex}:%s\\n", err${callIndex}.Error())`);
-    lines.push('\t} else {');
-    lines.push(`\t\tfmt.Fprintf(os.Stderr, "CALL_OK:${callIndex}:\\n")`);
     lines.push('\t}');
   }
 
@@ -522,6 +572,11 @@ async function main(): Promise<void> {
 
   // Load manifest
   const manifest = loadManifest(sdkPath);
+
+  // Build accessor name map by scanning the generated workos.go for
+  // `func (c *Client) XxxYyy()` patterns, then matching them to manifest
+  // service names via case-insensitive comparison.
+  const accessorMap = buildAccessorMap(sdkPath);
 
   const baseUrl = process.env.WORKOS_BASE_URL || spec.baseUrl;
 
@@ -633,7 +688,7 @@ async function main(): Promise<void> {
       // Generate all call blocks for this wave
       const callBlocks: string[] = [];
       for (const call of plannedCalls) {
-        callBlocks.push(generateGoCallBlock(call.op, call.resolution, call.pathParams, spec, call.index));
+        callBlocks.push(generateGoCallBlock(call.op, call.resolution, call.pathParams, spec, call.index, accessorMap));
       }
 
       const imports = generateGoImports(modulePath, servicePackages, needsJson, needsServicePkg);
@@ -644,7 +699,7 @@ async function main(): Promise<void> {
         imports,
         '',
         'func main() {',
-        `\tclient := workos.NewClient("${apiKey}", workos.WithEndpoint("http://127.0.0.1:${proxyPort}"))`,
+        `\tclient := workos.NewClient("${apiKey}", workos.WithBaseURL("http://127.0.0.1:${proxyPort}"))`,
         '\tctx := context.Background()',
         '',
         ...callBlocks,
@@ -660,8 +715,10 @@ async function main(): Promise<void> {
 
       // Step 1: Build (sync — no proxy needed during compilation)
       let buildError: string | null = null;
+
+      // Run go mod tidy first to resolve dependencies
       try {
-        execSync('go build -o smoke-driver main.go', {
+        execSync('go mod tidy', {
           cwd: tmpDir,
           timeout: 120_000,
           env: {
@@ -673,8 +730,25 @@ async function main(): Promise<void> {
         });
       } catch (err: any) {
         const stderr = typeof err.stderr === 'string' ? err.stderr : '';
-        buildError = stderr.trim().split('\n').slice(0, 5).join(' ') || 'go build failed';
+        buildError = `go mod tidy failed: ${stderr.trim().split('\n').slice(0, 3).join(' ')}`;
       }
+
+      if (!buildError)
+        try {
+          execSync('go build -o smoke-driver main.go', {
+            cwd: tmpDir,
+            timeout: 120_000,
+            env: {
+              ...process.env,
+              GOPATH: process.env.GOPATH || resolve(process.env.HOME || '~', 'go'),
+            },
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+        } catch (err: any) {
+          const stderr = typeof err.stderr === 'string' ? err.stderr : '';
+          buildError = stderr.trim().split('\n').slice(0, 5).join(' ') || 'go build failed';
+        }
 
       if (buildError) {
         // Build failure affects entire wave
