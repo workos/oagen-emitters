@@ -365,4 +365,165 @@ describe('generateResources', () => {
     expect(content).toContain('idempotency_key: Optional[str] = None,');
     expect(content).toContain('idempotency_key=idempotency_key,');
   });
+
+  it('adds deprecated annotation to operations', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Docstring should contain .. deprecated::
+    expect(content).toContain('.. deprecated::');
+    expect(content).toContain('This operation is deprecated.');
+
+    // Body should contain warnings.warn
+    expect(content).toContain('warnings.warn("get_organization is deprecated", DeprecationWarning, stacklevel=2)');
+
+    // Import warnings should be present
+    expect(content).toContain('import warnings');
+  });
+
+  it('does not import warnings when no operations are deprecated', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+    expect(content).not.toContain('import warnings');
+  });
+
+  it('marks deprecated parameters with (deprecated) prefix in Args docstring', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'UpdateOrgRequest',
+        fields: [
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+            description: 'Legacy field',
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+                description: 'The org ID',
+              },
+            ],
+            queryParams: [
+              {
+                name: 'legacy_param',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                deprecated: true,
+              },
+            ],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateOrgRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Deprecated path param with description
+    expect(content).toContain('id: (deprecated) The org ID');
+
+    // Deprecated body field with description
+    expect(content).toContain('old_field: (deprecated) Legacy field');
+
+    // Deprecated query param without description
+    expect(content).toContain('legacy_param: (deprecated)');
+  });
 });
