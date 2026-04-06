@@ -1,10 +1,10 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
-import { fileName, resolveMethodName } from './naming.js';
+import { fileName, resolveMethodName, methodName as goMethodName } from './naming.js';
 import { resolveResourceClassName, paramsStructName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
-import { groupByMount } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -96,9 +96,6 @@ function generateServiceTest(
     const method = resolveGoMethodName(op, resolvedName, ctx);
     const isPaginated = plan.isPaginated;
     const isDelete = plan.isDelete;
-
-    // Skip redirect endpoints
-    if (isRedirectEndpoint(op)) continue;
 
     // Skip duplicate method names (same dedup as resources.ts)
     if (emittedTestMethods.has(method)) continue;
@@ -208,6 +205,43 @@ function generateServiceTest(
     }
   }
 
+  // Generate tests for union split wrapper methods (e.g., AuthenticateWithPassword)
+  const resolvedLookup = buildResolvedLookup(ctx);
+  for (const op of service.operations) {
+    const resolved = lookupResolved(op, resolvedLookup);
+    if (!resolved?.wrappers || resolved.wrappers.length === 0) continue;
+
+    for (const wrapper of resolved.wrappers) {
+      const wrapperMethod = goMethodName(wrapper.name);
+      if (emittedTestMethods.has(wrapperMethod)) continue;
+      emittedTestMethods.add(wrapperMethod);
+
+      const wrapperParamsStruct = `${wrapperMethod}Params`;
+      const responseType = wrapper.responseModelName;
+      const testName = `Test${accessorName}_${wrapperMethod}`;
+      const fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
+
+      const wrapperCallArgs: string[] = ['context.Background()'];
+      for (const p of op.pathParams) {
+        wrapperCallArgs.push(`"test_${p.name}"`);
+      }
+      wrapperCallArgs.push(`&${ctx.namespace}.${wrapperParamsStruct}{}`);
+
+      lines.push(
+        ...generateWrapperTestLines(
+          testName,
+          accessorName,
+          wrapperMethod,
+          op.httpMethod.toUpperCase(),
+          fixturePath,
+          wrapperCallArgs.join(', '),
+          responseType,
+          ctx.namespace,
+        ),
+      );
+    }
+  }
+
   // Error test (one per file: 401)
   const sampleOp = service.operations[0];
   if (sampleOp) {
@@ -271,15 +305,47 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   return args.join(', ');
 }
 
-function isRedirectEndpoint(op: Operation): boolean {
-  if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) return true;
-  if (
-    op.httpMethod === 'get' &&
-    op.response.kind === 'primitive' &&
-    (op.response as any).type === 'unknown' &&
-    op.queryParams.length > 0
-  ) {
-    return true;
+function generateWrapperTestLines(
+  testName: string,
+  accessorName: string,
+  wrapperMethod: string,
+  httpMethod: string,
+  fixturePath: string | null,
+  callArgs: string,
+  responseType: string | null,
+  namespace: string,
+): string[] {
+  const lines: string[] = [];
+  const serverHandler = [
+    '\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {',
+    `\t\trequire.Equal(t, "${httpMethod}", r.Method)`,
+    '\t\tw.Header().Set("Content-Type", "application/json")',
+    '\t\tw.WriteHeader(http.StatusOK)',
+  ];
+  if (fixturePath) {
+    serverHandler.push(`\t\tfixture, _ := os.ReadFile("${fixturePath}")`);
+    serverHandler.push('\t\tw.Write(fixture)');
+  } else {
+    serverHandler.push('\t\tw.Write([]byte(`{}`))');
   }
-  return false;
+  serverHandler.push('\t}))');
+
+  lines.push(`func ${testName}(t *testing.T) {`);
+  lines.push(...serverHandler);
+  lines.push('\tdefer server.Close()');
+  lines.push('');
+  lines.push(`\tclient := ${namespace}.NewClient("sk_test", ${namespace}.WithBaseURL(server.URL))`);
+
+  if (responseType) {
+    lines.push(`\tresult, err := client.${accessorName}().${wrapperMethod}(${callArgs})`);
+    lines.push('\trequire.NoError(t, err)');
+    lines.push('\trequire.NotNil(t, result)');
+  } else {
+    lines.push(`\terr := client.${accessorName}().${wrapperMethod}(${callArgs})`);
+    lines.push('\trequire.NoError(t, err)');
+  }
+
+  lines.push('}');
+  lines.push('');
+  return lines;
 }
