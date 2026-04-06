@@ -3,7 +3,8 @@ import { planOperation, toSnakeCase } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
 import { mapTypeRef, mapTypeRefValue } from './type-map.js';
 import { className, fieldName, methodName, resolveClassName } from './naming.js';
-import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import { generateWrapperMethods } from './wrappers.js';
 
 /**
  * Resolve the resource class name for a service.
@@ -85,6 +86,17 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     const methodCode = generateMethod(serviceType, mountName, method, op, plan, ctx);
     lines.push(methodCode);
     lines.push('');
+
+    // Generate union split wrapper methods (e.g., AuthenticateWithPassword)
+    const resolvedLookup = buildResolvedLookup(ctx);
+    const resolved = lookupResolved(op, resolvedLookup);
+    if (resolved?.wrappers && resolved.wrappers.length > 0) {
+      const wrapperLines = generateWrapperMethods(serviceType, resolved, ctx);
+      lines.push(...wrapperLines);
+      for (const w of resolved.wrappers) {
+        emittedMethods.add(methodName(w.name));
+      }
+    }
   }
 
   return {
@@ -103,7 +115,7 @@ function resolveGoMethodName(op: Operation, ctx: EmitterContext): string {
   return methodName(op.name);
 }
 
-function paramsStructName(mountName: string, method: string): string {
+export function paramsStructName(mountName: string, method: string): string {
   // Prefix with mount name to avoid cross-file collisions in flat package
   const prefix = className(mountName);
   // If method already starts with the mount name, don't double-prefix

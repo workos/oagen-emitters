@@ -101,6 +101,11 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   lines.push('\treturn func(c *Client) { c.maxRetries = n }');
   lines.push('}');
   lines.push('');
+  lines.push('// WithClientID sets the client ID (used for authentication flows).');
+  lines.push('func WithClientID(id string) ClientOption {');
+  lines.push('\treturn func(c *Client) { c.clientID = id }');
+  lines.push('}');
+  lines.push('');
 
   // RequestOption type
   lines.push('// RequestOption configures a single API request.');
@@ -143,10 +148,11 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Client struct
   lines.push('// Client is the WorkOS API client.');
   lines.push('type Client struct {');
-  lines.push('\tapiKey     string');
-  lines.push('\tbaseURL    string');
-  lines.push('\thttpClient *http.Client');
-  lines.push('\tmaxRetries int');
+  lines.push('\tapiKey       string');
+  lines.push('\tclientID     string');
+  lines.push('\tbaseURL      string');
+  lines.push('\thttpClient   *http.Client');
+  lines.push('\tmaxRetries   int');
   lines.push('');
   // Service fields
   for (const service of topLevel) {
@@ -558,6 +564,7 @@ function generateGoMod(_ctx: EmitterContext): GeneratedFile {
     path: 'go.mod',
     content: lines.join('\n'),
     headerPlacement: 'skip',
+    skipIfExists: true,
   };
 }
 

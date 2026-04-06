@@ -1,10 +1,27 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
 import { fileName, resolveMethodName } from './naming.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, paramsStructName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
 import { groupByMount } from '../shared/resolved-ops.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const DEFAULT_MODULE_PATH = 'github.com/workos/workos-go/v2';
+
+/** Resolve the Go module path from the output directory's go.mod, or use default. */
+function resolveModulePath(ctx: EmitterContext): string {
+  if (ctx.outputDir) {
+    const goModPath = resolve(ctx.outputDir, 'go.mod');
+    if (existsSync(goModPath)) {
+      const content = readFileSync(goModPath, 'utf-8');
+      const match = content.match(/^module\s+(\S+)/m);
+      if (match) return match[1];
+    }
+  }
+  return DEFAULT_MODULE_PATH;
+}
 
 /**
  * Generate Go test files and JSON fixtures.
@@ -67,11 +84,13 @@ function generateServiceTest(
   lines.push('\t"os"');
   lines.push('\t"testing"');
   lines.push('');
-  lines.push(`\t"github.com/workos/workos-go/v2"`);
+  lines.push(`\t"${resolveModulePath(ctx)}"`);
   lines.push('\t"github.com/stretchr/testify/require"');
   lines.push(')');
   lines.push('');
 
+  // Deduplicate test functions by method name
+  const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
     const method = resolveGoMethodName(op, ctx);
@@ -80,6 +99,10 @@ function generateServiceTest(
 
     // Skip redirect endpoints
     if (isRedirectEndpoint(op)) continue;
+
+    // Skip duplicate method names (same dedup as resources.ts)
+    if (emittedTestMethods.has(method)) continue;
+    emittedTestMethods.add(method);
 
     const testName = `Test${accessorName}_${method}`;
 
@@ -106,7 +129,7 @@ function generateServiceTest(
       lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
 
       // Build method call
-      const callArgs = buildMethodCallArgs(op, plan, ctx);
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\titer := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NotNil(t, iter)');
       lines.push('}');
@@ -138,7 +161,7 @@ function generateServiceTest(
       lines.push('');
       lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
 
-      const callArgs = buildMethodCallArgs(op, plan, ctx);
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\terr := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NoError(t, err)');
       lines.push('}');
@@ -160,7 +183,7 @@ function generateServiceTest(
       lines.push('');
       lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
 
-      const callArgs = buildMethodCallArgs(op, plan, ctx);
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\tresult, err := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NoError(t, err)');
       lines.push('\trequire.NotNil(t, result)');
@@ -177,7 +200,7 @@ function generateServiceTest(
       lines.push('');
       lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
 
-      const callArgs = buildMethodCallArgs(op, plan, ctx);
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\terr := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NoError(t, err)');
       lines.push('}');
@@ -190,7 +213,7 @@ function generateServiceTest(
   if (sampleOp) {
     const plan = planOperation(sampleOp);
     const method = resolveGoMethodName(sampleOp, ctx);
-    const callArgs = buildMethodCallArgs(sampleOp, plan, ctx);
+    const callArgs = buildMethodCallArgs(sampleOp, plan, ctx, resolvedName);
 
     lines.push(`func Test${accessorName}_Error401(t *testing.T) {`);
     lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
@@ -227,7 +250,7 @@ function resolveGoMethodName(op: Operation, ctx: EmitterContext): string {
   return resolveMethodName(op, { name: '', operations: [] }, ctx);
 }
 
-function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext): string {
+function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
   const args: string[] = ['context.Background()'];
 
   // Path params
@@ -235,12 +258,13 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext): str
     args.push(`"test_${p.name}"`);
   }
 
-  // Params struct if needed
+  // Params struct if needed (uses service-prefixed name matching resources.ts)
   const hasQueryParams = op.queryParams.length > 0;
   const hasBody = plan.hasBody && op.requestBody;
   if (hasBody || hasQueryParams) {
     const method = resolveGoMethodName(op, ctx);
-    args.push(`&${ctx.namespace}.${method}Params{}`);
+    const pName = paramsStructName(mountName, method);
+    args.push(`&${ctx.namespace}.${pName}{}`);
   }
 
   return args.join(', ');
