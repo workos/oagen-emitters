@@ -14,8 +14,16 @@ import {
   isListMetadataModel,
   isListWrapperModel,
   buildDeduplicationMap,
+  relativeImport,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
+import {
+  renderSerializerTypeParams,
+  buildSerializerImports,
+  buildSkipFormatFields,
+  shouldSkipSerializeForModel,
+  emitSerializerBody,
+} from './field-plan.js';
 
 /**
  * Detect baseline interfaces that are generic (have type parameters) even though
@@ -58,26 +66,21 @@ function enrichGenericDefaultsFromBaseline(
   }
 }
 
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+export function generateModels(models: Model[], ctx: EmitterContext, shared?: SharedModelContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
-  // Detect whether the existing SDK uses string dates (ISO 8601) rather than Date objects.
-  // When detected, newly generated models also use string to maintain consistency.
-  const useStringDates = detectStringDateConvention(models, ctx);
-  const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
-  // Enrich genericDefaults from baseline interfaces that appear to be generic.
-  // The IR doesn't carry typeParams for models parsed from OpenAPI (which has no
-  // generics), but the existing SDK may have hand-written generic interfaces
-  // (e.g., Profile<CustomAttributesType>).  Detect these by checking if any
-  // field type contains a PascalCase name that isn't a known model, enum, or builtin.
-  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
+  const {
+    modelToService,
+    resolveDir,
+    useStringDates,
+    dedup: sharedDedup,
+    genericDefaults: sharedDefaults,
+  } = shared ?? buildSharedContext(models, ctx);
+  const genericDefaults = sharedDefaults;
   const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
-
-  // Detect structurally identical or same-name models — emit type aliases for duplicates
-  const dedup = buildDeduplicationMap(models, ctx);
+  const dedup = sharedDedup;
 
   for (const model of models) {
     // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
@@ -90,14 +93,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // emit a type alias instead of a full interface.
     const canonicalName = dedup.get(model.name);
     if (canonicalName) {
-      const domainName = resolveInterfaceName(model.name, ctx);
-      const responseName = wireInterfaceName(domainName);
-      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
-      const canonResponseName = wireInterfaceName(canonDomainName);
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
       const canonService = modelToService.get(canonicalName);
       const canonDir = resolveDir(canonService);
+
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const responseName = wireInterfaceName(domainName);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const canonResponseName = wireInterfaceName(canonDomainName);
+
+      // After noise suffix stripping (e.g., "OrganizationDto" → "Organization"),
+      // the alias and canonical may resolve to the same file path or the same
+      // type names.  Skip — the canonical file already provides the types.
+      const aliasPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+      const canonPath = `src/${canonDir}/interfaces/${fileName(canonicalName)}.interface.ts`;
+      if (aliasPath === canonPath) continue;
+      if (domainName === canonDomainName) continue;
       const canonRelPath =
         canonDir === dirName
           ? `./${fileName(canonicalName)}.interface`
@@ -109,7 +121,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         `export type ${responseName} = ${canonResponseName};`,
       ];
       files.push({
-        path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
+        path: aliasPath,
         content: aliasLines.join('\n'),
         skipIfExists: true,
       });
@@ -447,4 +459,135 @@ function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): 
     return `${tp.name}${def}`;
   });
   return `<${params.join(', ')}>`;
+}
+
+// ---------------------------------------------------------------------------
+// Shared context — computed once and reused by interface + serializer passes
+// ---------------------------------------------------------------------------
+
+interface SharedModelContext {
+  modelToService: Map<string, string>;
+  resolveDir: (irService: string | undefined) => string;
+  useStringDates: boolean;
+  dedup: Map<string, string>;
+  genericDefaults: Map<string, string>;
+}
+
+function buildSharedContext(models: Model[], ctx: EmitterContext): SharedModelContext {
+  const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
+  const useStringDates = detectStringDateConvention(models, ctx);
+  const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
+  enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
+  const dedup = buildDeduplicationMap(models, ctx);
+  return { modelToService, resolveDir, useStringDates, dedup, genericDefaults };
+}
+
+// ---------------------------------------------------------------------------
+// Serializer file generation (moved from serializers.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate serializer files for all models.
+ * Can accept pre-computed shared context to avoid duplicating work
+ * when called alongside generateModels.
+ */
+export function generateSerializers(
+  models: Model[],
+  ctx: EmitterContext,
+  shared?: SharedModelContext,
+): GeneratedFile[] {
+  if (models.length === 0) return [];
+
+  const { modelToService, resolveDir, useStringDates, dedup } = shared ?? buildSharedContext(models, ctx);
+  const files: GeneratedFile[] = [];
+  const skippedSerializeModels = new Set<string>();
+
+  for (const model of models) {
+    if (isListMetadataModel(model)) continue;
+    if (isListWrapperModel(model)) continue;
+
+    // Deduplication: for structurally identical models, re-export the canonical serializer
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const canonService = modelToService.get(canonicalName);
+      const canonDir = resolveDir(canonService);
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
+      const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+      const canonSerializerPath = `src/${canonDir}/serializers/${fileName(canonicalName)}.serializer.ts`;
+
+      // After noise suffix stripping, alias and canonical may resolve to the
+      // same serializer path or the same function names.  Skip — the canonical
+      // serializer already provides the functions.
+      if (serializerPath === canonSerializerPath) continue;
+      if (domainName === canonDomainName) continue;
+      const rel = relativeImport(serializerPath, canonSerializerPath);
+      files.push({
+        path: serializerPath,
+        content: `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`,
+      });
+      continue;
+    }
+
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const responseName = wireInterfaceName(domainName);
+    const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+    const typeParams = renderSerializerTypeParams(model, ctx);
+    const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
+    const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
+
+    const skipFormatFields = buildSkipFormatFields(model, useStringDates, baselineDomain);
+    const shouldSkipSerialize = shouldSkipSerializeForModel(
+      model,
+      baselineResponse,
+      baselineDomain,
+      dedup,
+      skippedSerializeModels,
+      ctx,
+    );
+    if (shouldSkipSerialize) {
+      skippedSerializeModels.add(model.name);
+    }
+
+    const sctx = { modelToService, resolveDir, useStringDates, dedup, skippedSerializeModels, ctx };
+    const lines = [
+      ...buildSerializerImports(model, serializerPath, dirName, domainName, responseName, sctx),
+      ...emitSerializerBody(
+        model,
+        domainName,
+        responseName,
+        typeParams,
+        baselineDomain,
+        baselineResponse,
+        skipFormatFields,
+        shouldSkipSerialize,
+        ctx,
+      ),
+    ];
+
+    files.push({
+      path: serializerPath,
+      content: pruneUnusedImports(lines).join('\n'),
+    });
+  }
+
+  return files;
+}
+
+// ---------------------------------------------------------------------------
+// Combined generation — single shared context, two output streams
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate both interface files and serializer files in a single pass
+ * with shared context computation.
+ */
+export function generateModelsAndSerializers(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+  if (models.length === 0) return [];
+  const shared = buildSharedContext(models, ctx);
+  return [...generateModels(models, ctx, shared), ...generateSerializers(models, ctx, shared)];
 }

@@ -11,9 +11,8 @@ import type {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { generateModels } from './models.js';
+import { generateModelsAndSerializers } from './models.js';
 import { generateEnums } from './enums.js';
-import { generateSerializers } from './serializers.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateErrors } from './errors.js';
@@ -34,7 +33,7 @@ export const nodeEmitter: Emitter = {
   language: 'node',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines([...generateModels(models, ctx), ...generateSerializers(models, ctx)]);
+    return ensureTrailingNewlines(generateModelsAndSerializers(models, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

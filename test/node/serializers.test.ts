@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateSerializers } from '../../src/node/serializers.js';
+import { generateSerializers } from '../../src/node/models.js';
 import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
