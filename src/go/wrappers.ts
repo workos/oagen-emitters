@@ -1,10 +1,12 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
+import { toSnakeCase } from '@workos/oagen';
 import {
   className as goClassName,
   fieldName as goFieldName,
   methodName as goMethodName,
   unexportedName,
 } from './naming.js';
+import { sortPathParamsByTemplateOrder } from './resources.js';
 
 /**
  * Generate Go wrapper method lines for union split operations.
@@ -44,11 +46,18 @@ function emitWrapperParamsStruct(lines: string[], wrapper: ResolvedWrapper, ctx:
   lines.push(`type ${structName} struct {`);
 
   for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
+    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
     const goField = goFieldName(paramName);
     const goType = field ? resolveSimpleGoType(field.type) : 'string';
     const isOptional = optionalSet.has(paramName) || !field?.required;
 
+    if (field?.description) {
+      const fdLines = field.description.split('\n').filter((l: string) => l.trim());
+      lines.push(`\t// ${goField} is ${lowerFirstField(fdLines[0])}`);
+      for (let i = 1; i < fdLines.length; i++) {
+        lines.push(`\t// ${fdLines[i].trim()}`);
+      }
+    }
     if (isOptional) {
       const optType = goType.startsWith('*') || goType.startsWith('[]') ? goType : `*${goType}`;
       lines.push(`\t${goField} ${optType} \`json:"${paramName},omitempty"\``);
@@ -80,8 +89,8 @@ function emitWrapperMethod(
   // Signature
   const sigParams: string[] = ['ctx context.Context'];
 
-  // Path params as positional args
-  for (const p of op.pathParams) {
+  // Path params as positional args (sorted by template order)
+  for (const p of sortPathParamsByTemplateOrder(op)) {
     sigParams.push(`${lowerFirstSafe(goFieldName(p.name))} ${resolveSimpleGoType(p.type)}`);
   }
 
@@ -108,7 +117,7 @@ function emitWrapperMethod(
   const variantFields = variantModel?.fields ?? [];
 
   for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
+    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
     const goField = goFieldName(paramName);
     if (!optionalSet.has(paramName) && field?.required) {
       lines.push(`\t\t"${paramName}": params.${goField},`);
@@ -128,7 +137,7 @@ function emitWrapperMethod(
   // Optional exposed params
   for (const paramName of wrapper.exposedParams) {
     const goField = goFieldName(paramName);
-    const field = variantFields.find((f) => f.name === paramName);
+    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
     if (optionalSet.has(paramName) || !field?.required) {
       lines.push(`\tif params.${goField} != nil {`);
       lines.push(`\t\tbody["${paramName}"] = *params.${goField}`);
@@ -141,7 +150,7 @@ function emitWrapperMethod(
   if (op.pathParams.length > 0) {
     let fmtStr = op.path;
     const fmtArgs: string[] = [];
-    for (const p of op.pathParams) {
+    for (const p of sortPathParamsByTemplateOrder(op)) {
       fmtStr = fmtStr.replace(`{${p.name}}`, '%s');
       fmtArgs.push(lowerFirstSafe(goFieldName(p.name)));
     }
@@ -209,6 +218,12 @@ function resolveSimpleGoType(ref: any): string {
   if (ref.kind === 'array') return `[]${resolveSimpleGoType(ref.items)}`;
   if (ref.kind === 'model') return `*${goClassName(ref.name)}`;
   if (ref.kind === 'enum') return goClassName(ref.name);
+  if (ref.kind === 'union') {
+    // For oneOf with a single non-null variant, use that variant's type
+    const nonNull = ref.variants.filter((v: any) => v.kind !== 'literal' || v.value !== null);
+    if (nonNull.length === 1) return resolveSimpleGoType(nonNull[0]);
+    return 'interface{}';
+  }
   return 'interface{}';
 }
 
@@ -246,6 +261,11 @@ function lowerFirstSafe(s: string): string {
   const result = unexportedName(s);
   if (GO_RESERVED.has(result)) return `${result}Param`;
   return result;
+}
+
+function lowerFirstField(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toLowerCase() + s.slice(1);
 }
 
 /** Format a snake_case method name into a human-readable description. */

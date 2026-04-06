@@ -1,9 +1,10 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
-import { fileName, resolveMethodName, methodName as goMethodName } from './naming.js';
-import { resolveResourceClassName, paramsStructName } from './resources.js';
+import { fileName, fieldName as goFieldName, resolveMethodName, methodName as goMethodName } from './naming.js';
+import { resolveResourceClassName, paramsStructName, sortPathParamsByTemplateOrder } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
+import { isListWrapperModel } from './models.js';
 import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -105,17 +106,36 @@ function generateServiceTest(
 
     if (isPaginated && op.pagination) {
       // Pagination test
-      // Find the right fixture -- either a list fixture or a model fixture
-      const itemModelName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
-      let fixturePath = itemModelName ? `testdata/list_${fileName(itemModelName)}.json` : null;
+      // Find the right fixture -- apply the same unwrap logic as fixtures.ts
+      let fixturePath: string | null = null;
+      const paginationItemType = op.pagination.itemType;
+      if (paginationItemType.kind === 'model') {
+        const itemModel = spec.models.find((m) => m.name === paginationItemType.name);
+        if (itemModel) {
+          let resolved = itemModel;
+          if (isListWrapperModel(itemModel)) {
+            const dataField = itemModel.fields.find((f) => f.name === 'data');
+            if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+              const inner = spec.models.find((m) => m.name === (dataField.type as any).items.name);
+              if (inner) resolved = inner;
+            }
+          }
+          fixturePath = `testdata/list_${fileName(resolved.name)}.json`;
+        }
+      }
 
+      const expectedPath = buildExpectedPath(op);
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
       lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
+      lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
       lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
       lines.push('\t\tw.WriteHeader(http.StatusOK)');
       if (fixturePath) {
-        lines.push(`\t\tfixture, _ := os.ReadFile("${fixturePath}")`);
+        lines.push(`\t\tfixture, err := os.ReadFile("${fixturePath}")`);
+        lines.push('\t\tif err != nil {');
+        lines.push('\t\t\tt.Fatalf("failed to read fixture: %v", err)');
+        lines.push('\t\t}');
         lines.push('\t\tw.Write(fixture)');
       } else {
         lines.push('\t\tw.Write([]byte(`{"data":[],"list_metadata":{"before":null,"after":null}}`))');
@@ -129,6 +149,12 @@ function generateServiceTest(
       const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\titer := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NotNil(t, iter)');
+      if (fixturePath) {
+        lines.push('\trequire.True(t, iter.Next())');
+        lines.push('\trequire.NoError(t, iter.Err())');
+        lines.push('\titem := iter.Current()');
+        lines.push('\trequire.NotNil(t, item)');
+      }
       lines.push('}');
       lines.push('');
 
@@ -149,9 +175,11 @@ function generateServiceTest(
       lines.push('');
     } else if (isDelete) {
       // Delete test
+      const expectedPath = buildExpectedPath(op);
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
       lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
+      lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
       lines.push('\t\tw.WriteHeader(http.StatusNoContent)');
       lines.push('\t}))');
       lines.push('\tdefer server.Close()');
@@ -166,15 +194,29 @@ function generateServiceTest(
     } else if (plan.responseModelName) {
       // Success test
       const respModel = plan.responseModelName;
+      const isArrayResponse = !isPaginated && op.response?.kind === 'array';
       const fixturePath = `testdata/${fileName(respModel)}.json`;
+      const expectedPath = buildExpectedPath(op);
 
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
       lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
+      lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
       lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
       lines.push('\t\tw.WriteHeader(http.StatusOK)');
-      lines.push(`\t\tfixture, _ := os.ReadFile("${fixturePath}")`);
-      lines.push('\t\tw.Write(fixture)');
+      if (isArrayResponse) {
+        lines.push(`\t\tfixture, err := os.ReadFile("${fixturePath}")`);
+        lines.push('\t\tif err != nil {');
+        lines.push('\t\t\tt.Fatalf("failed to read fixture: %v", err)');
+        lines.push('\t\t}');
+        lines.push('\t\tw.Write([]byte("[" + string(fixture) + "]"))');
+      } else {
+        lines.push(`\t\tfixture, err := os.ReadFile("${fixturePath}")`);
+        lines.push('\t\tif err != nil {');
+        lines.push('\t\t\tt.Fatalf("failed to read fixture: %v", err)');
+        lines.push('\t\t}');
+        lines.push('\t\tw.Write(fixture)');
+      }
       lines.push('\t}))');
       lines.push('\tdefer server.Close()');
       lines.push('');
@@ -183,14 +225,30 @@ function generateServiceTest(
       const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
       lines.push(`\tresult, err := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NoError(t, err)');
-      lines.push('\trequire.NotNil(t, result)');
+      if (isArrayResponse) {
+        lines.push('\trequire.NotEmpty(t, result)');
+      } else {
+        lines.push('\trequire.NotNil(t, result)');
+        // Add field assertion for first required string field
+        const respModelDef = spec.models.find((m) => m.name === respModel);
+        if (respModelDef) {
+          const targetField =
+            respModelDef.fields.find((f) => f.required && f.name === 'id') ||
+            respModelDef.fields.find((f) => f.required && f.type.kind === 'primitive' && f.type.type === 'string');
+          if (targetField) {
+            lines.push(`\trequire.NotEmpty(t, result.${goFieldName(targetField.name)})`);
+          }
+        }
+      }
       lines.push('}');
       lines.push('');
     } else {
       // Void response test
+      const expectedPath = buildExpectedPath(op);
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
       lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
+      lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
       lines.push('\t\tw.WriteHeader(http.StatusOK)');
       lines.push('\t}))');
       lines.push('\tdefer server.Close()');
@@ -222,7 +280,7 @@ function generateServiceTest(
       const fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
 
       const wrapperCallArgs: string[] = ['context.Background()'];
-      for (const p of op.pathParams) {
+      for (const p of sortPathParamsByTemplateOrder(op)) {
         wrapperCallArgs.push(`"test_${p.name}"`);
       }
       wrapperCallArgs.push(`&${ctx.namespace}.${wrapperParamsStruct}{}`);
@@ -233,6 +291,7 @@ function generateServiceTest(
           accessorName,
           wrapperMethod,
           op.httpMethod.toUpperCase(),
+          buildExpectedPath(op),
           fixturePath,
           wrapperCallArgs.join(', '),
           responseType,
@@ -288,8 +347,8 @@ function resolveGoMethodName(op: Operation, mountName: string, ctx: EmitterConte
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
   const args: string[] = ['context.Background()'];
 
-  // Path params
-  for (const p of op.pathParams) {
+  // Path params (sorted by template order)
+  for (const p of sortPathParamsByTemplateOrder(op)) {
     args.push(`"test_${p.name}"`);
   }
 
@@ -305,11 +364,21 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   return args.join(', ');
 }
 
+/** Build the expected URL path with test placeholder values. */
+function buildExpectedPath(op: Operation): string {
+  let expected = op.path;
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    expected = expected.replace(`{${p.name}}`, `test_${p.name}`);
+  }
+  return expected;
+}
+
 function generateWrapperTestLines(
   testName: string,
   accessorName: string,
   wrapperMethod: string,
   httpMethod: string,
+  expectedPath: string,
   fixturePath: string | null,
   callArgs: string,
   responseType: string | null,
@@ -319,11 +388,15 @@ function generateWrapperTestLines(
   const serverHandler = [
     '\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {',
     `\t\trequire.Equal(t, "${httpMethod}", r.Method)`,
+    `\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`,
     '\t\tw.Header().Set("Content-Type", "application/json")',
     '\t\tw.WriteHeader(http.StatusOK)',
   ];
   if (fixturePath) {
-    serverHandler.push(`\t\tfixture, _ := os.ReadFile("${fixturePath}")`);
+    serverHandler.push(`\t\tfixture, err := os.ReadFile("${fixturePath}")`);
+    serverHandler.push('\t\tif err != nil {');
+    serverHandler.push('\t\t\tt.Fatalf("failed to read fixture: %v", err)');
+    serverHandler.push('\t\t}');
     serverHandler.push('\t\tw.Write(fixture)');
   } else {
     serverHandler.push('\t\tw.Write([]byte(`{}`))');

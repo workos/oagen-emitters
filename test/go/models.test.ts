@@ -189,6 +189,42 @@ describe('go/models', () => {
     expect(content).toContain('URI string `json:"uri"`');
   });
 
+  it('emits Deprecated comments for deprecated fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Widget',
+        fields: [
+          {
+            name: 'old_name',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description: 'The original name.',
+            deprecated: true,
+          },
+          {
+            name: 'legacy_id',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+          },
+          {
+            name: 'current_name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ];
+    const files = generateModels(models, ctx);
+    const content = files[0].content;
+    // deprecated field WITH description gets separator + Deprecated
+    expect(content).toContain('\t// OldName is the original name.\n\t//\n\t// Deprecated: this field is deprecated.');
+    // deprecated field WITHOUT description gets Deprecated only (no separator)
+    expect(content).toContain('\t// Deprecated: this field is deprecated.\n\tLegacyID');
+    // non-deprecated field does NOT get Deprecated
+    expect(content).not.toMatch(/Deprecated.*\n\tCurrentName/);
+  });
+
   it('snapshot: Organization struct', () => {
     const models: Model[] = [
       {

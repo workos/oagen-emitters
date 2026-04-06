@@ -95,6 +95,29 @@ describe('go/enums', () => {
     `);
   });
 
+  it('emits Deprecated comments for deprecated enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'WidgetStatus',
+        values: [
+          { name: 'ACTIVE', value: 'active', description: 'Currently active', deprecated: true },
+          { name: 'LEGACY', value: 'legacy', deprecated: true },
+          { name: 'CURRENT', value: 'current' },
+        ],
+      },
+    ];
+    const files = generateEnums(enums, ctx);
+    const content = files[0].content;
+    // deprecated value WITH description gets separator + Deprecated
+    expect(content).toContain(
+      '\t// WidgetStatusActive is Currently active.\n\t//\n\t// Deprecated: this value is deprecated.',
+    );
+    // deprecated value WITHOUT description gets Deprecated only
+    expect(content).toContain('\t// Deprecated: this value is deprecated.\n\tWidgetStatusLegacy');
+    // non-deprecated value does NOT get Deprecated
+    expect(content).not.toMatch(/Deprecated.*\n\tWidgetStatusCurrent/);
+  });
+
   it('uses Go acronym conventions for enum type names', () => {
     const enums: Enum[] = [
       {

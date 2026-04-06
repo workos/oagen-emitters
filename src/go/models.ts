@@ -45,9 +45,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   // Pick canonical for each duplicate group
+  // Never alias empty structs — they are usually placeholder models from
+  // different contexts (e.g., oneOf variants) and should remain distinct.
   const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
+  for (const [hash, names] of hashGroups) {
     if (names.length <= 1) continue;
+    // Skip dedup for empty structs (hash is empty string when no fields)
+    if (hash === '') continue;
     const sorted = [...names].sort();
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
@@ -100,6 +104,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         for (let i = 1; i < fdLines.length; i++) {
           lines.push(`\t// ${fdLines[i].trim()}`);
         }
+      }
+      if (field.deprecated) {
+        if (field.description) lines.push(`\t//`);
+        lines.push(`\t// Deprecated: this field is deprecated.`);
       }
       lines.push(`\t${goFieldName} ${goType} \`${jsonTag}\``);
     }

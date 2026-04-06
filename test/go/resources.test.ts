@@ -225,6 +225,164 @@ describe('go/resources', () => {
     expect(content).toContain('request(ctx, "POST", "/users", params, params, &result, opts)');
   });
 
+  it('emits Deprecated comment for deprecated body field in params struct', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          makeOp({
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/users',
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          {
+            name: 'email',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'The user email.',
+            deprecated: true,
+          },
+          {
+            name: 'name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+    ]);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('\t// Email is the user email.\n\t//\n\t// Deprecated: this field is deprecated.');
+    expect(content).not.toMatch(/Deprecated.*\n\tName/);
+  });
+
+  it('emits Deprecated comment for deprecated query param in params struct', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          makeOp({
+            name: 'listUsers',
+            httpMethod: 'get',
+            path: '/users',
+            queryParams: [
+              {
+                name: 'old_filter',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'A legacy filter.',
+                deprecated: true,
+              },
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain(
+      '\t// OldFilter is a legacy filter.\n\t//\n\t// Deprecated: this parameter is deprecated.',
+    );
+    expect(content).not.toMatch(/Deprecated.*\n\tLimit/);
+  });
+
+  it('emits Deprecated note in godoc for deprecated path param', () => {
+    const services: Service[] = [
+      {
+        name: 'Items',
+        operations: [
+          makeOp({
+            name: 'getItem',
+            httpMethod: 'get',
+            path: '/items/{old_id}',
+            pathParams: [
+              {
+                name: 'old_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+                description: 'use new_id instead',
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('// Deprecated parameter OldID: use new_id instead');
+  });
+
+  it('emits Deprecated note in godoc for deprecated path param without description', () => {
+    const services: Service[] = [
+      {
+        name: 'Items',
+        operations: [
+          makeOp({
+            name: 'getItem',
+            httpMethod: 'get',
+            path: '/items/{old_id}',
+            pathParams: [
+              {
+                name: 'old_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('// Deprecated parameter OldID.');
+  });
+
+  it('emits Deprecated in godoc for deprecated operation', () => {
+    const services: Service[] = [
+      {
+        name: 'Items',
+        operations: [
+          makeOp({
+            name: 'getItem',
+            httpMethod: 'get',
+            path: '/items/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            deprecated: true,
+            description: 'Get an item.',
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('// Deprecated: this operation is deprecated.');
+  });
+
   it('uses params.Body for non-model request bodies', () => {
     const services: Service[] = [
       {

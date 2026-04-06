@@ -75,6 +75,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (v.description) {
         lines.push(`\t// ${constName} is ${v.description}.`);
       }
+      if (v.deprecated) {
+        if (v.description) lines.push(`\t//`);
+        lines.push(`\t// Deprecated: this value is deprecated.`);
+      }
       lines.push(`\t${constName} ${typeName} = ${valueStr}`);
     }
     lines.push(')');
