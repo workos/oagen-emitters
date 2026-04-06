@@ -148,11 +148,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         }
         usedNames.add(memberName);
         const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
-        if (v.description) {
-          lines.push(`    ${memberName} = ${valueStr}`);
-          lines.push(`    """${v.description}"""`);
-        } else {
-          lines.push(`    ${memberName} = ${valueStr}`);
+        lines.push(`    ${memberName} = ${valueStr}`);
+        if (v.description || v.deprecated) {
+          const parts: string[] = [];
+          if (v.description) parts.push(v.description);
+          if (v.deprecated) parts.push('.. deprecated::');
+          lines.push(`    """${parts.join('\n\n    ')}"""`);
         }
       }
       if (allStrings) {

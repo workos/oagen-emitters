@@ -556,4 +556,57 @@ describe('generateModels', () => {
     const modelFile = files.find((f) => f.path.endsWith('organization.py'))!;
     expect(modelFile.content).toContain('metadata: Optional[Dict[str, str]] = None');
   });
+
+  it('adds .. deprecated:: docstring for deprecated fields', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            deprecated: true,
+            description: 'Legacy field',
+          },
+          {
+            name: 'old_no_desc',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const modelFile = files.find((f) => f.path.includes('organization.py'))!;
+
+    // Deprecated required field with description gets both description and .. deprecated::
+    expect(modelFile.content).toContain('"""Legacy field\n\n    .. deprecated::"""');
+
+    // Deprecated optional field without description gets just .. deprecated::
+    expect(modelFile.content).toContain('""".. deprecated::"""');
+  });
 });

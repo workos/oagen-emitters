@@ -194,4 +194,36 @@ describe('generateEnums', () => {
     expect(files[0].content).toContain('"GithubOAuth"');
     expect(files[0].content).not.toContain('"GitHubOAuth"');
   });
+
+  it('adds .. deprecated:: docstring for deprecated enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [
+          { name: 'ACTIVE', value: 'active' },
+          { name: 'OLD_STATUS', value: 'old_status', deprecated: true, description: 'Use ACTIVE instead' },
+          { name: 'LEGACY', value: 'legacy', deprecated: true },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+
+    // Deprecated value with description gets both
+    expect(content).toContain('OLD_STATUS = "old_status"');
+    expect(content).toContain('"""Use ACTIVE instead\n\n    .. deprecated::"""');
+
+    // Deprecated value without description gets just .. deprecated::
+    expect(content).toContain('LEGACY = "legacy"');
+    expect(content).toContain('""".. deprecated::"""');
+
+    // Non-deprecated value should not get a docstring
+    expect(content).toContain('ACTIVE = "active"');
+    // ACTIVE should not have a docstring immediately after it
+    const activeIdx = content.indexOf('ACTIVE = "active"');
+    const nextLine = content.slice(activeIdx).split('\n')[1];
+    expect(nextLine).not.toContain('"""');
+  });
 });
