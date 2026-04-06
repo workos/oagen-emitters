@@ -1,7 +1,8 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
+import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName } from './naming.js';
+import { phpDocComment } from './utils.js';
 
 /**
  * Generate PHP wrapper methods for split union operations.
@@ -24,6 +25,20 @@ function emitWrapperMethod(
   const ns = ctx.namespacePascal;
 
   lines.push('');
+
+  // PHPDoc block
+  const docParts: string[] = [];
+  for (const paramName of wrapper.exposedParams) {
+    const field = findFieldInVariant(wrapper, paramName, resolvedOp);
+    const docType = field ? mapTypeRefForPHPDoc(field.type) : 'mixed';
+    const nullSuffix = field && !field.required ? '|null' : '|null';
+    docParts.push(`@param ${docType}${nullSuffix} $${fieldName(paramName)}`);
+  }
+  const op2 = resolvedOp.operation;
+  const returnDocType = op2.response.kind === 'model' ? `\\${ns}\\Resource\\${className(op2.response.name)}` : 'mixed';
+  docParts.push(`@return ${returnDocType}`);
+  lines.push(...phpDocComment(docParts.join('\n'), 4));
+
   lines.push(`    public function ${method}(`);
 
   // Exposed params

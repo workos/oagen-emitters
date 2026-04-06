@@ -22,13 +22,16 @@ export function mapTypeRef(ref: TypeRef, opts?: { qualified?: boolean }): string
 
 /**
  * Map an IR TypeRef to a PHPDoc type string for richer documentation.
+ * Uses fully-qualified names (leading \) so types resolve correctly
+ * regardless of the namespace the docblock appears in.
  */
-export function mapTypeRefForPHPDoc(ref: TypeRef): string {
+export function mapTypeRefForPHPDoc(ref: TypeRef, opts?: { prefix?: string }): string {
+  const prefix = opts?.prefix ?? '\\WorkOS\\Resource\\';
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitiveDoc,
     array: (_ref, items) => `array<${items}>`,
-    model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    model: (r) => `${prefix}${className(r.name)}`,
+    enum: (r) => `${prefix}${className(r.name)}`,
     union: (r, variants) => joinDocUnionVariants(r, variants),
     nullable: (_ref, inner) => `${inner}|null`,
     literal: (r) => (typeof r.value === 'string' ? 'string' : typeof r.value === 'number' ? 'int' : 'string'),

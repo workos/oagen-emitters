@@ -174,9 +174,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const field of requiredFields) {
       const pyFieldName = fieldName(field.name);
       const pyType = resolveModelFieldType(field.type);
-      if (field.description) {
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('.. deprecated::');
         lines.push(`    ${pyFieldName}: ${pyType}`);
-        lines.push(`    """${field.description}"""`);
+        lines.push(`    """${parts.join('\n\n    ')}"""`);
       } else {
         lines.push(`    ${pyFieldName}: ${pyType}`);
       }
@@ -187,9 +190,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const innerType =
         field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
       const pyType = `Optional[${innerType}]`;
-      if (field.description) {
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('.. deprecated::');
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
-        lines.push(`    """${field.description}"""`);
+        lines.push(`    """${parts.join('\n\n    ')}"""`);
       } else {
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
       }

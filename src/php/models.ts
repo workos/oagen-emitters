@@ -1,6 +1,7 @@
 import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName } from './naming.js';
+import { phpDocComment } from './utils.js';
 
 /**
  * Check if a model is a list metadata model (e.g., ListMetadata).
@@ -53,6 +54,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // No <?php here — the file header from fileHeader() provides it
     lines.push(`namespace ${ctx.namespacePascal}\\Resource;`);
     lines.push('');
+    if (model.description) {
+      lines.push(...phpDocComment(model.description, 0));
+    }
     lines.push(`readonly class ${name} implements \\JsonSerializable`);
     lines.push('{');
     lines.push('    use JsonSerializableTrait;');
@@ -77,6 +81,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpType = mapTypeRef(field.type);
       const isOptional = !field.required;
       const comma = i < allFields.length - 1 ? ',' : ',';
+
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('@deprecated');
+        lines.push(...phpDocComment(parts.join('\n'), 8));
+      }
 
       if (isOptional) {
         const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;

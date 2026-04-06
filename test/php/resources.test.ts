@@ -291,6 +291,94 @@ describe('generateResources', () => {
     expect(result[0].content).toContain("'slug' => $bodySlug,");
   });
 
+  it('adds @deprecated PHPDoc for deprecated operations', () => {
+    const deprecatedServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganizationOld',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deprecatedServices };
+    const result = generateResources(deprecatedServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('@deprecated');
+  });
+
+  it('adds description in PHPDoc for operations with description', () => {
+    const describedServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            description: 'Fetch a single organization by ID',
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: describedServices };
+    const result = generateResources(describedServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('Fetch a single organization by ID');
+  });
+
+  it('adds (deprecated) prefix in @param for deprecated path params', () => {
+    const deprecatedParamServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+                description: 'The organization ID',
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deprecatedParamServices };
+    const result = generateResources(deprecatedParamServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('(deprecated) The organization ID');
+  });
+
   it('requires inferred client credentials in wrapper methods', () => {
     const lines = generateWrapperMethods(
       {

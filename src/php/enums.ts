@@ -1,6 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 import { className, resolveEnumName } from './naming.js';
+import { phpDocComment } from './utils.js';
 
 /**
  * Generate PHP enum files from IR enums.
@@ -38,6 +39,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         caseName = `${baseName}${count + 1}`;
       }
       usedNames.set(baseName, count + 1);
+
+      if (val.description || val.deprecated) {
+        const parts: string[] = [];
+        if (val.description) parts.push(val.description);
+        if (val.deprecated) parts.push('@deprecated');
+        lines.push(...phpDocComment(parts.join('\n'), 4));
+      }
 
       if (typeof val.value === 'string') {
         lines.push(`    case ${caseName} = '${val.value}';`);

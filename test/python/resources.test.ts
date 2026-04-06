@@ -111,8 +111,25 @@ describe('generateResources', () => {
             path: '/organizations',
             pathParams: [],
             queryParams: [
-              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
-              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+                description: 'Upper limit on the number of objects to return, between `1` and `100`.',
+              },
+              {
+                name: 'after',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description:
+                  'An object ID that defines your place in the list. When the ID is not present, you are at the end of the list.',
+              },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Order the results by the creation time.',
+              },
             ],
             headerParams: [],
             response: { kind: 'model', name: 'OrganizationList' },
@@ -144,6 +161,77 @@ describe('generateResources', () => {
     expect(content).toContain(') -> SyncPage[Organization]:');
     expect(content).toContain('request_page(');
     expect(content).toContain('model=Organization');
+    expect(content).toContain('limit: Upper limit on the number of objects to return, between `1` and `100`.');
+    expect(content).toContain(
+      'after: An object ID that defines your place in the list. When the ID is not present, you are at the end of the list.',
+    );
+    expect(content).toContain('order: Order the results by the creation time.');
+  });
+
+  it('indents multiline argument descriptions in docstrings', () => {
+    const models: Model[] = [
+      {
+        name: 'GenerateLinkRequest',
+        fields: [
+          {
+            name: 'intent',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description: [
+              'The intent of the Admin Portal.',
+              '- `sso` - Launch Admin Portal for creating SSO connections',
+              '- `dsync` - Launch Admin Portal for creating Directory Sync connections',
+            ].join('\n'),
+          },
+          {
+            name: 'organization',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'An organization identifier.',
+          },
+        ],
+      },
+      {
+        name: 'PortalLinkResponse',
+        fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AdminPortal',
+        operations: [
+          {
+            name: 'generateLink',
+            httpMethod: 'post',
+            path: '/portal/generate_link',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'GenerateLinkRequest' },
+            response: { kind: 'model', name: 'PortalLinkResponse' },
+            description: 'Generate a Portal Link scoped to an Organization.',
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    expect(content).toContain('intent: The intent of the Admin Portal.');
+    expect(content).toContain('                - `sso` - Launch Admin Portal for creating SSO connections');
+    expect(content).toContain(
+      '                - `dsync` - Launch Admin Portal for creating Directory Sync connections',
+    );
+    expect(content).toContain('organization: An organization identifier.');
   });
 
   it('unwraps list wrapper models in paginated methods', () => {
@@ -364,5 +452,166 @@ describe('generateResources', () => {
     const content = files[0].content;
     expect(content).toContain('idempotency_key: Optional[str] = None,');
     expect(content).toContain('idempotency_key=idempotency_key,');
+  });
+
+  it('adds deprecated annotation to operations', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Docstring should contain .. deprecated::
+    expect(content).toContain('.. deprecated::');
+    expect(content).toContain('This operation is deprecated.');
+
+    // Body should contain warnings.warn
+    expect(content).toContain('warnings.warn("get_organization is deprecated", DeprecationWarning, stacklevel=2)');
+
+    // Import warnings should be present
+    expect(content).toContain('import warnings');
+  });
+
+  it('does not import warnings when no operations are deprecated', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+    expect(content).not.toContain('import warnings');
+  });
+
+  it('marks deprecated parameters with (deprecated) prefix in Args docstring', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'UpdateOrgRequest',
+        fields: [
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+            description: 'Legacy field',
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+                description: 'The org ID',
+              },
+            ],
+            queryParams: [
+              {
+                name: 'legacy_param',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                deprecated: true,
+              },
+            ],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateOrgRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Deprecated path param with description
+    expect(content).toContain('id: (deprecated) The org ID');
+
+    // Deprecated body field with description
+    expect(content).toContain('old_field: (deprecated) Legacy field');
+
+    // Deprecated query param without description
+    expect(content).toContain('legacy_param: (deprecated)');
   });
 });

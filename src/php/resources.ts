@@ -1,10 +1,11 @@
 import type { Service, Operation, Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
+import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName, resolveMethodName } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { phpDocComment } from './utils.js';
 
 /**
  * Resolve the resource class name for a service (used by client.ts).
@@ -97,6 +98,49 @@ function generateMethod(
   const method = resolveMethodName(op, service, ctx);
   const params = buildMethodParams(op, plan, modelMap, ctx);
   const returnType = getReturnType(plan, ctx);
+
+  // PHPDoc block
+  const docParts: string[] = [];
+  if (op.description) docParts.push(op.description);
+
+  // @param for path params
+  for (const p of op.pathParams) {
+    const docType = mapTypeRefForPHPDoc(p.type);
+    const prefix = p.deprecated ? '(deprecated) ' : '';
+    const desc = p.description ? ` ${prefix}${p.description}` : p.deprecated ? ' (deprecated)' : '';
+    docParts.push(`@param ${docType} $${fieldName(p.name)}${desc}`);
+  }
+
+  // @param for body fields
+  if (plan.hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = modelMap.get(op.requestBody.name);
+    if (bodyModel) {
+      const bodyParamMap = buildBodyParamMap(op, bodyModel);
+      for (const field of bodyModel.fields) {
+        const docType = mapTypeRefForPHPDoc(field.type);
+        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+        const nullSuffix = !field.required ? '|null' : '';
+        const prefix = field.deprecated ? '(deprecated) ' : '';
+        const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
+        docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
+      }
+    }
+  }
+
+  // @param for query params
+  for (const q of op.queryParams) {
+    const docType = mapTypeRefForPHPDoc(q.type);
+    const nullSuffix = !q.required ? '|null' : '';
+    const prefix = q.deprecated ? '(deprecated) ' : '';
+    const desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
+    docParts.push(`@param ${docType}${nullSuffix} $${fieldName(q.name)}${desc}`);
+  }
+
+  // @return
+  docParts.push(`@return ${returnType}`);
+
+  if (op.deprecated) docParts.push('@deprecated');
+  lines.push(...phpDocComment(docParts.join('\n'), 4));
 
   // Method signature
   lines.push(`    public function ${method}(`);

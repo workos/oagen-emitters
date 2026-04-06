@@ -251,4 +251,56 @@ describe('generateModels', () => {
     expect(file).toBeDefined();
     expect(file!.content).toContain('namespace WorkOS\\Resource;');
   });
+
+  it('adds PHPDoc @deprecated for deprecated fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Connection',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'old_field', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+        ],
+      },
+    ];
+
+    const specWithModels = { ...emptySpec, models };
+    const result = generateModels(models, { ...ctx, spec: specWithModels });
+
+    const file = findModel(result, 'Connection');
+    expect(file).toBeDefined();
+    expect(file!.content).toContain('/** @deprecated */');
+    // The deprecated PHPDoc should come before the property
+    const lines = file!.content.split('\n');
+    const deprecatedIdx = lines.findIndex((l: string) => l.includes('@deprecated'));
+    const propertyIdx = lines.findIndex((l: string) => l.includes('$oldField'));
+    expect(deprecatedIdx).toBeGreaterThan(-1);
+    expect(propertyIdx).toBeGreaterThan(-1);
+    expect(deprecatedIdx).toBeLessThan(propertyIdx);
+  });
+
+  it('adds PHPDoc with description and @deprecated for fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Connection',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'legacy_name',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description: 'Use name instead',
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const specWithModels = { ...emptySpec, models };
+    const result = generateModels(models, { ...ctx, spec: specWithModels });
+
+    const file = findModel(result, 'Connection');
+    expect(file).toBeDefined();
+    expect(file!.content).toContain('Use name instead');
+    expect(file!.content).toContain('@deprecated');
+  });
 });

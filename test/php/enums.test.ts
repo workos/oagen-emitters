@@ -112,6 +112,48 @@ describe('generateEnums', () => {
     expect(result[0].path).toBe('lib/Resource/Order.php');
   });
 
+  it('adds PHPDoc @deprecated for deprecated enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'ConnectionType',
+        values: [
+          { name: 'SAML', value: 'saml' },
+          { name: 'OAUTH', value: 'oauth', deprecated: true },
+        ],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+
+    expect(result).toHaveLength(1);
+    // The non-deprecated value should not have a PHPDoc
+    expect(result[0].content).not.toContain('/** @deprecated */\n    case Saml');
+    // The deprecated value should have a PHPDoc
+    expect(result[0].content).toContain('/** @deprecated */');
+    // Verify the deprecated case follows the PHPDoc
+    const lines = result[0].content.split('\n');
+    const deprecatedIdx = lines.findIndex((l: string) => l.includes('@deprecated'));
+    expect(deprecatedIdx).toBeGreaterThan(-1);
+    expect(lines[deprecatedIdx + 1]).toContain("= 'oauth';");
+  });
+
+  it('adds PHPDoc with description and @deprecated for enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'ConnectionType',
+        values: [
+          { name: 'SAML', value: 'saml' },
+          { name: 'OAUTH', value: 'oauth', description: 'Use OIDC instead', deprecated: true },
+        ],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+
+    expect(result[0].content).toContain('Use OIDC instead');
+    expect(result[0].content).toContain('@deprecated');
+  });
+
   it('deduplicates case names', () => {
     const enums: Enum[] = [
       {
