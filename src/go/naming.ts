@@ -18,6 +18,7 @@ const ACRONYM_FIXES: [RegExp, string][] = [
   [/Oidc/g, 'OIDC'],
   [/Api(?=[A-Z]|$)/g, 'API'],
   [/Url(?=[A-Z]|$)/g, 'URL'],
+  [/Uri(?=[A-Z]|$)/g, 'URI'],
   [/Http(?=[A-Z]|$)/g, 'HTTP'],
   [/Uuid(?=[A-Z]|$)/g, 'UUID'],
   [/Json(?=[A-Z]|$)/g, 'JSON'],
@@ -71,7 +72,20 @@ export function moduleName(name: string): string {
 
 /** snake_case property name for service accessors on the client. */
 export function servicePropertyName(name: string): string {
-  return toPascalCase(name);
+  return unexportedName(className(name));
+}
+
+/** Lower-camel identifier with Go acronym conventions preserved. */
+export function unexportedName(name: string): string {
+  const exported = className(name);
+  if (!exported) return exported;
+
+  const initialism = exported.match(/^[A-Z]+(?=[A-Z][a-z]|[0-9]|$)/)?.[0];
+  if (initialism) {
+    return initialism.toLowerCase() + exported.slice(initialism.length);
+  }
+
+  return exported.charAt(0).toLowerCase() + exported.slice(1);
 }
 
 /** Resolve the effective service name using resolved operations. */
@@ -97,26 +111,26 @@ export function resolveServiceDir(resolvedServiceName: string): string {
 export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
   const lookup = buildResolvedLookup(ctx);
   const resolved = lookupMethodName(op, lookup);
-  if (resolved) return methodName(resolved);
+  if (resolved) return trimMountedResourceFromMethod(methodName(resolved), resolveClassName(_service, ctx));
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) return methodName(existing.methodName);
-  return methodName(op.name);
+  if (existing) return trimMountedResourceFromMethod(methodName(existing.methodName), resolveClassName(_service, ctx));
+  return trimMountedResourceFromMethod(methodName(op.name), resolveClassName(_service, ctx));
 }
 
 /** Resolve the SDK class name for a service using resolved operations' mountOn. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
   for (const r of ctx.resolvedOperations ?? []) {
-    if (r.service.name === service.name) return r.mountOn;
+    if (r.service.name === service.name) return className(r.mountOn);
   }
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
       const existing = ctx.overlayLookup.methodByOperation.get(httpKey);
-      if (existing) return existing.className;
+      if (existing) return className(existing.className);
     }
   }
-  return toPascalCase(service.name);
+  return className(service.name);
 }
 
 /** Build a map from IR service name to mount-target directory name. */
@@ -127,4 +141,43 @@ export function buildMountDirMap(ctx: EmitterContext): Map<string, string> {
     map.set(service.name, moduleName(target));
   }
   return map;
+}
+
+function splitPascalWords(name: string): string[] {
+  return name.match(/[A-Z]+(?:[a-z]+|(?=[A-Z]|$))|[A-Z]?[a-z]+|[0-9]+/g) ?? [name];
+}
+
+function singularize(word: string): string {
+  if (word.endsWith('ies') && word.length > 3) {
+    return `${word.slice(0, -3)}y`;
+  }
+  if (word.endsWith('s') && !word.endsWith('ss')) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+function wordsMatch(left: string, right: string): boolean {
+  return singularize(left.toLowerCase()) === singularize(right.toLowerCase());
+}
+
+function trimMountedResourceFromMethod(method: string, mountName: string): string {
+  const methodWords = splitPascalWords(method);
+  if (methodWords.length < 2) return method;
+
+  const mountWords = splitPascalWords(className(mountName));
+  if (mountWords.length === 0) return method;
+
+  let matched = 0;
+  while (
+    matched < mountWords.length &&
+    matched + 1 < methodWords.length &&
+    wordsMatch(methodWords[matched + 1], mountWords[matched])
+  ) {
+    matched++;
+  }
+
+  if (matched === 0) return method;
+
+  return [methodWords[0], ...methodWords.slice(matched + 1)].join('');
 }

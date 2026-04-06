@@ -8,7 +8,7 @@ import { groupByMount } from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const DEFAULT_MODULE_PATH = 'github.com/workos/workos-go/v2';
+const DEFAULT_MODULE_PATH = 'github.com/workos/workos-go/v6';
 
 /** Resolve the Go module path from the output directory's go.mod, or use default. */
 function resolveModulePath(ctx: EmitterContext): string {
@@ -93,7 +93,7 @@ function generateServiceTest(
   const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
-    const method = resolveGoMethodName(op, ctx);
+    const method = resolveGoMethodName(op, resolvedName, ctx);
     const isPaginated = plan.isPaginated;
     const isDelete = plan.isDelete;
 
@@ -212,7 +212,7 @@ function generateServiceTest(
   const sampleOp = service.operations[0];
   if (sampleOp) {
     const plan = planOperation(sampleOp);
-    const method = resolveGoMethodName(sampleOp, ctx);
+    const method = resolveGoMethodName(sampleOp, resolvedName, ctx);
     const callArgs = buildMethodCallArgs(sampleOp, plan, ctx, resolvedName);
 
     lines.push(`func Test${accessorName}_Error401(t *testing.T) {`);
@@ -243,11 +243,12 @@ function generateServiceTest(
   return {
     path: testFile,
     content: lines.join('\n'),
+    overwriteExisting: true,
   };
 }
 
-function resolveGoMethodName(op: Operation, ctx: EmitterContext): string {
-  return resolveMethodName(op, { name: '', operations: [] }, ctx);
+function resolveGoMethodName(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
 }
 
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
@@ -262,7 +263,7 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   const hasQueryParams = op.queryParams.length > 0;
   const hasBody = plan.hasBody && op.requestBody;
   if (hasBody || hasQueryParams) {
-    const method = resolveGoMethodName(op, ctx);
+    const method = resolveGoMethodName(op, mountName, ctx);
     const pName = paramsStructName(mountName, method);
     args.push(`&${ctx.namespace}.${pName}{}`);
   }

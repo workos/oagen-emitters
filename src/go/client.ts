@@ -2,6 +2,7 @@ import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oa
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 // naming utilities used indirectly via resolveResourceClassName
 import { resolveResourceClassName } from './resources.js';
+import { unexportedName } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
@@ -157,8 +158,8 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Service fields
   for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const fieldNameStr = lowerFirst(resolvedName);
-    const serviceTypeName = `${lowerFirst(resolvedName)}Service`;
+    const fieldNameStr = unexportedName(resolvedName);
+    const serviceTypeName = serviceType(resolvedName);
     lines.push(`\t${fieldNameStr} *${serviceTypeName}`);
   }
   lines.push('}');
@@ -179,8 +180,8 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Initialize services
   for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const fieldNameStr = lowerFirst(resolvedName);
-    const serviceTypeName = `${lowerFirst(resolvedName)}Service`;
+    const fieldNameStr = unexportedName(resolvedName);
+    const serviceTypeName = serviceType(resolvedName);
     lines.push(`\tc.${fieldNameStr} = &${serviceTypeName}{client: c}`);
   }
   lines.push('\treturn c');
@@ -191,8 +192,8 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
     const accessorName = resolvedName;
-    const fieldNameStr = lowerFirst(resolvedName);
-    const serviceTypeName = `${lowerFirst(resolvedName)}Service`;
+    const fieldNameStr = unexportedName(resolvedName);
+    const serviceTypeName = serviceType(resolvedName);
     lines.push(`// ${accessorName} returns the ${resolvedName} service.`);
     lines.push(`func (c *Client) ${accessorName}() *${serviceTypeName} {`);
     lines.push(`\treturn c.${fieldNameStr}`);
@@ -203,6 +204,7 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   return {
     path: `${ctx.namespace}.go`,
     content: lines.join('\n'),
+    overwriteExisting: true,
   };
 }
 
@@ -215,15 +217,18 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\t"bytes"');
   lines.push('\t"context"');
   lines.push('\t"encoding/json"');
+  lines.push('\t"errors"');
   lines.push('\t"fmt"');
   lines.push('\t"io"');
   lines.push('\t"math"');
   lines.push('\t"math/rand"');
   lines.push('\t"net/http"');
+  lines.push('\t"net/url"');
   lines.push('\t"strconv"');
   lines.push('\t"strings"');
   lines.push('\t"time"');
   lines.push('');
+  lines.push('\t"github.com/google/go-querystring/query"');
   lines.push('\t"github.com/google/uuid"');
   lines.push(')');
   lines.push('');
@@ -244,6 +249,7 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\tctx context.Context,');
   lines.push('\tmethod string,');
   lines.push('\tpath string,');
+  lines.push('\tqueryParams interface{},');
   lines.push('\tbody interface{},');
   lines.push('\tresult interface{},');
   lines.push('\topts []RequestOption,');
@@ -288,15 +294,34 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\t\t\tbodyReader = bytes.NewReader(data)');
   lines.push('\t\t}');
   lines.push('');
-  lines.push('\t\turl := strings.TrimRight(baseURL, "/") + path');
-  lines.push('\t\treq, err := http.NewRequestWithContext(ctx, method, url, bodyReader)');
+  lines.push('\t\trequestURL := strings.TrimRight(baseURL, "/") + path');
+  lines.push('\t\tif queryParams != nil {');
+  lines.push('\t\t\tparsedURL, err := url.Parse(requestURL)');
+  lines.push('\t\t\tif err != nil {');
+  lines.push('\t\t\t\treturn nil, fmt.Errorf("workos: failed to parse request URL: %w", err)');
+  lines.push('\t\t\t}');
+  lines.push('\t\t\tencodedQuery, err := encodeQuery(queryParams)');
+  lines.push('\t\t\tif err != nil {');
+  lines.push('\t\t\t\treturn nil, err');
+  lines.push('\t\t\t}');
+  lines.push('\t\t\tqueryValues := parsedURL.Query()');
+  lines.push('\t\t\tfor key, values := range encodedQuery {');
+  lines.push('\t\t\t\tqueryValues.Del(key)');
+  lines.push('\t\t\t\tfor _, value := range values {');
+  lines.push('\t\t\t\t\tqueryValues.Add(key, value)');
+  lines.push('\t\t\t\t}');
+  lines.push('\t\t\t}');
+  lines.push('\t\t\tparsedURL.RawQuery = queryValues.Encode()');
+  lines.push('\t\t\trequestURL = parsedURL.String()');
+  lines.push('\t\t}');
+  lines.push('\t\treq, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)');
   lines.push('\t\tif err != nil {');
   lines.push('\t\t\treturn nil, fmt.Errorf("workos: failed to create request: %w", err)');
   lines.push('\t\t}');
   lines.push('');
   lines.push('\t\treq.Header.Set("Authorization", "Bearer "+c.apiKey)');
   lines.push('\t\treq.Header.Set("Content-Type", "application/json")');
-  lines.push('\t\treq.Header.Set("User-Agent", "workos-go/0.1.0")');
+  lines.push('\t\treq.Header.Set("User-Agent", "workos-go")');
   lines.push('\t\tif idempotencyKey != "" {');
   lines.push('\t\t\treq.Header.Set("Idempotency-Key", idempotencyKey)');
   lines.push('\t\t}');
@@ -310,7 +335,9 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('');
   lines.push('\t\thttpClient := c.httpClient');
   lines.push('\t\tif cfg.timeout > 0 {');
-  lines.push('\t\t\thttpClient = &http.Client{Timeout: cfg.timeout}');
+  lines.push('\t\t\tclonedClient := *httpClient');
+  lines.push('\t\t\tclonedClient.Timeout = cfg.timeout');
+  lines.push('\t\t\thttpClient = &clonedClient');
   lines.push('\t\t}');
   lines.push('');
   lines.push('\t\tresp, err := httpClient.Do(req)');
@@ -320,8 +347,8 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\t\t}');
   lines.push('');
   lines.push('\t\tif retryableStatuses[resp.StatusCode] && attempt < maxRetries {');
-  lines.push('\t\t\tresp.Body.Close()');
   lines.push('\t\t\tlastErr = parseAPIError(resp)');
+  lines.push('\t\t\tresp.Body.Close()');
   lines.push('\t\t\tcontinue');
   lines.push('\t\t}');
   lines.push('');
@@ -345,6 +372,24 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\treturn nil, lastErr');
   lines.push('}');
   lines.push('');
+  lines.push('func encodeQuery(params interface{}) (url.Values, error) {');
+  lines.push('\tif params == nil {');
+  lines.push('\t\treturn nil, nil');
+  lines.push('\t}');
+  lines.push('\tif values, ok := params.(url.Values); ok {');
+  lines.push('\t\tclone := url.Values{}');
+  lines.push('\t\tfor key, currentValues := range values {');
+  lines.push('\t\t\tclone[key] = append([]string(nil), currentValues...)');
+  lines.push('\t\t}');
+  lines.push('\t\treturn clone, nil');
+  lines.push('\t}');
+  lines.push('\tvalues, err := query.Values(params)');
+  lines.push('\tif err != nil {');
+  lines.push('\t\treturn nil, fmt.Errorf("workos: failed to encode query params: %w", err)');
+  lines.push('\t}');
+  lines.push('\treturn values, nil');
+  lines.push('}');
+  lines.push('');
 
   // backoff function
   lines.push('func backoff(attempt int, lastErr error) time.Duration {');
@@ -352,7 +397,8 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('\tmax := 30 * time.Second');
   lines.push('');
   lines.push('\t// Check for Retry-After header');
-  lines.push('\tif apiErr, ok := lastErr.(*APIError); ok && apiErr.RetryAfter > 0 {');
+  lines.push('\tvar apiErr *APIError');
+  lines.push('\tif errors.As(lastErr, &apiErr) && apiErr.RetryAfter > 0 {');
   lines.push('\t\treturn time.Duration(apiErr.RetryAfter) * time.Second');
   lines.push('\t}');
   lines.push('');
@@ -404,6 +450,7 @@ function generateClientFile(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
     path: 'client.go',
     content: lines.join('\n'),
     headerPlacement: 'skip',
+    overwriteExisting: true,
   };
 }
 
@@ -416,6 +463,7 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('\t"context"');
   lines.push('\t"encoding/json"');
   lines.push('\t"fmt"');
+  lines.push('\t"net/url"');
   lines.push(')');
   lines.push('');
 
@@ -444,6 +492,7 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('\tmethod   string');
   lines.push('\tpath     string');
   lines.push('\tparams   listParams');
+  lines.push('\tcursor   string');
   lines.push('\tdataPath string');
   lines.push('\topts     []RequestOption');
   lines.push('\tafter    *string');
@@ -459,6 +508,7 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('\tmethod string,');
   lines.push('\tpath string,');
   lines.push('\tparams listParams,');
+  lines.push('\tcursor string,');
   lines.push('\tdataPath string,');
   lines.push('\topts []RequestOption,');
   lines.push(') *Iterator[T] {');
@@ -468,6 +518,7 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('\t\tmethod:   method,');
   lines.push('\t\tpath:     path,');
   lines.push('\t\tparams:   params,');
+  lines.push('\t\tcursor:   cursor,');
   lines.push('\t\tdataPath: dataPath,');
   lines.push('\t\topts:     opts,');
   lines.push('\t}');
@@ -494,8 +545,10 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('\t\treturn false');
   lines.push('\t}');
   lines.push('');
+  lines.push('\tparams := withCursor(it.params, it.cursor, it.after)');
+  lines.push('');
   lines.push('\tvar rawResp json.RawMessage');
-  lines.push('\t_, err := it.client.request(it.ctx, it.method, it.path, it.params, &rawResp, it.opts)');
+  lines.push('\t_, err := it.client.request(it.ctx, it.method, it.path, params, nil, &rawResp, it.opts)');
   lines.push('\tif err != nil {');
   lines.push('\t\tit.err = err');
   lines.push('\t\treturn false');
@@ -534,29 +587,47 @@ function generatePaginationFile(ctx: EmitterContext): GeneratedFile {
   lines.push('func (it *Iterator[T]) Err() error {');
   lines.push('\treturn it.err');
   lines.push('}');
+  lines.push('');
+  lines.push('func withCursor(params listParams, cursor string, after *string) listParams {');
+  lines.push('\tif after == nil || cursor == "" {');
+  lines.push('\t\treturn params');
+  lines.push('\t}');
+  lines.push('\tvalues, err := encodeQuery(params)');
+  lines.push('\tif err != nil {');
+  lines.push('\t\treturn params');
+  lines.push('\t}');
+  lines.push('\tif values == nil {');
+  lines.push('\t\tvalues = url.Values{}');
+  lines.push('\t}');
+  lines.push('\tvalues.Set(cursor, *after)');
+  lines.push('\treturn values');
+  lines.push('}');
 
   return {
     path: 'pagination.go',
     content: lines.join('\n'),
     headerPlacement: 'skip',
+    overwriteExisting: true,
   };
 }
 
 function generateGoMod(_ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
-  lines.push(`module github.com/workos/workos-go/v2`);
+  lines.push(`module github.com/workos/workos-go/v6`);
   lines.push('');
-  lines.push('go 1.22');
+  lines.push('go 1.23');
   lines.push('');
   lines.push('require (');
+  lines.push('\tgithub.com/google/go-querystring v1.2.0');
   lines.push('\tgithub.com/google/uuid v1.6.0');
-  lines.push('\tgithub.com/stretchr/testify v1.9.0');
+  lines.push('\tgithub.com/stretchr/testify v1.11.1');
   lines.push(')');
   lines.push('');
   lines.push('require (');
   lines.push('\tgithub.com/davecgh/go-spew v1.1.1 // indirect');
+  lines.push('\tgithub.com/google/go-cmp v0.7.0 // indirect');
   lines.push('\tgithub.com/pmezard/go-difflib v1.0.0 // indirect');
-  lines.push('\tgithub.com/stretchr/objx v0.5.2 // indirect');
+  lines.push('\tgopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect');
   lines.push('\tgopkg.in/yaml.v3 v3.0.1 // indirect');
   lines.push(')');
 
@@ -564,11 +635,20 @@ function generateGoMod(_ctx: EmitterContext): GeneratedFile {
     path: 'go.mod',
     content: lines.join('\n'),
     headerPlacement: 'skip',
-    skipIfExists: true,
+    overwriteExisting: true,
   };
 }
 
-function lowerFirst(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toLowerCase() + s.slice(1);
+function singularizePascal(name: string): string {
+  if (name.endsWith('ies')) {
+    return `${name.slice(0, -3)}y`;
+  }
+  if (name.endsWith('s') && !name.endsWith('ss')) {
+    return name.slice(0, -1);
+  }
+  return name;
+}
+
+function serviceType(name: string): string {
+  return `${unexportedName(singularizePascal(name))}Service`;
 }

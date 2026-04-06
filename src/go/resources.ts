@@ -2,8 +2,8 @@ import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile }
 import { planOperation, toSnakeCase } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
 import { mapTypeRef, mapTypeRefValue } from './type-map.js';
-import { className, fieldName, methodName, resolveClassName } from './naming.js';
-import { buildResolvedLookup, lookupMethodName, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import { className, fieldName, methodName, resolveClassName, resolveMethodName, unexportedName } from './naming.js';
+import { buildResolvedLookup, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 
 /**
@@ -41,7 +41,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
 function generateServiceFile(mountName: string, operations: Operation[], ctx: EmitterContext): GeneratedFile | null {
   const lines: string[] = [];
-  const serviceType = `${lowerFirst(mountName)}Service`;
+  const serviceType = serviceTypeName(mountName);
   const goFile = `${toSnakeCase(mountName)}.go`;
 
   // Determine which imports are needed
@@ -70,7 +70,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const emittedMethods = new Set<string>();
   for (const op of operations) {
     const plan = planOperation(op);
-    const method = resolveGoMethodName(op, ctx);
+    const method = resolveGoMethodName(op, mountName, ctx);
 
     if (emittedMethods.has(method)) continue;
     emittedMethods.add(method);
@@ -102,17 +102,12 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   return {
     path: goFile,
     content: lines.join('\n'),
+    overwriteExisting: true,
   };
 }
 
-function resolveGoMethodName(op: Operation, ctx: EmitterContext): string {
-  const lookup = buildResolvedLookup(ctx);
-  const resolved = lookupMethodName(op, lookup);
-  if (resolved) return methodName(resolved);
-  const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-  const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) return methodName(existing.methodName);
-  return methodName(op.name);
+function resolveGoMethodName(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
 }
 
 export function paramsStructName(mountName: string, method: string): string {
@@ -171,9 +166,11 @@ function generateParamsStruct(
     if (emittedFields.has(goField)) continue;
     emittedFields.add(goField);
     const isOptional = !param.required;
-    const goType = isOptional ? makeOptional(mapTypeRef(param.type)) : mapTypeRef(param.type);
+    const paramType = mapQueryParamType(param.name, param.type);
+    const goType = isOptional ? makeOptional(paramType) : paramType;
     const urlTag = param.required ? `url:"${param.name}"` : `url:"${param.name},omitempty"`;
-    lines.push(`\t${goField} ${goType} \`${urlTag}\``);
+    const jsonTag = 'json:"-"';
+    lines.push(`\t${goField} ${goType} \`${urlTag} ${jsonTag}\``);
   }
 
   lines.push('}');
@@ -195,6 +192,7 @@ function generateMethod(
   const hasQueryParams = op.queryParams.length > 0;
   const hasParams = hasBody || hasQueryParams;
   const paramsType = hasParams ? `*${paramsStructName(mountName, method)}` : null;
+  const bodyArg = hasBody ? bodyArgument(op) : 'nil';
 
   // Return type
   let returnType: string;
@@ -247,19 +245,20 @@ function generateMethod(
   if (isPaginated && op.pagination) {
     const itemType = resolveIteratorItemType(op.pagination.itemType, _ctx);
     const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
+    const cursorParam = '"after"';
     lines.push(
-      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasParams ? 'params' : 'nil'}, ${dataPath}, opts)`,
+      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts)`,
     );
   } else if (isDelete) {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasParams ? 'params' : 'nil'}, nil, opts)`,
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
     );
     lines.push('\treturn err');
   } else if (plan.responseModelName) {
     const respType = className(plan.responseModelName);
     lines.push(`\tvar result ${respType}`);
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasBody ? 'params' : 'nil'}, &result, opts)`,
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, &result, opts)`,
     );
     lines.push('\tif err != nil {');
     lines.push('\t\treturn nil, err');
@@ -267,7 +266,7 @@ function generateMethod(
     lines.push('\treturn &result, nil');
   } else {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasParams ? 'params' : 'nil'}, nil, opts)`,
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
     );
     lines.push('\treturn err');
   }
@@ -288,6 +287,20 @@ function buildPathExpr(op: Operation): string {
     args.push(lowerFirst(fieldName(p.name)));
   }
   return `fmt.Sprintf("${fmtStr}", ${args.join(', ')})`;
+}
+
+function bodyArgument(op: Operation): string {
+  if (op.requestBody?.kind === 'model') {
+    return 'params';
+  }
+  return 'params.Body';
+}
+
+function mapQueryParamType(name: string, type: import('@workos/oagen').TypeRef): string {
+  if (name === 'limit' && type.kind === 'primitive' && (type.type === 'integer' || type.type === 'number')) {
+    return 'int';
+  }
+  return mapTypeRef(type);
 }
 
 function makeOptional(goType: string): string {
@@ -347,8 +360,22 @@ const GO_RESERVED = new Set([
 
 function lowerFirst(s: string): string {
   if (!s) return s;
-  const result = s.charAt(0).toLowerCase() + s.slice(1);
+  const result = unexportedName(s);
   // Escape Go reserved words by appending an underscore
   if (GO_RESERVED.has(result)) return `${result}Param`;
   return result;
+}
+
+function singularizePascal(name: string): string {
+  if (name.endsWith('ies')) {
+    return `${name.slice(0, -3)}y`;
+  }
+  if (name.endsWith('s') && !name.endsWith('ss')) {
+    return name.slice(0, -1);
+  }
+  return name;
+}
+
+function serviceTypeName(name: string): string {
+  return `${unexportedName(singularizePascal(name))}Service`;
 }

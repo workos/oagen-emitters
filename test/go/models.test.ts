@@ -176,6 +176,19 @@ describe('go/models', () => {
     expect(content).toContain('Status ConnectionStatus `json:"status"`');
   });
 
+  it('preserves DTO model names when emitting distinct types', () => {
+    const models: Model[] = [
+      {
+        name: 'RedirectUriDto',
+        fields: [{ name: 'uri', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    const files = generateModels(models, ctx);
+    const content = files[0].content;
+    expect(content).toContain('type RedirectURIDto struct {');
+    expect(content).toContain('URI string `json:"uri"`');
+  });
+
   it('snapshot: Organization struct', () => {
     const models: Model[] = [
       {

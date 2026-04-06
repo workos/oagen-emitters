@@ -61,8 +61,8 @@ describe('go/client', () => {
 
     expect(content).toContain('package workos');
     expect(content).toContain('func NewClient(apiKey string, opts ...ClientOption) *Client {');
-    expect(content).toContain('organizations *organizationsService');
-    expect(content).toContain('func (c *Client) Organizations() *organizationsService {');
+    expect(content).toContain('organizations *organizationService');
+    expect(content).toContain('func (c *Client) Organizations() *organizationService {');
   });
 
   it('generates functional options', () => {
@@ -96,8 +96,11 @@ describe('go/client', () => {
     const content = clientFile.content;
 
     expect(content).toContain('func (c *Client) request(');
+    expect(content).toContain('queryParams interface{}');
     expect(content).toContain('retryableStatuses');
+    expect(content).toContain('func encodeQuery(params interface{}) (url.Values, error) {');
     expect(content).toContain('func backoff(attempt int');
+    expect(content).toContain('errors.As(lastErr, &apiErr)');
     expect(content).toContain('func parseAPIError(resp *http.Response) error {');
     expect(content).toContain('AuthenticationError');
     expect(content).toContain('RateLimitExceededError');
@@ -108,8 +111,9 @@ describe('go/client', () => {
     const files = generateClient(spec, makeCtx(spec));
     const goMod = files.find((f) => f.path === 'go.mod')!;
 
-    expect(goMod.content).toContain('module github.com/workos/workos-go/v2');
-    expect(goMod.content).toContain('go 1.22');
+    expect(goMod.content).toContain('module github.com/workos/workos-go/v6');
+    expect(goMod.content).toContain('go 1.23');
+    expect(goMod.content).toContain('github.com/google/go-querystring');
     expect(goMod.content).toContain('github.com/stretchr/testify');
   });
 
@@ -120,8 +124,25 @@ describe('go/client', () => {
     const content = paginationFile.content;
 
     expect(content).toContain('type Iterator[T any] struct {');
+    expect(content).toContain('cursor   string');
     expect(content).toContain('func (it *Iterator[T]) Next() bool {');
+    expect(content).toContain('func withCursor(params listParams, cursor string, after *string) listParams {');
     expect(content).toContain('func (it *Iterator[T]) Current() *T {');
     expect(content).toContain('func (it *Iterator[T]) Err() error {');
+  });
+
+  it('uses acronym-aware service accessors and fields', () => {
+    const spec = makeSpec([
+      { name: 'ApiKeys', operations: [] },
+      { name: 'SSO', operations: [] },
+    ]);
+    const files = generateClient(spec, makeCtx(spec));
+    const workosFile = files.find((f) => f.path === 'workos.go')!;
+    const content = workosFile.content;
+
+    expect(content).toContain('apiKeys *apiKeyService');
+    expect(content).toContain('sso *ssoService');
+    expect(content).toContain('func (c *Client) APIKeys() *apiKeyService {');
+    expect(content).toContain('func (c *Client) SSO() *ssoService {');
   });
 });

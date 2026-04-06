@@ -84,6 +84,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   files.push({
     path: 'enums.go',
     content: lines.join('\n'),
+    overwriteExisting: true,
   });
 
   return files;

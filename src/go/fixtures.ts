@@ -38,9 +38,8 @@ export function generateFixtures(spec: {
   for (const model of spec.models) {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
-    if (model.fields.length === 0) continue;
 
-    const fixture = generateModelFixture(model, modelMap, enumMap);
+    const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
     files.push({
       path: `testdata/${fileName(model.name)}.json`,

@@ -1,5 +1,10 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
-import { className as goClassName, fieldName as goFieldName, methodName as goMethodName } from './naming.js';
+import {
+  className as goClassName,
+  fieldName as goFieldName,
+  methodName as goMethodName,
+  unexportedName,
+} from './naming.js';
 
 /**
  * Generate Go wrapper method lines for union split operations.
@@ -148,13 +153,17 @@ function emitWrapperMethod(
   // Make the request
   if (responseType) {
     lines.push(`\tvar result ${responseType}`);
-    lines.push(`\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, body, &result, opts)`);
+    lines.push(
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, &result, opts)`,
+    );
     lines.push('\tif err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
     lines.push('\treturn &result, nil');
   } else {
-    lines.push(`\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, body, nil, opts)`);
+    lines.push(
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, nil, opts)`,
+    );
     lines.push('\treturn err');
   }
 
@@ -234,7 +243,7 @@ const GO_RESERVED = new Set([
 
 function lowerFirstSafe(s: string): string {
   if (!s) return s;
-  const result = s.charAt(0).toLowerCase() + s.slice(1);
+  const result = unexportedName(s);
   if (GO_RESERVED.has(result)) return `${result}Param`;
   return result;
 }

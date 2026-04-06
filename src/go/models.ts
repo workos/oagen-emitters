@@ -111,6 +111,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   files.push({
     path: 'models.go',
     content: lines.join('\n'),
+    overwriteExisting: true,
   });
 
   return files;

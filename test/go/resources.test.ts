@@ -114,11 +114,12 @@ describe('go/resources', () => {
     expect(files.length).toBeGreaterThanOrEqual(1);
     const content = files[0].content;
     expect(content).toContain('package workos');
-    expect(content).toContain('type organizationsService struct {');
-    expect(content).toContain('func (s *organizationsService) ListOrganizations(');
-    expect(content).toContain('func (s *organizationsService) GetOrganization(');
-    expect(content).toContain('func (s *organizationsService) CreateOrganization(');
-    expect(content).toContain('func (s *organizationsService) DeleteOrganization(');
+    expect(content).toContain('type organizationService struct {');
+    expect(content).toContain('Limit *int `url:"limit,omitempty" json:"-"`');
+    expect(content).toContain('func (s *organizationService) List(');
+    expect(content).toContain('func (s *organizationService) Get(');
+    expect(content).toContain('func (s *organizationService) Create(');
+    expect(content).toContain('func (s *organizationService) Delete(');
   });
 
   it('generates path interpolation with fmt.Sprintf', () => {
@@ -138,7 +139,7 @@ describe('go/resources', () => {
     const spec = makeSpec(services);
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
-    expect(content).toContain('fmt.Sprintf("/users/%s", iD)');
+    expect(content).toContain('fmt.Sprintf("/users/%s", id)');
   });
 
   it('generates paginated methods returning Iterator', () => {
@@ -164,7 +165,7 @@ describe('go/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
     expect(content).toContain('*Iterator[User]');
-    expect(content).toContain('newIterator[User]');
+    expect(content).toContain('newIterator[User](ctx, s.client, "GET", "/users", nil, "after", "data", opts)');
   });
 
   it('generates delete methods returning error', () => {
@@ -218,8 +219,32 @@ describe('go/resources', () => {
     ]);
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
-    expect(content).toContain('type UsersCreateUserParams struct {');
+    expect(content).toContain('type UsersCreateParams struct {');
     expect(content).toContain('Email string `json:"email"`');
-    expect(content).toContain('Notify *bool `url:"notify,omitempty"`');
+    expect(content).toContain('Notify *bool `url:"notify,omitempty" json:"-"`');
+    expect(content).toContain('request(ctx, "POST", "/users", params, params, &result, opts)');
+  });
+
+  it('uses params.Body for non-model request bodies', () => {
+    const services: Service[] = [
+      {
+        name: 'Connect',
+        operations: [
+          makeOp({
+            name: 'createApplications',
+            httpMethod: 'post',
+            path: '/connect/applications',
+            requestBody: { kind: 'primitive', type: 'unknown' },
+            response: { kind: 'model', name: 'ConnectApplication' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('type ConnectCreateApplicationsParams struct {');
+    expect(content).toContain('Body interface{} `json:"-"`');
+    expect(content).toContain('request(ctx, "POST", "/connect/applications", nil, params.Body, &result, opts)');
   });
 });
