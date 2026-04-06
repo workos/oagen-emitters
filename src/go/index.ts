@@ -13,7 +13,6 @@ import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
-import { generateErrors } from './errors.js';
 import { generateConfig } from './config.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
@@ -47,8 +46,8 @@ export const goEmitter: Emitter = {
     return ensureTrailingNewlines(generateClient(spec, ctx));
   },
 
-  generateErrors(ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateErrors(ctx));
+  generateErrors(): GeneratedFile[] {
+    return [];
   },
 
   generateConfig(ctx: EmitterContext): GeneratedFile[] {

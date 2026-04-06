@@ -24,19 +24,14 @@ function makeCtx(spec: ApiSpec): EmitterContext {
 }
 
 describe('go/client', () => {
-  it('generates client files for empty spec', () => {
+  it('generates only workos.go', () => {
     const spec = makeSpec([]);
     const files = generateClient(spec, makeCtx(spec));
-    // Should produce: workos.go, client.go, pagination.go, go.mod
-    expect(files.length).toBe(4);
-    const paths = files.map((f) => f.path);
-    expect(paths).toContain('workos.go');
-    expect(paths).toContain('client.go');
-    expect(paths).toContain('pagination.go');
-    expect(paths).toContain('go.mod');
+    expect(files.length).toBe(1);
+    expect(files[0].path).toBe('workos.go');
   });
 
-  it('generates NewClient constructor', () => {
+  it('generates Client struct with service fields', () => {
     const spec = makeSpec([
       {
         name: 'Organizations',
@@ -60,75 +55,24 @@ describe('go/client', () => {
     const content = workosFile.content;
 
     expect(content).toContain('package workos');
-    expect(content).toContain('func NewClient(apiKey string, opts ...ClientOption) *Client {');
     expect(content).toContain('organizations *organizationService');
+    expect(content).toContain('func NewClient(apiKey string, opts ...ClientOption) *Client {');
     expect(content).toContain('func (c *Client) Organizations() *organizationService {');
   });
 
-  it('generates functional options', () => {
+  it('does not emit static options or HTTP infrastructure', () => {
     const spec = makeSpec([]);
     const files = generateClient(spec, makeCtx(spec));
     const workosFile = files.find((f) => f.path === 'workos.go')!;
     const content = workosFile.content;
 
-    expect(content).toContain('type ClientOption func(*Client)');
-    expect(content).toContain('func WithBaseURL(url string) ClientOption {');
-    expect(content).toContain('func WithHTTPClient(client *http.Client) ClientOption {');
-    expect(content).toContain('func WithMaxRetries(n int) ClientOption {');
-  });
-
-  it('generates RequestOption type', () => {
-    const spec = makeSpec([]);
-    const files = generateClient(spec, makeCtx(spec));
-    const workosFile = files.find((f) => f.path === 'workos.go')!;
-    const content = workosFile.content;
-
-    expect(content).toContain('type RequestOption func(*requestConfig)');
-    expect(content).toContain('func WithExtraHeaders(h http.Header) RequestOption {');
-    expect(content).toContain('func WithIdempotencyKey(key string) RequestOption {');
-    expect(content).toContain('func WithTimeout(d time.Duration) RequestOption {');
-  });
-
-  it('generates client.go with retry logic', () => {
-    const spec = makeSpec([]);
-    const files = generateClient(spec, makeCtx(spec));
-    const clientFile = files.find((f) => f.path === 'client.go')!;
-    const content = clientFile.content;
-
-    expect(content).toContain('func (c *Client) request(');
-    expect(content).toContain('queryParams interface{}');
-    expect(content).toContain('retryableStatuses');
-    expect(content).toContain('func encodeQuery(params interface{}) (url.Values, error) {');
-    expect(content).toContain('func backoff(attempt int');
-    expect(content).toContain('errors.As(lastErr, &apiErr)');
-    expect(content).toContain('func parseAPIError(resp *http.Response) error {');
-    expect(content).toContain('AuthenticationError');
-    expect(content).toContain('RateLimitExceededError');
-  });
-
-  it('generates go.mod', () => {
-    const spec = makeSpec([]);
-    const files = generateClient(spec, makeCtx(spec));
-    const goMod = files.find((f) => f.path === 'go.mod')!;
-
-    expect(goMod.content).toContain('module github.com/workos/workos-go/v6');
-    expect(goMod.content).toContain('go 1.23');
-    expect(goMod.content).toContain('github.com/google/go-querystring');
-    expect(goMod.content).toContain('github.com/stretchr/testify');
-  });
-
-  it('generates pagination.go with Iterator', () => {
-    const spec = makeSpec([]);
-    const files = generateClient(spec, makeCtx(spec));
-    const paginationFile = files.find((f) => f.path === 'pagination.go')!;
-    const content = paginationFile.content;
-
-    expect(content).toContain('type Iterator[T any] struct {');
-    expect(content).toContain('cursor   string');
-    expect(content).toContain('func (it *Iterator[T]) Next() bool {');
-    expect(content).toContain('func withCursor(params listParams, cursor string, after *string) listParams {');
-    expect(content).toContain('func (it *Iterator[T]) Current() *T {');
-    expect(content).toContain('func (it *Iterator[T]) Err() error {');
+    // These definitions are now in hand-maintained options.go
+    expect(content).not.toContain('type ClientOption func(*Client)');
+    expect(content).not.toContain('func WithBaseURL');
+    expect(content).not.toContain('type RequestOption');
+    expect(content).not.toContain('type requestConfig struct');
+    // Constants are defined in options.go, but referenced in NewClient
+    expect(content).not.toContain('defaultBaseURL    =');
   });
 
   it('uses acronym-aware service accessors and fields', () => {
