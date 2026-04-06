@@ -48,6 +48,7 @@ export function generateFixtures(
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
+  const seenFixturePaths = new Set<string>();
   for (const model of spec.models) {
     // Skip redundant list-metadata and list-wrapper models (handled by shared types)
     if (isListMetadataModel(model)) continue;
@@ -55,10 +56,17 @@ export function generateFixtures(
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
+    const fixturePath = `src/${dirName}/fixtures/${fileName(model.name)}.fixture.json`;
+
+    // After noise suffix stripping, multiple models may resolve to the same
+    // fixture path (e.g., OrganizationDto and Organization).  Skip duplicates.
+    if (seenFixturePaths.has(fixturePath)) continue;
+    seenFixturePaths.add(fixturePath);
+
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `src/${dirName}/fixtures/${fileName(model.name)}.fixture.json`,
+      path: fixturePath,
       content: JSON.stringify(fixture, null, 2),
     });
   }

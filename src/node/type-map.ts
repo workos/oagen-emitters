@@ -122,10 +122,12 @@ function mapWirePrimitive(ref: PrimitiveType): string {
  * allOf unions use `&` (intersection), oneOf/anyOf/unspecified use `|` (union).
  */
 function joinUnionVariants(ref: UnionType, variants: string[]): string {
+  const unique = [...new Set(variants)];
   if (ref.compositionKind === 'allOf') {
-    return variants.join(' & ');
+    return unique.join(' & ');
   }
-  return variants.join(' | ');
+  if (unique.length === 1) return unique[0];
+  return unique.join(' | ');
 }
 
 /** Wrap union/intersection types in parentheses when used as array item type. */

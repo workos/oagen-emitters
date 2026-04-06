@@ -2,6 +2,11 @@ import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 
+/** Strip spec-noise suffixes (e.g., "Dto") from an IR name. */
+export function stripNoiseSuffixes(name: string): string {
+  return name.replace(/Dto$/i, '');
+}
+
 /** PascalCase class/interface name. */
 export function className(name: string): string {
   return toPascalCase(name);
@@ -108,5 +113,9 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
 export function resolveInterfaceName(name: string, ctx: EmitterContext): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
-  return toPascalCase(name);
+  // Strip spec-noise suffixes (e.g., "Dto") only for models without a
+  // baseline.  When an overlay exists (Scenario A), the overlay check above
+  // handles existing models.  New models (no overlay entry) get clean names.
+  const cleaned = ctx.apiSurface ? name : stripNoiseSuffixes(name);
+  return toPascalCase(cleaned);
 }

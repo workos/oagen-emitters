@@ -197,6 +197,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       // remove skipIfExists so the merger adds the new methods.
       if (hasMethodsAbsentFromBaseline(service, ctx)) {
         delete file.skipIfExists;
+        // Suppress auto-generated header — the file is a merge target
+        // containing hand-written code, not a fully generated file.
+        file.headerPlacement = 'skip';
       }
       files.push(file);
       continue;
@@ -211,6 +214,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       // merger adds new methods AND refreshes existing JSDoc.
       const file = generateResourceClass(service, ctx);
       delete file.skipIfExists;
+      // Suppress auto-generated header — the file is a merge target
+      // containing hand-written code, not a fully generated file.
+      file.headerPlacement = 'skip';
       files.push(file);
     } else {
       files.push(generateResourceClass(service, ctx));
@@ -247,18 +253,23 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // order, JSDoc comments get attached to the wrong methods (list↔create,
   // add↔set swaps).  Sorting by the overlay's method order ensures the
   // generated output matches the existing file's method order.
+  //
+  // We build the order from HTTP operation keys (e.g., "GET /organizations")
+  // rather than method names, because resolveMethodName may return a different
+  // name than the overlay's methodName (e.g., when the hint map overrides it),
+  // causing the lookup to fail and the sort to produce wrong order.
   if (ctx.overlayLookup?.methodByOperation) {
-    const methodOrder = new Map<string, number>();
+    const httpKeyOrder = new Map<string, number>();
     let pos = 0;
-    for (const [, info] of ctx.overlayLookup.methodByOperation) {
-      if (!methodOrder.has(info.methodName)) {
-        methodOrder.set(info.methodName, pos++);
-      }
+    for (const [httpKey] of ctx.overlayLookup.methodByOperation) {
+      httpKeyOrder.set(httpKey, pos++);
     }
-    if (methodOrder.size > 0) {
+    if (httpKeyOrder.size > 0) {
       plans.sort((a, b) => {
-        const aPos = methodOrder.get(a.method) ?? Number.MAX_SAFE_INTEGER;
-        const bPos = methodOrder.get(b.method) ?? Number.MAX_SAFE_INTEGER;
+        const aKey = `${a.op.httpMethod.toUpperCase()} ${a.op.path}`;
+        const bKey = `${b.op.httpMethod.toUpperCase()} ${b.op.path}`;
+        const aPos = httpKeyOrder.get(aKey) ?? Number.MAX_SAFE_INTEGER;
+        const bPos = httpKeyOrder.get(bKey) ?? Number.MAX_SAFE_INTEGER;
         return aPos - bPos;
       });
     }
@@ -554,112 +565,123 @@ function renderMethod(
     validParamNames = actualParams;
   }
 
-  const docParts: string[] = [];
-  if (op.description) docParts.push(op.description);
-  for (const param of op.pathParams) {
-    const paramName = fieldName(param.name);
-    if (validParamNames && !validParamNames.has(paramName)) continue;
-    const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
-    if (param.description) {
-      docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
-    } else if (param.deprecated) {
-      docParts.push(`@param ${paramName} - (deprecated)`);
-    }
-    if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
-    if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
-  }
-  // Document query params for non-paginated operations
-  if (!plan.isPaginated) {
-    // Only document query params if the method will have an options parameter
-    if (validParamNames && (validParamNames.has('options') || overlayMethod)) {
-      for (const param of op.queryParams) {
-        const paramName = `options.${fieldName(param.name)}`;
-        if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name))) continue;
-        const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
-        if (param.description) {
-          docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
-        } else if (param.deprecated) {
-          docParts.push(`@param ${paramName} - (deprecated)`);
-        }
-        if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
-        if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
-      }
-    }
-  }
-  // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
-  // The SDK handles headers and cookies internally, so documenting them would be misleading.
-  // Document payload parameter when there is a request body
-  if (plan.hasBody) {
-    const bodyInfo = extractRequestBodyType(op, ctx);
-    if (bodyInfo?.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
-      let payloadDesc: string;
-      if (bodyModel?.description) {
-        payloadDesc = `@param payload - ${bodyModel.description}`;
-      } else if (bodyModel) {
-        // When the model lacks a description, list its required fields to help
-        // callers understand what must be provided.
-        const requiredFieldNames = bodyModel.fields.filter((f) => f.required).map((f) => fieldName(f.name));
-        payloadDesc =
-          requiredFieldNames.length > 0
-            ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
-            : '@param payload - The request body.';
-      } else {
-        payloadDesc = '@param payload - The request body.';
-      }
-      docParts.push(payloadDesc);
-    } else {
-      docParts.push('@param payload - The request body.');
-    }
-  }
-  // Document options parameter for paginated operations
-  if (plan.isPaginated) {
-    docParts.push('@param options - Pagination and filter options.');
-  } else if (op.queryParams.length > 0) {
-    docParts.push('@param options - Additional query options.');
-  }
-  // @returns for the primary response model (use item type for paginated operations).
-  // Unwrap list wrapper models to match the actual return type — the method returns
-  // AutoPaginatable<ItemType>, not the list wrapper.
-  if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
-    let itemRawName = op.pagination.itemType.name;
-    const pModel = modelMap.get(itemRawName);
-    if (pModel) {
-      const unwrapped = unwrapListModel(pModel, modelMap);
-      if (unwrapped) itemRawName = unwrapped.name;
-    }
-    const itemTypeName = resolveInterfaceName(itemRawName, ctx);
-    docParts.push(`@returns {AutoPaginatable<${itemTypeName}>}`);
-  } else if (responseModel) {
-    docParts.push(`@returns {${responseModel}}`);
-  } else {
-    docParts.push('@returns {void}');
-  }
-  // @throws for error responses
-  for (const err of op.errors) {
-    const exceptionName = STATUS_TO_EXCEPTION_NAME[err.statusCode];
-    if (exceptionName) {
-      docParts.push(`@throws {${exceptionName}} ${err.statusCode}`);
-    }
-  }
-  if (op.deprecated) docParts.push('@deprecated');
+  // When the method already exists in the baseline (overlay match), skip JSDoc
+  // generation entirely.  The merger only replaces existing docstrings when the
+  // generated member HAS a docstring — by omitting it, the merger preserves
+  // the hand-written JSDoc (including @deprecated notices, SDK-specific docs
+  // like PKCE flow descriptions, and custom @throws annotations).
+  // New methods (no overlay match) still get full spec-derived JSDoc.
+  const skipJSDoc = !!overlayMethod;
 
-  if (docParts.length > 0) {
-    // Flatten all parts, splitting multiline descriptions into individual lines
-    const allLines: string[] = [];
-    for (const part of docParts) {
-      for (const line of part.split('\n')) {
-        allLines.push(line);
+  if (!skipJSDoc) {
+    const docParts: string[] = [];
+    if (op.description) docParts.push(op.description);
+    for (const param of op.pathParams) {
+      const paramName = fieldName(param.name);
+      if (validParamNames && !validParamNames.has(paramName)) continue;
+      const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+      if (param.description) {
+        docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
+      } else if (param.deprecated) {
+        docParts.push(`@param ${paramName} - (deprecated)`);
+      }
+      if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+      if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
+    }
+    // Document query params for non-paginated operations
+    if (!plan.isPaginated) {
+      // Only document query params if the method will have an options parameter
+      if (validParamNames && (validParamNames.has('options') || overlayMethod)) {
+        for (const param of op.queryParams) {
+          const paramName = `options.${fieldName(param.name)}`;
+          if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name)))
+            continue;
+          const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
+          if (param.description) {
+            docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
+          } else if (param.deprecated) {
+            docParts.push(`@param ${paramName} - (deprecated)`);
+          }
+          if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
+          if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
+        }
       }
     }
-    if (allLines.length === 1) {
-      lines.push(`  /** ${allLines[0]} */`);
-    } else {
-      lines.push('  /**');
-      for (const line of allLines) {
-        lines.push(line === '' ? '   *' : `   * ${line}`);
+    // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
+    // The SDK handles headers and cookies internally, so documenting them would be misleading.
+    // Document payload parameter when there is a request body
+    if (plan.hasBody) {
+      const bodyInfo = extractRequestBodyType(op, ctx);
+      if (bodyInfo?.kind === 'model') {
+        const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
+        let payloadDesc: string;
+        if (bodyModel?.description) {
+          payloadDesc = `@param payload - ${bodyModel.description}`;
+        } else if (bodyModel) {
+          // When the model lacks a description, list its required fields to help
+          // callers understand what must be provided.
+          const requiredFieldNames = bodyModel.fields.filter((f) => f.required).map((f) => fieldName(f.name));
+          payloadDesc =
+            requiredFieldNames.length > 0
+              ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
+              : '@param payload - The request body.';
+        } else {
+          payloadDesc = '@param payload - The request body.';
+        }
+        docParts.push(payloadDesc);
+      } else {
+        docParts.push('@param payload - The request body.');
       }
-      lines.push('   */');
+    }
+    // Document options parameter for paginated operations
+    if (plan.isPaginated) {
+      docParts.push('@param options - Pagination and filter options.');
+    } else if (op.queryParams.length > 0) {
+      docParts.push('@param options - Additional query options.');
+    }
+    // @returns for the primary response model (use item type for paginated operations).
+    // Unwrap list wrapper models to match the actual return type — the method returns
+    // AutoPaginatable<ItemType>, not the list wrapper.
+    if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+      let itemRawName = op.pagination.itemType.name;
+      const pModel = modelMap.get(itemRawName);
+      if (pModel) {
+        const unwrapped = unwrapListModel(pModel, modelMap);
+        if (unwrapped) itemRawName = unwrapped.name;
+      }
+      const itemTypeName = resolveInterfaceName(itemRawName, ctx);
+      docParts.push(`@returns {AutoPaginatable<${itemTypeName}>}`);
+    } else if (responseModel) {
+      docParts.push(`@returns {${responseModel}}`);
+    } else {
+      docParts.push('@returns {void}');
+    }
+    // @throws for error responses
+    for (const err of op.errors) {
+      const exceptionName = STATUS_TO_EXCEPTION_NAME[err.statusCode];
+      if (exceptionName) {
+        docParts.push(`@throws {${exceptionName}} ${err.statusCode}`);
+      }
+    }
+    if (op.deprecated) docParts.push('@deprecated');
+
+    if (docParts.length > 0) {
+      // Flatten all parts, splitting multiline descriptions into individual lines
+      const allLines: string[] = [];
+      for (const part of docParts) {
+        for (const line of part.split('\n')) {
+          allLines.push(line);
+        }
+      }
+      if (allLines.length === 1) {
+        lines.push(`  /** ${allLines[0]} */`);
+      } else {
+        lines.push('  /**');
+        for (const line of allLines) {
+          lines.push(line === '' ? '   *' : `   * ${line}`);
+        }
+        lines.push('   */');
+      }
     }
   }
 

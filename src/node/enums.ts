@@ -19,6 +19,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // Check baseline surface for representation and values
     const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
     const baselineAlias = ctx.apiSurface?.typeAliases?.[enumDef.name];
+    const generatedPath = `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`;
+
+    // If the baseline already provides this enum from a different file (e.g., `.enum.ts`),
+    // skip generation to avoid duplicate exports from the same barrel.
+    const baselineSourceFile = (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile;
+    if (baselineSourceFile && baselineSourceFile !== generatedPath) {
+      continue;
+    }
+
     const lines: string[] = [];
 
     // Track whether the generated content has new values not in the baseline.
