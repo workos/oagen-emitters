@@ -15,12 +15,12 @@ import { resolveResourceClassName } from './resources.js';
 import {
   assignModelsToServices,
   createServiceDirResolver,
-  isServiceCoveredByExisting,
   uncoveredOperations,
   relativeImport,
   isListMetadataModel,
   isListWrapperModel,
 } from './utils.js';
+import { groupByMount } from '../shared/resolved-ops.js';
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -34,15 +34,32 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Build model lookup for response field assertions
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
 
-  // Generate test files per service — skip services whose endpoints are fully
-  // covered by existing hand-written service classes. For partially covered
-  // services, generate tests only for uncovered operations.
-  for (const service of spec.services) {
-    if (isServiceCoveredByExisting(service, ctx)) continue;
-    const ops = uncoveredOperations(service, ctx);
+  // Generate test files per mount target — merges all sub-services into one
+  // test file. Skip operations already covered by existing hand-written classes.
+  const mountGroups = groupByMount(ctx);
+
+  // Build mount-target → property name map so tests use the same accessor
+  // as the generated client, even when the mount target name doesn't match
+  // any IR service name directly.
+  const mountAccessors = new Map<string, string>();
+  for (const r of ctx.resolvedOperations ?? []) {
+    if (!mountAccessors.has(r.mountOn)) {
+      mountAccessors.set(r.mountOn, servicePropertyName(r.mountOn));
+    }
+  }
+
+  const testEntries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
+
+  for (const { name: mountName, operations } of testEntries) {
+    if (operations.length === 0) continue;
+    const mergedService: Service = { name: mountName, operations };
+    const ops = uncoveredOperations(mergedService, ctx);
     if (ops.length === 0) continue;
-    const testService = ops.length < service.operations.length ? { ...service, operations: ops } : service;
-    files.push(generateServiceTest(testService, spec, ctx, modelMap));
+    const testService = ops.length < operations.length ? { ...mergedService, operations: ops } : mergedService;
+    files.push(generateServiceTest(testService, spec, ctx, modelMap, mountAccessors));
   }
 
   // Generate serializer round-trip tests
@@ -59,11 +76,12 @@ function generateServiceTest(
   spec: ApiSpec,
   ctx: EmitterContext,
   modelMap: Map<string, Model>,
+  mountAccessors?: Map<string, string>,
 ): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
-  const serviceProp = servicePropertyName(resolvedName);
+  const serviceProp = mountAccessors?.get(service.name) ?? servicePropertyName(resolvedName);
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
 
   const plans = service.operations.map((op) => ({

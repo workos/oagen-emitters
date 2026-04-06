@@ -111,6 +111,87 @@ Runs compat verification (checks that generated types preserve the live SDK's pu
 
 **When to run:** After any generation to verify correctness, or in CI.
 
+## SDK Behavior
+
+Emitters read runtime policy (retry, errors, telemetry, pagination, etc.) from `ctx.spec.sdk` rather than hardcoding values. The `ApiSpec.sdk` field is always populated with defaults from `defaultSdkBehavior()`.
+
+```ts
+function generateHttpClient(ctx: EmitterContext) {
+  const sdk = ctx.spec.sdk;
+  const retryCodes = sdk.retry.retryableStatusCodes; // [429, 500, 502, 503, 504]
+  const timeout = sdk.timeout.defaultTimeoutSeconds;  // 60
+}
+```
+
+Per-language overrides go in the SDK's `oagen.config.ts`:
+
+```ts
+// Example: Python SDK overrides
+export default {
+  sdkBehavior: {
+    retry: { backoff: { initialDelay: 0.5, maxDelay: 8.0 } },
+    timeout: { defaultTimeoutSeconds: 30, timeoutEnvVar: 'WORKOS_REQUEST_TIMEOUT' },
+  },
+};
+```
+
+See `@workos/oagen`'s `src/ir/sdk-behavior.ts` for all interfaces and default values.
+
+## Operation Hints
+
+`oagen.config.ts` defines `operationHints` and `mountRules` that control how operations are named and organized across all SDKs.
+
+### Adding a hint for a new operation
+
+When the spec adds a new endpoint and the algorithm-derived name is wrong, add an entry to `operationHints`:
+
+```ts
+const operationHints: Record<string, OperationHint> = {
+  // Override derived name
+  'GET /sso/authorize': { name: 'get_authorization_url' },
+
+  // Remount to a different service
+  'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
+};
+```
+
+### Adding a union split
+
+For endpoints that accept a discriminated union body (multiple request shapes), use `split`:
+
+```ts
+'POST /user_management/authenticate': {
+  split: [
+    {
+      name: 'authenticate_with_password',
+      targetVariant: 'PasswordSessionAuthenticateRequest',
+      defaults: { grant_type: 'password' },
+      inferFromClient: ['client_id', 'client_secret'],
+      exposedParams: ['email', 'password', 'invitation_token'],
+    },
+    // ... more variants
+  ],
+},
+```
+
+### Mount rules
+
+Instead of adding `mountOn` to every operation individually, use `mountRules` for service-level remounting:
+
+```ts
+const mountRules: Record<string, string> = {
+  Connections: 'SSO',           // All Connections ops → SSO namespace
+  DirectoryGroups: 'DirectorySync',
+  UserManagementUsers: 'UserManagement',
+};
+```
+
+### Reviewing operations
+
+```bash
+npx oagen resolve --spec ../openapi-spec/spec/open-api-spec.yaml --format table
+```
+
 ## Adding a new language
 
 Use the oagen skills:

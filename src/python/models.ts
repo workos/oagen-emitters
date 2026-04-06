@@ -1,0 +1,655 @@
+import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
+import { mapTypeRef } from './type-map.js';
+import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
+import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
+
+/**
+ * Generate Python dataclass model files from IR Model definitions.
+ * Each model becomes a single .py file with a dataclass, from_dict, and to_dict.
+ */
+export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+  if (models.length === 0) return [];
+
+  const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+  const mountDirMap = buildMountDirMap(ctx);
+  const resolveDir = (irService: string | undefined) =>
+    irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
+  const modelMap = new Map(models.map((m) => [m.name, m]));
+  const files: GeneratedFile[] = [];
+  const emittedModelSymbolsByDir = new Map<string, string[]>();
+  const modelUsage = collectModelUsage(ctx.spec);
+
+  // Build structural hashes for deduplication
+  const modelHashMap = new Map<string, string>(); // model name -> hash
+  const hashGroups = new Map<string, string[]>(); // hash -> model names
+  for (const model of models) {
+    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    const hash = structuralHash(model);
+    modelHashMap.set(model.name, hash);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(model.name);
+  }
+
+  // For each group of identical models, pick canonical (alphabetically first)
+  const aliasOf = new Map<string, string>(); // alias name -> canonical name
+  for (const [, names] of hashGroups) {
+    if (names.length <= 1) continue;
+    const sorted = [...names].sort((a, b) => compareAliasPriority(a, b, modelUsage));
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      if (canAliasModels(canonical, sorted[i], modelUsage)) {
+        aliasOf.set(sorted[i], canonical);
+      }
+    }
+  }
+
+  for (const model of models) {
+    // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
+    if (isListWrapperModel(model)) continue;
+    // Skip all list metadata models (e.g., ListMetadata, FooListListMetadata)
+    if (isListMetadataModel(model)) continue;
+
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    const modelClassName = className(model.name);
+
+    // If this model is an alias for a canonical model, generate a type alias file
+    const canonicalName = aliasOf.get(model.name);
+    if (canonicalName) {
+      const canonicalService = modelToService.get(canonicalName);
+      const canonicalDir = resolveDir(canonicalService);
+      const canonicalClassName = className(canonicalName);
+      const lines: string[] = [];
+      if (canonicalDir === dirName) {
+        lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);
+      } else {
+        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalClassName}`);
+      }
+      lines.push('');
+      lines.push(`${modelClassName} = ${canonicalClassName}`);
+      files.push({
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+      continue;
+    }
+
+    // Deduplicate fields that map to the same snake_case name
+    const seenFieldNames = new Set<string>();
+    const deduplicatedFields = model.fields.filter((f) => {
+      const pyName = fieldName(f.name);
+      if (seenFieldNames.has(pyName)) return false;
+      seenFieldNames.add(pyName);
+      return true;
+    });
+    const dedupModel = { ...model, fields: deduplicatedFields };
+    const deps = collectFieldDependencies(dedupModel);
+
+    const lines: string[] = [];
+
+    // Collect typing imports
+    const typingImports = new Set<string>();
+    typingImports.add('Any');
+    typingImports.add('Dict');
+    for (const field of deduplicatedFields) {
+      collectTypingImports(field.type, typingImports);
+    }
+    const hasOptional = deduplicatedFields.some((f) => isOptionalField(model.name, f, ctx));
+    if (hasOptional) typingImports.add('Optional');
+    const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
+    const usesEnum = deps.enums.size > 0;
+
+    lines.push('from __future__ import annotations');
+    lines.push('');
+    lines.push('from dataclasses import dataclass');
+    if (usesDateTime) {
+      lines.push('from datetime import datetime');
+    }
+    if (usesEnum) {
+      lines.push('from enum import Enum');
+    }
+    lines.push('from typing import cast');
+    lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
+    lines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
+    if (usesDateTime) {
+      lines.push(`from ${ctx.namespace}._types import _format_datetime, _parse_datetime`);
+    }
+
+    // Import referenced models from their service's models package
+    if (deps.models.size > 0) {
+      lines.push('');
+      for (const modelName of [...deps.models].sort()) {
+        if (modelName === model.name) continue; // skip self
+        const modelService = modelToService.get(modelName);
+        const modelDir = resolveDir(modelService);
+        if (modelDir === dirName) {
+          lines.push(`from .${fileName(modelName)} import ${className(modelName)}`);
+        } else {
+          lines.push(`from ${ctx.namespace}.${dirToModule(modelDir)}.models import ${className(modelName)}`);
+        }
+      }
+    }
+
+    // Import referenced enums from their service's models package
+    if (deps.enums.size > 0) {
+      for (const enumName of [...deps.enums].sort()) {
+        const enumService = enumToService.get(enumName);
+        const enumDir = resolveDir(enumService);
+        if (enumDir === dirName) {
+          lines.push(`from .${fileName(enumName)} import ${className(enumName)}`);
+        } else {
+          lines.push(`from ${ctx.namespace}.${dirToModule(enumDir)}.models import ${className(enumName)}`);
+        }
+      }
+    }
+
+    lines.push('');
+    lines.push('');
+
+    // Dataclass definition
+    lines.push('@dataclass(slots=True)');
+    lines.push(`class ${modelClassName}:`);
+    if (model.description) {
+      lines.push(`    """${model.description}"""`);
+    } else {
+      // Generate a default docstring from the class name when the spec
+      // doesn't provide a description.
+      let readable = modelClassName.replace(/([a-z])([A-Z])/g, '$1 $2');
+      readable = readable.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+      lines.push(`    """${readable} model."""`);
+    }
+
+    lines.push('');
+
+    // Sort fields: required first, then optional
+    const requiredFields = deduplicatedFields.filter((f) => !isOptionalField(model.name, f, ctx));
+    const optionalFields = deduplicatedFields.filter((f) => isOptionalField(model.name, f, ctx));
+
+    for (const field of requiredFields) {
+      const pyFieldName = fieldName(field.name);
+      const pyType = resolveModelFieldType(field.type);
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('.. deprecated::');
+        lines.push(`    ${pyFieldName}: ${pyType}`);
+        lines.push(`    """${parts.join('\n\n    ')}"""`);
+      } else {
+        lines.push(`    ${pyFieldName}: ${pyType}`);
+      }
+    }
+
+    for (const field of optionalFields) {
+      const pyFieldName = fieldName(field.name);
+      const innerType =
+        field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
+      const pyType = `Optional[${innerType}]`;
+      if (field.description || field.deprecated) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (field.deprecated) parts.push('.. deprecated::');
+        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+        lines.push(`    """${parts.join('\n\n    ')}"""`);
+      } else {
+        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+      }
+    }
+
+    // from_dict class method
+    lines.push('');
+    lines.push('    @classmethod');
+    lines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${modelClassName}":`);
+    lines.push(`        """Deserialize from a dictionary."""`);
+    lines.push('        try:');
+    lines.push('            return cls(');
+
+    for (const field of [...requiredFields, ...optionalFields]) {
+      const pyFieldName = fieldName(field.name);
+      const wireKey = field.name; // Wire keys are snake_case from the spec
+      const isRequired = !isOptionalField(model.name, field, ctx);
+      const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+      // For deserialization expressions, nullable types must always handle None
+      // even when the field itself is required (the key must be present, but value can be null).
+      const deserRequired = isRequired && field.type.kind !== 'nullable';
+      const deserExpr = deserializeField(field.type, accessor, deserRequired, modelMap);
+      lines.push(`                ${pyFieldName}=${deserExpr},`);
+    }
+
+    lines.push('            )');
+    lines.push('        except (KeyError, ValueError) as e:');
+    lines.push(`            _raise_deserialize_error("${modelClassName}", e)`);
+
+    // to_dict instance method
+    lines.push('');
+    lines.push('    def to_dict(self) -> Dict[str, Any]:');
+    lines.push('        """Serialize to a dictionary."""');
+    lines.push('        result: Dict[str, Any] = {}');
+
+    for (const field of [...requiredFields, ...optionalFields]) {
+      const pyFieldName = fieldName(field.name);
+      const wireKey = field.name;
+      const isRequired = !isOptionalField(model.name, field, ctx);
+
+      const isNullable = field.type.kind === 'nullable';
+      if (isRequired && !isNullable) {
+        // Required non-nullable: always serialize directly
+        const serExpr = serializeField(field.type, `self.${pyFieldName}`);
+        lines.push(`        result["${wireKey}"] = ${serExpr}`);
+      } else if (isNullable) {
+        // Nullable fields should round-trip explicit None as null, even when optional
+        const innerType = (field.type as any).inner;
+        const serExpr = serializeField(innerType, `self.${pyFieldName}`);
+        lines.push(`        if self.${pyFieldName} is not None:`);
+        lines.push(`            result["${wireKey}"] = ${serExpr}`);
+        lines.push(`        else:`);
+        lines.push(`            result["${wireKey}"] = None`);
+      } else {
+        // Optional non-nullable fields should be omitted when unset
+        const serExpr = serializeField(field.type, `self.${pyFieldName}`);
+        lines.push(`        if self.${pyFieldName} is not None:`);
+        lines.push(`            result["${wireKey}"] = ${serExpr}`);
+      }
+    }
+
+    lines.push('        return result');
+
+    files.push({
+      path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+      content: lines.join('\n'),
+      integrateTarget: true,
+      overwriteExisting: true,
+    });
+    if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+    emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+  }
+
+  // Generate __init__.py barrel files for each models/ directory
+  // Include both models and enums
+  const symbolsByDir = new Map<string, string[]>();
+  for (const [dirName, names] of emittedModelSymbolsByDir) {
+    const key = `src/${ctx.namespace}/${dirName}/models`;
+    if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
+    symbolsByDir.get(key)!.push(...names);
+  }
+
+  // Also include enums in the barrels using the enum emitter's actual output placement.
+  const reachableEnumNames = collectReachableEnumNames(ctx);
+  const emittedEnums = ctx.spec.enums.filter((enumDef) => reachableEnumNames.has(enumDef.name));
+  const enumSymbolsByDir = collectGeneratedEnumSymbolsByDir(emittedEnums, ctx);
+  for (const [dirName, names] of enumSymbolsByDir) {
+    const key = `src/${ctx.namespace}/${dirName}/models`;
+    if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
+    symbolsByDir.get(key)!.push(...names);
+  }
+
+  // Build set of service directory model paths — these get their parent __init__.py
+  // from generateServiceInits in client.ts, so we must not create a competing one here.
+  const serviceDirModelPaths = new Set<string>();
+  for (const service of ctx.spec.services) {
+    const dirName = mountDirMap.get(service.name) ?? resolveDir(service.name);
+    serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
+  }
+
+  for (const [dirPath, names] of symbolsByDir) {
+    // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
+    const uniqueNames = [...new Set(names)].sort();
+    const importLines: string[] = [];
+    for (const name of uniqueNames) {
+      importLines.push(`from .${fileName(name)} import ${className(name)} as ${className(name)}`);
+    }
+    const imports = importLines.join('\n');
+    files.push({
+      path: `${dirPath}/__init__.py`,
+      content: imports,
+      integrateTarget: true,
+      overwriteExisting: true,
+    });
+
+    // Only generate parent __init__.py for non-service dirs (e.g., common/).
+    // Service dirs get their __init__.py from generateServiceInits in client.ts
+    // which includes both the resource class re-export and model star import.
+    if (!serviceDirModelPaths.has(dirPath)) {
+      const parentDir = dirPath.replace(/\/models$/, '');
+      const reExports = [...new Set(names)]
+        .sort()
+        .map((name) => `from .models import ${className(name)} as ${className(name)}`)
+        .join('\n');
+      files.push({
+        path: `${parentDir}/__init__.py`,
+        content: reExports,
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
+  }
+
+  return files;
+}
+
+function collectTypingImports(ref: any, imports: Set<string>): void {
+  switch (ref.kind) {
+    case 'array':
+      imports.add('List');
+      collectTypingImports(ref.items, imports);
+      break;
+    case 'nullable':
+      imports.add('Optional');
+      collectTypingImports(ref.inner, imports);
+      break;
+    case 'union':
+      imports.add('Union');
+      for (const v of ref.variants) collectTypingImports(v, imports);
+      break;
+    case 'map':
+      imports.add('Dict');
+      collectTypingImports(ref.valueType, imports);
+      break;
+    case 'literal':
+      imports.add('Literal');
+      break;
+    case 'primitive':
+      if (ref.type === 'unknown') imports.add('Any');
+      break;
+  }
+}
+
+function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
+  const referencedModels = new Set<string>();
+  const referencedEnums = new Set<string>();
+
+  const collectFromTypeRef = (ref: any): void => {
+    walkTypeRef(ref, {
+      model: (r) => referencedModels.add(r.name),
+      enum: (r) => referencedEnums.add(r.name),
+    });
+  };
+
+  for (const service of ctx.spec.services) {
+    for (const op of service.operations) {
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+        collectFromTypeRef(p.type);
+      }
+      if (op.requestBody) collectFromTypeRef(op.requestBody);
+      collectFromTypeRef(op.response);
+      if (op.pagination) collectFromTypeRef(op.pagination.itemType);
+      for (const err of op.errors) {
+        if (err.type) collectFromTypeRef(err.type);
+      }
+      if (op.successResponses) {
+        for (const sr of op.successResponses) {
+          collectFromTypeRef(sr.type);
+        }
+      }
+    }
+  }
+
+  const modelsByName = new Map(ctx.spec.models.map((m) => [m.name, m]));
+  const visited = new Set<string>();
+  const queue = [...referencedModels];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const model = modelsByName.get(name);
+    if (!model) continue;
+    for (const field of model.fields) {
+      collectFromTypeRef(field.type);
+      for (const modelName of referencedModels) {
+        if (!visited.has(modelName)) queue.push(modelName);
+      }
+    }
+  }
+
+  return referencedEnums;
+}
+
+function collectModelUsage(spec: EmitterContext['spec']): {
+  requestOnly: Set<string>;
+  response: Set<string>;
+  mixed: Set<string>;
+} {
+  const request = new Set<string>();
+  const response = new Set<string>();
+
+  for (const service of spec.services) {
+    for (const op of service.operations) {
+      const plan = planOperation(op);
+      if (plan.responseModelName) {
+        response.add(plan.responseModelName);
+      }
+      if (op.pagination?.itemType.kind === 'model') {
+        response.add(op.pagination.itemType.name);
+      }
+      if (op.requestBody?.kind === 'model') {
+        request.add(op.requestBody.name);
+      }
+      if (op.requestBody?.kind === 'union') {
+        for (const variant of op.requestBody.variants ?? []) {
+          if (variant.kind === 'model') request.add(variant.name);
+        }
+      }
+    }
+  }
+
+  const mixed = new Set<string>();
+  for (const name of request) {
+    if (response.has(name)) mixed.add(name);
+  }
+
+  const requestOnly = new Set([...request].filter((name) => !mixed.has(name)));
+  const responseOnly = new Set([...response].filter((name) => !mixed.has(name)));
+
+  return { requestOnly, response: responseOnly, mixed };
+}
+
+function compareAliasPriority(left: string, right: string, usage: ReturnType<typeof collectModelUsage>): number {
+  const score = (name: string): number => {
+    if (usage.response.has(name)) return 0;
+    if (usage.mixed.has(name)) return 1;
+    if (usage.requestOnly.has(name)) return 2;
+    return 3;
+  };
+
+  const diff = score(left) - score(right);
+  if (diff !== 0) return diff;
+  return left.localeCompare(right);
+}
+
+function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
+  if (
+    (usage.response.has(canonical) && usage.requestOnly.has(alias)) ||
+    (usage.response.has(alias) && usage.requestOnly.has(canonical))
+  ) {
+    return false;
+  }
+
+  const canonicalTokens = tokenizeModelName(canonical);
+  const aliasTokens = tokenizeModelName(alias);
+
+  if (canonicalTokens.length === 0 || aliasTokens.length === 0) return false;
+
+  const canonicalSet = new Set(canonicalTokens);
+  const aliasSet = new Set(aliasTokens);
+  const canonicalSubset = [...canonicalSet].every((token) => aliasSet.has(token));
+  const aliasSubset = [...aliasSet].every((token) => canonicalSet.has(token));
+
+  return canonicalSubset || aliasSubset;
+}
+
+function tokenizeModelName(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[\s_]+/)
+    .map((part) => part.toLowerCase())
+    .filter((part) => !['dto', 'request', 'response', 'params', 'param', 'model'].includes(part));
+}
+
+function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
+  void modelName;
+  void ctx;
+  // A field is optional (gets = None default) only if it's not required or deprecated.
+  // Nullable-required fields (required: true, type: nullable) are NOT optional —
+  // they must appear in the API response (value can be null, but key must be present).
+  // The spec's required status always takes precedence over the old SDK's API surface.
+  if (!field.required || field.deprecated) return true;
+  return false;
+}
+
+function resolveModelFieldType(ref: any): string {
+  // Handle nullable datetime: return Optional[datetime] to preserve nullable wrapper
+  if (ref.kind === 'nullable' && isDateTimeType(ref.inner)) {
+    return 'Optional[datetime]';
+  }
+  if (isDateTimeType(ref)) {
+    return 'datetime';
+  }
+  return mapTypeRef(ref);
+}
+
+function isDateTimeType(ref: any): boolean {
+  if (ref.kind === 'nullable') {
+    return isDateTimeType(ref.inner);
+  }
+  return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
+}
+
+// oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
+function deserializeField(ref: any, accessor: string, isRequired: boolean, modelMap: Map<string, Model>): string {
+  if (isDateTimeType(ref)) {
+    if (isRequired) {
+      return `_parse_datetime(${accessor})`;
+    }
+    return `_parse_datetime(_v) if (_v := ${accessor}) is not None else None`;
+  }
+  switch (ref.kind) {
+    case 'model': {
+      if (isRequired) {
+        return `${className(ref.name)}.from_dict(cast(Dict[str, Any], ${accessor}))`;
+      }
+      return `${className(ref.name)}.from_dict(cast(Dict[str, Any], _v)) if (_v := ${accessor}) is not None else None`;
+    }
+    case 'array': {
+      if (ref.items.kind === 'model') {
+        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
+        if (isRequired) {
+          return listExpr;
+        }
+        // For optional arrays, preserve None instead of converting to []
+        return `${listExpr} if (_v := ${accessor}) is not None else None`;
+      }
+      if (ref.items.kind === 'enum') {
+        const enumClass = className(ref.items.name);
+        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
+        if (isRequired) {
+          return listExpr;
+        }
+        return `${listExpr} if (_v := ${accessor}) is not None else None`;
+      }
+      return accessor;
+    }
+    case 'enum': {
+      const enumClass = className(ref.name);
+      if (isRequired) {
+        return `${enumClass}(${accessor})`;
+      }
+      return `${enumClass}(_v) if (_v := ${accessor}) is not None else None`;
+    }
+    case 'nullable':
+      return deserializeField(ref.inner, accessor, false, modelMap);
+    case 'union': {
+      const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
+      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
+      if (uniqueModels.length === 1) {
+        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, modelMap);
+      }
+      // Mixed unions — pass through (would need runtime discriminant logic)
+      return accessor;
+    }
+    default:
+      return accessor;
+  }
+}
+
+function serializeField(ref: any, accessor: string): string {
+  if (isDateTimeType(ref)) {
+    return `_format_datetime(${accessor})`;
+  }
+  switch (ref.kind) {
+    case 'model':
+      return `${accessor}.to_dict()`;
+    case 'enum':
+      return `${accessor}.value if isinstance(${accessor}, Enum) else ${accessor}`;
+    case 'array': {
+      if (ref.items.kind === 'model') {
+        return `[item.to_dict() for item in ${accessor}]`;
+      }
+      if (ref.items.kind === 'enum') {
+        return `[item.value if isinstance(item, Enum) else item for item in ${accessor}]`;
+      }
+      return accessor;
+    }
+    case 'union': {
+      const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
+      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
+      if (uniqueModels.length === 1) {
+        return `${accessor}.to_dict()`;
+      }
+      return accessor;
+    }
+    default:
+      return accessor;
+  }
+}
+
+/**
+ * Build a structural hash for a model based on sorted field names, types, and required flags.
+ * Two models with the same hash are structurally identical (same fields, types, required).
+ */
+function structuralHash(model: Model): string {
+  const fields = [...model.fields]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((f) => `${f.name}:${typeHash(f.type)}:${f.required}`);
+  return fields.join('|');
+}
+
+function typeHash(ref: any): string {
+  switch (ref.kind) {
+    case 'primitive':
+      return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
+    case 'model':
+      return `m:${ref.name}`;
+    case 'enum':
+      return `e:${ref.name}`;
+    case 'array':
+      return `a:${typeHash(ref.items)}`;
+    case 'nullable':
+      return `n:${typeHash(ref.inner)}`;
+    case 'union':
+      return `u:${ref.variants.map(typeHash).sort().join(',')}`;
+    case 'map':
+      return `d:${typeHash(ref.valueType)}`;
+    case 'literal':
+      return `l:${String(ref.value)}`;
+    default:
+      return 'unknown';
+  }
+}
+
+/** Check if a model is a list metadata model (e.g., ListMetadata). */
+export function isListMetadataModel(model: Model): boolean {
+  const fieldNames = new Set(model.fields.map((f) => f.name));
+  return model.fields.length <= 3 && (fieldNames.has('before') || fieldNames.has('after')) && !fieldNames.has('data');
+}
+
+/** Check if a model is a list wrapper model (has `data` array + `list_metadata`). */
+export function isListWrapperModel(model: Model): boolean {
+  const dataField = model.fields.find((f) => f.name === 'data');
+  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+  return !!dataField && hasListMetadata && dataField.type.kind === 'array';
+}

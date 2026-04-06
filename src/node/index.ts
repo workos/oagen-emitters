@@ -17,8 +17,6 @@ import { generateSerializers } from './serializers.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateErrors } from './errors.js';
-import { generateConfig } from './config.js';
-import { generateCommon } from './common.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
 
@@ -55,8 +53,9 @@ export const nodeEmitter: Emitter = {
     return ensureTrailingNewlines(generateErrors(ctx));
   },
 
-  generateConfig(_ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines([...generateConfig(), ...generateCommon()]);
+  generateConfig(): GeneratedFile[] {
+    // Config interfaces and common utilities are now hand-maintained in the target SDK
+    return [];
   },
 
   generateTypeSignatures(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile[] {

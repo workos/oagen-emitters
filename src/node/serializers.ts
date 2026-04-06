@@ -691,8 +691,8 @@ function serializerHasBaselineIncompatibility(
   // than the serializer's parent directory.  The generated serializer creates local
   // copies of nested model interfaces (via the model generator), and these local
   // copies are structurally similar but TypeScript treats them as different types.
-  // Example: OrganizationDomainResponse from organization-domains/interfaces/ vs
-  // the generated copy in organizations/interfaces/ — same structure, different modules.
+  // Example: a Response type from one service directory vs a generated copy in
+  // another service directory — same structure, different modules.
   if (ctx?.apiSurface?.interfaces) {
     // Determine the serializer's parent directory from the model name
     const modelSourceFile = (baselineResponse as any)?.sourceFile as string | undefined;

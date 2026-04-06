@@ -12,6 +12,7 @@ import {
   buildServiceNameMap,
 } from '../../src/node/naming.js';
 import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 
 describe('naming', () => {
   describe('className', () => {
@@ -88,6 +89,7 @@ describe('naming', () => {
       services: [],
       models: [],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     it('returns overlay class name when available', () => {
@@ -160,6 +162,7 @@ describe('naming', () => {
       services: [],
       models: [],
       enums: [],
+      sdk: defaultSdkBehavior(),
     };
 
     it('maps IR names to resolved names', () => {

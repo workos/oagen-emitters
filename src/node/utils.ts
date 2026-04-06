@@ -14,8 +14,8 @@ import {
   resolveServiceDir,
   resolveMethodName,
   buildServiceNameMap,
-  SERVICE_COVERED_BY,
 } from './naming.js';
+import { getMountTarget } from '../shared/resolved-ops.js';
 import { assignModelsToServices } from '@workos/oagen';
 
 /**
@@ -392,8 +392,10 @@ export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Ma
  * endpoints (e.g., `GET /connections`).
  */
 export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext): boolean {
-  // Explicit override: services known to be covered by existing hand-written classes
-  if (SERVICE_COVERED_BY[toPascalCase(service.name)]) return true;
+  // A service is "covered" when its mountOn differs from its own name,
+  // meaning its operations are mounted on a different (existing) class.
+  const mountTarget = getMountTarget(service, ctx);
+  if (mountTarget !== toPascalCase(service.name)) return true;
 
   const overlay = ctx.overlayLookup?.methodByOperation;
   if (!overlay || overlay.size === 0) return false;
@@ -426,12 +428,11 @@ export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterConte
   const baselineClasses = ctx.apiSurface?.classes;
   if (!baselineClasses) return false;
 
-  // For services explicitly mapped to an existing class via SERVICE_COVERED_BY,
-  // check each operation's resolved method name against the target class directly.
-  // This avoids the overlay gap where new endpoints are silently skipped.
-  const targetClassName = SERVICE_COVERED_BY[toPascalCase(service.name)];
-  if (targetClassName) {
-    const cls = baselineClasses[targetClassName];
+  // When a service mounts on a different class (via mount rules), check
+  // each operation's resolved method name against the target class directly.
+  const mountTarget = getMountTarget(service, ctx);
+  if (mountTarget !== toPascalCase(service.name)) {
+    const cls = baselineClasses[mountTarget];
     if (!cls) return true; // Target class missing from baseline — treat as absent
     for (const op of service.operations) {
       const method = resolveMethodName(op, service, ctx);
