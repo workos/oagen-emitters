@@ -66,6 +66,13 @@ const operationHints: Record<string, OperationHint> = {
   'GET /organizations/external_id/{external_id}': { name: 'get_organization_by_external_id' },
   'GET /user_management/users/external_id/{external_id}': { name: 'get_user_by_external_id' },
 
+  // ── Authorization — env-scoped role permissions (disambiguate from org-scoped)
+  'PUT /authorization/roles/{slug}/permissions': { name: 'set_role_permissions' },
+  'POST /authorization/roles/{slug}/permissions': { name: 'add_role_permission' },
+
+  // ── Authorization — env-scoped resource memberships ────────────────────
+  'GET /authorization/resources/{resource_id}/organization_memberships': { name: 'list_memberships_for_resource' },
+
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
   'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
   'PUT /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
