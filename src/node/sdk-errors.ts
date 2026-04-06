@@ -1,5 +1,4 @@
 import type { SdkBehavior } from '@workos/oagen';
-import { defaultSdkBehavior } from '@workos/oagen';
 
 /**
  * Node-specific overrides for exception kind names.
@@ -13,6 +12,17 @@ const NODE_EXCEPTION_KIND_OVERRIDES: Record<string, string> = {
   Authentication: 'Unauthorized',
 };
 
+/** Fallback status code map when no SDK behavior is provided. */
+const DEFAULT_STATUS_CODE_MAP: Record<string, string> = {
+  '400': 'BadRequest',
+  '401': 'Authentication',
+  '403': 'Authorization',
+  '404': 'NotFound',
+  '409': 'Conflict',
+  '422': 'UnprocessableEntity',
+  '429': 'RateLimitExceeded',
+};
+
 /**
  * Build the status-code-to-exception-class-name map from SDK behavior,
  * applying Node-specific naming overrides.
@@ -21,9 +31,9 @@ const NODE_EXCEPTION_KIND_OVERRIDES: Record<string, string> = {
  * because Node uses `UnauthorizedException` instead of `AuthenticationException`.
  */
 export function buildNodeStatusExceptions(sdk?: SdkBehavior): Record<number, string> {
-  const behavior = sdk ?? defaultSdkBehavior();
+  const statusCodeMap = sdk?.errors?.statusCodeMap ?? DEFAULT_STATUS_CODE_MAP;
   return Object.fromEntries(
-    Object.entries(behavior.errors.statusCodeMap).map(([code, kind]) => {
+    Object.entries(statusCodeMap).map(([code, kind]) => {
       const nodeKind = NODE_EXCEPTION_KIND_OVERRIDES[kind] ?? kind;
       return [Number(code), `${nodeKind}Exception`];
     }),

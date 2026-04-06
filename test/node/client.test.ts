@@ -100,16 +100,11 @@ describe('generateClient', () => {
     expect(serviceBarrel!.skipIfExists).toBe(true);
   });
 
-  it('generates package.json and tsconfig.json', () => {
+  it('does not generate package.json, tsconfig.json, or worker barrel (now hand-maintained)', () => {
     const files = generateClient(spec, ctx);
-    const pkg = files.find((f) => f.path === 'package.json');
-    const tsconfig = files.find((f) => f.path === 'tsconfig.json');
-
-    expect(pkg).toBeDefined();
-    expect(pkg!.skipIfExists).toBe(true);
-
-    expect(tsconfig).toBeDefined();
-    expect(tsconfig!.skipIfExists).toBe(true);
+    expect(files.find((f) => f.path === 'package.json')).toBeUndefined();
+    expect(files.find((f) => f.path === 'tsconfig.json')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/index.worker.ts')).toBeUndefined();
   });
 
   it('uses overlay-resolved names for imports and accessors', () => {

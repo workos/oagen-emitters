@@ -141,14 +141,13 @@ function emitWrapperMethod(
   lines.push('');
 
   if (wrapper.responseModelName) {
-    lines.push(`        response = ${awaitPrefix}self._client.request(`);
+    lines.push(`        return ${awaitPrefix}self._client.request(`);
     lines.push(`            method="${op.httpMethod.toUpperCase()}",`);
     lines.push(`            path=${pathExpr},`);
     lines.push('            body=body,');
     lines.push(`            model=${className(wrapper.responseModelName)},`);
     lines.push('            request_options=request_options,');
     lines.push('        )');
-    lines.push(`        return cast(${className(wrapper.responseModelName)}, response)`);
   } else {
     lines.push(`        ${awaitPrefix}self._client.request(`);
     lines.push(`            method="${op.httpMethod.toUpperCase()}",`);

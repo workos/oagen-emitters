@@ -107,16 +107,13 @@ describe('generateModels', () => {
     // from_dict method
     expect(modelFile.content).toContain('def from_dict(cls, data: Dict[str, Any])');
     expect(modelFile.content).toContain('_parse_datetime(data["created_at"])');
-    expect(modelFile.content).toContain('except (KeyError, ValueError) as e:');
-    expect(modelFile.content).toContain(
-      'raise WorkOSError(f"Unexpected API response while parsing Organization: {e!s}") from e',
-    );
+    expect(modelFile.content).toContain('_raise_deserialize_error("Organization", e)');
+    expect(modelFile.content).toContain('from workos._types import _raise_deserialize_error');
 
     // to_dict method
     expect(modelFile.content).toContain('def to_dict(self) -> Dict[str, Any]:');
-    expect(modelFile.content).toContain(
-      'result["created_at"] = self.created_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")',
-    );
+    expect(modelFile.content).toContain('result["created_at"] = _format_datetime(self.created_at)');
+    expect(modelFile.content).toContain('from workos._types import _format_datetime, _parse_datetime');
     expect(modelFile.content).toContain('result["external_id"] = None');
   });
 
@@ -378,7 +375,7 @@ describe('generateModels', () => {
           pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
           queryParams: [],
           headerParams: [],
-          requestBody: { kind: 'model', name: 'CreateApplicationSecretDto' },
+          requestBody: { kind: 'model', name: 'CreateApplicationSecret' },
           response: { kind: 'model', name: 'DataIntegrationAccessTokenResponse' },
           errors: [],
           injectIdempotencyKey: false,
@@ -388,7 +385,7 @@ describe('generateModels', () => {
 
     const models: Model[] = [
       {
-        name: 'CreateApplicationSecretDto',
+        name: 'CreateApplicationSecret',
         fields: [{ name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: true }],
       },
       {
@@ -401,11 +398,11 @@ describe('generateModels', () => {
     const responseFile = files.find((f) => f.path.includes('data_integration_access_token_response.py'))!;
     expect(responseFile.content).toContain('@dataclass(slots=True)');
     expect(responseFile.content).not.toContain('= CreateApplicationSecret');
-    // Dto suffix should be stripped from file and class names
+    // Dto stripping now happens at IR level (schemaNameTransform in oagen.config.ts),
+    // so model names arrive at the emitter already stripped
     const dtoFile = files.find((f) => f.path.includes('create_application_secret.py'));
     expect(dtoFile).toBeDefined();
     expect(dtoFile!.content).toContain('class CreateApplicationSecret:');
-    expect(dtoFile!.content).not.toContain('Dto');
     expect(files.every((f) => !f.path.includes('_dto'))).toBe(true);
   });
 
@@ -558,5 +555,58 @@ describe('generateModels', () => {
     expect(files.length).toBe(2);
     const modelFile = files.find((f) => f.path.endsWith('organization.py'))!;
     expect(modelFile.content).toContain('metadata: Optional[Dict[str, str]] = None');
+  });
+
+  it('adds .. deprecated:: docstring for deprecated fields', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            deprecated: true,
+            description: 'Legacy field',
+          },
+          {
+            name: 'old_no_desc',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const modelFile = files.find((f) => f.path.includes('organization.py'))!;
+
+    // Deprecated required field with description gets both description and .. deprecated::
+    expect(modelFile.content).toContain('"""Legacy field\n\n    .. deprecated::"""');
+
+    // Deprecated optional field without description gets just .. deprecated::
+    expect(modelFile.content).toContain('""".. deprecated::"""');
   });
 });

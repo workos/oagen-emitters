@@ -49,69 +49,53 @@ const ctx: EmitterContext = {
 };
 
 describe('generateClient', () => {
-  it('generates client class with resource accessors', () => {
+  it('generates slim client that subclasses _base_client', () => {
     const files = generateClient(spec, ctx);
 
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     expect(clientFile).toBeDefined();
 
     const content = clientFile!.content;
-    expect(content).toContain('class _BaseWorkOSClient:');
-    expect(content).toContain('class WorkOSClient(_BaseWorkOSClient):');
+    // Imports from _base_client
+    expect(content).toContain('from ._base_client import');
+    expect(content).toContain('WorkOSClient as _SyncBase');
+    expect(content).toContain('AsyncWorkOSClient as _AsyncBase');
+    // Subclass definitions
+    expect(content).toContain('class WorkOSClient(_SyncBase):');
+    expect(content).toContain('class AsyncWorkOSClient(_AsyncBase):');
     // Lazy resource accessors via cached_property
     expect(content).toContain('@functools.cached_property');
     expect(content).toContain('def organizations(self) -> Organizations:');
-    expect(content).toContain('def request(');
-    expect(content).toContain('def request_page(');
-    expect(content).toContain('RETRY_STATUS_CODES');
-    expect(content).toContain('Idempotency-Key');
-    expect(content).toContain('def _parse_retry_after(');
-    expect(content).toContain('def _calculate_retry_delay(');
-    // P1-1: Async client
-    expect(content).toContain('class AsyncWorkOSClient(_BaseWorkOSClient):');
-    // P0-4: Context manager
-    expect(content).toContain('def close(self)');
-    expect(content).toContain('def __enter__');
-    // P2-3: client_id
-    expect(content).toContain('client_id: Optional[str] = None,');
-    expect(content).toContain('request_timeout: Optional[int] = None,');
-    expect(content).toContain('jwt_leeway: float = 0.0,');
-    expect(content).toContain('WorkOS requires either an API key or a client ID.');
-    expect(content).toContain('def _require_api_key(self) -> str:');
-    expect(content).toContain('def _require_client_id(self) -> str:');
-    expect(content).toContain('if self._api_key:');
-    expect(content).not.toContain('WorkOS client ID must be provided when instantiating the client');
-    expect(content).toContain('request_options.get("idempotency_key")');
-    expect(content).toContain('request_options.get("max_retries")');
-    expect(content).toContain('request_options.get("base_url")');
-    expect(content).toContain('WORKOS_BASE_URL');
-    expect(content).toContain('WORKOS_REQUEST_TIMEOUT');
-    expect(content).toContain('request_url = str(request.url) if request is not None else None');
-    expect(content).toContain('request_method = request.method if request is not None else None');
-    expect(content).toContain('follow_redirects=True');
-    // P3-4: Versioned User-Agent
-    expect(content).toContain('workos-python/{VERSION}');
-    expect(content).not.toContain('def directory_sync(self)');
-    expect(content).not.toContain('def connect(self)');
-    expect(content).not.toContain('def portal(self)');
-    expect(content).not.toContain('def mfa(self)');
-    expect(content).not.toContain('def fga(self)');
   });
 
-  it('generates barrel __init__.py', () => {
+  it('does not contain static HTTP infrastructure', () => {
     const files = generateClient(spec, ctx);
+    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
+    const content = clientFile!.content;
 
+    // Static code should NOT be in the generated file
+    expect(content).not.toContain('class _BaseWorkOSClient:');
+    expect(content).not.toContain('def request(');
+    expect(content).not.toContain('def request_page(');
+    expect(content).not.toContain('RETRY_STATUS_CODES');
+    expect(content).not.toContain('Idempotency-Key');
+    expect(content).not.toContain('def _parse_retry_after(');
+    expect(content).not.toContain('def _raise_error(');
+    expect(content).not.toContain('def close(self)');
+    expect(content).not.toContain('def __enter__');
+    expect(content).not.toContain('import httpx');
+  });
+
+  it('does not generate barrel __init__.py (now @oagen-ignore-file)', () => {
+    const files = generateClient(spec, ctx);
     const barrel = files.find((f) => f.path === 'src/workos/__init__.py');
-    expect(barrel).toBeDefined();
-    expect(barrel!.content).toContain('from ._client import AsyncWorkOSClient, WorkOSClient');
-    expect(barrel!.content).toContain('from ._errors import WorkOSError');
-    expect(barrel!.content).toContain('from ._pagination import AsyncPage, ListMetadata, SyncPage');
-    expect(barrel!.content).not.toContain('WorkOSListResource');
-    expect(barrel!.content).toContain('"WorkOSClient"');
-    expect(barrel!.content).toContain('"AsyncWorkOSClient"');
-    expect(barrel!.content).toContain('"WorkOSError"');
-    expect(barrel!.content).toContain('"ListMetadata"');
-    expect(barrel!.overwriteExisting).toBe(true);
+    expect(barrel).toBeUndefined();
+  });
+
+  it('does not generate pyproject.toml or py.typed (now in target)', () => {
+    const files = generateClient(spec, ctx);
+    expect(files.find((f) => f.path === 'pyproject.toml')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/workos/py.typed')).toBeUndefined();
   });
 
   it('generates service __init__.py', () => {
@@ -155,41 +139,6 @@ describe('generateClient', () => {
     // Client should import from the flat path
     const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
     expect(clientFile!.content).toContain('OrganizationsApiKeys');
-  });
-
-  it('generates pyproject.toml', () => {
-    const files = generateClient(spec, ctx);
-
-    const pyproject = files.find((f) => f.path === 'pyproject.toml');
-    expect(pyproject).toBeDefined();
-    expect(pyproject!.content).toContain('name = "workos"');
-    expect(pyproject!.content).toContain('httpx');
-    expect(pyproject!.content).toContain('hatchling');
-    expect(pyproject!.headerPlacement).toBe('skip');
-  });
-
-  it('generates py.typed marker', () => {
-    const files = generateClient(spec, ctx);
-
-    const pyTyped = files.find((f) => f.path === 'src/workos/py.typed');
-    expect(pyTyped).toBeDefined();
-  });
-
-  it('request_page accepts body parameter', () => {
-    const files = generateClient(spec, ctx);
-    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    const content = clientFile!.content;
-
-    // Signature should include body param
-    expect(content).toContain('body: Optional[Dict[str, Any]] = None,');
-    // Should forward body to self.request()
-    expect(content).toContain('body=body,');
-  });
-
-  it('uses base URL from spec', () => {
-    const files = generateClient(spec, ctx);
-    const clientFile = files.find((f) => f.path === 'src/workos/_client.py');
-    expect(clientFile!.content).toContain('os.environ.get("WORKOS_BASE_URL", "https://api.workos.com")');
   });
 
   it('does not generate compat shim modules', () => {

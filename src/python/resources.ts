@@ -225,9 +225,13 @@ function emitMethodDocstring(
   const { returnType, pathParamNames, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
 
-  // Description
+  // Description — indent continuation lines to align with the opening `"""`
   if (op.description) {
-    lines.push(`        """${op.description}`);
+    const descLines = op.description.split('\n');
+    const indentedDesc = descLines
+      .map((line, i) => (i === 0 ? line : line.trim() === '' ? '' : `        ${line}`))
+      .join('\n');
+    lines.push(`        """${indentedDesc}`);
   } else {
     lines.push(`        """${toPascalCase(method.replace(/_/g, ' '))} operation.`);
   }
@@ -235,7 +239,7 @@ function emitMethodDocstring(
   // Args section
   const allParams: { name: string; desc?: string }[] = op.pathParams.map((p) => ({
     name: fieldName(p.name),
-    desc: p.description,
+    desc: p.deprecated ? (p.description ? `(deprecated) ${p.description}` : '(deprecated)') : p.description,
   }));
 
   // Add body model fields to docs
@@ -245,7 +249,10 @@ function emitMethodDocstring(
       const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
       if (bodyModel) {
         for (const f of bodyModel.fields) {
-          allParams.push({ name: bodyParamName(f, pathParamNames), desc: f.description });
+          allParams.push({
+            name: bodyParamName(f, pathParamNames),
+            desc: f.deprecated ? (f.description ? `(deprecated) ${f.description}` : '(deprecated)') : f.description,
+          });
         }
       }
     } else if (op.requestBody.kind === 'union') {
@@ -268,7 +275,14 @@ function emitMethodDocstring(
       if (pathParamNames.has(pn)) continue;
       // Skip params already documented from body fields
       if (allParams.some((p) => p.name === pn)) continue;
-      allParams.push({ name: pn, desc: param.description });
+      allParams.push({
+        name: pn,
+        desc: param.deprecated
+          ? param.description
+            ? `(deprecated) ${param.description}`
+            : '(deprecated)'
+          : param.description,
+      });
     }
   }
 
@@ -276,7 +290,14 @@ function emitMethodDocstring(
   if (isPaginated) {
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-      allParams.push({ name: fieldName(param.name), desc: param.description });
+      allParams.push({
+        name: fieldName(param.name),
+        desc: param.deprecated
+          ? param.description
+            ? `(deprecated) ${param.description}`
+            : '(deprecated)'
+          : param.description,
+      });
     }
   }
 
@@ -298,7 +319,7 @@ function emitMethodDocstring(
       lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
     }
     if (isPaginated) {
-      lines.push('            limit: Maximum number of records to return.');
+      lines.push('            limit: Maximum number of records to return (1-100, default: 10).');
       lines.push('            before: Pagination cursor for previous page.');
       lines.push('            after: Pagination cursor for next page.');
       lines.push('            order: Sort order.');
@@ -321,6 +342,11 @@ function emitMethodDocstring(
   for (const line of errorRaises) {
     lines.push(`            ${line}`);
   }
+  if (op.deprecated) {
+    lines.push('');
+    lines.push('        .. deprecated::');
+    lines.push('            This operation is deprecated.');
+  }
   lines.push('        """');
 }
 
@@ -341,6 +367,11 @@ function emitMethodBody(
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
   const usesClientCredentialDefaults = false;
+
+  if (op.deprecated) {
+    const method = toSnakeCase(op.name);
+    lines.push(`        warnings.warn("${method} is deprecated", DeprecationWarning, stacklevel=2)`);
+  }
 
   // Method body — build path
   const pathStr = buildPathString(op);
@@ -639,6 +670,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('if TYPE_CHECKING:');
     lines.push(`    from ${importPrefix}_client import AsyncWorkOSClient, WorkOSClient`);
     lines.push('');
+
+    const hasDeprecatedOps = allOperations.some((op) => op.deprecated);
+    if (hasDeprecatedOps) {
+      lines.push('import warnings');
+      lines.push('');
+    }
 
     // Collect all model and enum imports needed
     const modelImports = new Set<string>();

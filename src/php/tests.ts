@@ -1,12 +1,12 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Service, Operation } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
-import { className, fieldName, resolveClassName, servicePropertyName } from './naming.js';
-import { buildResolvedLookup, lookupMethodName, groupByMount } from '../shared/resolved-ops.js';
-import { buildServiceAccessPaths } from './client.js';
+import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, Model } from '@workos/oagen';
+import { planOperation, toCamelCase, toSnakeCase } from '@workos/oagen';
+import { className, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
+import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
+import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
 
 /**
- * Generate PHPUnit test files and JSON fixtures.
+ * Generate PHPUnit test files and fixture JSON files.
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -18,402 +18,257 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       path: fixture.path,
       content: fixture.content,
       headerPlacement: 'skip',
-      integrateTarget: false,
     });
   }
 
-  // Generate test helper (fresh output only — new Guzzle-based pattern)
-  files.push(generateTestHelper(ctx));
+  // TestHelper is now hand-maintained in the target SDK (@oagen-ignore-file).
 
-  // Generate target test helper (overwrites the hand-written TestHelper in the target repo
-  // with a combined version supporting both legacy Client mocks and new Guzzle mocks)
-  files.push(generateTargetTestHelper(ctx));
+  // Collect all operations per mount target using resolved per-operation mounts.
+  // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
+  const mountGroupsFromResolved = groupByMount(ctx);
+  const mountGroups = new Map<string, { op: Operation; service: Service }[]>();
+  if (mountGroupsFromResolved.size > 0) {
+    for (const [target, group] of mountGroupsFromResolved) {
+      mountGroups.set(
+        target,
+        group.resolvedOps.map((r) => ({ op: r.operation, service: r.service })),
+      );
+    }
+  } else {
+    // Fallback: group by service
+    for (const service of spec.services) {
+      const target = getMountTarget(service, ctx);
+      if (!mountGroups.has(target)) mountGroups.set(target, []);
+      for (const op of service.operations) {
+        mountGroups.get(target)!.push({ op, service });
+      }
+    }
+  }
 
-  // Generate per-mount-target test files (merges all sub-services into one file)
-  const mountGroups = groupByMount(ctx);
-  const accessPaths = buildServiceAccessPaths(spec.services, ctx);
-  const testEntries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
-      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
-      : spec.services.map((s) => ({ name: resolveClassName(s, ctx), operations: s.operations }));
-
-  for (const { name: mountName, operations } of testEntries) {
-    if (operations.length === 0) continue;
-    const mergedService: Service = { name: mountName, operations };
-    files.push(generateResourceTest(mergedService, spec, ctx, accessPaths));
+  // Generate resource tests (one per mount target, all operations included)
+  // Use overwriteExisting so the integration step always writes the latest
+  // test content rather than attempting additive AST merge.
+  for (const [target, ops] of mountGroups) {
+    files.push({
+      path: `tests/Service/${className(target)}Test.php`,
+      content: generateMountGroupTest(target, ops, ctx),
+      overwriteExisting: true,
+    });
   }
 
   // Generate client test
-  files.push(generateClientTest(ctx));
+  files.push({
+    path: 'tests/ClientTest.php',
+    content: generateClientTest(ctx),
+    overwriteExisting: true,
+  });
 
   return files;
 }
 
-function generateTestHelper(ctx: EmitterContext): GeneratedFile {
-  return {
-    path: 'tests/TestHelper.php',
-    content: `
-namespace Tests\\${ctx.namespacePascal};
-
-use GuzzleHttp\\Handler\\MockHandler;
-use GuzzleHttp\\HandlerStack;
-use GuzzleHttp\\Psr7\\Response;
-use ${ctx.namespacePascal}\\${ctx.namespacePascal};
-
-trait TestHelper
-{
-    protected function loadFixture(string $name): array
-    {
-        $path = __DIR__ . '/Fixtures/' . $name . '.json';
-        return json_decode(file_get_contents($path), true);
-    }
-
-    protected function createMockClient(array $responses): ${ctx.namespacePascal}
-    {
-        $mockResponses = array_map(
-            fn (array $response) => new Response(
-                $response['status'] ?? 200,
-                $response['headers'] ?? [],
-                json_encode($response['body'] ?? [])
-            ),
-            $responses,
-        );
-
-        $mock = new MockHandler($mockResponses);
-        $handler = HandlerStack::create($mock);
-
-        return new ${ctx.namespacePascal}(
-            apiKey: 'test_api_key',
-            handler: $handler,
-        );
-    }
-}`,
-    integrateTarget: false,
-    headerPlacement: 'skip',
-  };
-}
-
-/**
- * Generate a combined TestHelper for integration into the target SDK repo.
- *
- * Supports both:
- * - Legacy pattern: Client mock via RequestClientInterface (used by hand-written tests)
- * - New pattern: Guzzle MockHandler (used by generated resource tests)
- *
- * Uses createStub() in setUp (no expectations) and createMock() in
- * prepareRequestMock (where expects() is called). This avoids PHPUnit 13
- * warnings about mocks without expectations.
- */
-function generateTargetTestHelper(ctx: EmitterContext): GeneratedFile {
-  const ns = ctx.namespacePascal;
-  return {
-    path: 'tests/TestHelper.php',
-    content: `<?php
-
-namespace ${ns};
-
-use GuzzleHttp\\Handler\\MockHandler;
-use GuzzleHttp\\HandlerStack;
-use GuzzleHttp\\Psr7\\Response;
-
-trait TestHelper
-{
-    protected $defaultRequestClient;
-    protected $requestClientMock;
-
-    protected function setUp(): void
-    {
-        $this->defaultRequestClient = Client::requestClient();
-        $this->requestClientMock = $this->createStub("\\\\${ns}\\\\RequestClient\\\\RequestClientInterface");
-    }
-
-    protected function tearDown(): void
-    {
-        ${ns}::setApiKey(null);
-        ${ns}::setClientId(null);
-
-        Client::setRequestClient($this->defaultRequestClient);
-    }
-
-    // Configuration
-
-    protected function withApiKey($apiKey = "pk_secretsauce")
-    {
-        ${ns}::setApiKey($apiKey);
-    }
-
-    protected function withApiKeyAndClientId($apiKey = "pk_secretsauce", $clientId = "client_pizza")
-    {
-        ${ns}::setApiKey($apiKey);
-        ${ns}::setClientId($clientId);
-    }
-
-    // Legacy request mocking (for tests using Client::request)
-
-    protected function mockRequest(
-        $method,
-        $path,
-        $headers = null,
-        $params = null,
-        $withAuth = false,
-        $result = null,
-        $responseHeaders = null,
-        $responseCode = 200
-    ) {
-        Client::setRequestClient($this->requestClientMock);
-
-        $url = Client::generateUrl($path);
-        if (!$headers) {
-            $requestHeaders = Client::generateBaseHeaders($withAuth);
-        } else {
-            $requestHeaders = \\array_merge(Client::generateBaseHeaders($withAuth), $headers);
-        }
-
-        if (!$result) {
-            $result = "{}";
-        }
-        if (!$responseHeaders) {
-            $responseHeaders = [];
-        }
-
-        $this->prepareRequestMock($method, $url, $requestHeaders, $params)
-            ->willReturn([$result, $responseHeaders, $responseCode]);
-    }
-
-    protected function secondMockRequest(
-        $method,
-        $path,
-        $headers = null,
-        $params = null,
-        $withAuth = false,
-        $result = null,
-        $responseHeaders = null,
-        $responseCode = 200
-    ) {
-        Client::setRequestClient($this->requestClientMock);
-        $url = Client::generateUrl($path);
-        if (!$headers) {
-            $requestHeaders = Client::generateBaseHeaders($withAuth);
-        } else {
-            $requestHeaders = \\array_merge(Client::generateBaseHeaders(), $headers);
-        }
-
-        if (!$result) {
-            $result = "{}";
-        }
-        if (!$responseHeaders) {
-            $responseHeaders = [];
-        }
-
-        $this->prepareRequestMock($method, $url, $requestHeaders, $params)
-            ->willReturn([$result, $responseHeaders, $responseCode]);
-    }
-
-    private function prepareRequestMock($method, $url, $headers, $params)
-    {
-        $this->requestClientMock = $this->createMock("\\\\${ns}\\\\RequestClient\\\\RequestClientInterface");
-        Client::setRequestClient($this->requestClientMock);
-        return $this->requestClientMock
-            ->expects(static::atLeastOnce())->method('request')
-            ->with(
-                static::identicalTo($method),
-                static::identicalTo($url),
-                static::identicalTo($headers),
-                static::identicalTo($params)
-            );
-    }
-
-    // New-style Guzzle mock helpers (for generated resource tests)
-
-    protected function loadFixture(string $name): array
-    {
-        $path = __DIR__ . '/Fixtures/' . $name . '.json';
-        return json_decode(file_get_contents($path), true);
-    }
-
-    protected function createMockClient(array $responses): ${ns}
-    {
-        $mockResponses = array_map(
-            fn (array $response) => new Response(
-                $response['status'] ?? 200,
-                $response['headers'] ?? [],
-                json_encode($response['body'] ?? [])
-            ),
-            $responses,
-        );
-
-        $mock = new MockHandler($mockResponses);
-        $handler = HandlerStack::create($mock);
-
-        return new ${ns}(
-            apiKey: 'test_api_key',
-            handler: $handler,
-        );
-    }
-}
-`,
-    integrateTarget: true,
-    overwriteExisting: true,
-    headerPlacement: 'skip',
-  };
-}
-
-function generateResourceTest(
-  service: Service,
-  spec: ApiSpec,
+function generateMountGroupTest(
+  target: string,
+  ops: { op: Operation; service: Service }[],
   ctx: EmitterContext,
-  accessPaths: Map<string, string>,
-): GeneratedFile {
-  const resourceName = resolveClassName(service, ctx);
-  const accessPath = accessPaths.get(service.name);
-  // Access paths include () like "userManagement()" — strip trailing () for template use
-  const propName = accessPath ? accessPath.replace(/\(\)$/, '') : servicePropertyName(resourceName);
-  const resolvedLookup = buildResolvedLookup(ctx);
+): string {
+  const ns = ctx.namespacePascal;
+  const name = className(target);
+  const accessor = servicePropertyName(target);
   const lines: string[] = [];
 
-  lines.push('');
-  lines.push(`namespace Tests\\${ctx.namespacePascal}\\Resources;`);
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push('namespace Tests\\Service;');
   lines.push('');
   lines.push('use PHPUnit\\Framework\\TestCase;');
-  lines.push(`use Tests\\${ctx.namespacePascal}\\TestHelper;`);
+  lines.push('use WorkOS\\TestHelper;');
   lines.push('');
-
-  lines.push(`class ${resourceName}Test extends TestCase`);
+  lines.push(`class ${name}Test extends TestCase`);
   lines.push('{');
   lines.push('    use TestHelper;');
 
-  for (const op of service.operations) {
+  // Track emitted test names to avoid duplicates
+  const emitted = new Set<string>();
+
+  // Generate tests for all operations across all services in the mount group.
+  // Uses the hand-maintained TestHelper API:
+  //   - loadFixture(name) appends .json automatically
+  //   - createMockClient([['status' => N, 'body' => [...]]]) wraps into Response
+  for (const { op, service } of ops) {
     const plan = planOperation(op);
-    const resolvedName = lookupMethodName(op, resolvedLookup);
-    const method = resolvedName ? toCamelCase(resolvedName) : toCamelCase(op.name);
+    const method = resolveMethodName(op, service, ctx);
+    const testName = `test${method.charAt(0).toUpperCase()}${method.slice(1)}`;
+
+    if (emitted.has(testName)) continue;
+    emitted.add(testName);
 
     lines.push('');
-    lines.push(`    public function test${capitalize(method)}(): void`);
+    lines.push(`    public function ${testName}(): void`);
     lines.push('    {');
 
+    const expectedPath = buildExpectedPath(op, ctx);
+
     if (plan.isDelete) {
-      // Delete operation — expect 204 no content
-      lines.push('        $client = $this->createMockClient([');
-      lines.push("            ['status' => 204, 'body' => []],");
-      lines.push('        ]);');
-      lines.push('');
-
-      const callArgs = buildTestCallArgs(op, plan, ctx);
-      lines.push(`        $client->${propName}()->${method}(${callArgs});`);
-      lines.push('        $this->assertTrue(true); // No exception means success');
-    } else if (plan.isPaginated) {
-      // Paginated operation
-      const itemType = op.pagination?.itemType;
-      const itemName = itemType?.kind === 'model' ? className(itemType.name) : null;
-      const fixtureName = itemName ? `list_${toSnakeCase(itemName)}` : null;
-
-      if (fixtureName) {
-        lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
-      } else {
-        lines.push("        $fixture = ['data' => [], 'list_metadata' => ['after' => null]];");
+      lines.push("        $client = $this->createMockClient([['status' => 204]]);");
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      // Request assertions
+      lines.push('        $request = $this->getLastRequest();');
+      lines.push("        $this->assertSame('DELETE', $request->getMethod());");
+      lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
+      // Body assertions for DELETE-with-body
+      if (plan.hasBody && op.requestBody?.kind === 'model') {
+        emitBodyAssertions(lines, op, ctx);
       }
-      lines.push('        $client = $this->createMockClient([');
-      lines.push("            ['status' => 200, 'body' => $fixture],");
-      lines.push('        ]);');
-      lines.push('');
-
-      const callArgs = buildTestCallArgs(op, plan, ctx);
-      lines.push(`        $result = $client->${propName}()->${method}(${callArgs});`);
-      lines.push(`        $this->assertInstanceOf(\\${ctx.namespacePascal}\\PaginatedResponse::class, $result);`);
-    } else if (plan.responseModelName) {
-      // Model response
-      const modelName = className(plan.responseModelName);
-      const fixtureName = toSnakeCase(plan.responseModelName);
-
+    } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+      const fixtureName = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
       lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
-      lines.push('        $client = $this->createMockClient([');
-      lines.push("            ['status' => 200, 'body' => $fixture],");
-      lines.push('        ]);');
-      lines.push('');
-
-      const callArgs = buildTestCallArgs(op, plan, ctx);
-      lines.push(`        $result = $client->${propName}()->${method}(${callArgs});`);
-      lines.push(`        $this->assertInstanceOf(\\${ctx.namespacePascal}\\Resource\\${modelName}::class, $result);`);
+      lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
+      // Request assertions
+      lines.push('        $request = $this->getLastRequest();');
+      lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
+      lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
+    } else if (plan.responseModelName) {
+      const modelName = className(plan.responseModelName);
+      const fixtureName = `${snakeName(plan.responseModelName)}`;
+      lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+      if (op.response.kind === 'array') {
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => [$fixture]]]);");
+      } else {
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+      }
+      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      if (op.response.kind === 'array') {
+        lines.push('        $this->assertIsArray($result);');
+        lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
+      } else {
+        lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
+      }
+      // Request assertions
+      lines.push('        $request = $this->getLastRequest();');
+      lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
+      lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
+      // Body assertions for POST/PUT/PATCH
+      if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
+        emitBodyAssertions(lines, op, ctx);
+      }
     } else {
-      // Generic response
-      lines.push('        $client = $this->createMockClient([');
-      lines.push("            ['status' => 200, 'body' => []],");
-      lines.push('        ]);');
-      lines.push('');
-
-      const callArgs = buildTestCallArgs(op, plan, ctx);
-      lines.push(`        $result = $client->${propName}()->${method}(${callArgs});`);
-      lines.push('        $this->assertIsArray($result);');
+      lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      // Request assertions
+      lines.push('        $request = $this->getLastRequest();');
+      lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
+      lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
     }
 
     lines.push('    }');
   }
 
+  // Generate tests for wrapper methods (union split operations)
+  for (const resolved of ctx.resolvedOperations ?? []) {
+    if (resolved.mountOn !== target) continue;
+    for (const wrapper of resolved.wrappers ?? []) {
+      const method = toCamelCase(wrapper.name);
+      const testName = `test${method.charAt(0).toUpperCase()}${method.slice(1)}`;
+
+      if (emitted.has(testName)) continue;
+      emitted.add(testName);
+
+      const op = resolved.operation;
+      const responseModel = op.response.kind === 'model' ? op.response.name : null;
+
+      lines.push('');
+      lines.push(`    public function ${testName}(): void`);
+      lines.push('    {');
+
+      if (responseModel) {
+        const modelName = className(responseModel);
+        const fixtureName = `${snakeName(responseModel)}`;
+        lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+        lines.push(`        $result = $client->${accessor}()->${method}();`);
+        lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
+      } else {
+        lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
+        lines.push(`        $client->${accessor}()->${method}();`);
+        lines.push('        $this->assertTrue(true);');
+      }
+
+      lines.push('    }');
+    }
+  }
+
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function generateClientTest(ctx: EmitterContext): string {
+  const ns = ctx.namespacePascal;
+  const lines: string[] = [];
+
+  // No <?php here — the file header from fileHeader() provides it
+  lines.push('namespace Tests;');
+  lines.push('');
+  lines.push('use PHPUnit\\Framework\\TestCase;');
+  lines.push(`use ${ns}\\${ns};`);
+  lines.push('');
+  lines.push('class ClientTest extends TestCase');
+  lines.push('{');
+  lines.push('    public function testConstructor(): void');
+  lines.push('    {');
+  lines.push(`        $client = new ${ns}(apiKey: 'test-key');`);
+  lines.push('        $this->assertNotNull($client);');
+  lines.push('    }');
   lines.push('}');
 
-  return {
-    path: `tests/Resources/${resourceName}Test.php`,
-    content: lines.join('\n'),
-    integrateTarget: false,
-    headerPlacement: 'skip',
-  };
+  return lines.join('\n');
 }
 
-function generateClientTest(ctx: EmitterContext): GeneratedFile {
-  return {
-    path: 'tests/ClientTest.php',
-    content: `
-namespace Tests\\${ctx.namespacePascal};
-
-use PHPUnit\\Framework\\TestCase;
-use ${ctx.namespacePascal}\\${ctx.namespacePascal};
-use ${ctx.namespacePascal}\\Exception\\ConfigurationException;
-
-class ClientTest extends TestCase
-{
-    public function testConstructorRequiresApiKey(): void
-    {
-        // Unset env var if set
-        putenv('WORKOS_API_KEY');
-
-        $this->expectException(ConfigurationException::class);
-        new ${ctx.namespacePascal}(apiKey: '');
-    }
-
-    public function testConstructorAcceptsApiKey(): void
-    {
-        $client = new ${ctx.namespacePascal}(apiKey: 'test_key');
-        $this->assertInstanceOf(${ctx.namespacePascal}::class, $client);
-    }
-}`,
-    integrateTarget: false,
-    headerPlacement: 'skip',
-  };
-}
-
-function buildTestCallArgs(op: Operation, plan: any, ctx: EmitterContext): string {
+function buildTestArgs(op: Operation, ctx: EmitterContext): string {
   const args: string[] = [];
+  const usedNames = new Set<string>();
 
-  // Path params
+  // Path params (use enum values for enum-typed path params)
   for (const p of op.pathParams) {
-    args.push(`'test_${p.name}'`);
+    if (p.type.kind === 'enum' || p.type.kind === 'model') {
+      args.push(generateTestValue(p.type, ctx));
+    } else {
+      args.push(`'test_${p.name}'`);
+    }
+    usedNames.add(toCamelCase(p.name));
   }
 
   // Required body fields
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as any).name);
+  if (op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
     if (bodyModel) {
-      for (const f of bodyModel.fields.filter((f: any) => f.required)) {
-        const phpName = fieldName(f.name);
-        args.push(`${phpName}: ${generateTestValue(f.type)}`);
+      const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
+      for (const f of bodyModel.fields) {
+        if (!f.required) continue;
+        let phpName = toCamelCase(f.name);
+        if (pathParamNames.has(phpName)) {
+          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+        }
+        if (usedNames.has(phpName)) continue;
+        usedNames.add(phpName);
+        args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
       }
     }
+  }
+
+  // Required query params
+  for (const q of op.queryParams) {
+    if (!q.required) continue;
+    const phpName = toCamelCase(q.name);
+    if (usedNames.has(phpName)) continue;
+    usedNames.add(phpName);
+    args.push(`${phpName}: ${generateTestValue(q.type, ctx)}`);
   }
 
   return args.join(', ');
 }
 
-function generateTestValue(ref: any): string {
+function generateTestValue(ref: { kind: string; type?: string; name?: string }, ctx?: EmitterContext): string {
   switch (ref.kind) {
     case 'primitive':
       switch (ref.type) {
@@ -426,26 +281,97 @@ function generateTestValue(ref: any): string {
         case 'boolean':
           return 'true';
         default:
-          return 'null';
+          return "'test_value'";
       }
-    case 'enum':
+    case 'enum': {
+      // Use the first enum value so PHP type-checking passes
+      if (ctx && ref.name) {
+        const e = ctx.spec.enums.find((en) => en.name === ref.name);
+        if (e && e.values.length > 0) {
+          const enumClass = className(ref.name);
+          const caseName = String(e.values[0].name)
+            .split(/[_\s-]+/)
+            .filter(Boolean)
+            .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+            .join('');
+          return `\\WorkOS\\Resource\\${enumClass}::${caseName}`;
+        }
+      }
       return "'test_value'";
+    }
     case 'array':
       return '[]';
-    case 'model':
+    case 'model': {
+      if (ref.name) {
+        const modelClass = className(ref.name);
+        const fixtureName = toSnakeCase(ref.name);
+        return `\\WorkOS\\Resource\\${modelClass}::fromArray($this->loadFixture('${fixtureName}'))`;
+      }
       return '[]';
+    }
     default:
       return "'test_value'";
   }
 }
 
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
+/**
+ * Resolve the fixture model name, unwrapping list wrapper models to match
+ * the fixture generator's naming (which unwraps before naming).
+ */
+function resolveFixtureModelName(modelName: string, ctx: EmitterContext): string {
+  const model = ctx.spec.models.find((m: Model) => m.name === modelName);
+  if (model && isListWrapperModel(model)) {
+    const dataField = model.fields.find((f) => f.name === 'data');
+    if (dataField?.type.kind === 'array' && dataField.type.items.kind === 'model') {
+      return snakeName(dataField.type.items.name);
+    }
+  }
+  return snakeName(modelName);
 }
 
-function toSnakeCase(str: string): string {
-  return str
-    .replace(/([A-Z])/g, '_$1')
-    .replace(/^_/, '')
-    .toLowerCase();
+/**
+ * Build the expected URL path for an operation, substituting test values for path params.
+ */
+function buildExpectedPath(op: Operation, ctx: EmitterContext): string {
+  let path = op.path.replace(/^\//, '');
+  for (const p of op.pathParams) {
+    if (p.type.kind === 'enum' && (p.type as { name: string }).name) {
+      // Use the actual first enum backing value for the path
+      const e = ctx.spec.enums.find((en) => en.name === (p.type as { name: string }).name);
+      const firstValue = e?.values[0]?.value;
+      path = path.replace(`{${p.name}}`, firstValue != null ? String(firstValue) : `test_${p.name}`);
+    } else {
+      path = path.replace(`{${p.name}}`, `test_${p.name}`);
+    }
+  }
+  return path;
+}
+
+/**
+ * Emit body field assertions for POST/PUT/PATCH operations.
+ * Only asserts primitive required fields (strings, numbers, booleans).
+ */
+function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext): void {
+  if (op.requestBody?.kind !== 'model') return;
+  const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+  if (!bodyModel) return;
+  // Skip fields that collide with path param names (they get deduped in the resource)
+  const pathParamNames = new Set(op.pathParams.map((p) => p.name));
+  const primitiveRequired = bodyModel.fields.filter(
+    (f) => f.required && (f.type.kind === 'primitive' || f.type.kind === 'literal') && !pathParamNames.has(f.name),
+  );
+  if (primitiveRequired.length === 0) return;
+
+  lines.push('        $body = json_decode((string) $request->getBody(), true);');
+  for (const f of primitiveRequired) {
+    if (f.type.kind === 'primitive' && f.type.type === 'string') {
+      lines.push(`        $this->assertSame('test_value', $body['${f.name}']);`);
+    } else if (f.type.kind === 'primitive' && f.type.type === 'integer') {
+      lines.push(`        $this->assertSame(1, $body['${f.name}']);`);
+    } else if (f.type.kind === 'primitive' && f.type.type === 'boolean') {
+      lines.push(`        $this->assertTrue($body['${f.name}']);`);
+    } else {
+      lines.push(`        $this->assertArrayHasKey('${f.name}', $body);`);
+    }
+  }
 }
