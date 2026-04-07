@@ -1,6 +1,7 @@
 import type { Service, Operation, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { stripUrnPrefix } from '../shared/naming-utils.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -98,7 +99,7 @@ export function enumClassName(name: string): string {
 
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(name);
+  let result = toPascalCase(stripUrnPrefix(name));
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -136,7 +137,7 @@ export function fieldName(name: string): string {
 
 /** snake_case name for fixtures and other snake_case contexts. */
 export function snakeName(name: string): string {
-  return toSnakeCase(name);
+  return toSnakeCase(stripUrnPrefix(name));
 }
 
 /** snake_case wire name (preserves the original API field name). */
@@ -184,7 +185,7 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
 export function resolveTypeName(name: string, ctx: EmitterContext): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
-  return toPascalCase(name);
+  return toPascalCase(stripUrnPrefix(name));
 }
 
 // ─── Service grouping ─────────────────────────────────────────────────

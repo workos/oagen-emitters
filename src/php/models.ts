@@ -1,23 +1,11 @@
 import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
-import { className, fieldName } from './naming.js';
+import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
+import { className, enumClassName, fieldName } from './naming.js';
 import { phpDocComment } from './utils.js';
 
-/**
- * Check if a model is a list metadata model (e.g., ListMetadata).
- */
-export function isListMetadataModel(model: Model): boolean {
-  return /list.?metadata$/i.test(model.name);
-}
-
-/**
- * Check if a model is a list wrapper (has `data` array + `list_metadata`).
- */
-export function isListWrapperModel(model: Model): boolean {
-  const hasData = model.fields.some((f) => f.name === 'data' && f.type.kind === 'array');
-  const hasListMeta = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  return hasData && hasListMeta;
-}
+// Import and re-export shared model detection utilities
+import { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
+export { isListMetadataModel, isListWrapperModel };
 
 /**
  * Generate PHP model files from IR models.
@@ -82,9 +70,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isOptional = !field.required;
       const comma = i < allFields.length - 1 ? ',' : ',';
 
-      if (field.description || field.deprecated) {
+      const varAnnotation = needsVarAnnotation(field.type)
+        ? `@var ${mapTypeRefForPHPDoc(field.type)}${isOptional ? '|null' : ''}`
+        : null;
+      if (field.description || field.deprecated || varAnnotation) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
+        if (varAnnotation) parts.push(varAnnotation);
         if (field.deprecated) parts.push('@deprecated');
         lines.push(...phpDocComment(parts.join('\n'), 8));
       }
@@ -180,7 +172,7 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
       return `${name}::fromArray(${accessor})`;
     }
     case 'enum': {
-      const name = className(ref.name);
+      const name = enumClassName(ref.name);
       return `${name}::from(${accessor})`;
     }
     case 'array':
@@ -235,7 +227,7 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
     case 'array':
       if (ref.items.kind === 'model') {
         return nullable
-          ? `array_map(fn ($item) => $item->toArray(), ${accessor} ?? [])`
+          ? `${accessor} !== null ? array_map(fn ($item) => $item->toArray(), ${accessor}) : null`
           : `array_map(fn ($item) => $item->toArray(), ${accessor})`;
       }
       return accessor;
@@ -247,5 +239,21 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
       return accessor;
     case 'literal':
       return accessor;
+  }
+}
+
+/**
+ * Check if a TypeRef needs a @var PHPDoc annotation because the PHP type hint
+ * loses information (e.g., `array` vs `array<ConnectionDomain>`).
+ */
+function needsVarAnnotation(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'array':
+    case 'map':
+      return true;
+    case 'nullable':
+      return needsVarAnnotation(ref.inner);
+    default:
+      return false;
   }
 }
