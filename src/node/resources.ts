@@ -1,6 +1,14 @@
 // @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
 
-import type { Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
+import type {
+  Service,
+  Operation,
+  EmitterContext,
+  GeneratedFile,
+  TypeRef,
+  Model,
+  ResolvedOperation,
+} from '@workos/oagen';
 import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -24,7 +32,13 @@ import {
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
 import { buildNodeStatusExceptions } from './sdk-errors.js';
-import { buildResolvedLookup, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import {
+  buildResolvedLookup,
+  lookupResolved,
+  groupByMount,
+  getOpDefaults,
+  getOpInferFromClient,
+} from '../shared/resolved-ops.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 
 /**
@@ -278,13 +292,32 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
+  // When merging into an existing class, the merger keeps baseline method
+  // bodies but may add imports from the generated code.  To avoid orphaned
+  // imports for types used only by baseline methods (whose bodies are kept
+  // intact), skip model collection for methods that already exist.
+  const baselineMethodSet = new Set<string>();
+  const baselineClass = ctx.apiSurface?.classes?.[serviceClass];
+  if (baselineClass?.methods) {
+    for (const name of Object.keys(baselineClass.methods)) {
+      baselineMethodSet.add(name);
+    }
+  }
+
   // Collect models for imports — only include models that are actually used
   // in method signatures (not all union variants from the spec)
   const responseModels = new Set<string>();
   const requestModels = new Set<string>();
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
-  for (const { op, plan } of plans) {
+  for (const { op, plan, method } of plans) {
+    // Skip imports for methods that already exist in the baseline class.
+    // The merger keeps baseline method bodies, so their imports are already
+    // present in the existing file.  Including them here would create
+    // orphaned imports when the generated return type differs from the
+    // baseline's (e.g., generated `List` vs baseline `RoleList`).
+    if (baselineMethodSet.has(method)) continue;
+
     if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       // For paginated operations, import the item type (e.g., Connection)
       // rather than the list wrapper type (e.g., ConnectionList).
@@ -335,7 +368,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // Collect response models from union split wrappers so their types and
   // deserializers are imported alongside the primary operation models.
   const resolvedLookup = buildResolvedLookup(ctx);
-  for (const { op } of plans) {
+  for (const { op, method } of plans) {
+    if (baselineMethodSet.has(method)) continue;
     const resolved = lookupResolved(op, resolvedLookup);
     if (resolved) {
       for (const name of collectWrapperResponseModels(resolved)) {
@@ -489,20 +523,29 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     } else if (!plan.isPaginated && !plan.hasBody && !plan.isDelete && op.queryParams.length > 0) {
       // Non-paginated GET or void methods with query params get a typed options interface
       // instead of falling back to Record<string, unknown>.
-      const optionsName = toPascalCase(method) + 'Options';
-      lines.push(`export interface ${optionsName} {`);
-      for (const param of op.queryParams) {
-        const opt = !param.required ? '?' : '';
-        if (param.description || param.deprecated) {
-          const parts: string[] = [];
-          if (param.description) parts.push(param.description);
-          if (param.deprecated) parts.push('@deprecated');
-          lines.push(...docComment(parts.join('\n'), 2));
+      // Filter out hidden params (defaults and inferFromClient fields)
+      const resolved = lookupResolved(op, resolvedLookup);
+      const opHiddenParams = new Set<string>([
+        ...Object.keys(getOpDefaults(resolved)),
+        ...getOpInferFromClient(resolved),
+      ]);
+      const visibleParams = op.queryParams.filter((p) => !opHiddenParams.has(p.name));
+      if (visibleParams.length > 0) {
+        const optionsName = toPascalCase(method) + 'Options';
+        lines.push(`export interface ${optionsName} {`);
+        for (const param of visibleParams) {
+          const opt = !param.required ? '?' : '';
+          if (param.description || param.deprecated) {
+            const parts: string[] = [];
+            if (param.description) parts.push(param.description);
+            if (param.deprecated) parts.push('@deprecated');
+            lines.push(...docComment(parts.join('\n'), 2));
+          }
+          lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
         }
-        lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
+        lines.push('}');
+        lines.push('');
       }
-      lines.push('}');
-      lines.push('');
     }
   }
 
@@ -515,10 +558,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   for (const { op, plan, method } of plans) {
     lines.push('');
-    lines.push(...renderMethod(op, plan, method, service, ctx, modelMap, specEnumNames));
+    const resolved = lookupResolved(op, resolvedLookup);
+    lines.push(...renderMethod(op, plan, method, service, ctx, modelMap, specEnumNames, resolved));
 
     // Emit union split wrapper methods (typed convenience methods for each variant)
-    const resolved = lookupResolved(op, resolvedLookup);
     if (resolved?.wrappers && resolved.wrappers.length > 0) {
       lines.push(...generateWrapperMethods(resolved, ctx));
     }
@@ -537,11 +580,19 @@ function renderMethod(
   ctx: EmitterContext,
   modelMap: Map<string, Model>,
   specEnumNames?: Set<string>,
+  resolvedOp?: ResolvedOperation,
 ): string[] {
   const lines: string[] = [];
   const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
 
   const pathStr = buildPathStr(op);
+
+  // Build the set of params hidden from the method signature
+  // (injected from client config or as constant defaults)
+  const hiddenParams = new Set<string>([
+    ...Object.keys(getOpDefaults(resolvedOp)),
+    ...getOpInferFromClient(resolvedOp),
+  ]);
 
   // Build set of valid param names to filter @param tags.
   // Prefer the overlay (existing method signature) if available;
@@ -558,8 +609,9 @@ function renderMethod(
     for (const p of op.pathParams) actualParams.add(fieldName(p.name));
     if (plan.hasBody) actualParams.add('payload');
     if (plan.isPaginated) actualParams.add('options');
-    // renderGetMethod adds options when there are non-paginated query params
-    if (!plan.isPaginated && op.queryParams.length > 0 && !plan.isDelete && responseModel) {
+    // renderGetMethod/renderVoidMethod add options when there are visible non-paginated query params
+    const visibleQueryCount = op.queryParams.filter((q) => !hiddenParams.has(q.name)).length;
+    if (!plan.isPaginated && visibleQueryCount > 0 && !plan.isDelete) {
       actualParams.add('options');
     }
     validParamNames = actualParams;
@@ -593,6 +645,7 @@ function renderMethod(
       // Only document query params if the method will have an options parameter
       if (validParamNames && (validParamNames.has('options') || overlayMethod)) {
         for (const param of op.queryParams) {
+          if (hiddenParams.has(param.name)) continue;
           const paramName = `options.${fieldName(param.name)}`;
           if (validParamNames && !validParamNames.has('options') && !validParamNames.has(fieldName(param.name)))
             continue;
@@ -636,7 +689,7 @@ function renderMethod(
     // Document options parameter for paginated operations
     if (plan.isPaginated) {
       docParts.push('@param options - Pagination and filter options.');
-    } else if (op.queryParams.length > 0) {
+    } else if (op.queryParams.filter((q) => !hiddenParams.has(q.name)).length > 0) {
       docParts.push('@param options - Additional query options.');
     }
     // @returns for the primary response model (use item type for paginated operations).
@@ -725,9 +778,9 @@ function renderMethod(
   } else if (plan.hasBody && responseModel) {
     renderBodyMethod(lines, op, plan, method, responseModel, pathStr, ctx, specEnumNames);
   } else if (responseModel) {
-    renderGetMethod(lines, op, plan, method, responseModel, pathStr, specEnumNames);
+    renderGetMethod(lines, op, plan, method, responseModel, pathStr, specEnumNames, resolvedOp);
   } else {
-    renderVoidMethod(lines, op, plan, method, pathStr, ctx, specEnumNames);
+    renderVoidMethod(lines, op, plan, method, pathStr, ctx, specEnumNames, resolvedOp);
   }
 
   // Defensive: if no render function produced a method body, emit a stub
@@ -911,21 +964,78 @@ function renderGetMethod(
   responseModel: string,
   pathStr: string,
   specEnumNames?: Set<string>,
+  resolvedOp?: ResolvedOperation,
 ): void {
-  const params = buildPathParams(op, specEnumNames);
-  const hasQuery = op.queryParams.length > 0 && !plan.isPaginated;
-  const optionsType = hasQuery ? toPascalCase(method) + 'Options' : null;
+  const hiddenParams = new Set<string>([
+    ...Object.keys(getOpDefaults(resolvedOp)),
+    ...getOpInferFromClient(resolvedOp),
+  ]);
 
-  const allParams = hasQuery ? (params ? `${params}, options?: ${optionsType}` : `options?: ${optionsType}`) : params;
+  const params = buildPathParams(op, specEnumNames);
+  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name));
+  const hasVisibleQuery = visibleQueryParams.length > 0 && !plan.isPaginated;
+  const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
+  const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
+  const hasInjected = hasDefaults || hasInferred;
+  const hasQuery = (op.queryParams.length > 0 && !plan.isPaginated) || hasInjected;
+  const optionsType = hasVisibleQuery ? toPascalCase(method) + 'Options' : null;
+
+  const allParams = optionsType
+    ? params
+      ? `${params}, options?: ${optionsType}`
+      : `options?: ${optionsType}`
+    : params;
 
   lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
   if (hasQuery) {
-    const queryExpr = renderQueryExpr(op.queryParams);
-    lines.push(
-      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
-    );
-    lines.push(`      query: ${queryExpr},`);
-    lines.push('    });');
+    if (hasInjected) {
+      // Build the query object with visible params, defaults, and inferred fields
+      const queryParts: string[] = [];
+
+      // Regular visible query params (from options)
+      if (hasVisibleQuery) {
+        for (const param of visibleQueryParams) {
+          const camel = fieldName(param.name);
+          const snake = wireFieldName(param.name);
+          if (camel === snake) {
+            if (param.required) {
+              queryParts.push(`${camel}: options.${camel}`);
+            } else {
+              queryParts.push(`...(options?.${camel} !== undefined && { ${camel}: options.${camel} })`);
+            }
+          } else {
+            if (param.required) {
+              queryParts.push(`${snake}: options.${camel}`);
+            } else {
+              queryParts.push(`...(options?.${camel} !== undefined && { ${snake}: options.${camel} })`);
+            }
+          }
+        }
+      }
+
+      // Constant defaults (e.g., response_type: 'code')
+      for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+        queryParts.push(`${key}: ${tsLiteral(value)}`);
+      }
+
+      // Inferred fields from client config (e.g., client_id from this.workos.options.clientId)
+      for (const field of getOpInferFromClient(resolvedOp)) {
+        queryParts.push(`${field}: ${clientFieldExpression(field)}`);
+      }
+
+      lines.push(
+        `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
+      );
+      lines.push(`      query: { ${queryParts.join(', ')} },`);
+      lines.push('    });');
+    } else {
+      const queryExpr = renderQueryExpr(visibleQueryParams);
+      lines.push(
+        `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
+      );
+      lines.push(`      query: ${queryExpr},`);
+      lines.push('    });');
+    }
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     // PUT/PATCH/POST require a body argument even when the spec has no request body
     lines.push(
@@ -940,6 +1050,25 @@ function renderGetMethod(
   lines.push('  }');
 }
 
+/** Convert a JS value to a TypeScript literal. */
+function tsLiteral(value: string | number | boolean): string {
+  if (typeof value === 'string') return `'${value.replace(/'/g, "\\'")}'`;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+/** Get the TypeScript expression for reading a client config field. */
+function clientFieldExpression(field: string): string {
+  switch (field) {
+    case 'client_id':
+      return 'this.workos.options.clientId';
+    case 'client_secret':
+      return 'this.workos.key';
+    default:
+      return `this.workos.${toCamelCase(field)}`;
+  }
+}
+
 function renderVoidMethod(
   lines: string[],
   op: Operation,
@@ -948,10 +1077,21 @@ function renderVoidMethod(
   pathStr: string,
   ctx: EmitterContext,
   specEnumNames?: Set<string>,
+  resolvedOp?: ResolvedOperation,
 ): void {
+  const hiddenParams = new Set<string>([
+    ...Object.keys(getOpDefaults(resolvedOp)),
+    ...getOpInferFromClient(resolvedOp),
+  ]);
+
   const params = buildPathParams(op, specEnumNames);
-  const hasQuery = op.queryParams.length > 0 && !plan.hasBody;
-  const optionsType = hasQuery ? toPascalCase(method) + 'Options' : null;
+  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name));
+  const hasVisibleQuery = visibleQueryParams.length > 0 && !plan.hasBody;
+  const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
+  const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
+  const hasInjected = hasDefaults || hasInferred;
+  const hasQuery = hasVisibleQuery || (hasInjected && !plan.hasBody);
+  const optionsType = hasVisibleQuery ? toPascalCase(method) + 'Options' : null;
 
   let bodyParam = '';
   let bodyExpr = 'payload';
@@ -984,10 +1124,47 @@ function renderVoidMethod(
   if (plan.hasBody) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
   } else if (hasQuery) {
-    const queryExpr = renderQueryExpr(op.queryParams);
-    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
-    lines.push(`      query: ${queryExpr},`);
-    lines.push('    });');
+    if (hasInjected) {
+      // Build query object with visible params, defaults, and inferred fields
+      const queryParts: string[] = [];
+
+      if (hasVisibleQuery) {
+        for (const param of visibleQueryParams) {
+          const camel = fieldName(param.name);
+          const snake = wireFieldName(param.name);
+          if (camel === snake) {
+            if (param.required) {
+              queryParts.push(`${camel}: options.${camel}`);
+            } else {
+              queryParts.push(`...(options?.${camel} !== undefined && { ${camel}: options.${camel} })`);
+            }
+          } else {
+            if (param.required) {
+              queryParts.push(`${snake}: options.${camel}`);
+            } else {
+              queryParts.push(`...(options?.${camel} !== undefined && { ${snake}: options.${camel} })`);
+            }
+          }
+        }
+      }
+
+      for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+        queryParts.push(`${key}: ${tsLiteral(value)}`);
+      }
+
+      for (const field of getOpInferFromClient(resolvedOp)) {
+        queryParts.push(`${field}: ${clientFieldExpression(field)}`);
+      }
+
+      lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
+      lines.push(`      query: { ${queryParts.join(', ')} },`);
+      lines.push('    });');
+    } else {
+      const queryExpr = renderQueryExpr(visibleQueryParams);
+      lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
+      lines.push(`      query: ${queryExpr},`);
+      lines.push('    });');
+    }
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {});`);
   } else {
