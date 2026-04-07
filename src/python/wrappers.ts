@@ -1,6 +1,7 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import { toSnakeCase } from '@workos/oagen';
 import { className, fieldName } from './naming.js';
+import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
 
 /**
  * Generate Python wrapper method lines for split operations.
@@ -43,13 +44,7 @@ function emitWrapperMethod(
 ): void {
   const op = resolvedOp.operation;
   const method = wrapper.name; // already snake_case
-
-  // Find the variant model to determine field types
-  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
-  const variantFields = variantModel?.fields ?? [];
-
-  // Determine optional params
-  const optionalSet = new Set(wrapper.optionalParams);
+  const wrapperParams = resolveWrapperParams(wrapper, ctx);
 
   // Build signature
   const defKeyword = isAsync ? 'async def' : 'def';
@@ -66,12 +61,11 @@ function emitWrapperMethod(
   lines.push('        *,');
 
   // Exposed params as keyword args
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
+  for (const { paramName, field, isOptional } of wrapperParams) {
     const pyName = fieldName(paramName);
     const pyType = field ? resolveSimpleType(field.type) : 'str';
 
-    if (optionalSet.has(paramName) || !field?.required) {
+    if (isOptional) {
       lines.push(`        ${pyName}: Optional[${pyType}] = None,`);
     } else {
       lines.push(`        ${pyName}: ${pyType},`);
@@ -86,7 +80,7 @@ function emitWrapperMethod(
   lines.push(`    ) -> ${responseType}:`);
 
   // Docstring
-  lines.push(`        """${formatMethodDescription(wrapper.name)}."""`);
+  lines.push(`        """${formatWrapperDescription(wrapper.name)}."""`);
 
   // Build body dict
   lines.push('        body: Dict[str, Any] = {');
@@ -97,12 +91,10 @@ function emitWrapperMethod(
   }
 
   // Exposed params (required ones go directly)
-  for (const paramName of wrapper.exposedParams) {
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (isOptional) continue;
     const pyName = fieldName(paramName);
-    const field = variantFields.find((f) => f.name === paramName);
-    if (!optionalSet.has(paramName) && field?.required) {
-      lines.push(`            "${paramName}": ${pyName},`);
-    }
+    lines.push(`            "${paramName}": ${pyName},`);
   }
 
   lines.push('        }');
@@ -115,13 +107,11 @@ function emitWrapperMethod(
   }
 
   // Optional exposed params
-  for (const paramName of wrapper.exposedParams) {
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (!isOptional) continue;
     const pyName = fieldName(paramName);
-    const field = variantFields.find((f) => f.name === paramName);
-    if (optionalSet.has(paramName) || !field?.required) {
-      lines.push(`        if ${pyName} is not None:`);
-      lines.push(`            body["${paramName}"] = ${pyName}`);
-    }
+    lines.push(`        if ${pyName} is not None:`);
+    lines.push(`            body["${paramName}"] = ${pyName}`);
   }
 
   // Build path expression
@@ -159,14 +149,14 @@ function emitWrapperMethod(
 }
 
 /** Convert a value to a Python literal. */
-function pythonLiteral(value: string | number | boolean): string {
+export function pythonLiteral(value: string | number | boolean): string {
   if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
   if (typeof value === 'boolean') return value ? 'True' : 'False';
   return String(value);
 }
 
 /** Get the Python expression for reading a client config field. */
-function clientFieldExpression(field: string): string {
+export function clientFieldExpression(field: string): string {
   switch (field) {
     case 'client_id':
       return 'self._client.client_id';
@@ -198,12 +188,4 @@ function resolveSimpleType(ref: any): string {
   if (ref.kind === 'model') return className(ref.name);
   if (ref.kind === 'enum') return className(ref.name);
   return 'Any';
-}
-
-/** Format a snake_case method name into a human-readable description. */
-function formatMethodDescription(name: string): string {
-  return name
-    .split('_')
-    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-    .join(' ');
 }
