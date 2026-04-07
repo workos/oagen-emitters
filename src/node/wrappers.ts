@@ -2,6 +2,7 @@ import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos
 import { toCamelCase } from '@workos/oagen';
 import { fieldName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import { mapTypeRef } from './type-map.js';
+import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
 
 /**
  * Generate TypeScript wrapper method lines for union split operations.
@@ -47,12 +48,7 @@ function emitWrapperMethod(
 ): void {
   const op = resolvedOp.operation;
   const method = toCamelCase(wrapper.name);
-
-  // Find the variant model to determine field types
-  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
-  const variantFields = variantModel?.fields ?? [];
-
-  const optionalSet = new Set(wrapper.optionalParams);
+  const wrapperParams = resolveWrapperParams(wrapper, ctx);
 
   // Build parameter list: path params, then required exposed, then optional exposed
   const paramParts: string[] = [];
@@ -61,22 +57,18 @@ function emitWrapperMethod(
     paramParts.push(`${fieldName(p.name)}: string`);
   }
 
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    if (isOptional) continue;
     const tsName = fieldName(paramName);
     const tsType = field ? mapTypeRef(field.type) : 'string';
-    if (!optionalSet.has(paramName) && field?.required) {
-      paramParts.push(`${tsName}: ${tsType}`);
-    }
+    paramParts.push(`${tsName}: ${tsType}`);
   }
 
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    if (!isOptional) continue;
     const tsName = fieldName(paramName);
     const tsType = field ? mapTypeRef(field.type) : 'string';
-    if (optionalSet.has(paramName) || !field?.required) {
-      paramParts.push(`${tsName}?: ${tsType}`);
-    }
+    paramParts.push(`${tsName}?: ${tsType}`);
   }
 
   // Response type
@@ -85,7 +77,7 @@ function emitWrapperMethod(
   const returnType = responseTypeName ?? 'void';
 
   // JSDoc
-  lines.push(`  /** ${formatMethodDescription(wrapper.name)}. */`);
+  lines.push(`  /** ${formatWrapperDescription(wrapper.name)}. */`);
 
   // Method signature
   lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<${returnType}> {`);
@@ -105,22 +97,18 @@ function emitWrapperMethod(
   }
 
   // Required exposed params (wire-format key, camelCase value)
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
-    if (!optionalSet.has(paramName) && field?.required) {
-      lines.push(`      ${paramName}: ${fieldName(paramName)},`);
-    }
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (isOptional) continue;
+    lines.push(`      ${paramName}: ${fieldName(paramName)},`);
   }
 
   lines.push('    };');
 
   // Optional exposed params — add conditionally
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName);
-    if (optionalSet.has(paramName) || !field?.required) {
-      const tsName = fieldName(paramName);
-      lines.push(`    if (${tsName} !== undefined) body.${paramName} = ${tsName};`);
-    }
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (!isOptional) continue;
+    const tsName = fieldName(paramName);
+    lines.push(`    if (${tsName} !== undefined) body.${paramName} = ${tsName};`);
   }
 
   // Build path expression
@@ -160,12 +148,4 @@ function clientFieldExpression(field: string): string {
     default:
       return `this.workos.${toCamelCase(field)}`;
   }
-}
-
-/** Format a snake_case method name into a human-readable description. */
-function formatMethodDescription(name: string): string {
-  return name
-    .split('_')
-    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-    .join(' ');
 }
