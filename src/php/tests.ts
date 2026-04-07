@@ -1,9 +1,18 @@
-import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, Model } from '@workos/oagen';
-import { planOperation, toCamelCase, toSnakeCase } from '@workos/oagen';
-import { className, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
+import type {
+  ApiSpec,
+  Service,
+  Operation,
+  EmitterContext,
+  GeneratedFile,
+  Model,
+  ResolvedOperation,
+} from '@workos/oagen';
+import { planOperation, toCamelCase } from '@workos/oagen';
+import { className, enumClassName, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
-import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
+import { getMountTarget, groupByMount, buildHiddenParams } from '../shared/resolved-ops.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 
 /**
  * Generate PHPUnit test files and fixture JSON files.
@@ -26,12 +35,12 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Collect all operations per mount target using resolved per-operation mounts.
   // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
   const mountGroupsFromResolved = groupByMount(ctx);
-  const mountGroups = new Map<string, { op: Operation; service: Service }[]>();
+  const mountGroups = new Map<string, { op: Operation; service: Service; resolvedOp?: ResolvedOperation }[]>();
   if (mountGroupsFromResolved.size > 0) {
     for (const [target, group] of mountGroupsFromResolved) {
       mountGroups.set(
         target,
-        group.resolvedOps.map((r) => ({ op: r.operation, service: r.service })),
+        group.resolvedOps.map((r) => ({ op: r.operation, service: r.service, resolvedOp: r })),
       );
     }
   } else {
@@ -68,7 +77,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
 function generateMountGroupTest(
   target: string,
-  ops: { op: Operation; service: Service }[],
+  ops: { op: Operation; service: Service; resolvedOp?: ResolvedOperation }[],
   ctx: EmitterContext,
 ): string {
   const ns = ctx.namespacePascal;
@@ -93,10 +102,11 @@ function generateMountGroupTest(
   // Uses the hand-maintained TestHelper API:
   //   - loadFixture(name) appends .json automatically
   //   - createMockClient([['status' => N, 'body' => [...]]]) wraps into Response
-  for (const { op, service } of ops) {
+  for (const { op, service, resolvedOp } of ops) {
     const plan = planOperation(op);
     const method = resolveMethodName(op, service, ctx);
     const testName = `test${method.charAt(0).toUpperCase()}${method.slice(1)}`;
+    const hidden = buildHiddenParams(resolvedOp);
 
     if (emitted.has(testName)) continue;
     emitted.add(testName);
@@ -109,25 +119,30 @@ function generateMountGroupTest(
 
     if (plan.isDelete) {
       lines.push("        $client = $this->createMockClient([['status' => 204]]);");
-      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push("        $this->assertSame('DELETE', $request->getMethod());");
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for DELETE-with-body
       if (plan.hasBody && op.requestBody?.kind === 'model') {
-        emitBodyAssertions(lines, op, ctx);
+        emitBodyAssertions(lines, op, ctx, hidden);
       }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       const fixtureName = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
+      // Pass all params (including optional enums) to verify serialization
       lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
-      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      lines.push(
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden })});`,
+      );
       lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
+      // Query string serialization assertions
+      emitQueryAssertions(lines, op, ctx, hidden);
     } else if (plan.responseModelName) {
       const modelName = className(plan.responseModelName);
       const fixtureName = `${snakeName(plan.responseModelName)}`;
@@ -137,12 +152,14 @@ function generateMountGroupTest(
       } else {
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
       }
-      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
       if (op.response.kind === 'array') {
         lines.push('        $this->assertIsArray($result);');
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
+        emitFieldHydrationAssertions(lines, plan.responseModelName, '$result[0]', '$fixture', ctx);
       } else {
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
+        emitFieldHydrationAssertions(lines, plan.responseModelName, '$result', '$fixture', ctx);
       }
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
@@ -150,11 +167,11 @@ function generateMountGroupTest(
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for POST/PUT/PATCH
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
-        emitBodyAssertions(lines, op, ctx);
+        emitBodyAssertions(lines, op, ctx, hidden);
       }
     } else {
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
-      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx)});`);
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
@@ -181,19 +198,58 @@ function generateMountGroupTest(
       lines.push(`    public function ${testName}(): void`);
       lines.push('    {');
 
+      // Build required args for wrapper methods
+      const wrapperArgs = buildWrapperTestArgs(wrapper, ctx);
+
       if (responseModel) {
         const modelName = className(responseModel);
         const fixtureName = `${snakeName(responseModel)}`;
         lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
-        lines.push(`        $result = $client->${accessor}()->${method}();`);
+        lines.push(`        $result = $client->${accessor}()->${method}(${wrapperArgs});`);
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
       } else {
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
-        lines.push(`        $client->${accessor}()->${method}();`);
+        lines.push(`        $client->${accessor}()->${method}(${wrapperArgs});`);
         lines.push('        $this->assertTrue(true);');
       }
 
+      lines.push('    }');
+    }
+  }
+
+  // Pagination boundary test: verify iteration works when before/after cursors are null
+  const firstPaginatedOp = ops.find(({ op }) => {
+    const p = planOperation(op);
+    return p.isPaginated && op.pagination?.itemType.kind === 'model';
+  });
+  if (firstPaginatedOp) {
+    const testName = 'testPaginationBoundary';
+    if (!emitted.has(testName)) {
+      emitted.add(testName);
+      const op = firstPaginatedOp.op;
+      const paginatedHidden = buildHiddenParams(firstPaginatedOp.resolvedOp);
+      const itemType = op.pagination!.itemType as { name: string };
+      const fixtureName = `list_${resolveFixtureModelName(itemType.name, ctx)}`;
+      const method = resolveMethodName(op, firstPaginatedOp.service, ctx);
+
+      lines.push('');
+      lines.push(`    public function ${testName}(): void`);
+      lines.push('    {');
+      lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+      lines.push('        // Ensure cursors are null (first/last page boundary)');
+      lines.push("        $fixture['list_metadata']['before'] = null;");
+      lines.push("        $fixture['list_metadata']['after'] = null;");
+      lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
+      lines.push(
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden: paginatedHidden })});`,
+      );
+      lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
+      lines.push('        // Iterating should not throw on null cursors');
+      lines.push('        foreach ($result as $item) {');
+      lines.push('            $this->assertNotNull($item);');
+      lines.push('            break;');
+      lines.push('        }');
       lines.push('    }');
     }
   }
@@ -224,7 +280,13 @@ function generateClientTest(ctx: EmitterContext): string {
   return lines.join('\n');
 }
 
-function buildTestArgs(op: Operation, ctx: EmitterContext): string {
+function buildTestArgs(
+  op: Operation,
+  ctx: EmitterContext,
+  opts?: { includeOptional?: boolean; hidden?: Set<string> },
+): string {
+  const includeOptional = opts?.includeOptional ?? false;
+  const hidden = opts?.hidden ?? new Set<string>();
   const args: string[] = [];
   const usedNames = new Set<string>();
 
@@ -244,7 +306,8 @@ function buildTestArgs(op: Operation, ctx: EmitterContext): string {
     if (bodyModel) {
       const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
       for (const f of bodyModel.fields) {
-        if (!f.required) continue;
+        if (hidden.has(f.name)) continue;
+        if (!f.required && !includeOptional) continue;
         let phpName = toCamelCase(f.name);
         if (pathParamNames.has(phpName)) {
           phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
@@ -256,9 +319,10 @@ function buildTestArgs(op: Operation, ctx: EmitterContext): string {
     }
   }
 
-  // Required query params
+  // Query params
   for (const q of op.queryParams) {
-    if (!q.required) continue;
+    if (hidden.has(q.name)) continue;
+    if (!q.required && !includeOptional) continue;
     const phpName = toCamelCase(q.name);
     if (usedNames.has(phpName)) continue;
     usedNames.add(phpName);
@@ -288,7 +352,7 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
       if (ctx && ref.name) {
         const e = ctx.spec.enums.find((en) => en.name === ref.name);
         if (e && e.values.length > 0) {
-          const enumClass = className(ref.name);
+          const enumClass = enumClassName(ref.name);
           const caseName = String(e.values[0].name)
             .split(/[_\s-]+/)
             .filter(Boolean)
@@ -304,7 +368,7 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
     case 'model': {
       if (ref.name) {
         const modelClass = className(ref.name);
-        const fixtureName = toSnakeCase(ref.name);
+        const fixtureName = snakeName(ref.name);
         return `\\WorkOS\\Resource\\${modelClass}::fromArray($this->loadFixture('${fixtureName}'))`;
       }
       return '[]';
@@ -312,6 +376,21 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
     default:
       return "'test_value'";
   }
+}
+
+/**
+ * Build test arguments for wrapper method calls, providing values for required exposed params.
+ */
+function buildWrapperTestArgs(wrapper: import('@workos/oagen').ResolvedWrapper, ctx: EmitterContext): string {
+  const params = resolveWrapperParams(wrapper, ctx);
+  const args: string[] = [];
+  for (const { paramName, field, isOptional } of params) {
+    if (isOptional) continue;
+    const phpName = toCamelCase(paramName);
+    const value = field ? generateTestValue(field.type, ctx) : "'test_value'";
+    args.push(`${phpName}: ${value}`);
+  }
+  return args.join(', ');
 }
 
 /**
@@ -348,17 +427,84 @@ function buildExpectedPath(op: Operation, ctx: EmitterContext): string {
 }
 
 /**
+ * Emit field hydration assertions: verify that deserialized model fields
+ * match the fixture data. Checks up to 2 primitive string fields (id + one more).
+ */
+function emitFieldHydrationAssertions(
+  lines: string[],
+  modelName: string,
+  resultVar: string,
+  fixtureVar: string,
+  ctx: EmitterContext,
+): void {
+  const model = ctx.spec.models.find((m) => m.name === modelName);
+  if (!model) return;
+
+  // Pick required primitive string fields for assertion (id first, then others)
+  const candidates = model.fields.filter(
+    (f) => f.required && f.type.kind === 'primitive' && f.type.type === 'string' && !f.type.format,
+  );
+  const idField = candidates.find((f) => f.name === 'id');
+  const others = candidates.filter((f) => f.name !== 'id');
+  const assertFields = [idField, others[0]].filter(Boolean);
+
+  for (const f of assertFields) {
+    if (!f) continue;
+    const phpProp = toCamelCase(f.name);
+    lines.push(`        $this->assertSame(${fixtureVar}['${f.name}'], ${resultVar}->${phpProp});`);
+  }
+}
+
+/**
+ * Emit query string assertions for list operations.
+ * Asserts that all query params (including optional enums) are serialized correctly.
+ */
+function emitQueryAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
+  if (op.queryParams.length === 0) return;
+  lines.push('        parse_str($request->getUri()->getQuery(), $query);');
+  for (const q of op.queryParams) {
+    if (hidden?.has(q.name)) continue;
+    const innerType =
+      q.type.kind === 'nullable' ? (q.type as { inner: { kind: string; type?: string; name?: string } }).inner : q.type;
+    if (innerType.kind === 'enum' && innerType.name) {
+      // Assert enum is serialized as its backing value, not the enum instance
+      const e = ctx.spec.enums.find((en) => en.name === innerType.name);
+      if (e && e.values.length > 0) {
+        lines.push(`        $this->assertSame('${e.values[0].value}', $query['${q.name}']);`);
+      }
+    } else if (innerType.kind === 'primitive') {
+      switch (innerType.type) {
+        case 'string':
+          lines.push(`        $this->assertSame('test_value', $query['${q.name}']);`);
+          break;
+        case 'integer':
+        case 'number':
+          lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+          break;
+        case 'boolean':
+          lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+          break;
+      }
+    }
+  }
+}
+
+/**
  * Emit body field assertions for POST/PUT/PATCH operations.
  * Only asserts primitive required fields (strings, numbers, booleans).
  */
-function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext): void {
+function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
   if (op.requestBody?.kind !== 'model') return;
   const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
   if (!bodyModel) return;
   // Skip fields that collide with path param names (they get deduped in the resource)
   const pathParamNames = new Set(op.pathParams.map((p) => p.name));
   const primitiveRequired = bodyModel.fields.filter(
-    (f) => f.required && (f.type.kind === 'primitive' || f.type.kind === 'literal') && !pathParamNames.has(f.name),
+    (f) =>
+      f.required &&
+      (f.type.kind === 'primitive' || f.type.kind === 'literal') &&
+      !pathParamNames.has(f.name) &&
+      !hidden?.has(f.name),
   );
   if (primitiveRequired.length === 0) return;
 
