@@ -1,6 +1,7 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
+import { stripUrnPrefix } from '../shared/naming-utils.js';
 
 /**
  * Acronym map: after PascalCase conversion, fix known acronyms to all-caps Go convention.
@@ -36,7 +37,10 @@ const ACRONYM_FIXES: [RegExp, string][] = [
  * Must be applied after PascalCase and other acronym fixes.
  */
 function fixTrailingId(s: string): string {
-  return s.replace(/Id(?=[A-Z]|$)/g, 'ID');
+  // Fix "Ids" → "IDs" first (plural), then "Id" → "ID" (singular)
+  let result = s.replace(/Ids(?=[A-Z]|$)/g, 'IDs');
+  result = result.replace(/Id(?=[A-Z]|$)/g, 'ID');
+  return result;
 }
 
 /** Apply all Go acronym conventions to a PascalCase string. */
@@ -51,12 +55,12 @@ function applyAcronyms(s: string): string {
 
 /** PascalCase type/struct name with Go acronym conventions. */
 export function className(name: string): string {
-  return applyAcronyms(toPascalCase(name));
+  return applyAcronyms(toPascalCase(stripUrnPrefix(name)));
 }
 
 /** snake_case file name (without extension). */
 export function fileName(name: string): string {
-  return toSnakeCase(name);
+  return toSnakeCase(stripUrnPrefix(name));
 }
 
 /** PascalCase exported method name with Go acronym conventions. */

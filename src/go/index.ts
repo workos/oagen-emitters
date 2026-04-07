@@ -10,6 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
+import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
@@ -31,7 +32,9 @@ export const goEmitter: Emitter = {
   language: 'go',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateModels(models, ctx));
+    // Enrich models by flattening oneOf/allOf+oneOf variant fields from the raw spec
+    const enriched = enrichModelsFromSpec(models);
+    return ensureTrailingNewlines(generateModels(enriched, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
