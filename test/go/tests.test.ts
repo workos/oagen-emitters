@@ -76,17 +76,16 @@ describe('go/tests', () => {
     ];
     const spec = makeSpec(services);
     const files = generateTests(spec, makeCtx(spec));
-    const testFile = files.find((f) => f.path.endsWith('_test.go'))!;
+    const testFile = files.find((f) => f.path.endsWith('_test.go') && !f.path.includes('helpers'))!;
     const content = testFile.content;
 
     expect(content).toContain('package workos_test');
     expect(content).toContain('httptest.NewServer');
     expect(content).toContain('require.Equal');
-    expect(content).toContain('require.NoError');
     expect(content).toContain('workos.NewClient');
   });
 
-  it('generates error test for 401', () => {
+  it('generates shared test helpers file', () => {
     const services: Service[] = [
       {
         name: 'Organizations',
@@ -95,12 +94,29 @@ describe('go/tests', () => {
     ];
     const spec = makeSpec(services);
     const files = generateTests(spec, makeCtx(spec));
-    const testFile = files.find((f) => f.path.endsWith('_test.go'))!;
+    const helperFile = files.find((f) => f.path === 'helpers_test.go')!;
+    expect(helperFile).toBeDefined();
+    expect(helperFile.content).toContain('ptrString');
+    expect(helperFile.content).toContain('ptrInt');
+    expect(helperFile.content).toContain('setupTestServer');
+  });
+
+  it('generates error test for 404 and 422', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [makeOp({})],
+      },
+    ];
+    const spec = makeSpec(services);
+    const files = generateTests(spec, makeCtx(spec));
+    const testFile = files.find((f) => f.path.endsWith('_test.go') && !f.path.includes('helpers'))!;
     const content = testFile.content;
 
-    expect(content).toContain('Error401');
-    expect(content).toContain('StatusUnauthorized');
-    expect(content).toContain('AuthenticationError');
+    expect(content).toContain('Error404');
+    expect(content).toContain('NotFoundError');
+    expect(content).toContain('Error422');
+    expect(content).toContain('UnprocessableEntityError');
   });
 
   it('generates delete operation tests with no response assertion', () => {
@@ -118,7 +134,7 @@ describe('go/tests', () => {
     ];
     const spec = makeSpec(services);
     const files = generateTests(spec, makeCtx(spec));
-    const testFile = files.find((f) => f.path.endsWith('_test.go'))!;
+    const testFile = files.find((f) => f.path.endsWith('_test.go') && !f.path.includes('helpers'))!;
     const content = testFile.content;
 
     expect(content).toContain('StatusNoContent');

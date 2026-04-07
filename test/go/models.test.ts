@@ -247,6 +247,18 @@ describe('go/models', () => {
       	Name string \`json:"name"\`
       	CreatedAt string \`json:"created_at"\`
       }
+
+      // PaginationParams contains common pagination parameters for list operations.
+      type PaginationParams struct {
+      	// Before is a cursor for reverse pagination.
+      	Before *string \`url:"before,omitempty" json:"-"\`
+      	// After is a cursor for forward pagination.
+      	After *string \`url:"after,omitempty" json:"-"\`
+      	// Limit is the maximum number of items to return per page.
+      	Limit *int \`url:"limit,omitempty" json:"-"\`
+      	// Order is the sort order for results (asc or desc).
+      	Order *string \`url:"order,omitempty" json:"-"\`
+      }
       "
     `);
   });
