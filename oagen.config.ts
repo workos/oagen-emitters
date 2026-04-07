@@ -35,7 +35,11 @@ const operationHints: Record<string, OperationHint> = {
   'DELETE /radar/lists/{type}/{action}': { name: 'remove_list_entry' },
 
   // ── SSO ──────────────────────────────────────────────────────────────────
-  'GET /sso/authorize': { name: 'get_authorization_url' },
+  'GET /sso/authorize': {
+    name: 'get_authorization_url',
+    defaults: { response_type: 'code' },
+    inferFromClient: ['client_id'],
+  },
   'GET /sso/logout': { name: 'get_logout_url' },
   'GET /sso/profile': { name: 'get_profile' },
   'POST /sso/token': { name: 'get_profile_and_token' },
@@ -44,7 +48,11 @@ const operationHints: Record<string, OperationHint> = {
   'GET /sso/jwks/{clientId}': { name: 'get_jwks' },
 
   // ── User Management — auth ──────────────────────────────────────────────
-  'GET /user_management/authorize': { name: 'get_authorization_url' },
+  'GET /user_management/authorize': {
+    name: 'get_authorization_url',
+    defaults: { response_type: 'code' },
+    inferFromClient: ['client_id'],
+  },
   'GET /user_management/sessions/logout': { name: 'get_logout_url' },
 
   // ── User Management — org membership actions ────────────────────────────
@@ -144,7 +152,7 @@ const operationHints: Record<string, OperationHint> = {
     split: [
       {
         name: 'create_oauth_application',
-        targetVariant: 'OAuthApplicationCreateRequest',
+        targetVariant: 'CreateOAuthApplication',
         defaults: { application_type: 'oauth' },
         exposedParams: [
           'name',
@@ -158,7 +166,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'create_m2m_application',
-        targetVariant: 'M2MApplicationCreateRequest',
+        targetVariant: 'CreateM2MApplication',
         defaults: { application_type: 'm2m' },
         exposedParams: ['name', 'organization_id', 'description', 'scopes'],
       },
@@ -244,7 +252,21 @@ const config: OagenConfig = {
   },
   docUrl: 'https://workos.com/docs',
   operationIdTransform: nestjsOperationIdTransform,
-  schemaNameTransform: (name: string) => name.replace(/Dto/g, '').replace(/DTO/g, ''),
+  schemaNameTransform: (name: string) => {
+    // Explicit renames for Dto models that collide with response models
+    const COLLISION_RENAMES: Record<string, string> = {
+      OrganizationDto: 'OrganizationInput',
+      RedirectUriDto: 'RedirectUriInput',
+      // Generic list-derived names that need domain-specific identifiers
+      ListData: 'Role',
+      ListModel: 'RoleList',
+    };
+    if (COLLISION_RENAMES[name]) return COLLISION_RENAMES[name];
+    return name
+      .replace(/Dto/g, '')
+      .replace(/DTO/g, '')
+      .replace(/^Urn(?:IetfParams|Workos)O[Aa]uthGrantType/, '');
+  },
   operationHints,
   mountRules,
 };
