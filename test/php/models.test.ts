@@ -303,4 +303,54 @@ describe('generateModels', () => {
     expect(file!.content).toContain('Use name instead');
     expect(file!.content).toContain('@deprecated');
   });
+
+  it('adds @var PHPDoc for array-typed properties', () => {
+    const models: Model[] = [
+      {
+        name: 'Connection',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'domains',
+            type: { kind: 'array', items: { kind: 'model', name: 'ConnectionDomain' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ConnectionDomain',
+        fields: [{ name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const specWithModels = { ...emptySpec, models };
+    const result = generateModels(models, { ...ctx, spec: specWithModels });
+
+    const file = findModel(result, 'Connection');
+    expect(file).toBeDefined();
+    expect(file!.content).toContain('@var array<\\WorkOS\\Resource\\ConnectionDomain>');
+  });
+
+  it('adds @var PHPDoc for nullable array-typed properties', () => {
+    const models: Model[] = [
+      {
+        name: 'User',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'roles',
+            type: { kind: 'nullable', inner: { kind: 'array', items: { kind: 'primitive', type: 'string' } } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const specWithModels = { ...emptySpec, models };
+    const result = generateModels(models, { ...ctx, spec: specWithModels });
+
+    const file = findModel(result, 'User');
+    expect(file).toBeDefined();
+    expect(file!.content).toContain('@var array<string>|null');
+  });
 });

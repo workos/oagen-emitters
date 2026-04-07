@@ -1719,6 +1719,8 @@ describe('partial service coverage', () => {
           service: services[0],
           methodName: 'list_organization_roles',
           mountOn: 'Authorization',
+          defaults: {},
+          inferFromClient: [],
         },
       ],
     };

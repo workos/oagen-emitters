@@ -360,7 +360,7 @@ describe('generateModels', () => {
     // Alias model should be a type alias
     const aliasFile = files.find((f) => f.path.includes('organization_domain_stand_alone.py'))!;
     expect(aliasFile).toBeDefined();
-    expect(aliasFile.content).toContain('OrganizationDomainStandAlone = OrganizationDomain');
+    expect(aliasFile.content).toContain('OrganizationDomainStandAlone: TypeAlias = OrganizationDomain');
     expect(aliasFile.content).not.toContain('@dataclass');
   });
 
@@ -604,9 +604,113 @@ describe('generateModels', () => {
     const modelFile = files.find((f) => f.path.includes('organization.py'))!;
 
     // Deprecated required field with description gets both description and .. deprecated::
-    expect(modelFile.content).toContain('"""Legacy field\n\n    .. deprecated::"""');
+    expect(modelFile.content).toContain('"""Legacy field\n\n    .. deprecated:: This field is deprecated."""');
 
     // Deprecated optional field without description gets just .. deprecated::
-    expect(modelFile.content).toContain('""".. deprecated::"""');
+    expect(modelFile.content).toContain('""".. deprecated:: This field is deprecated."""');
+  });
+
+  it('deduplicates models with recursively identical sub-model references', () => {
+    const service: Service = {
+      name: 'Events',
+      operations: [
+        {
+          name: 'listEvents',
+          httpMethod: 'get',
+          path: '/events',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: {
+            kind: 'union',
+            variants: [
+              { kind: 'model', name: 'EventA' },
+              { kind: 'model', name: 'EventB' },
+            ],
+          },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'EventA',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'event_a' }, required: true },
+          { name: 'context', type: { kind: 'model', name: 'EventAContext' }, required: false },
+        ],
+      },
+      {
+        name: 'EventAContext',
+        fields: [
+          { name: 'actor_id', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'detail', type: { kind: 'model', name: 'EventAContextDetail' }, required: false },
+        ],
+      },
+      {
+        name: 'EventAContextDetail',
+        fields: [{ name: 'ip', type: { kind: 'primitive', type: 'string' }, required: false }],
+      },
+      {
+        name: 'EventB',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'event_b' }, required: true },
+          { name: 'context', type: { kind: 'model', name: 'EventBContext' }, required: false },
+        ],
+      },
+      {
+        name: 'EventBContext',
+        fields: [
+          { name: 'actor_id', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'detail', type: { kind: 'model', name: 'EventBContextDetail' }, required: false },
+        ],
+      },
+      {
+        name: 'EventBContextDetail',
+        fields: [{ name: 'ip', type: { kind: 'primitive', type: 'string' }, required: false }],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+
+    // Top-level events differ (different literal values) → both get full dataclasses
+    const eventAFile = files.find((f) => f.path.includes('/event_a.py'))!;
+    expect(eventAFile).toBeDefined();
+    expect(eventAFile.content).toContain('@dataclass');
+    expect(eventAFile.content).toContain('class EventA:');
+
+    const eventBFile = files.find((f) => f.path.includes('/event_b.py'))!;
+    expect(eventBFile).toBeDefined();
+    expect(eventBFile.content).toContain('@dataclass');
+    expect(eventBFile.content).toContain('class EventB:');
+
+    // Leaf models are structurally identical → one canonical, one alias
+    const detailAFile = files.find((f) => f.path.includes('event_a_context_detail.py'))!;
+    expect(detailAFile).toBeDefined();
+    expect(detailAFile.content).toContain('@dataclass');
+
+    const detailBFile = files.find((f) => f.path.includes('event_b_context_detail.py'))!;
+    expect(detailBFile).toBeDefined();
+    expect(detailBFile.content).toContain('TypeAlias');
+    expect(detailBFile.content).not.toContain('@dataclass');
+
+    // Context models reference recursively-identical sub-models → also deduplicated
+    const contextAFile = files.find((f) => f.path.includes('/event_a_context.py'))!;
+    expect(contextAFile).toBeDefined();
+    expect(contextAFile.content).toContain('@dataclass');
+
+    const contextBFile = files.find((f) => f.path.includes('/event_b_context.py'))!;
+    expect(contextBFile).toBeDefined();
+    expect(contextBFile.content).toContain('TypeAlias');
+    expect(contextBFile.content).not.toContain('@dataclass');
   });
 });

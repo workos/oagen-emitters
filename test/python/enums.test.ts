@@ -160,7 +160,7 @@ describe('generateEnums', () => {
     const alias = files.find((f) => f.path.includes('profile_connection_type.py'))!;
     expect(alias).toBeDefined();
     expect(alias.content).toContain('import ConnectionType');
-    expect(alias.content).toContain('ProfileConnectionType = ConnectionType');
+    expect(alias.content).toContain('ProfileConnectionType: TypeAlias = ConnectionType');
     expect(alias.content).not.toContain('Literal');
   });
 

@@ -414,4 +414,61 @@ describe('generateResources', () => {
     expect(lines).not.toContain('\\WorkOS\\WorkOS::getClientId()');
     expect(lines).not.toContain('\\WorkOS\\WorkOS::getApiKey()');
   });
+
+  it('hides defaults and inferFromClient params from method signature', () => {
+    const ssoServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [
+              { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'response_type', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'state', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ssoSpec = { ...emptySpec, services: ssoServices };
+    const ssoCtx: EmitterContext = {
+      ...ctx,
+      spec: ssoSpec,
+      resolvedOperations: [
+        {
+          operation: ssoServices[0].operations[0],
+          service: ssoServices[0],
+          methodName: 'get_authorization_url',
+          mountOn: 'SSO',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(ssoServices, ssoCtx);
+    const content = result[0].content;
+
+    // Should NOT include hidden params in method signature
+    expect(content).not.toContain('$clientId');
+    expect(content).not.toContain('$responseType');
+
+    // Should include the remaining params
+    expect(content).toContain('string $redirectUri');
+    expect(content).toContain('?string $state');
+
+    // Should inject default and inferred values into query
+    expect(content).toContain("'response_type' => 'code'");
+    expect(content).toContain("$query['client_id'] = $this->client->requireClientId()");
+  });
 });
