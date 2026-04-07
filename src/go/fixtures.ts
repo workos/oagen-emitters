@@ -73,7 +73,30 @@ export function generateFixtures(spec: {
     }
   }
 
-  return files;
+  // Deduplicate fixtures with identical content.
+  // When multiple fixtures have the same content, emit one shared file and
+  // rewrite the others as references to the shared path.
+  const contentGroups = new Map<string, string[]>();
+  for (const f of files) {
+    if (!contentGroups.has(f.content)) contentGroups.set(f.content, []);
+    contentGroups.get(f.content)!.push(f.path);
+  }
+
+  const pathRewrites = new Map<string, string>();
+  for (const [_content, paths] of contentGroups) {
+    if (paths.length < 3) continue; // only dedup when 3+ files are identical
+    // Use the shortest path as the canonical shared fixture
+    const sorted = [...paths].sort((a, b) => a.length - b.length);
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      pathRewrites.set(sorted[i], canonical);
+    }
+  }
+
+  // Remove duplicate files (they'll reference the canonical)
+  const deduped = files.filter((f) => !pathRewrites.has(f.path));
+
+  return deduped;
 }
 
 function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {

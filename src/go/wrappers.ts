@@ -1,5 +1,4 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
 import {
   className as goClassName,
   fieldName as goFieldName,
@@ -7,6 +6,8 @@ import {
   unexportedName,
 } from './naming.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
+import { resolveWrapperParams, formatWrapperDescription, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
+import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 
 /**
  * Generate Go wrapper method lines for union split operations.
@@ -27,33 +28,33 @@ export function generateWrapperMethods(
   const lines: string[] = [];
 
   for (const wrapper of resolvedOp.wrappers) {
+    const wrapperParams = resolveWrapperParams(wrapper, ctx);
     lines.push('');
-    emitWrapperParamsStruct(lines, wrapper, ctx);
+    emitWrapperParamsStruct(lines, wrapper, wrapperParams);
     lines.push('');
-    emitWrapperMethod(lines, serviceType, resolvedOp, wrapper, ctx);
+    emitWrapperMethod(lines, serviceType, resolvedOp, wrapper, wrapperParams);
   }
 
   return lines;
 }
 
-function emitWrapperParamsStruct(lines: string[], wrapper: ResolvedWrapper, ctx: EmitterContext): void {
+function emitWrapperParamsStruct(
+  lines: string[],
+  wrapper: ResolvedWrapper,
+  wrapperParams: ResolvedWrapperParam[],
+): void {
   const structName = `${goMethodName(wrapper.name)}Params`;
-  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
-  const variantFields = variantModel?.fields ?? [];
-  const optionalSet = new Set(wrapper.optionalParams);
 
   lines.push(`// ${structName} contains the parameters for ${goMethodName(wrapper.name)}.`);
   lines.push(`type ${structName} struct {`);
 
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
+  for (const { paramName, field, isOptional } of wrapperParams) {
     const goField = goFieldName(paramName);
     const goType = field ? resolveSimpleGoType(field.type) : 'string';
-    const isOptional = optionalSet.has(paramName) || !field?.required;
 
     if (field?.description) {
       const fdLines = field.description.split('\n').filter((l: string) => l.trim());
-      lines.push(`\t// ${goField} is ${lowerFirstField(fdLines[0])}`);
+      lines.push(`\t// ${fieldDocComment(goField, fdLines[0])}`);
       for (let i = 1; i < fdLines.length; i++) {
         lines.push(`\t// ${fdLines[i].trim()}`);
       }
@@ -74,7 +75,7 @@ function emitWrapperMethod(
   serviceType: string,
   resolvedOp: ResolvedOperation,
   wrapper: ResolvedWrapper,
-  ctx: EmitterContext,
+  wrapperParams: ResolvedWrapperParam[],
 ): void {
   const op = resolvedOp.operation;
   const method = goMethodName(wrapper.name);
@@ -84,7 +85,7 @@ function emitWrapperMethod(
   const responseType = wrapper.responseModelName ? goClassName(wrapper.responseModelName) : null;
 
   // GoDoc
-  lines.push(`// ${method} ${formatDescription(wrapper.name)}.`);
+  lines.push(`// ${method} ${formatWrapperDescription(wrapper.name)}.`);
 
   // Signature
   const sigParams: string[] = ['ctx context.Context'];
@@ -112,16 +113,10 @@ function emitWrapperMethod(
   }
 
   // Required exposed params
-  const optionalSet = new Set(wrapper.optionalParams);
-  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
-  const variantFields = variantModel?.fields ?? [];
-
-  for (const paramName of wrapper.exposedParams) {
-    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (isOptional) continue;
     const goField = goFieldName(paramName);
-    if (!optionalSet.has(paramName) && field?.required) {
-      lines.push(`\t\t"${paramName}": params.${goField},`);
-    }
+    lines.push(`\t\t"${paramName}": params.${goField},`);
   }
 
   lines.push('\t}');
@@ -135,14 +130,12 @@ function emitWrapperMethod(
   }
 
   // Optional exposed params
-  for (const paramName of wrapper.exposedParams) {
+  for (const { paramName, isOptional } of wrapperParams) {
+    if (!isOptional) continue;
     const goField = goFieldName(paramName);
-    const field = variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName));
-    if (optionalSet.has(paramName) || !field?.required) {
-      lines.push(`\tif params.${goField} != nil {`);
-      lines.push(`\t\tbody["${paramName}"] = *params.${goField}`);
-      lines.push('\t}');
-    }
+    lines.push(`\tif params.${goField} != nil {`);
+    lines.push(`\t\tbody["${paramName}"] = *params.${goField}`);
+    lines.push('\t}');
   }
 
   // Build path expression
@@ -263,15 +256,6 @@ function lowerFirstSafe(s: string): string {
   return result;
 }
 
-function lowerFirstField(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toLowerCase() + s.slice(1);
-}
-
-/** Format a snake_case method name into a human-readable description. */
-function formatDescription(name: string): string {
-  return name
-    .split('_')
-    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-    .join(' ');
+function _lowerFirstField(s: string): string {
+  return lowerFirstForDoc(s);
 }
