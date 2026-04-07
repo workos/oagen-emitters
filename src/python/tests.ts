@@ -1,4 +1,13 @@
-import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
+import type {
+  ApiSpec,
+  Service,
+  Operation,
+  EmitterContext,
+  GeneratedFile,
+  TypeRef,
+  Model,
+  ResolvedOperation,
+} from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
 import { className, fileName, fieldName, resolveMethodName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName, bodyParamName } from './resources.js';
@@ -6,7 +15,9 @@ import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import { assignEnumsToServices } from './enums.js';
-import { groupByMount } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { pythonLiteral } from './wrappers.js';
 
 /** Check if an operation is a redirect endpoint (same logic as resources.ts). */
 function isRedirectEndpoint(op: Operation): boolean {
@@ -20,6 +31,12 @@ function isRedirectEndpoint(op: Operation): boolean {
     return true;
   }
   return false;
+}
+
+/** Push an async test method definition with @pytest.mark.asyncio decorator. */
+function pushAsyncTestDef(lines: string[], def: string): void {
+  lines.push('    @pytest.mark.asyncio');
+  lines.push(def);
 }
 
 /**
@@ -48,15 +65,19 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Generate per-mount-target test files (merges all sub-services into one file)
   const mountGroups = groupByMount(ctx);
-  const testEntries: Array<{ name: string; operations: Operation[] }> =
+  const testEntries: Array<{ name: string; operations: Operation[]; resolvedOps?: ResolvedOperation[] }> =
     mountGroups.size > 0
-      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      ? [...mountGroups].map(([name, group]) => ({
+          name,
+          operations: group.operations,
+          resolvedOps: group.resolvedOps,
+        }))
       : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
 
-  for (const { name: mountName, operations } of testEntries) {
+  for (const { name: mountName, operations, resolvedOps } of testEntries) {
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
-    const testFile = generateServiceTest(mergedService, spec, ctx, accessPaths);
+    const testFile = generateServiceTest(mergedService, spec, ctx, accessPaths, resolvedOps);
     if (testFile) files.push(testFile);
   }
 
@@ -72,6 +93,7 @@ function generateServiceTest(
   spec: ApiSpec,
   ctx: EmitterContext,
   accessPaths: Map<string, string>,
+  resolvedOps?: ResolvedOperation[],
 ): GeneratedFile | null {
   if (service.operations.length === 0) return null;
 
@@ -168,9 +190,12 @@ function generateServiceTest(
   lines.push('');
   lines.push(`class Test${resolvedName}:`);
 
+  const resolvedLookup = buildResolvedLookup(ctx);
   const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
+    const resolvedOp = lookupResolved(op, resolvedLookup);
+    const hiddenParams = buildHiddenParams(resolvedOp);
     let method = resolveMethodName(op, service, ctx);
 
     // On name collision, fall back to the full snake_case operation name (match resource dedup)
@@ -210,7 +235,7 @@ function generateServiceTest(
       }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
 
-      const paginatedArgs = buildTestArgs(op, spec);
+      const paginatedArgs = buildTestArgs(op, spec, hiddenParams);
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       if (fixtureName) {
         lines.push(`        httpx_mock.add_response(`);
@@ -234,7 +259,7 @@ function generateServiceTest(
     } else if (isDelete) {
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(status_code=204)');
-      const args = buildTestArgs(op, spec);
+      const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
       lines.push('        assert result is None');
       // Request assertions for delete
@@ -244,7 +269,7 @@ function generateServiceTest(
       lines.push(`        assert request.url.path.endswith("/${deletePath}")`);
     } else if (isRedirectEndpoint(op)) {
       // Redirect endpoint: returns a URL string, no HTTP request made
-      const args = buildTestArgs(op, spec);
+      const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`    def test_${method}(self, workos):`);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
       lines.push('        assert isinstance(result, str)');
@@ -253,7 +278,7 @@ function generateServiceTest(
       // Array response: returns List[Model]
       const modelClass = className(plan.responseModelName!);
       const fixtureName = `${fileName(plan.responseModelName!)}.json`;
-      const args = buildTestArgs(op, spec);
+      const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
@@ -269,7 +294,7 @@ function generateServiceTest(
       lines.push(`        httpx_mock.add_response(`);
       lines.push(`            json=load_fixture("${fixtureName}"),`);
       lines.push('        )');
-      const args = buildTestArgs(op, spec);
+      const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
       lines.push(`        assert isinstance(result, ${modelClass})`);
 
@@ -305,7 +330,7 @@ function generateServiceTest(
     } else {
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(json={})');
-      const args = buildTestArgs(op, spec);
+      const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        workos.${propName}.${method}(${args})`);
       // Request assertions for void-returning methods
       const voidPath = buildExpectedPath(op);
@@ -333,6 +358,33 @@ function generateServiceTest(
     }
   }
 
+  // Generate tests for wrapper (union-split) methods (sync)
+  emitWrapperTests(lines, resolvedOps, propName, spec, ctx, false);
+
+  // Add a RequestOptions propagation test for the first non-redirect operation
+  const firstRequestOptionsOp = service.operations.find((op) => !isRedirectEndpoint(op));
+  if (firstRequestOptionsOp) {
+    const roMethod = resolveMethodName(firstRequestOptionsOp, service, ctx);
+    const roPlan = planOperation(firstRequestOptionsOp);
+    const roResponseSetup = buildQueryEncodingResponseSetup(firstRequestOptionsOp, roPlan);
+    const roArgs = buildTestArgs(
+      firstRequestOptionsOp,
+      spec,
+      buildHiddenParams(lookupResolved(firstRequestOptionsOp, resolvedLookup)),
+    );
+    const roArgsWithOpts = roArgs
+      ? `${roArgs}, request_options={"extra_headers": {"X-Custom": "value"}}`
+      : 'request_options={"extra_headers": {"X-Custom": "value"}}';
+    lines.push('');
+    lines.push(`    def test_${roMethod}_with_request_options(self, workos, httpx_mock):`);
+    for (const setupLine of roResponseSetup) {
+      lines.push(`        ${setupLine}`);
+    }
+    lines.push(`        workos.${propName}.${roMethod}(${roArgsWithOpts})`);
+    lines.push('        request = httpx_mock.get_request()');
+    lines.push('        assert request.headers["X-Custom"] == "value"');
+  }
+
   // Add an error test for the first non-delete, non-redirect operation
   const firstNonDelete = service.operations.find((op) => !planOperation(op).isDelete && !isRedirectEndpoint(op));
   if (firstNonDelete) {
@@ -344,7 +396,7 @@ function generateServiceTest(
     lines.push('            json={"message": "Unauthorized"},');
     lines.push('        )');
     lines.push('        with pytest.raises(AuthenticationError):');
-    const args = buildTestArgs(firstNonDelete, spec);
+    const args = buildTestArgs(firstNonDelete, spec, buildHiddenParams(lookupResolved(firstNonDelete, resolvedLookup)));
     lines.push(`            workos.${propName}.${method}(${args})`);
 
     lines.push('');
@@ -380,13 +432,15 @@ function generateServiceTest(
     lines.push('            workos.close()');
   }
 
-  // Add 400/422 error tests for the first write (POST/PUT/PATCH) operation
-  const firstWriteOp = service.operations.find(
-    (op) => ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase()) && !isRedirectEndpoint(op),
-  );
-  if (firstWriteOp) {
-    const writeMethod = resolveMethodName(firstWriteOp, service, ctx);
-    const writeArgs = buildTestArgs(firstWriteOp, spec);
+  // Add 400/422 error tests for the first non-delete, non-redirect operation
+  const firstErrorTargetOp = service.operations.find((op) => !planOperation(op).isDelete && !isRedirectEndpoint(op));
+  if (firstErrorTargetOp) {
+    const writeMethod = resolveMethodName(firstErrorTargetOp, service, ctx);
+    const writeArgs = buildTestArgs(
+      firstErrorTargetOp,
+      spec,
+      buildHiddenParams(lookupResolved(firstErrorTargetOp, resolvedLookup)),
+    );
 
     lines.push('');
     lines.push(`    def test_${writeMethod}_bad_request(self, httpx_mock):`);
@@ -412,12 +466,13 @@ function generateServiceTest(
   // --- Async test class ---
   lines.push('');
   lines.push('');
-  lines.push(`@pytest.mark.asyncio`);
   lines.push(`class TestAsync${resolvedName}:`);
 
   const asyncEmittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
+    const asyncResolvedOp = lookupResolved(op, resolvedLookup);
+    const asyncHiddenParams = buildHiddenParams(asyncResolvedOp);
     let method = resolveMethodName(op, service, ctx);
 
     if (asyncEmittedTestMethods.has(method)) {
@@ -433,7 +488,7 @@ function generateServiceTest(
     const isDelete = plan.isDelete;
     const isPaginated = plan.isPaginated;
     const isAsyncArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
-    const asyncArgs = buildTestArgs(op, spec);
+    const asyncArgs = buildTestArgs(op, spec, asyncHiddenParams);
 
     lines.push('');
 
@@ -455,7 +510,7 @@ function generateServiceTest(
         if (itemModel && itemModel.fields.length === 0) itemName = null;
       }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
-      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       if (fixtureName) {
         lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
@@ -463,7 +518,7 @@ function generateServiceTest(
         lines.push('        assert isinstance(page.data, list)');
 
         lines.push('');
-        lines.push(`    async def test_${method}_empty_page(self, async_workos, httpx_mock):`);
+        pushAsyncTestDef(lines, `    async def test_${method}_empty_page(self, async_workos, httpx_mock):`);
         lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
         lines.push('        assert isinstance(page, AsyncPage)');
@@ -475,7 +530,7 @@ function generateServiceTest(
       }
     } else if (isDelete) {
       const deletePath = buildExpectedPath(op);
-      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(status_code=204)');
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert result is None');
@@ -483,14 +538,15 @@ function generateServiceTest(
       lines.push(`        assert request.method == "DELETE"`);
       lines.push(`        assert request.url.path.endswith("/${deletePath}")`);
     } else if (isRedirectEndpoint(op)) {
-      lines.push(`    async def test_${method}(self, async_workos):`);
-      lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
+      // Redirect methods are sync (def, not async def) even in the async class
+      lines.push(`    def test_${method}(self, async_workos):`);
+      lines.push(`        result = async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert isinstance(result, str)');
       lines.push('        assert result.startswith("http")');
     } else if (isAsyncArrayResponse) {
       const modelClass = className(plan.responseModelName!);
       const fixtureName = `${fileName(plan.responseModelName!)}.json`;
-      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=[load_fixture("${fixtureName}")])`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert isinstance(result, list)');
@@ -500,7 +556,7 @@ function generateServiceTest(
       const modelName = plan.responseModelName;
       const fixtureName = `${fileName(modelName)}.json`;
       const modelClass = className(modelName);
-      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push(`        assert isinstance(result, ${modelClass})`);
@@ -517,7 +573,7 @@ function generateServiceTest(
       lines.push(`        assert request.url.path.endswith("/${expectedPath}")`);
     } else {
       const voidPath = buildExpectedPath(op);
-      lines.push(`    async def test_${method}(self, async_workos, httpx_mock):`);
+      pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push('        httpx_mock.add_response(json={})');
       lines.push(`        await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        request = httpx_mock.get_request()');
@@ -531,7 +587,7 @@ function generateServiceTest(
       if (queryArgs && queryAssertions.length > 0) {
         const responseSetup = buildQueryEncodingResponseSetup(op, plan);
         lines.push('');
-        lines.push(`    async def test_${method}_encodes_query_params(self, async_workos, httpx_mock):`);
+        pushAsyncTestDef(lines, `    async def test_${method}_encodes_query_params(self, async_workos, httpx_mock):`);
         for (const setupLine of responseSetup) {
           lines.push(`        ${setupLine}`);
         }
@@ -544,18 +600,52 @@ function generateServiceTest(
     }
   }
 
+  // Generate tests for wrapper (union-split) methods (async)
+  emitWrapperTests(lines, resolvedOps, propName, spec, ctx, true);
+
+  // Add async RequestOptions propagation test
+  const asyncFirstRequestOptionsOp = service.operations.find((op) => !isRedirectEndpoint(op));
+  if (asyncFirstRequestOptionsOp) {
+    const asyncRoMethod = resolveMethodName(asyncFirstRequestOptionsOp, service, ctx);
+    const asyncRoPlan = planOperation(asyncFirstRequestOptionsOp);
+    const asyncRoResponseSetup = buildQueryEncodingResponseSetup(asyncFirstRequestOptionsOp, asyncRoPlan);
+    const asyncRoArgs = buildTestArgs(
+      asyncFirstRequestOptionsOp,
+      spec,
+      buildHiddenParams(lookupResolved(asyncFirstRequestOptionsOp, resolvedLookup)),
+    );
+    const asyncRoArgsWithOpts = asyncRoArgs
+      ? `${asyncRoArgs}, request_options={"extra_headers": {"X-Custom": "value"}}`
+      : 'request_options={"extra_headers": {"X-Custom": "value"}}';
+    lines.push('');
+    pushAsyncTestDef(
+      lines,
+      `    async def test_${asyncRoMethod}_with_request_options(self, async_workos, httpx_mock):`,
+    );
+    for (const setupLine of asyncRoResponseSetup) {
+      lines.push(`        ${setupLine}`);
+    }
+    lines.push(`        await async_workos.${propName}.${asyncRoMethod}(${asyncRoArgsWithOpts})`);
+    lines.push('        request = httpx_mock.get_request()');
+    lines.push('        assert request.headers["X-Custom"] == "value"');
+  }
+
   // Async error tests for the first non-delete operation
   const asyncFirstNonDelete = service.operations.find((op) => !planOperation(op).isDelete && !isRedirectEndpoint(op));
   if (asyncFirstNonDelete) {
     const asyncErrMethod = resolveMethodName(asyncFirstNonDelete, service, ctx);
-    const asyncErrArgs = buildTestArgs(asyncFirstNonDelete, spec);
+    const asyncErrArgs = buildTestArgs(
+      asyncFirstNonDelete,
+      spec,
+      buildHiddenParams(lookupResolved(asyncFirstNonDelete, resolvedLookup)),
+    );
     lines.push('');
-    lines.push(`    async def test_${asyncErrMethod}_unauthorized(self, async_workos, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncErrMethod}_unauthorized(self, async_workos, httpx_mock):`);
     lines.push('        httpx_mock.add_response(status_code=401, json={"message": "Unauthorized"})');
     lines.push('        with pytest.raises(AuthenticationError):');
     lines.push(`            await async_workos.${propName}.${asyncErrMethod}(${asyncErrArgs})`);
     lines.push('');
-    lines.push(`    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncErrMethod}_not_found(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=404, json={"message": "Not found"})');
@@ -564,7 +654,7 @@ function generateServiceTest(
     lines.push('        finally:');
     lines.push('            await workos.close()');
     lines.push('');
-    lines.push(`    async def test_${asyncErrMethod}_rate_limited(self, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncErrMethod}_rate_limited(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push(
@@ -575,7 +665,7 @@ function generateServiceTest(
     lines.push('        finally:');
     lines.push('            await workos.close()');
     lines.push('');
-    lines.push(`    async def test_${asyncErrMethod}_server_error(self, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncErrMethod}_server_error(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=500, json={"message": "Server error"})');
@@ -585,16 +675,20 @@ function generateServiceTest(
     lines.push('            await workos.close()');
   }
 
-  // Async 400/422 error tests for the first write operation
-  const asyncFirstWriteOp = service.operations.find(
-    (op) => ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase()) && !isRedirectEndpoint(op),
+  // Async 400/422 error tests for the first non-delete, non-redirect operation
+  const asyncFirstErrorTargetOp = service.operations.find(
+    (op) => !planOperation(op).isDelete && !isRedirectEndpoint(op),
   );
-  if (asyncFirstWriteOp) {
-    const asyncWriteMethod = resolveMethodName(asyncFirstWriteOp, service, ctx);
-    const asyncWriteArgs = buildTestArgs(asyncFirstWriteOp, spec);
+  if (asyncFirstErrorTargetOp) {
+    const asyncWriteMethod = resolveMethodName(asyncFirstErrorTargetOp, service, ctx);
+    const asyncWriteArgs = buildTestArgs(
+      asyncFirstErrorTargetOp,
+      spec,
+      buildHiddenParams(lookupResolved(asyncFirstErrorTargetOp, resolvedLookup)),
+    );
 
     lines.push('');
-    lines.push(`    async def test_${asyncWriteMethod}_bad_request(self, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncWriteMethod}_bad_request(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=400, json={"message": "Bad request"})');
@@ -604,7 +698,7 @@ function generateServiceTest(
     lines.push('            await workos.close()');
 
     lines.push('');
-    lines.push(`    async def test_${asyncWriteMethod}_unprocessable(self, httpx_mock):`);
+    pushAsyncTestDef(lines, `    async def test_${asyncWriteMethod}_unprocessable(self, httpx_mock):`);
     lines.push('        workos = AsyncWorkOSClient(api_key="sk_test_123", client_id="client_test", max_retries=0)');
     lines.push('        try:');
     lines.push('            httpx_mock.add_response(status_code=422, json={"message": "Unprocessable"})');
@@ -620,6 +714,83 @@ function generateServiceTest(
     integrateTarget: true,
     overwriteExisting: true,
   };
+}
+
+/**
+ * Emit tests for wrapper (union-split) methods.
+ *
+ * For each resolved operation that has wrappers, emit a test per wrapper
+ * that calls the wrapper method, asserts the response type, and verifies
+ * that constant defaults appear in the request body.
+ */
+function emitWrapperTests(
+  lines: string[],
+  resolvedOps: ResolvedOperation[] | undefined,
+  propName: string,
+  spec: ApiSpec,
+  ctx: EmitterContext,
+  isAsync: boolean,
+): void {
+  if (!resolvedOps) return;
+
+  for (const r of resolvedOps) {
+    if (!r.wrappers || r.wrappers.length === 0) continue;
+
+    for (const wrapper of r.wrappers) {
+      const method = wrapper.name;
+      const wrapperParams = resolveWrapperParams(wrapper, ctx);
+      const responseType = wrapper.responseModelName ? className(wrapper.responseModelName) : null;
+      const fixtureName = wrapper.responseModelName ? `${fileName(wrapper.responseModelName)}.json` : null;
+
+      // Build test args for required wrapper params
+      const argParts: string[] = [];
+      for (const { paramName, field, isOptional } of wrapperParams) {
+        if (isOptional) continue;
+        const pyName = fieldName(paramName);
+        const testVal = field ? generateTestValue(field.type, field.name) : '"test_value"';
+        argParts.push(`${pyName}=${testVal}`);
+      }
+      const args = argParts.join(', ');
+
+      lines.push('');
+      if (isAsync) {
+        pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
+        if (fixtureName) {
+          lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
+          lines.push(`        result = await async_workos.${propName}.${method}(${args})`);
+          if (responseType) {
+            lines.push(`        assert isinstance(result, ${responseType})`);
+          }
+        } else {
+          lines.push('        httpx_mock.add_response(json={})');
+          lines.push(`        await async_workos.${propName}.${method}(${args})`);
+        }
+      } else {
+        lines.push(`    def test_${method}(self, workos, httpx_mock):`);
+        if (fixtureName) {
+          lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
+          lines.push(`        result = workos.${propName}.${method}(${args})`);
+          if (responseType) {
+            lines.push(`        assert isinstance(result, ${responseType})`);
+          }
+        } else {
+          lines.push('        httpx_mock.add_response(json={})');
+          lines.push(`        workos.${propName}.${method}(${args})`);
+        }
+      }
+
+      // Assert the request body contains the correct defaults
+      lines.push('        request = httpx_mock.get_request()');
+      lines.push(`        assert request.method == "${r.operation.httpMethod.toUpperCase()}"`);
+
+      if (Object.keys(wrapper.defaults).length > 0) {
+        lines.push('        body = json.loads(request.content)');
+        for (const [key, value] of Object.entries(wrapper.defaults)) {
+          lines.push(`        assert body["${key}"] == ${pythonLiteral(value)}`);
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -673,7 +844,7 @@ function buildExpectedPath(op: Operation): string {
 /**
  * Build test arguments string for an operation call.
  */
-function buildTestArgs(op: Operation, spec: ApiSpec): string {
+function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): string {
   const args: string[] = [];
 
   // Path params as positional args
@@ -689,7 +860,7 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
     const requestBodyName = op.requestBody.name;
     const bodyModel = spec.models.find((m) => m.name === requestBodyName);
     if (bodyModel) {
-      const reqFields = bodyModel.fields.filter((f) => f.required);
+      const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams?.has(f.name));
       for (const f of reqFields) {
         const paramName = bodyParamName(f, pathParamNames);
         args.push(`${paramName}=${generateTestValue(f.type, f.name)}`);
@@ -716,6 +887,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec): string {
   // Required query params (for all methods, including paginated)
   if (plan.hasQueryParams) {
     for (const param of op.queryParams) {
+      // Skip hidden/injected params
+      if (hiddenParams?.has(param.name)) continue;
       // Skip pagination params (they're optional)
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
@@ -766,14 +939,19 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-    if (param.type.kind === 'array') continue; // Skip array params — complex serialization
+    // Include explode=false array params; skip other array params (complex serialization)
+    if (param.type.kind === 'array' && param.explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
       const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
-    args.push(`${paramName}=${generateQueryEncodingValue(param.type, param.name)}`);
+    if (param.explode === false && param.type.kind === 'array') {
+      args.push(`${paramName}=["val1", "val2"]`);
+    } else {
+      args.push(`${paramName}=${generateQueryEncodingValue(param.type, param.name)}`);
+    }
   }
 
   return args.join(', ');
@@ -817,7 +995,8 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-    if (param.type.kind === 'array') continue; // Skip array params — complex serialization
+    // Include explode=false array params; skip other array params (complex serialization)
+    if (param.type.kind === 'array' && param.explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -826,9 +1005,13 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
       );
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
-    assertions.push(
-      `assert request.url.params["${param.name}"] == ${toPythonLiteral(expectedQueryEncodingValue(param.type, param.name))}`,
-    );
+    if (param.explode === false && param.type.kind === 'array') {
+      assertions.push(`assert request.url.params["${param.name}"] == "val1,val2"`);
+    } else {
+      assertions.push(
+        `assert request.url.params["${param.name}"] == ${toPythonLiteral(expectedQueryEncodingValue(param.type, param.name))}`,
+      );
+    }
   }
 
   return assertions;
