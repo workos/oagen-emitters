@@ -1,6 +1,7 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
+import { stripUrnPrefix } from '../shared/naming-utils.js';
 
 /**
  * Map of lowercase acronym forms to their correct casing.
@@ -40,7 +41,7 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
 
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(name);
+  let result = toPascalCase(stripUrnPrefix(name));
   for (const [pattern, replacement] of ACRONYM_FIXES) {
     result = result.replace(pattern, replacement);
   }
@@ -52,7 +53,7 @@ export function className(name: string): string {
 
 /** snake_case file name (without extension). */
 export function fileName(name: string): string {
-  return toSnakeCase(name);
+  return toSnakeCase(stripUrnPrefix(name));
 }
 
 /** snake_case method name. */
@@ -63,6 +64,48 @@ export function methodName(name: string): string {
 /** snake_case field name. */
 export function fieldName(name: string): string {
   return toSnakeCase(name);
+}
+
+/**
+ * Python builtins that should not be shadowed by parameter names.
+ * When a path/query param name collides, suffix with underscore.
+ */
+const PYTHON_BUILTIN_NAMES = new Set([
+  'type',
+  'id',
+  'list',
+  'dict',
+  'set',
+  'map',
+  'filter',
+  'input',
+  'object',
+  'format',
+  'hash',
+  'range',
+  'dir',
+  'max',
+  'min',
+  'next',
+  'open',
+  'print',
+  'len',
+  'str',
+  'int',
+  'float',
+  'bool',
+  'bytes',
+  'tuple',
+  'super',
+]);
+
+/**
+ * Safe parameter name for path/query params that avoids shadowing Python builtins.
+ * Body field names should continue to use fieldName() to preserve wire-key compatibility.
+ */
+export function safeParamName(name: string): string {
+  const snake = toSnakeCase(name);
+  return PYTHON_BUILTIN_NAMES.has(snake) ? `${snake}_` : snake;
 }
 
 /** snake_case module/directory name. */
@@ -134,7 +177,7 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
 export function resolveTypeName(name: string, ctx: EmitterContext): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
-  return toPascalCase(name);
+  return toPascalCase(stripUrnPrefix(name));
 }
 
 /**
