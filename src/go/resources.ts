@@ -1,9 +1,25 @@
-import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type {
+  Service,
+  Operation,
+  OperationPlan,
+  EmitterContext,
+  GeneratedFile,
+  ResolvedOperation,
+} from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
 import { mapTypeRef, mapTypeRefValue } from './type-map.js';
 import { className, fieldName, methodName, resolveClassName, resolveMethodName, unexportedName } from './naming.js';
-import { buildResolvedLookup, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
+import {
+  buildResolvedLookup,
+  lookupResolved,
+  groupByMount,
+  getOpDefaults,
+  getOpInferFromClient,
+  buildHiddenParams,
+  hasHiddenParams,
+} from '../shared/resolved-ops.js';
+import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
 
 /**
@@ -56,8 +72,16 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const serviceType = serviceTypeName(mountName);
   const goFile = `${toSnakeCase(mountName)}.go`;
 
+  // Build resolved lookup once for the whole file
+  const resolvedLookup = buildResolvedLookup(ctx);
+
   // Determine which imports are needed
   const needsFmt = operations.some((op) => op.pathParams.length > 0);
+  const needsNetUrl = operations.some((op) => {
+    const resolved = lookupResolved(op, resolvedLookup);
+    return resolved && hasHiddenParams(resolved) && op.httpMethod.toLowerCase() === 'get';
+  });
+  const needsStrings = needsStringsImport(operations, resolvedLookup);
 
   lines.push(`package ${ctx.namespace}`);
   lines.push('');
@@ -65,6 +89,12 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('\t"context"');
   if (needsFmt) {
     lines.push('\t"fmt"');
+  }
+  if (needsNetUrl) {
+    lines.push('\t"net/url"');
+  }
+  if (needsStrings) {
+    lines.push('\t"strings"');
   }
   lines.push(')');
   lines.push('');
@@ -87,25 +117,25 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     if (emittedMethods.has(method)) continue;
     emittedMethods.add(method);
 
+    const resolvedOp = lookupResolved(op, resolvedLookup);
+
     // Generate params struct if needed
-    const paramsStruct = generateParamsStruct(mountName, method, op, plan, ctx);
+    const paramsStruct = generateParamsStruct(mountName, method, op, plan, ctx, resolvedOp);
     if (paramsStruct) {
       lines.push(paramsStruct);
       lines.push('');
     }
 
     // Generate method
-    const methodCode = generateMethod(serviceType, mountName, method, op, plan, ctx);
+    const methodCode = generateMethod(serviceType, mountName, method, op, plan, ctx, resolvedOp);
     lines.push(methodCode);
     lines.push('');
 
     // Generate union split wrapper methods (e.g., AuthenticateWithPassword)
-    const resolvedLookup = buildResolvedLookup(ctx);
-    const resolved = lookupResolved(op, resolvedLookup);
-    if (resolved?.wrappers && resolved.wrappers.length > 0) {
-      const wrapperLines = generateWrapperMethods(serviceType, resolved, ctx);
+    if (resolvedOp?.wrappers && resolvedOp.wrappers.length > 0) {
+      const wrapperLines = generateWrapperMethods(serviceType, resolvedOp, ctx);
       lines.push(...wrapperLines);
-      for (const w of resolved.wrappers) {
+      for (const w of resolvedOp.wrappers) {
         emittedMethods.add(methodName(w.name));
       }
     }
@@ -136,11 +166,26 @@ function generateParamsStruct(
   op: Operation,
   plan: OperationPlan,
   ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
 ): string | null {
-  const hasQueryParams = op.queryParams.length > 0;
+  // Build set of hidden param names (defaults + inferFromClient)
+  const hidden = buildHiddenParams(resolvedOp);
+
+  const hasQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
 
-  if (!hasQueryParams && !hasBody) return null;
+  // Check if body has any visible fields after filtering
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+    }
+  } else if (hasBody) {
+    hasVisibleBodyFields = true; // non-model body always visible
+  }
+
+  if (!hasQueryParams && !hasVisibleBodyFields) return null;
 
   const lines: string[] = [];
   const structName = paramsStructName(mountName, method);
@@ -156,6 +201,7 @@ function generateParamsStruct(
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
+        if (hidden.has(field.name)) continue;
         const goField = fieldName(field.name);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
@@ -163,11 +209,11 @@ function generateParamsStruct(
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
         const jsonTag = field.required ? `json:"${field.name}"` : `json:"${field.name},omitempty"`;
         // If this field also appears in query params, emit a url tag too
-        const isAlsoQueryParam = op.queryParams.some((qp) => fieldName(qp.name) === goField);
+        const isAlsoQueryParam = op.queryParams.some((qp) => !hidden.has(qp.name) && fieldName(qp.name) === goField);
         const urlTag = isAlsoQueryParam ? ` url:"${field.name}${field.required ? '' : ',omitempty'}"` : '';
         if (field.description) {
           const fdLines = field.description.split('\n').filter((l) => l.trim());
-          lines.push(`\t// ${goField} is ${lowerFirstDesc(fdLines[0])}`);
+          lines.push(`\t// ${fieldDocComment(goField, fdLines[0])}`);
           for (let i = 1; i < fdLines.length; i++) {
             lines.push(`\t// ${fdLines[i].trim()}`);
           }
@@ -184,8 +230,21 @@ function generateParamsStruct(
     lines.push('\tBody interface{} `json:"-"`');
   }
 
-  // Query params (skip any already emitted from body fields)
+  // Check if this is a list operation with standard pagination fields.
+  // If so, embed PaginationParams and skip those fields individually.
+  const PAGINATION_FIELDS = new Set(['before', 'after', 'limit', 'order']);
+  const visibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name));
+  const hasPaginationFields = ['before', 'after', 'limit'].every((name) =>
+    visibleQueryParams.some((qp) => qp.name === name),
+  );
+  if (hasPaginationFields) {
+    lines.push('\tPaginationParams');
+  }
+
+  // Query params (skip any already emitted from body fields, hidden params, and pagination fields)
   for (const param of op.queryParams) {
+    if (hidden.has(param.name)) continue;
+    if (hasPaginationFields && PAGINATION_FIELDS.has(param.name)) continue;
     const goField = fieldName(param.name);
     if (emittedFields.has(goField)) continue;
     emittedFields.add(goField);
@@ -196,13 +255,18 @@ function generateParamsStruct(
     const jsonTag = 'json:"-"';
     if (param.description) {
       const pdLines = param.description.split('\n').filter((l) => l.trim());
-      lines.push(`\t// ${goField} is ${lowerFirstDesc(pdLines[0])}`);
+      lines.push(`\t// ${fieldDocComment(goField, pdLines[0])}`);
       for (let i = 1; i < pdLines.length; i++) {
         lines.push(`\t// ${pdLines[i].trim()}`);
       }
     }
+    if (param.default != null) {
+      const defaultLine = `\t// Defaults to ${JSON.stringify(param.default)}.`;
+      if (!param.description) lines.push(defaultLine);
+      else lines.push(defaultLine);
+    }
     if (param.deprecated) {
-      if (param.description) lines.push(`\t//`);
+      if (param.description || param.default != null) lines.push(`\t//`);
       lines.push(`\t// Deprecated: this parameter is deprecated.`);
     }
     lines.push(`\t${goField} ${goType} \`${urlTag} ${jsonTag}\``);
@@ -219,15 +283,31 @@ function generateMethod(
   op: Operation,
   plan: OperationPlan,
   _ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
 ): string {
   const lines: string[] = [];
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   const hasBody = plan.hasBody && op.requestBody;
-  const hasQueryParams = op.queryParams.length > 0;
-  const hasParams = hasBody || hasQueryParams;
+  const hidden = buildHiddenParams(resolvedOp);
+  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+
+  // Check if body has visible fields after filtering hidden params
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = _ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+    }
+  } else if (hasBody) {
+    hasVisibleBodyFields = true;
+  }
+
+  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams;
   const paramsType = hasParams ? `*${paramsStructName(mountName, method)}` : null;
-  const bodyArg = hasBody ? bodyArgument(op) : 'nil';
+  const bodyArg = hasBody && hasParams ? bodyArgument(op) : 'nil';
+  const hasHidden = hasHiddenParams(resolvedOp);
+  const isGet = op.httpMethod.toLowerCase() === 'get';
 
   // Detect if response is a raw array (not paginated)
   const isArrayResponse = !isPaginated && op.response?.kind === 'array';
@@ -253,7 +333,7 @@ function generateMethod(
   // Build godoc -- wrap multi-line descriptions in // comments
   if (op.description) {
     const descLines = op.description.split('\n').filter((l) => l.trim());
-    lines.push(`// ${method} ${lowerFirst(descLines[0])}`);
+    lines.push(`// ${method} ${lowerFirstDesc(descLines[0])}`);
     for (let i = 1; i < descLines.length; i++) {
       lines.push(`// ${descLines[i].trim()}`);
     }
@@ -291,16 +371,45 @@ function generateMethod(
   // Build path
   const pathExpr = buildPathExpr(op);
 
-  if (isPaginated && op.pagination) {
+  // For GET operations with hidden params, build query via url.Values
+  // so we can inject defaults + inferred values alongside user-provided params.
+  if (hasHidden && isGet) {
+    emitGetWithHiddenParams(
+      lines,
+      op,
+      pathExpr,
+      plan,
+      _ctx,
+      resolvedOp!,
+      paramsType,
+      isPaginated,
+      isDelete,
+      isArrayResponse,
+    );
+  } else if (hasHidden && !isGet && hasBody) {
+    // For non-GET operations with hidden params, build a body map
+    emitBodyWithHiddenParams(
+      lines,
+      op,
+      pathExpr,
+      plan,
+      _ctx,
+      resolvedOp!,
+      paramsType,
+      isPaginated,
+      isDelete,
+      isArrayResponse,
+    );
+  } else if (isPaginated && op.pagination) {
     const itemType = resolveIteratorItemType(op.pagination.itemType, _ctx);
     const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
     const cursorParam = '"after"';
     lines.push(
-      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts)`,
+      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts)`,
     );
   } else if (isDelete) {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
     );
     lines.push('\treturn err');
   } else if (plan.responseModelName) {
@@ -308,7 +417,7 @@ function generateMethod(
     if (isArrayResponse) {
       lines.push(`\tvar result []${respType}`);
       lines.push(
-        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, &result, opts)`,
+        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${bodyArg}, &result, opts)`,
       );
       lines.push('\tif err != nil {');
       lines.push('\t\treturn nil, err');
@@ -317,7 +426,7 @@ function generateMethod(
     } else {
       lines.push(`\tvar result ${respType}`);
       lines.push(
-        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, &result, opts)`,
+        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${bodyArg}, &result, opts)`,
       );
       lines.push('\tif err != nil {');
       lines.push('\t\treturn nil, err');
@@ -326,13 +435,285 @@ function generateMethod(
     }
   } else {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${bodyArg}, nil, opts)`,
     );
     lines.push('\treturn err');
   }
 
   lines.push('}');
   return lines.join('\n');
+}
+
+// buildHiddenParams and hasHiddenParams are imported from ../shared/resolved-ops.js
+
+/** Convert a JS value to a Go literal. */
+function goLiteral(value: string | number | boolean): string {
+  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+/** Get the Go expression for reading a client config field. */
+function clientFieldExpression(field: string): string {
+  switch (field) {
+    case 'client_id':
+      return 's.client.clientID';
+    case 'client_secret':
+      return 's.client.apiKey';
+    default:
+      return `s.client.${lowerFirst(fieldName(field))}`;
+  }
+}
+
+/**
+ * Emit method body for GET operations that have hidden params (defaults/inferFromClient).
+ * Builds a url.Values manually so we can inject hidden values alongside user-provided query params.
+ */
+function emitGetWithHiddenParams(
+  lines: string[],
+  op: Operation,
+  pathExpr: string,
+  plan: OperationPlan,
+  ctx: EmitterContext,
+  resolvedOp: ResolvedOperation,
+  paramsType: string | null,
+  isPaginated: boolean,
+  isDelete: boolean,
+  isArrayResponse: boolean,
+): void {
+  const hidden = buildHiddenParams(resolvedOp);
+
+  // Build url.Values with hidden + user-provided params
+  lines.push('\tquery := url.Values{}');
+
+  // Inject constant defaults
+  for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+    lines.push(`\tquery.Set("${key}", ${goLiteralForQuery(value as string | number | boolean)})`);
+  }
+
+  // Inject inferred fields from client config
+  for (const field of getOpInferFromClient(resolvedOp)) {
+    const expr = clientFieldExpression(field);
+    lines.push(`\tif ${expr} != "" {`);
+    lines.push(`\t\tquery.Set("${field}", ${expr})`);
+    lines.push('\t}');
+  }
+
+  // Add user-provided query params from the struct
+  if (paramsType) {
+    const visibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name));
+    for (const param of visibleQueryParams) {
+      const goField = fieldName(param.name);
+      const isMap = param.type.kind === 'map';
+      if (isMap) {
+        // Maps use bracket encoding: param[key]=value
+        if (param.required) {
+          lines.push(`\tfor k, v := range params.${goField} {`);
+          lines.push(`\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push('\t}');
+        } else {
+          lines.push(`\tif params.${goField} != nil {`);
+          lines.push(`\t\tfor k, v := range params.${goField} {`);
+          lines.push(`\t\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push('\t\t}');
+          lines.push('\t}');
+        }
+      } else if (param.required) {
+        lines.push(`\tquery.Set("${param.name}", ${formatQueryValue(`params.${goField}`, param.type)})`);
+      } else {
+        // Slices are reference types in Go -- nil-able without pointer wrapping
+        const isRefType = param.type.kind === 'array';
+        const valueExpr = isRefType ? `params.${goField}` : `*params.${goField}`;
+        lines.push(`\tif params.${goField} != nil {`);
+        lines.push(`\t\tquery.Set("${param.name}", ${formatQueryValue(valueExpr, param.type)})`);
+        lines.push('\t}');
+      }
+    }
+  }
+
+  // Make the request with query as the 4th arg
+  if (isPaginated && op.pagination) {
+    const itemType = resolveIteratorItemType(op.pagination.itemType, ctx);
+    const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
+    const cursorParam = '"after"';
+    lines.push(
+      `\treturn newIterator[${itemType}](ctx, s.client, "GET", ${pathExpr}, query, ${cursorParam}, ${dataPath}, opts)`,
+    );
+  } else if (isDelete) {
+    lines.push(`\t_, err := s.client.request(ctx, "GET", ${pathExpr}, query, nil, nil, opts)`);
+    lines.push('\treturn err');
+  } else if (plan.responseModelName) {
+    const respType = className(plan.responseModelName);
+    if (isArrayResponse) {
+      lines.push(`\tvar result []${respType}`);
+      lines.push(`\t_, err := s.client.request(ctx, "GET", ${pathExpr}, query, nil, &result, opts)`);
+      lines.push('\tif err != nil {');
+      lines.push('\t\treturn nil, err');
+      lines.push('\t}');
+      lines.push('\treturn result, nil');
+    } else {
+      lines.push(`\tvar result ${respType}`);
+      lines.push(`\t_, err := s.client.request(ctx, "GET", ${pathExpr}, query, nil, &result, opts)`);
+      lines.push('\tif err != nil {');
+      lines.push('\t\treturn nil, err');
+      lines.push('\t}');
+      lines.push('\treturn &result, nil');
+    }
+  } else {
+    lines.push(`\t_, err := s.client.request(ctx, "GET", ${pathExpr}, query, nil, nil, opts)`);
+    lines.push('\treturn err');
+  }
+}
+
+/**
+ * Emit method body for non-GET operations that have hidden params (defaults/inferFromClient).
+ * Builds a body map so we can inject hidden values alongside user-provided fields.
+ */
+function emitBodyWithHiddenParams(
+  lines: string[],
+  op: Operation,
+  pathExpr: string,
+  plan: OperationPlan,
+  ctx: EmitterContext,
+  resolvedOp: ResolvedOperation,
+  paramsType: string | null,
+  _isPaginated: boolean,
+  isDelete: boolean,
+  isArrayResponse: boolean,
+): void {
+  const hidden = buildHiddenParams(resolvedOp);
+
+  // Build body map
+  lines.push('\tbody := map[string]interface{}{');
+
+  // Inject constant defaults
+  for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+    lines.push(`\t\t"${key}": ${goLiteral(value as string | number | boolean)},`);
+  }
+
+  lines.push('\t}');
+
+  // Inject inferred fields from client config
+  for (const field of getOpInferFromClient(resolvedOp)) {
+    const expr = clientFieldExpression(field);
+    lines.push(`\tif ${expr} != "" {`);
+    lines.push(`\t\tbody["${field}"] = ${expr}`);
+    lines.push('\t}');
+  }
+
+  // Add user-provided body fields from the struct
+  if (paramsType && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      for (const field of bodyModel.fields) {
+        if (hidden.has(field.name)) continue;
+        const goField = fieldName(field.name);
+        if (field.required) {
+          lines.push(`\tbody["${field.name}"] = params.${goField}`);
+        } else {
+          // Slices and maps are reference types in Go — nil-able without pointer wrapping
+          const isRefType = field.type.kind === 'array' || field.type.kind === 'map';
+          const valueExpr = isRefType ? `params.${goField}` : `*params.${goField}`;
+          lines.push(`\tif params.${goField} != nil {`);
+          lines.push(`\t\tbody["${field.name}"] = ${valueExpr}`);
+          lines.push('\t}');
+        }
+      }
+    }
+  }
+
+  // Determine query arg (visible query params from struct)
+  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const queryArg = hasVisibleQueryParams ? 'params' : 'nil';
+
+  // Make the request
+  if (isDelete) {
+    lines.push(
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
+    );
+    lines.push('\treturn err');
+  } else if (plan.responseModelName) {
+    const respType = className(plan.responseModelName);
+    if (isArrayResponse) {
+      lines.push(`\tvar result []${respType}`);
+      lines.push(
+        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
+      );
+      lines.push('\tif err != nil {');
+      lines.push('\t\treturn nil, err');
+      lines.push('\t}');
+      lines.push('\treturn result, nil');
+    } else {
+      lines.push(`\tvar result ${respType}`);
+      lines.push(
+        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
+      );
+      lines.push('\tif err != nil {');
+      lines.push('\t\treturn nil, err');
+      lines.push('\t}');
+      lines.push('\treturn &result, nil');
+    }
+  } else {
+    lines.push(
+      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
+    );
+    lines.push('\treturn err');
+  }
+}
+
+/** Format a Go value as a string for url.Values.Set(). */
+function goLiteralForQuery(value: string | number | boolean): string {
+  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'boolean') return value ? `"true"` : `"false"`;
+  return `fmt.Sprintf("%v", ${String(value)})`;
+}
+
+/** Format a Go expression to a string suitable for url.Values.Set(). */
+function formatQueryValue(expr: string, type: import('@workos/oagen').TypeRef): string {
+  if (type.kind === 'primitive') {
+    switch (type.type) {
+      case 'string':
+        return expr;
+      case 'integer':
+      case 'number':
+        return `fmt.Sprintf("%v", ${expr})`;
+      case 'boolean':
+        return `fmt.Sprintf("%v", ${expr})`;
+      default:
+        return `fmt.Sprintf("%v", ${expr})`;
+    }
+  }
+  if (type.kind === 'array') {
+    return `strings.Join(${expr}, ",")`;
+  }
+  return `fmt.Sprintf("%v", ${expr})`;
+}
+
+/**
+ * Check if any operations with hidden params also have visible array query params.
+ * strings.Join is only generated inside emitGetWithHiddenParams, so the import is
+ * only needed when that code path is active AND uses array params.
+ */
+function needsStringsImport(operations: Operation[], resolvedLookup: Map<string, any>): boolean {
+  for (const op of operations) {
+    const resolved = lookupResolved(op, resolvedLookup);
+    if (!resolved || !hasHiddenParams(resolved)) continue;
+    if (op.httpMethod.toLowerCase() !== 'get') continue;
+    const hidden = buildHiddenParams(resolved);
+    for (const qp of op.queryParams) {
+      if (hidden.has(qp.name)) continue;
+      if (qp.type.kind === 'array') return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Check if any visible query params in operations use map types,
+ * requiring bracket-encoded loop generation.
+ */
+function _hasMapQueryParams(op: Operation, hidden: Set<string>): boolean {
+  return op.queryParams.some((qp) => !hidden.has(qp.name) && qp.type.kind === 'map');
 }
 
 function buildPathExpr(op: Operation): string {
@@ -428,8 +809,7 @@ function lowerFirst(s: string): string {
 
 /** Simple lowercase-first for human-readable descriptions (not identifiers). */
 function lowerFirstDesc(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toLowerCase() + s.slice(1);
+  return lowerFirstForDoc(s);
 }
 
 function singularizePascal(name: string): string {
