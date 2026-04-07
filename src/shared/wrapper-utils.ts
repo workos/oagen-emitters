@@ -1,0 +1,50 @@
+import type { EmitterContext, Field, ResolvedWrapper } from '@workos/oagen';
+import { toSnakeCase } from '@workos/oagen';
+
+/**
+ * A resolved wrapper parameter with its variant model field and optional status.
+ * Pre-computed once per wrapper so emitters don't repeat the lookup.
+ */
+export interface ResolvedWrapperParam {
+  /** Wire name of the param (e.g., "email", "grant_type"). */
+  paramName: string;
+  /** The field from the variant model, or null if not found in the spec. */
+  field: Field | null;
+  /** Whether this param should be optional in the generated SDK. */
+  isOptional: boolean;
+}
+
+/**
+ * Resolve the variant model's fields for a wrapper's exposed params.
+ *
+ * Encapsulates the three-step lookup every emitter needs:
+ * 1. Find the variant model via wrapper.targetVariant in ctx.spec.models
+ * 2. Match each exposed param to its field in the variant
+ * 3. Classify as required or optional using wrapper.optionalParams + field.required
+ *
+ * Field matching uses exact name first, then falls back to snake_case normalization
+ * to handle cases where wire names and model field names differ in casing.
+ */
+export function resolveWrapperParams(wrapper: ResolvedWrapper, ctx: EmitterContext): ResolvedWrapperParam[] {
+  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
+  const variantFields = variantModel?.fields ?? [];
+  const optionalSet = new Set(wrapper.optionalParams);
+
+  return wrapper.exposedParams.map((paramName) => {
+    const field =
+      variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName)) ?? null;
+    const isOptional = optionalSet.has(paramName) || !field?.required;
+    return { paramName, field, isOptional };
+  });
+}
+
+/**
+ * Format a snake_case wrapper name into a human-readable description.
+ * "authenticate_with_password" → "Authenticate with password"
+ */
+export function formatWrapperDescription(name: string): string {
+  return name
+    .split('_')
+    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(' ');
+}
