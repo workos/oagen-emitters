@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { Model, Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
@@ -21,13 +21,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const emittedModelSymbolsByDir = new Map<string, string[]>();
   const modelUsage = collectModelUsage(ctx.spec);
 
-  // Build structural hashes for deduplication
-  const modelHashMap = new Map<string, string>(); // model name -> hash
+  // Build recursive structural hashes for deduplication.
+  // Model/enum references are resolved bottom-up so structurally-identical
+  // model trees (e.g. event context/actor sub-models) get the same hash.
+  const recursiveHashes = buildRecursiveHashMap(models, ctx.spec.enums);
   const hashGroups = new Map<string, string[]>(); // hash -> model names
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
-    const hash = structuralHash(model);
-    modelHashMap.set(model.name, hash);
+    const hash = recursiveHashes.get(model.name) ?? '';
     if (!hashGroups.has(hash)) hashGroups.set(hash, []);
     hashGroups.get(hash)!.push(model.name);
   }
@@ -62,13 +63,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const canonicalDir = resolveDir(canonicalService);
       const canonicalClassName = className(canonicalName);
       const lines: string[] = [];
+      lines.push('from typing_extensions import TypeAlias');
+      // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalClassName}`);
+        lines.push(
+          `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)} import ${canonicalClassName}`,
+        );
       }
       lines.push('');
-      lines.push(`${modelClassName} = ${canonicalClassName}`);
+      lines.push(`${modelClassName}: TypeAlias = ${canonicalClassName}`);
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
         content: lines.join('\n'),
@@ -121,7 +126,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`from ${ctx.namespace}._types import _format_datetime, _parse_datetime`);
     }
 
-    // Import referenced models from their service's models package
+    // Import referenced models from their service's models package.
+    // Always use direct file imports (not barrel __init__.py) to avoid
+    // circular-import chains when common/ models reference service modules.
     if (deps.models.size > 0) {
       lines.push('');
       for (const modelName of [...deps.models].sort()) {
@@ -131,12 +138,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (modelDir === dirName) {
           lines.push(`from .${fileName(modelName)} import ${className(modelName)}`);
         } else {
-          lines.push(`from ${ctx.namespace}.${dirToModule(modelDir)}.models import ${className(modelName)}`);
+          lines.push(
+            `from ${ctx.namespace}.${dirToModule(modelDir)}.models.${fileName(modelName)} import ${className(modelName)}`,
+          );
         }
       }
     }
 
-    // Import referenced enums from their service's models package
+    // Import referenced enums — same direct-file strategy.
     if (deps.enums.size > 0) {
       for (const enumName of [...deps.enums].sort()) {
         const enumService = enumToService.get(enumName);
@@ -144,7 +153,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (enumDir === dirName) {
           lines.push(`from .${fileName(enumName)} import ${className(enumName)}`);
         } else {
-          lines.push(`from ${ctx.namespace}.${dirToModule(enumDir)}.models import ${className(enumName)}`);
+          lines.push(
+            `from ${ctx.namespace}.${dirToModule(enumDir)}.models.${fileName(enumName)} import ${className(enumName)}`,
+          );
         }
       }
     }
@@ -177,7 +188,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
-        if (field.deprecated) parts.push('.. deprecated::');
+        if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
         lines.push(`    ${pyFieldName}: ${pyType}`);
         lines.push(`    """${parts.join('\n\n    ')}"""`);
       } else {
@@ -193,7 +204,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
-        if (field.deprecated) parts.push('.. deprecated::');
+        if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
         lines.push(`    """${parts.join('\n\n    ')}"""`);
       } else {
@@ -462,32 +473,15 @@ function compareAliasPriority(left: string, right: string, usage: ReturnType<typ
 }
 
 function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
+  // Don't alias across request/response boundaries — a request-only model
+  // and a response-only model may look identical today but evolve independently.
   if (
     (usage.response.has(canonical) && usage.requestOnly.has(alias)) ||
     (usage.response.has(alias) && usage.requestOnly.has(canonical))
   ) {
     return false;
   }
-
-  const canonicalTokens = tokenizeModelName(canonical);
-  const aliasTokens = tokenizeModelName(alias);
-
-  if (canonicalTokens.length === 0 || aliasTokens.length === 0) return false;
-
-  const canonicalSet = new Set(canonicalTokens);
-  const aliasSet = new Set(aliasTokens);
-  const canonicalSubset = [...canonicalSet].every((token) => aliasSet.has(token));
-  const aliasSubset = [...aliasSet].every((token) => canonicalSet.has(token));
-
-  return canonicalSubset || aliasSubset;
-}
-
-function tokenizeModelName(name: string): string[] {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .split(/[\s_]+/)
-    .map((part) => part.toLowerCase())
-    .filter((part) => !['dto', 'request', 'response', 'params', 'param', 'model'].includes(part));
+  return true;
 }
 
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
@@ -608,48 +602,88 @@ function serializeField(ref: any, accessor: string): string {
 }
 
 /**
- * Build a structural hash for a model based on sorted field names, types, and required flags.
- * Two models with the same hash are structurally identical (same fields, types, required).
+ * Build recursive structural hashes for all models.
+ *
+ * Model references are resolved to their own structural hash (bottom-up) and
+ * enum references are resolved to their value-set hash.  This means
+ * structurally-identical model *trees* — like the dozens of per-event Context /
+ * ContextActor / ContextGoogleAnalyticsSession sub-models in the spec — get
+ * the same hash even though their IR names differ.
  */
-function structuralHash(model: Model): string {
-  const fields = [...model.fields]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((f) => `${f.name}:${typeHash(f.type)}:${f.required}`);
-  return fields.join('|');
-}
+function buildRecursiveHashMap(models: Model[], enums: Enum[]): Map<string, string> {
+  const modelByName = new Map(models.map((m) => [m.name, m]));
+  const hashCache = new Map<string, string>();
+  const visiting = new Set<string>(); // cycle guard
 
-function typeHash(ref: any): string {
-  switch (ref.kind) {
-    case 'primitive':
-      return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
-    case 'model':
-      return `m:${ref.name}`;
-    case 'enum':
-      return `e:${ref.name}`;
-    case 'array':
-      return `a:${typeHash(ref.items)}`;
-    case 'nullable':
-      return `n:${typeHash(ref.inner)}`;
-    case 'union':
-      return `u:${ref.variants.map(typeHash).sort().join(',')}`;
-    case 'map':
-      return `d:${typeHash(ref.valueType)}`;
-    case 'literal':
-      return `l:${String(ref.value)}`;
-    default:
-      return 'unknown';
+  // Pre-compute enum value hashes so identically-valued enums hash the same.
+  const enumVH = new Map<string, string>();
+  for (const e of enums) {
+    enumVH.set(
+      e.name,
+      [...e.values]
+        .map((v) => String(v.value))
+        .sort()
+        .join('|'),
+    );
   }
+
+  function modelHash(name: string): string {
+    const cached = hashCache.get(name);
+    if (cached != null) return cached;
+    if (visiting.has(name)) return `m:${name}`; // cycle — fall back to name
+    visiting.add(name);
+
+    const model = modelByName.get(name);
+    if (!model) {
+      visiting.delete(name);
+      return `m:${name}`; // unknown model
+    }
+
+    const hash = [...model.fields]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((f) => `${f.name}:${deepTypeHash(f.type)}:${f.required}`)
+      .join('|');
+
+    visiting.delete(name);
+    hashCache.set(name, hash);
+    return hash;
+  }
+
+  function deepTypeHash(ref: any): string {
+    switch (ref.kind) {
+      case 'primitive':
+        return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
+      case 'model':
+        return `m:{${modelHash(ref.name)}}`;
+      case 'enum': {
+        const vh = enumVH.get(ref.name);
+        return vh != null ? `e:{${vh}}` : `e:${ref.name}`;
+      }
+      case 'array':
+        return `a:${deepTypeHash(ref.items)}`;
+      case 'nullable':
+        return `n:${deepTypeHash(ref.inner)}`;
+      case 'union':
+        return `u:${(ref.variants ?? [])
+          .map((v: any) => deepTypeHash(v))
+          .sort()
+          .join(',')}`;
+      case 'map':
+        return `d:${deepTypeHash(ref.valueType)}`;
+      case 'literal':
+        return `l:${String(ref.value)}`;
+      default:
+        return 'unknown';
+    }
+  }
+
+  for (const model of models) {
+    modelHash(model.name);
+  }
+
+  return hashCache;
 }
 
-/** Check if a model is a list metadata model (e.g., ListMetadata). */
-export function isListMetadataModel(model: Model): boolean {
-  const fieldNames = new Set(model.fields.map((f) => f.name));
-  return model.fields.length <= 3 && (fieldNames.has('before') || fieldNames.has('after')) && !fieldNames.has('data');
-}
-
-/** Check if a model is a list wrapper model (has `data` array + `list_metadata`). */
-export function isListWrapperModel(model: Model): boolean {
-  const dataField = model.fields.find((f) => f.name === 'data');
-  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  return !!dataField && hasListMetadata && dataField.type.kind === 'array';
-}
+// Import and re-export shared model detection utilities
+import { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
+export { isListMetadataModel, isListWrapperModel };

@@ -42,14 +42,18 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalCls = className(canonicalName);
       const aliasCls = className(enumDef.name);
       const lines: string[] = [];
+      lines.push('from typing_extensions import TypeAlias');
       // Use explicit __all__ to prevent ruff F401 from stripping the re-export
+      // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalCls}`);
       } else {
-        lines.push(`from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalCls}`);
+        lines.push(
+          `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)} import ${canonicalCls}`,
+        );
       }
       lines.push('');
-      lines.push(`${aliasCls} = ${canonicalCls}`);
+      lines.push(`${aliasCls}: TypeAlias = ${canonicalCls}`);
       lines.push(`__all__ = ["${aliasCls}"]`);
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
@@ -63,10 +67,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         const importLine =
           canonicalDir === dirName
             ? `from .${fileName(canonicalName)} import ${canonicalCls}`
-            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models import ${canonicalCls}`;
+            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)} import ${canonicalCls}`;
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: [importLine, '', `${aliasName} = ${canonicalCls}`, `__all__ = ["${aliasName}"]`].join('\n'),
+          content: [
+            'from typing_extensions import TypeAlias',
+            importLine,
+            '',
+            `${aliasName}: TypeAlias = ${canonicalCls}`,
+            `__all__ = ["${aliasName}"]`,
+          ].join('\n'),
           integrateTarget: true,
           overwriteExisting: true,
         });
@@ -186,9 +196,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
         content: [
+          'from typing_extensions import TypeAlias',
           `from .${fileName(enumDef.name)} import ${cls}`,
           '',
-          `${aliasName} = ${cls}`,
+          `${aliasName}: TypeAlias = ${cls}`,
           `__all__ = ["${aliasName}"]`,
         ].join('\n'),
         integrateTarget: true,
