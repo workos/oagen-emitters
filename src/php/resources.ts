@@ -1,9 +1,15 @@
-import type { Service, Operation, Model, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { planOperation } from '@workos/oagen';
+import type { Service, Operation, Model, EmitterContext, GeneratedFile, ResolvedOperation } from '@workos/oagen';
+import { planOperation, toCamelCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName, resolveMethodName } from './naming.js';
 import { isListWrapperModel } from './models.js';
-import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  getOpDefaults,
+  getOpInferFromClient,
+} from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
 
@@ -66,10 +72,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (emittedMethods.has(method)) continue;
       emittedMethods.add(method);
       lines.push('');
-      generateMethod(lines, op, mergedService, ctx, modelMap);
+      const resolved = lookupResolved(op, resolvedLookup);
+      generateMethod(lines, op, mergedService, ctx, modelMap, resolved ?? undefined);
 
       // Generate union split wrapper methods if this operation has them
-      const resolved = lookupResolved(op, resolvedLookup);
       if (resolved?.wrappers && resolved.wrappers.length > 0) {
         lines.push(...generateWrapperMethods(resolved, ctx));
       }
@@ -93,10 +99,19 @@ function generateMethod(
   service: Service,
   ctx: EmitterContext,
   modelMap: Map<string, Model>,
+  resolvedOp?: ResolvedOperation,
 ): void {
   const plan = planOperation(op);
   const method = resolveMethodName(op, service, ctx);
-  const params = buildMethodParams(op, plan, modelMap, ctx);
+
+  // Build the set of params hidden from the method signature
+  // (injected from client config or as constant defaults)
+  const hiddenParams = new Set<string>([
+    ...Object.keys(getOpDefaults(resolvedOp)),
+    ...getOpInferFromClient(resolvedOp),
+  ]);
+
+  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams);
   const returnType = getReturnType(plan, ctx);
 
   // PHPDoc block
@@ -107,7 +122,8 @@ function generateMethod(
   for (const p of op.pathParams) {
     const docType = mapTypeRefForPHPDoc(p.type);
     const prefix = p.deprecated ? '(deprecated) ' : '';
-    const desc = p.description ? ` ${prefix}${p.description}` : p.deprecated ? ' (deprecated)' : '';
+    let desc = p.description ? ` ${prefix}${p.description}` : p.deprecated ? ' (deprecated)' : '';
+    if (p.default != null) desc += ` Defaults to ${JSON.stringify(p.default)}.`;
     docParts.push(`@param ${docType} $${fieldName(p.name)}${desc}`);
   }
 
@@ -129,15 +145,33 @@ function generateMethod(
 
   // @param for query params
   for (const q of op.queryParams) {
+    if (hiddenParams.has(q.name)) continue;
     const docType = mapTypeRefForPHPDoc(q.type);
     const nullSuffix = !q.required ? '|null' : '';
     const prefix = q.deprecated ? '(deprecated) ' : '';
-    const desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
+    let desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
+    if (q.default != null) desc += ` Defaults to ${JSON.stringify(q.default)}.`;
     docParts.push(`@param ${docType}${nullSuffix} $${fieldName(q.name)}${desc}`);
   }
 
-  // @return
-  docParts.push(`@return ${returnType}`);
+  // @return — use generic annotation for paginated responses
+  if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+    const itemType = op.pagination.itemType;
+    const itemModel = ctx.spec.models.find((m) => m.name === itemType.name);
+    let resolvedName = itemType.name;
+    if (itemModel && isListWrapperModel(itemModel)) {
+      const dataField = itemModel.fields.find((f) => f.name === 'data');
+      if (dataField?.type.kind === 'array' && dataField.type.items.kind === 'model') {
+        resolvedName = dataField.type.items.name;
+      }
+    }
+    const itemClass = className(resolvedName);
+    docParts.push(
+      `@return \\${ctx.namespacePascal}\\PaginatedResponse<\\${ctx.namespacePascal}\\Resource\\${itemClass}>`,
+    );
+  } else {
+    docParts.push(`@return ${returnType}`);
+  }
 
   if (op.deprecated) docParts.push('@deprecated');
   lines.push(...phpDocComment(docParts.join('\n'), 4));
@@ -199,7 +233,9 @@ function generateMethod(
       if (bodyModel) {
         for (const field of bodyModel.fields) {
           const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-          lines.push(`            '${field.name}' => $${phpName},`);
+          const nullsafe = field.required ? '' : '?';
+          const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+          lines.push(`            '${field.name}' => ${valueExpr},`);
         }
       }
       if (hasOptionalFields) {
@@ -241,7 +277,9 @@ function generateMethod(
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-        lines.push(`            '${field.name}' => $${phpName},`);
+        const nullsafe = field.required ? '' : '?';
+        const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+        lines.push(`            '${field.name}' => ${valueExpr},`);
       }
     }
     if (hasOptionalFields) {
@@ -267,9 +305,13 @@ function generateMethod(
       lines.push('        return $response;');
     }
   } else {
-    const queryLines = buildQueryArray(op);
-    if (queryLines.length > 0) {
-      const hasOptionalQuery = op.queryParams.some((q) => !q.required);
+    const queryLines = buildQueryArray(op, hiddenParams);
+    const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
+    const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
+    const needsQuery = queryLines.length > 0 || hasDefaults || hasInferred;
+
+    if (needsQuery) {
+      const hasOptionalQuery = op.queryParams.some((q) => !q.required && !hiddenParams.has(q.name));
       if (hasOptionalQuery) {
         lines.push('        $query = array_filter([');
       } else {
@@ -278,16 +320,24 @@ function generateMethod(
       for (const q of queryLines) {
         lines.push(`            ${q}`);
       }
+      // Inject constant defaults
+      for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+        lines.push(`            '${key}' => ${phpLiteral(value)},`);
+      }
       if (hasOptionalQuery) {
         lines.push('        ], fn ($v) => $v !== null);');
       } else {
         lines.push('        ];');
       }
+      // Inject fields from client config
+      for (const clientField of getOpInferFromClient(resolvedOp)) {
+        lines.push(`        $query['${clientField}'] = ${clientFieldExpression(clientField)};`);
+      }
     }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
-    if (queryLines.length > 0) {
+    if (needsQuery) {
       lines.push('            query: $query,');
     }
     lines.push('            options: $options,');
@@ -313,12 +363,14 @@ function buildMethodParams(
   plan: ReturnType<typeof planOperation>,
   modelMap: Map<string, Model>,
   ctx: EmitterContext,
+  hiddenParams?: Set<string>,
 ): string[] {
   // Collect all params into required/optional buckets to avoid
   // PHP's "required after optional" deprecation.
   const required: string[] = [];
   const optional: string[] = [];
   const usedNames = new Set<string>();
+  const hidden = hiddenParams ?? new Set();
 
   // Path params (always required)
   for (const p of op.pathParams) {
@@ -334,6 +386,7 @@ function buildMethodParams(
     const bodyModel = modelMap.get(op.requestBody.name);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
+        if (hidden.has(field.name)) continue;
         const phpType = mapTypeRef(field.type, { qualified: true });
         let phpName = fieldName(field.name);
         if (usedNames.has(phpName)) {
@@ -354,6 +407,7 @@ function buildMethodParams(
 
   // Query params
   for (const q of op.queryParams) {
+    if (hidden.has(q.name)) continue;
     const phpType = mapTypeRef(q.type, { qualified: true });
     let phpName = fieldName(q.name);
     if (usedNames.has(phpName)) continue;
@@ -418,11 +472,42 @@ function buildPathString(op: Operation): string {
   return `"${path}"`;
 }
 
-function buildQueryArray(op: Operation): string[] {
-  return op.queryParams.map((q) => {
-    const phpName = fieldName(q.name);
-    return `'${q.name}' => $${phpName},`;
-  });
+function isEnumType(ref: import('@workos/oagen').TypeRef): boolean {
+  if (ref.kind === 'enum') return true;
+  if (ref.kind === 'nullable') return isEnumType(ref.inner);
+  return false;
+}
+
+function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
+  const hidden = hiddenParams ?? new Set();
+  return op.queryParams
+    .filter((q) => !hidden.has(q.name))
+    .map((q) => {
+      const phpName = fieldName(q.name);
+      if (isEnumType(q.type)) {
+        const nullsafe = q.required ? '' : '?';
+        return `'${q.name}' => $${phpName}${nullsafe}->value,`;
+      }
+      return `'${q.name}' => $${phpName},`;
+    });
+}
+
+function phpLiteral(value: unknown): string {
+  if (typeof value === 'string') return `'${value}'`;
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return 'null';
+}
+
+function clientFieldExpression(field: string): string {
+  switch (field) {
+    case 'client_id':
+      return '$this->client->requireClientId()';
+    case 'client_secret':
+      return '$this->client->requireApiKey()';
+    default:
+      return `$this->client->${toCamelCase(field)}`;
+  }
 }
 
 function collectImports(service: Service, ctx: EmitterContext): string[] {
