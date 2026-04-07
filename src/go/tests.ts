@@ -5,7 +5,7 @@ import { resolveResourceClassName, paramsStructName, sortPathParamsByTemplateOrd
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
-import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -29,6 +29,47 @@ function resolveModulePath(ctx: EmitterContext): string {
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
+
+  // Generate shared test helpers file
+  const helperLines: string[] = [];
+  helperLines.push(`package ${ctx.namespace}_test`);
+  helperLines.push('');
+  helperLines.push('import (');
+  helperLines.push('\t"net/http"');
+  helperLines.push('\t"net/http/httptest"');
+  helperLines.push('\t"os"');
+  helperLines.push('\t"testing"');
+  helperLines.push('');
+  helperLines.push(`\t"${resolveModulePath(ctx)}"`);
+  helperLines.push('\t"github.com/stretchr/testify/require"');
+  helperLines.push(')');
+  helperLines.push('');
+  helperLines.push('func ptrString(s string) *string { return &s }');
+  helperLines.push('func ptrInt(i int) *int { return &i }');
+  helperLines.push('');
+  helperLines.push(
+    `func setupTestServer(t *testing.T, method, path, fixturePath string) (*httptest.Server, *${ctx.namespace}.Client) {`,
+  );
+  helperLines.push('\tt.Helper()');
+  helperLines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
+  helperLines.push('\t\trequire.Equal(t, method, r.Method)');
+  helperLines.push('\t\trequire.Equal(t, path, r.URL.Path)');
+  helperLines.push('\t\tw.Header().Set("Content-Type", "application/json")');
+  helperLines.push('\t\tfixture, err := os.ReadFile(fixturePath)');
+  helperLines.push('\t\tif err != nil {');
+  helperLines.push('\t\t\tt.Fatalf("failed to read fixture: %v", err)');
+  helperLines.push('\t\t}');
+  helperLines.push('\t\tw.Write(fixture)');
+  helperLines.push('\t}))');
+  helperLines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
+  helperLines.push('\treturn server, client');
+  helperLines.push('}');
+  helperLines.push('');
+  files.push({
+    path: 'helpers_test.go',
+    content: helperLines.join('\n'),
+    overwriteExisting: true,
+  });
 
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec);
@@ -78,8 +119,26 @@ function generateServiceTest(
   const lines: string[] = [];
   lines.push(`package ${ctx.namespace}_test`);
   lines.push('');
+  // Check if any operation uses POST/PUT/PATCH with visible model body fields (for import needs).
+  // Union-type bodies don't trigger body validation so don't need io/json imports.
+  const resolvedLookupForImports = buildResolvedLookup(ctx);
+  const hasBodyOps = service.operations.some((op) => {
+    const httpMethod = op.httpMethod.toUpperCase();
+    if (httpMethod !== 'POST' && httpMethod !== 'PUT' && httpMethod !== 'PATCH') return false;
+    if (op.requestBody?.kind !== 'model') return false;
+    const resolved = lookupResolved(op, resolvedLookupForImports);
+    const hidden = buildHiddenParams(resolved);
+    const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) return bodyModel.fields.some((f) => !hidden.has(f.name));
+    return false;
+  });
+
   lines.push('import (');
   lines.push('\t"context"');
+  if (hasBodyOps) {
+    lines.push('\t"encoding/json"');
+    lines.push('\t"io"');
+  }
   lines.push('\t"net/http"');
   lines.push('\t"net/http/httptest"');
   lines.push('\t"os"');
@@ -89,6 +148,7 @@ function generateServiceTest(
   lines.push('\t"github.com/stretchr/testify/require"');
   lines.push(')');
   lines.push('');
+  // Test helpers (ptrString, ptrInt, setupTestServer) are in helpers_test.go
 
   // Deduplicate test functions by method name
   const emittedTestMethods = new Set<string>();
@@ -125,10 +185,25 @@ function generateServiceTest(
       }
 
       const expectedPath = buildExpectedPath(op);
+
+      // Find a filter param to populate (prefer 'limit', then first visible string param)
+      const resolvedLookupPag = buildResolvedLookup(ctx);
+      const resolvedOpPag = lookupResolved(op, resolvedLookupPag);
+      const hiddenPag = buildHiddenParams(resolvedOpPag);
+      const visibleQPs = op.queryParams.filter((qp) => !hiddenPag.has(qp.name));
+      const limitParam = visibleQPs.find((qp) => qp.name === 'limit');
+      const filterParam =
+        limitParam ?? visibleQPs.find((qp) => qp.type.kind === 'primitive' && qp.type.type === 'string');
+
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
       lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
       lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
+      // Assert filter param in query string
+      if (filterParam) {
+        const expectedVal = filterParam.name === 'limit' ? '10' : `test_${filterParam.name}`;
+        lines.push(`\t\trequire.Equal(t, "${expectedVal}", r.URL.Query().Get("${filterParam.name}"))`);
+      }
       lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
       lines.push('\t\tw.WriteHeader(http.StatusOK)');
       if (fixturePath) {
@@ -145,8 +220,8 @@ function generateServiceTest(
       lines.push('');
       lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
 
-      // Build method call
-      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      // Build method call with populated filter param
+      const callArgs = buildMethodCallArgsWithFilter(op, plan, ctx, resolvedName, filterParam);
       lines.push(`\titer := client.${accessorName}().${method}(${callArgs})`);
       lines.push('\trequire.NotNil(t, iter)');
       if (fixturePath) {
@@ -198,10 +273,34 @@ function generateServiceTest(
       const fixturePath = `testdata/${fileName(respModel)}.json`;
       const expectedPath = buildExpectedPath(op);
 
+      const httpMethodUpper = op.httpMethod.toUpperCase();
+      const isBodyMethod = httpMethodUpper === 'POST' || httpMethodUpper === 'PUT' || httpMethodUpper === 'PATCH';
+
       lines.push(`func ${testName}(t *testing.T) {`);
       lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
-      lines.push(`\t\trequire.Equal(t, "${op.httpMethod.toUpperCase()}", r.Method)`);
+      lines.push(`\t\trequire.Equal(t, "${httpMethodUpper}", r.Method)`);
       lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
+
+      // Validate request body for POST/PUT/PATCH when body fields are actually sent.
+      // Skip for union-type bodies (test sends empty Body interface{}) and operations
+      // where all body fields are hidden.
+      const resolvedLookup = buildResolvedLookup(ctx);
+      const resolvedOp = lookupResolved(op, resolvedLookup);
+      const hiddenSet = buildHiddenParams(resolvedOp);
+      let hasVisibleBody = false;
+      if (isBodyMethod && op.requestBody?.kind === 'model') {
+        const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+        if (bodyModel) {
+          hasVisibleBody = bodyModel.fields.some((f) => !hiddenSet.has(f.name));
+        }
+      }
+      // Don't validate body for union types -- test sends nil Body
+      if (hasVisibleBody) {
+        lines.push('\t\tbody, _ := io.ReadAll(r.Body)');
+        lines.push('\t\tvar bodyMap map[string]interface{}');
+        lines.push('\t\trequire.NoError(t, json.Unmarshal(body, &bodyMap))');
+      }
+
       lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
       lines.push('\t\tw.WriteHeader(http.StatusOK)');
       if (isArrayResponse) {
@@ -229,14 +328,12 @@ function generateServiceTest(
         lines.push('\trequire.NotEmpty(t, result)');
       } else {
         lines.push('\trequire.NotNil(t, result)');
-        // Add field assertion for first required string field
+        // Add specific field value assertions from fixture data
         const respModelDef = spec.models.find((m) => m.name === respModel);
         if (respModelDef) {
-          const targetField =
-            respModelDef.fields.find((f) => f.required && f.name === 'id') ||
-            respModelDef.fields.find((f) => f.required && f.type.kind === 'primitive' && f.type.type === 'string');
-          if (targetField) {
-            lines.push(`\trequire.NotEmpty(t, result.${goFieldName(targetField.name)})`);
+          const fixtureAssertions = buildFixtureAssertions(respModelDef, ctx.namespace);
+          for (const assertion of fixtureAssertions) {
+            lines.push(`\t${assertion}`);
           }
         }
       }
@@ -331,6 +428,56 @@ function generateServiceTest(
     }
     lines.push('}');
     lines.push('');
+
+    // Error 404 test
+    lines.push(`func Test${accessorName}_Error404(t *testing.T) {`);
+    lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
+    lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
+    lines.push('\t\tw.WriteHeader(http.StatusNotFound)');
+    lines.push('\t\tw.Write([]byte(`{"code":"not_found","message":"Not Found"}`))');
+    lines.push('\t}))');
+    lines.push('\tdefer server.Close()');
+    lines.push('');
+    lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
+
+    if (plan.isPaginated) {
+      lines.push(`\titer := client.${accessorName}().${method}(${callArgs})`);
+      lines.push('\trequire.False(t, iter.Next())');
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.NotFoundError{}, iter.Err())`);
+    } else if (plan.isDelete || !plan.responseModelName) {
+      lines.push(`\terr := client.${accessorName}().${method}(${callArgs})`);
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.NotFoundError{}, err)`);
+    } else {
+      lines.push(`\t_, err := client.${accessorName}().${method}(${callArgs})`);
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.NotFoundError{}, err)`);
+    }
+    lines.push('}');
+    lines.push('');
+
+    // Error 422 test
+    lines.push(`func Test${accessorName}_Error422(t *testing.T) {`);
+    lines.push('\tserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {');
+    lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
+    lines.push('\t\tw.WriteHeader(422)');
+    lines.push('\t\tw.Write([]byte(`{"code":"unprocessable_entity","message":"Unprocessable"}`))');
+    lines.push('\t}))');
+    lines.push('\tdefer server.Close()');
+    lines.push('');
+    lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithBaseURL(server.URL))`);
+
+    if (plan.isPaginated) {
+      lines.push(`\titer := client.${accessorName}().${method}(${callArgs})`);
+      lines.push('\trequire.False(t, iter.Next())');
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.UnprocessableEntityError{}, iter.Err())`);
+    } else if (plan.isDelete || !plan.responseModelName) {
+      lines.push(`\terr := client.${accessorName}().${method}(${callArgs})`);
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.UnprocessableEntityError{}, err)`);
+    } else {
+      lines.push(`\t_, err := client.${accessorName}().${method}(${callArgs})`);
+      lines.push(`\trequire.IsType(t, &${ctx.namespace}.UnprocessableEntityError{}, err)`);
+    }
+    lines.push('}');
+    lines.push('');
   }
 
   return {
@@ -352,13 +499,89 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
     args.push(`"test_${p.name}"`);
   }
 
-  // Params struct if needed (uses service-prefixed name matching resources.ts)
-  const hasQueryParams = op.queryParams.length > 0;
+  // Params struct if needed — must mirror resources.ts hasParams logic
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const resolvedOp = lookupResolved(op, resolvedLookup);
+  const hidden = buildHiddenParams(resolvedOp);
+  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
-  if (hasBody || hasQueryParams) {
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+    }
+  } else if (hasBody) {
+    hasVisibleBodyFields = true;
+  }
+
+  if (hasVisibleBodyFields || hasVisibleQueryParams) {
     const method = resolveGoMethodName(op, mountName, ctx);
     const pName = paramsStructName(mountName, method);
     args.push(`&${ctx.namespace}.${pName}{}`);
+  }
+
+  return args.join(', ');
+}
+
+/**
+ * Build method call args with a populated filter param for list tests.
+ * If filterParam is provided, populates it in the params struct initializer.
+ */
+function buildMethodCallArgsWithFilter(
+  op: Operation,
+  plan: any,
+  ctx: EmitterContext,
+  mountName: string,
+  filterParam?: { name: string; type: import('@workos/oagen').TypeRef } | null,
+): string {
+  const args: string[] = ['context.Background()'];
+
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    args.push(`"test_${p.name}"`);
+  }
+
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const resolvedOp = lookupResolved(op, resolvedLookup);
+  const hidden = buildHiddenParams(resolvedOp);
+  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const hasBody = plan.hasBody && op.requestBody;
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+    }
+  } else if (hasBody) {
+    hasVisibleBodyFields = true;
+  }
+
+  if (hasVisibleBodyFields || hasVisibleQueryParams) {
+    const method = resolveGoMethodName(op, mountName, ctx);
+    const pName = paramsStructName(mountName, method);
+    if (filterParam) {
+      const isPaginationField = ['before', 'after', 'limit', 'order'].includes(filterParam.name);
+      // Check if params struct embeds PaginationParams (has before/after/limit)
+      const allQPs = op.queryParams.filter((qp) => !hidden.has(qp.name));
+      const embedsPagination = ['before', 'after', 'limit'].every((name) => allQPs.some((qp) => qp.name === name));
+      const goField = goFieldName(filterParam.name);
+
+      let valExpr: string;
+      if (filterParam.name === 'limit') {
+        valExpr = `${goField}: ptrInt(10)`;
+      } else {
+        valExpr = `${goField}: ptrString("test_${filterParam.name}")`;
+      }
+
+      if (isPaginationField && embedsPagination) {
+        // Pagination fields are embedded — set via embedded struct
+        args.push(`&${ctx.namespace}.${pName}{PaginationParams: ${ctx.namespace}.PaginationParams{${valExpr}}}`);
+      } else {
+        args.push(`&${ctx.namespace}.${pName}{${valExpr}}`);
+      }
+    } else {
+      args.push(`&${ctx.namespace}.${pName}{}`);
+    }
   }
 
   return args.join(', ');
@@ -403,6 +626,21 @@ function generateWrapperTestLines(
   }
   serverHandler.push('\t}))');
 
+  // Add body validation for wrapper POST methods before building handler lines
+  const isWrapperBodyMethod = httpMethod === 'POST' || httpMethod === 'PUT' || httpMethod === 'PATCH';
+  if (isWrapperBodyMethod) {
+    const headerIdx = serverHandler.findIndex((l) => l.includes('w.Header().Set'));
+    if (headerIdx >= 0) {
+      serverHandler.splice(
+        headerIdx,
+        0,
+        '\t\tbody, _ := io.ReadAll(r.Body)',
+        '\t\tvar bodyMap map[string]interface{}',
+        '\t\trequire.NoError(t, json.Unmarshal(body, &bodyMap))',
+      );
+    }
+  }
+
   lines.push(`func ${testName}(t *testing.T) {`);
   lines.push(...serverHandler);
   lines.push('\tdefer server.Close()');
@@ -422,3 +660,92 @@ function generateWrapperTestLines(
   lines.push('');
   return lines;
 }
+
+/**
+ * Build field value assertions from fixture data for a response model.
+ * Returns Go assertion lines (without leading \t).
+ * Checks id field and 1-2 other required string fields.
+ */
+function buildFixtureAssertions(model: import('@workos/oagen').Model, _namespace: string): string[] {
+  const assertions: string[] = [];
+  const fixtureValues = generateModelFixtureValues(model);
+
+  // Priority: assert the 'id' field first
+  const idField = model.fields.find((f) => f.required && f.name === 'id');
+  if (idField && fixtureValues[idField.name] != null) {
+    const goField = goFieldName(idField.name);
+    const val = fixtureValues[idField.name];
+    if (typeof val === 'string' && isGoStringSafe(val)) {
+      assertions.push(`require.Equal(t, "${escapeGoString(val)}", result.${goField})`);
+    } else {
+      assertions.push(`require.NotEmpty(t, result.${goField})`);
+    }
+  }
+
+  // Assert 1-2 other required string fields
+  let extraCount = 0;
+  for (const field of model.fields) {
+    if (extraCount >= 2) break;
+    if (field.name === 'id') continue;
+    if (!field.required) continue;
+    if (field.type.kind !== 'primitive' || field.type.type !== 'string') continue;
+    const val = fixtureValues[field.name];
+    if (val == null) continue;
+    const goField = goFieldName(field.name);
+    if (typeof val === 'string' && isGoStringSafe(val)) {
+      assertions.push(`require.Equal(t, "${escapeGoString(val)}", result.${goField})`);
+    } else {
+      assertions.push(`require.NotEmpty(t, result.${goField})`);
+    }
+    extraCount++;
+  }
+
+  // Fallback: at least assert NotEmpty on the first required string field
+  if (assertions.length === 0) {
+    const targetField =
+      model.fields.find((f) => f.required && f.name === 'id') ||
+      model.fields.find((f) => f.required && f.type.kind === 'primitive' && f.type.type === 'string');
+    if (targetField) {
+      assertions.push(`require.NotEmpty(t, result.${goFieldName(targetField.name)})`);
+    }
+  }
+
+  return assertions;
+}
+
+/** Check if a string value can be safely embedded in a Go double-quoted string. */
+function isGoStringSafe(val: string): boolean {
+  // Skip values that look like JSON objects/arrays or contain template expressions
+  if (val.includes('{') || val.includes('}') || val.includes('`')) return false;
+  return true;
+}
+
+/** Escape special characters for a Go double-quoted string. */
+function escapeGoString(val: string): string {
+  return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/** Generate fixture values for a model (same logic as fixtures.ts but inline). */
+function generateModelFixtureValues(model: import('@workos/oagen').Model): Record<string, any> {
+  const fixture: Record<string, any> = {};
+  for (const field of model.fields) {
+    if (field.example !== undefined) {
+      fixture[field.name] = field.example;
+    } else if (field.type.kind === 'primitive' && field.type.type === 'string') {
+      if (field.name === 'id') {
+        const prefix = (ID_PREFIXES as Record<string, string>)[model.name] ?? '';
+        fixture[field.name] = `${prefix}01234`;
+      } else if (field.name.includes('email')) {
+        fixture[field.name] = 'test@example.com';
+      } else if (field.name.includes('name')) {
+        fixture[field.name] = 'Test';
+      } else {
+        fixture[field.name] = `test_${field.name}`;
+      }
+    }
+  }
+  return fixture;
+}
+
+// Re-import fixture ID prefixes
+import { ID_PREFIXES } from './fixtures.js';
