@@ -103,6 +103,9 @@ function generateMountGroupTest(
   //   - loadFixture(name) appends .json automatically
   //   - createMockClient([['status' => N, 'body' => [...]]]) wraps into Response
   for (const { op, service, resolvedOp } of ops) {
+    // Skip base method when wrappers exist (matches resources.ts)
+    if (resolvedOp?.wrappers && resolvedOp.wrappers.length > 0) continue;
+
     const plan = planOperation(op);
     const method = resolveMethodName(op, service, ctx);
     const testName = `test${method.charAt(0).toUpperCase()}${method.slice(1)}`;
@@ -157,9 +160,13 @@ function generateMountGroupTest(
         lines.push('        $this->assertIsArray($result);');
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
         emitFieldHydrationAssertions(lines, plan.responseModelName, '$result[0]', '$fixture', ctx);
+        // Round-trip: fromArray → toArray must not throw
+        lines.push('        $this->assertIsArray($result[0]->toArray());');
       } else {
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
         emitFieldHydrationAssertions(lines, plan.responseModelName, '$result', '$fixture', ctx);
+        // Round-trip: fromArray → toArray must not throw
+        lines.push('        $this->assertIsArray($result->toArray());');
       }
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
@@ -245,6 +252,9 @@ function generateMountGroupTest(
         `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden: paginatedHidden })});`,
       );
       lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
+      lines.push('        // Verify cursors are null on boundary page');
+      lines.push("        $this->assertNull($result->listMetadata['before']);");
+      lines.push("        $this->assertNull($result->listMetadata['after']);");
       lines.push('        // Iterating should not throw on null cursors');
       lines.push('        foreach ($result as $item) {');
       lines.push('            $this->assertNotNull($item);');
