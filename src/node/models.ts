@@ -95,13 +95,18 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     if (canonicalName) {
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
+
+      // Skip typeAlias resolution for dedup models.  The canonical file may
+      // be preserved (skipIfExists) and still export its raw name, so the
+      // import names must match the raw exports, not resolved aliases.
+      const skipTA = { skipTypeAlias: true };
+      const domainName = resolveInterfaceName(model.name, ctx, skipTA);
+      const responseName = wireInterfaceName(domainName);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx, skipTA);
+      const canonResponseName = wireInterfaceName(canonDomainName);
+
       const canonService = modelToService.get(canonicalName);
       const canonDir = resolveDir(canonService);
-
-      const domainName = resolveInterfaceName(model.name, ctx);
-      const responseName = wireInterfaceName(domainName);
-      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
-      const canonResponseName = wireInterfaceName(canonDomainName);
 
       // After noise suffix stripping (e.g., "OrganizationDto" → "Organization"),
       // the alias and canonical may resolve to the same file path or the same
@@ -130,7 +135,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
-    const domainName = resolveInterfaceName(model.name, ctx);
+    // If this model is a dedup canonical (other models alias to it), skip
+    // typeAlias resolution so the file exports the raw name.  Dedup aliases
+    // import using the raw name to stay consistent with preserved files.
+    const isDedupCanonical = [...dedup.values()].includes(model.name);
+    const domainName = resolveInterfaceName(model.name, ctx, isDedupCanonical ? { skipTypeAlias: true } : undefined);
     const responseName = wireInterfaceName(domainName);
     const deps = collectFieldDependencies(model);
     const lines: string[] = [];
@@ -511,10 +520,13 @@ export function generateSerializers(
     if (canonicalName) {
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
+      // Skip typeAlias resolution for dedup serializers (same reason as interfaces).
+      const skipTA = { skipTypeAlias: true };
+      const domainName = resolveInterfaceName(model.name, ctx, skipTA);
+      const canonDomainName = resolveInterfaceName(canonicalName, ctx, skipTA);
+
       const canonService = modelToService.get(canonicalName);
       const canonDir = resolveDir(canonService);
-      const domainName = resolveInterfaceName(model.name, ctx);
-      const canonDomainName = resolveInterfaceName(canonicalName, ctx);
       const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
       const canonSerializerPath = `src/${canonDir}/serializers/${fileName(canonicalName)}.serializer.ts`;
 
@@ -533,7 +545,8 @@ export function generateSerializers(
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
-    const domainName = resolveInterfaceName(model.name, ctx);
+    const isDedupCanonical = [...dedup.values()].includes(model.name);
+    const domainName = resolveInterfaceName(model.name, ctx, isDedupCanonical ? { skipTypeAlias: true } : undefined);
     const responseName = wireInterfaceName(domainName);
     const serializerPath = `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
     const typeParams = renderSerializerTypeParams(model, ctx);

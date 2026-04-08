@@ -110,15 +110,20 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
   return toPascalCase(service.name);
 }
 
-/** Resolve the interface name for a model, checking overlay first. */
-export function resolveInterfaceName(name: string, ctx: EmitterContext): string {
+/** Resolve the interface name for a model, checking overlay first.
+ *
+ * @param opts.skipTypeAlias - When true, skip apiSurface typeAlias resolution.
+ *   Use this for dedup models to ensure the file exports match the import
+ *   names (preserved files export the raw name, not the resolved alias).
+ */
+export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: { skipTypeAlias?: boolean }): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
 
   // If the model name is a type alias that points to a canonical interface,
   // use the canonical name.  This prevents the merger from generating unused
   // backward-compat aliases (e.g., `type FlagOwner = FeatureFlagOwner`).
-  if (ctx.apiSurface?.typeAliases) {
+  if (!opts?.skipTypeAlias && ctx.apiSurface?.typeAliases) {
     const alias = ctx.apiSurface.typeAliases[name] as { value?: string } | undefined;
     if (alias?.value && ctx.apiSurface.interfaces?.[alias.value]) {
       return alias.value;
