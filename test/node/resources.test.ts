@@ -1667,11 +1667,10 @@ describe('partial service coverage', () => {
     const files = generateResources(services, ctxCovered);
     expect(files.length).toBe(1);
     const content = files[0].content;
-    // Methods with overlay matches should NOT have generated JSDoc —
-    // the merger preserves existing hand-written JSDoc (including
-    // @deprecated notices and SDK-specific docs) when the generated
-    // member has no docstring.
-    expect(content).not.toContain('List all permissions.');
+    // All methods should have generated JSDoc — the merger matches by name
+    // and handles @deprecated preservation, so the emitter always provides
+    // docstrings for the merger to work with.
+    expect(content).toContain('List all permissions.');
     // skipIfExists should remain true for covered services
     expect(files[0].skipIfExists).toBe(true);
   });
