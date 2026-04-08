@@ -311,7 +311,7 @@ describe('generateResources', () => {
     expect(content).toContain('   *');
     expect(content).toContain('   * You may optionally inform Radar that an attempt was successful.');
     expect(content).toContain('   * @param id - The unique identifier of the attempt.');
-    expect(content).toContain('   * @returns {RadarAttempt}');
+    expect(content).toContain('   * @returns {Promise<RadarAttempt>}');
     expect(content).toContain('   * @deprecated');
     expect(content).toContain('   */');
   });
@@ -344,7 +344,61 @@ describe('generateResources', () => {
 
     const files = generateResources(services, ctx);
     const content = files[0].content;
-    expect(content).toContain('@returns {Organization}');
+    expect(content).toContain('@returns {Promise<Organization>}');
+  });
+
+  it('renders @returns from overlay return type when available', () => {
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'createEnvironmentRole',
+            httpMethod: 'post',
+            path: '/authorization/roles',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateRoleInput' },
+            response: { kind: 'model', name: 'Role' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /authorization/roles',
+            {
+              className: 'Authorization',
+              methodName: 'createEnvironmentRole',
+              params: [{ name: 'payload', type: 'CreateRoleInput', optional: false }],
+              returnType: 'Promise<EnvironmentRole>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+    // JSDoc should use the overlay return type, not the spec schema name
+    expect(content).toContain('@returns {Promise<EnvironmentRole>}');
+    expect(content).not.toContain('@returns {Role}');
+    expect(content).not.toContain('@returns {Promise<Role>}');
   });
 
   it('renders query param docs for non-paginated operations', () => {
@@ -468,9 +522,9 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
     // Only emit a single @returns for the primary response model (no status-code variants)
-    expect(content).toContain('@returns {Organization}');
-    expect(content).not.toContain('@returns {Organization} 200');
-    expect(content).not.toContain('@returns {Organization} 201');
+    expect(content).toContain('@returns {Promise<Organization>}');
+    expect(content).not.toContain('@returns {Promise<Organization>} 200');
+    expect(content).not.toContain('@returns {Promise<Organization>} 201');
   });
 
   it('generates DELETE-with-body method using deleteWithBody', () => {

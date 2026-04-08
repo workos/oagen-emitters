@@ -690,10 +690,15 @@ function renderMethod(
     } else if (op.queryParams.filter((q) => !hiddenParams.has(q.name)).length > 0) {
       docParts.push('@param options - Additional query options.');
     }
-    // @returns for the primary response model (use item type for paginated operations).
-    // Unwrap list wrapper models to match the actual return type — the method returns
-    // AutoPaginatable<ItemType>, not the list wrapper.
-    if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+    // @returns for the primary response model.
+    // When an overlay method exists, prefer its return type so the JSDoc
+    // matches the actual TypeScript signature (the overlay may use a
+    // different model name than the OpenAPI schema).
+    if (overlayMethod?.returnType) {
+      docParts.push(`@returns {${overlayMethod.returnType}}`);
+    } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+      // Unwrap list wrapper models to match the actual return type — the method returns
+      // AutoPaginatable<ItemType>, not the list wrapper.
       let itemRawName = op.pagination.itemType.name;
       const pModel = modelMap.get(itemRawName);
       if (pModel) {
@@ -701,11 +706,11 @@ function renderMethod(
         if (unwrapped) itemRawName = unwrapped.name;
       }
       const itemTypeName = resolveInterfaceName(itemRawName, ctx);
-      docParts.push(`@returns {AutoPaginatable<${itemTypeName}>}`);
+      docParts.push(`@returns {Promise<AutoPaginatable<${itemTypeName}>>}`);
     } else if (responseModel) {
-      docParts.push(`@returns {${responseModel}}`);
+      docParts.push(`@returns {Promise<${responseModel}>}`);
     } else {
-      docParts.push('@returns {void}');
+      docParts.push('@returns {Promise<void>}');
     }
     // @throws for error responses
     for (const err of op.errors) {
