@@ -471,4 +471,158 @@ describe('generateResources', () => {
     expect(content).toContain("'response_type' => 'code'");
     expect(content).toContain("$query['client_id'] = $this->client->requireClientId()");
   });
+
+  it('skips base method when wrappers exist', () => {
+    const authServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrganizationRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const authSpec = { ...emptySpec, services: authServices };
+    const authCtx: EmitterContext = {
+      ...ctx,
+      spec: authSpec,
+      resolvedOperations: [
+        {
+          operation: authServices[0].operations[0],
+          service: authServices[0],
+          methodName: 'authenticate',
+          mountOn: 'UserManagement',
+          wrappers: [
+            {
+              name: 'authenticate_with_password',
+              targetVariant: 'PasswordSessionAuthenticateRequest',
+              defaults: { grant_type: 'password' },
+              inferFromClient: ['client_id', 'client_secret'],
+              exposedParams: ['email'],
+            },
+          ],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(authServices, authCtx);
+    const content = result[0].content;
+
+    // Wrapper method should be emitted
+    expect(content).toContain('authenticateWithPassword');
+    // Base method should NOT be emitted
+    expect(content).not.toContain('public function authenticate(');
+  });
+
+  it('does not produce |null|null in PHPDoc for nullable optional body fields', () => {
+    const nullableModels: Model[] = [
+      ...models,
+      {
+        name: 'UpdateOrgRequest',
+        fields: [
+          {
+            name: 'domain',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const nullableServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateOrgRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: nullableServices, models: nullableModels };
+    const result = generateResources(nullableServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('string|null $domain');
+    expect(result[0].content).not.toContain('|null|null');
+  });
+
+  it('hides body params from PHPDoc when in hiddenParams', () => {
+    const tokenModels: Model[] = [
+      ...models,
+      {
+        name: 'TokenRequest',
+        fields: [
+          { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'grant_type', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const tokenServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getProfileAndToken',
+            httpMethod: 'post',
+            path: '/sso/token',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'TokenRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: tokenServices, models: tokenModels };
+    const tokenCtx: EmitterContext = {
+      ...ctx,
+      spec,
+      resolvedOperations: [
+        {
+          operation: tokenServices[0].operations[0],
+          service: tokenServices[0],
+          methodName: 'get_profile_and_token',
+          mountOn: 'SSO',
+          defaults: { grant_type: 'authorization_code' },
+          inferFromClient: ['client_id'],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(tokenServices, tokenCtx);
+    const content = result[0].content;
+
+    // Hidden params should not appear in PHPDoc
+    expect(content).not.toContain('@param string $clientId');
+    expect(content).not.toContain('@param string $grantType');
+    // Visible params should appear
+    expect(content).toContain('@param string $code');
+  });
 });

@@ -1,5 +1,6 @@
 import type { EmitterContext, Field, ResolvedWrapper } from '@workos/oagen';
 import { toSnakeCase } from '@workos/oagen';
+import { enrichModelsFromSpec } from './model-utils.js';
 
 /**
  * A resolved wrapper parameter with its variant model field and optional status.
@@ -26,7 +27,15 @@ export interface ResolvedWrapperParam {
  * to handle cases where wire names and model field names differ in casing.
  */
 export function resolveWrapperParams(wrapper: ResolvedWrapper, ctx: EmitterContext): ResolvedWrapperParam[] {
-  const variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
+  let variantModel = ctx.spec.models.find((m) => m.name === wrapper.targetVariant);
+
+  // If the variant model has no fields, try enriching from the raw spec.
+  // Some oneOf variants have 0 IR fields until enrichModelsFromSpec backfills them.
+  if (!variantModel || variantModel.fields.length === 0) {
+    const enriched = enrichModelsFromSpec(ctx.spec.models);
+    variantModel = enriched.find((m) => m.name === wrapper.targetVariant) ?? variantModel;
+  }
+
   const variantFields = variantModel?.fields ?? [];
   const optionalSet = new Set(wrapper.optionalParams);
 

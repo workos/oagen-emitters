@@ -71,13 +71,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       const method = resolveMethodName(op, mergedService, ctx);
       if (emittedMethods.has(method)) continue;
       emittedMethods.add(method);
-      lines.push('');
       const resolved = lookupResolved(op, resolvedLookup);
-      generateMethod(lines, op, mergedService, ctx, modelMap, resolved ?? undefined);
 
-      // Generate union split wrapper methods if this operation has them
+      // When wrappers exist, skip the base method and only emit wrappers
       if (resolved?.wrappers && resolved.wrappers.length > 0) {
         lines.push(...generateWrapperMethods(resolved, ctx));
+      } else {
+        lines.push('');
+        generateMethod(lines, op, mergedService, ctx, modelMap, resolved ?? undefined);
       }
     }
 
@@ -117,14 +118,17 @@ function generateMethod(
   // PHPDoc block
   const docParts: string[] = [];
   if (op.description) docParts.push(op.description);
+  const seenDocParams = new Set<string>();
 
   // @param for path params
   for (const p of op.pathParams) {
     const docType = mapTypeRefForPHPDoc(p.type);
+    const phpName = fieldName(p.name);
+    seenDocParams.add(phpName);
     const prefix = p.deprecated ? '(deprecated) ' : '';
     let desc = p.description ? ` ${prefix}${p.description}` : p.deprecated ? ' (deprecated)' : '';
     if (p.default != null) desc += ` Defaults to ${JSON.stringify(p.default)}.`;
-    docParts.push(`@param ${docType} $${fieldName(p.name)}${desc}`);
+    docParts.push(`@param ${docType} $${phpName}${desc}`);
   }
 
   // @param for body fields
@@ -133,9 +137,12 @@ function generateMethod(
     if (bodyModel) {
       const bodyParamMap = buildBodyParamMap(op, bodyModel);
       for (const field of bodyModel.fields) {
+        if (hiddenParams.has(field.name)) continue;
         const docType = mapTypeRefForPHPDoc(field.type);
         const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-        const nullSuffix = !field.required ? '|null' : '';
+        if (seenDocParams.has(phpName)) continue;
+        seenDocParams.add(phpName);
+        const nullSuffix = !field.required && !docType.endsWith('|null') ? '|null' : '';
         const prefix = field.deprecated ? '(deprecated) ' : '';
         const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
         docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
@@ -147,11 +154,14 @@ function generateMethod(
   for (const q of op.queryParams) {
     if (hiddenParams.has(q.name)) continue;
     const docType = mapTypeRefForPHPDoc(q.type);
-    const nullSuffix = !q.required ? '|null' : '';
+    const phpName = fieldName(q.name);
+    if (seenDocParams.has(phpName)) continue;
+    seenDocParams.add(phpName);
+    const nullSuffix = !q.required && !docType.endsWith('|null') ? '|null' : '';
     const prefix = q.deprecated ? '(deprecated) ' : '';
     let desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
     if (q.default != null) desc += ` Defaults to ${JSON.stringify(q.default)}.`;
-    docParts.push(`@param ${docType}${nullSuffix} $${fieldName(q.name)}${desc}`);
+    docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
   }
 
   // @return — use generic annotation for paginated responses

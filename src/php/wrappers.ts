@@ -32,7 +32,7 @@ function emitWrapperMethod(
   const docParts: string[] = [];
   for (const { paramName, field, isOptional } of wrapperParams) {
     const docType = field ? mapTypeRefForPHPDoc(field.type) : 'mixed';
-    const nullSuffix = isOptional ? '|null' : '';
+    const nullSuffix = isOptional && !docType.endsWith('|null') ? '|null' : '';
     docParts.push(`@param ${docType}${nullSuffix} $${fieldName(paramName)}`);
   }
   const op2 = resolvedOp.operation;
