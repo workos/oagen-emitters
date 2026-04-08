@@ -234,24 +234,31 @@ function generateMethod(
     if (plan.hasBody) {
       const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
       const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
-      const hasOptionalFields = bodyModel?.fields.some((f) => !f.required) ?? false;
+      const visibleFields = bodyModel?.fields.filter((f) => !hiddenParams.has(f.name)) ?? [];
+      const hasOptionalFields = visibleFields.some((f) => !f.required);
       if (hasOptionalFields) {
         lines.push('        $body = array_filter([');
       } else {
         lines.push('        $body = [');
       }
-      if (bodyModel) {
-        for (const field of bodyModel.fields) {
-          const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-          const nullsafe = field.required ? '' : '?';
-          const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
-          lines.push(`            '${field.name}' => ${valueExpr},`);
-        }
+      for (const field of visibleFields) {
+        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+        const nullsafe = field.required ? '' : '?';
+        const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+        lines.push(`            '${field.name}' => ${valueExpr},`);
+      }
+      // Inject constant defaults
+      for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+        lines.push(`            '${key}' => ${phpLiteral(value)},`);
       }
       if (hasOptionalFields) {
         lines.push('        ], fn ($v) => $v !== null);');
       } else {
         lines.push('        ];');
+      }
+      // Inject fields from client config
+      for (const clientField of getOpInferFromClient(resolvedOp)) {
+        lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
       }
     }
     // Build query params if present
@@ -278,24 +285,31 @@ function generateMethod(
   } else if (plan.hasBody) {
     const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
     const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
-    const hasOptionalFields = bodyModel?.fields.some((f) => !f.required) ?? false;
+    const visibleFields = bodyModel?.fields.filter((f) => !hiddenParams.has(f.name)) ?? [];
+    const hasOptionalFields = visibleFields.some((f) => !f.required);
     if (hasOptionalFields) {
       lines.push('        $body = array_filter([');
     } else {
       lines.push('        $body = [');
     }
-    if (bodyModel) {
-      for (const field of bodyModel.fields) {
-        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-        const nullsafe = field.required ? '' : '?';
-        const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
-        lines.push(`            '${field.name}' => ${valueExpr},`);
-      }
+    for (const field of visibleFields) {
+      const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+      const nullsafe = field.required ? '' : '?';
+      const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+      lines.push(`            '${field.name}' => ${valueExpr},`);
+    }
+    // Inject constant defaults
+    for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+      lines.push(`            '${key}' => ${phpLiteral(value)},`);
     }
     if (hasOptionalFields) {
       lines.push('        ], fn ($v) => $v !== null);');
     } else {
       lines.push('        ];');
+    }
+    // Inject fields from client config
+    for (const clientField of getOpInferFromClient(resolvedOp)) {
+      lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
     }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);

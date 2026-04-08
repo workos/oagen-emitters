@@ -575,6 +575,7 @@ describe('generateResources', () => {
         fields: [
           { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
           { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'client_secret', type: { kind: 'primitive', type: 'string' }, required: true },
           { name: 'grant_type', type: { kind: 'primitive', type: 'string' }, required: true },
         ],
       },
@@ -611,7 +612,7 @@ describe('generateResources', () => {
           methodName: 'get_profile_and_token',
           mountOn: 'SSO',
           defaults: { grant_type: 'authorization_code' },
-          inferFromClient: ['client_id'],
+          inferFromClient: ['client_id', 'client_secret'],
         } as any,
       ],
     };
@@ -621,8 +622,23 @@ describe('generateResources', () => {
 
     // Hidden params should not appear in PHPDoc
     expect(content).not.toContain('@param string $clientId');
+    expect(content).not.toContain('@param string $clientSecret');
     expect(content).not.toContain('@param string $grantType');
     // Visible params should appear
     expect(content).toContain('@param string $code');
+
+    // Body should NOT reference hidden fields as variables
+    expect(content).not.toContain("'client_id' => $clientId");
+    expect(content).not.toContain("'client_secret' => $clientSecret");
+    expect(content).not.toContain("'grant_type' => $grantType");
+    // Body should inject defaults and inferred fields
+    expect(content).toContain("'grant_type' => 'authorization_code'");
+    expect(content).toContain("$body['client_id'] = $this->client->requireClientId()");
+    expect(content).toContain("$body['client_secret'] = $this->client->requireApiKey()");
+    // Visible field should still be in the body array
+    expect(content).toContain("'code' => $code");
+    // Developer should only need to pass code
+    expect(content).toContain('public function getProfileAndToken(');
+    expect(content).toMatch(/function getProfileAndToken\(\s*string \$code/);
   });
 });
