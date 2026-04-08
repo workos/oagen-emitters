@@ -79,90 +79,78 @@ const operationHints: Record<string, OperationHint> = {
   'GET /user_management/users/external_id/{external_id}': { name: 'get_user_by_external_id' },
 
   // ── Authorization — environment-scoped roles ─────────────────────────────
-  'GET /authorization/roles': { name: 'list_environment_roles', languages: ['go', 'python', 'php'] },
-  'POST /authorization/roles': { name: 'create_environment_role', languages: ['go', 'python', 'php'] },
-  'GET /authorization/roles/{slug}': { name: 'get_environment_role', languages: ['go', 'python', 'php'] },
-  'PATCH /authorization/roles/{slug}': { name: 'update_environment_role', languages: ['go', 'python', 'php'] },
+  'GET /authorization/roles': { name: 'list_environment_roles' },
+  'POST /authorization/roles': { name: 'create_environment_role' },
+  'GET /authorization/roles/{slug}': { name: 'get_environment_role' },
+  'PATCH /authorization/roles/{slug}': { name: 'update_environment_role' },
   'PUT /authorization/roles/{slug}/permissions': {
     name: 'set_environment_role_permissions',
-    languages: ['go', 'python', 'php'],
   },
   'POST /authorization/roles/{slug}/permissions': {
     name: 'add_environment_role_permission',
-    languages: ['go', 'python', 'php'],
   },
 
   // ── Authorization — singularized/shortened names ────────────────────────
-  'POST /authorization/permissions': { name: 'create_permission', languages: ['go', 'python', 'php'] },
-  'POST /authorization/resources': { name: 'create_resource', languages: ['go', 'python', 'php'] },
+  'POST /authorization/permissions': { name: 'create_permission' },
+  'POST /authorization/resources': { name: 'create_resource' },
   'POST /authorization/organization_memberships/{organization_membership_id}/check': {
     name: 'check',
-    languages: ['go', 'python', 'php'],
   },
   'POST /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
     name: 'assign_role',
-    languages: ['go', 'python', 'php'],
   },
   'DELETE /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
     name: 'remove_role',
-    languages: ['go', 'python', 'php'],
   },
   'POST /authorization/organizations/{organizationId}/roles': {
     name: 'create_organization_role',
-    languages: ['go', 'python', 'php'],
   },
 
   // ── Authorization — env-scoped resource memberships ────────────────────
   'GET /authorization/resources/{resource_id}/organization_memberships': { name: 'list_memberships_for_resource' },
 
   // ── User Management — singularized/shortened names ─────────────────────
-  'POST /user_management/users': { name: 'create_user', languages: ['go', 'python', 'php'] },
+  'POST /user_management/users': { name: 'create_user' },
   'POST /user_management/organization_memberships': {
     name: 'create_organization_membership',
-    languages: ['go', 'python', 'php'],
   },
-  'POST /user_management/invitations': { name: 'send_invitation', languages: ['go', 'python', 'php'] },
+  'POST /user_management/invitations': { name: 'send_invitation' },
   'GET /user_management/invitations/by_token/{token}': {
     name: 'find_invitation_by_token',
-    languages: ['go', 'python', 'php'],
   },
   'POST /user_management/users/{id}/email_verification/send': {
     name: 'send_verification_email',
-    languages: ['go', 'python', 'php'],
   },
   'POST /user_management/users/{id}/email_verification/confirm': {
     name: 'verify_email',
-    languages: ['go', 'python', 'php'],
   },
-  'POST /user_management/password_reset': { name: 'reset_password', languages: ['go', 'python', 'php'] },
+  'POST /user_management/password_reset': { name: 'reset_password' },
   'POST /user_management/password_reset/confirm': {
     name: 'confirm_password_reset',
-    languages: ['go', 'python', 'php'],
   },
-  'GET /user_management/users/{id}/sessions': { name: 'list_sessions', languages: ['go', 'python', 'php'] },
-  'GET /user_management/users/{id}/identities': { name: 'get_user_identities', languages: ['go', 'python', 'php'] },
-  'POST /user_management/cors_origins': { name: 'create_cors_origin', languages: ['go', 'python', 'php'] },
-  'POST /user_management/redirect_uris': { name: 'create_redirect_uri', languages: ['go', 'python', 'php'] },
+  'GET /user_management/users/{id}/sessions': { name: 'list_sessions' },
+  'GET /user_management/users/{id}/identities': { name: 'get_user_identities' },
+  'POST /user_management/cors_origins': { name: 'create_cors_origin' },
+  'POST /user_management/redirect_uris': { name: 'create_redirect_uri' },
 
   // ── Organizations — singularized names ─────────────────────────────────
-  'POST /organizations': { name: 'create_organization', languages: ['go', 'python', 'php'] },
+  'POST /organizations': { name: 'create_organization' },
 
   // ── Directory Sync — shortened names ───────────────────────────────────
-  'GET /directory_groups': { name: 'list_groups', languages: ['go', 'python', 'php'] },
-  'GET /directory_groups/{id}': { name: 'get_group', languages: ['go', 'python', 'php'] },
-  'GET /directory_users': { name: 'list_users', languages: ['go', 'python', 'php'] },
-  'GET /directory_users/{id}': { name: 'get_user', languages: ['go', 'python', 'php'] },
+  'GET /directory_groups': { name: 'list_groups' },
+  'GET /directory_groups/{id}': { name: 'get_group' },
+  'GET /directory_users': { name: 'list_users' },
+  'GET /directory_users/{id}': { name: 'get_user' },
 
   // ── Audit Logs — singularized names ────────────────────────────────────
-  'POST /audit_logs/events': { name: 'create_event', languages: ['go', 'python', 'php'] },
-  'POST /audit_logs/exports': { name: 'create_export', languages: ['go', 'python', 'php'] },
-  'POST /audit_logs/actions/{actionName}/schemas': { name: 'create_schema', languages: ['go', 'python', 'php'] },
+  'POST /audit_logs/events': { name: 'create_event' },
+  'POST /audit_logs/exports': { name: 'create_export' },
+  'POST /audit_logs/actions/{actionName}/schemas': { name: 'create_schema' },
 
   // ── Feature Flags — match SDK conventions ──────────────────────────────
-  'POST /feature-flags/{slug}/targets/{resourceId}': { name: 'add_flag_target', languages: ['go', 'python', 'php'] },
+  'POST /feature-flags/{slug}/targets/{resourceId}': { name: 'add_flag_target' },
   'DELETE /feature-flags/{slug}/targets/{resourceId}': {
     name: 'remove_flag_target',
-    languages: ['go', 'python', 'php'],
   },
 
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
