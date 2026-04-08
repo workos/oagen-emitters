@@ -6,7 +6,11 @@ import type {
   GeneratedFile,
   TypeRef,
   ResolvedOperation,
+  Parameter,
 } from '@workos/oagen';
+
+/** Extend Parameter with `explode` until @workos/oagen publishes the field. */
+type ParameterExt = Parameter & { explode?: boolean };
 import {
   planOperation,
   toPascalCase,
@@ -480,7 +484,9 @@ function emitMethodBody(
       lines.push('        params = {k: v for k, v in {');
       for (const entry of redirectParamEntries) {
         const param = op.queryParams.find((p) => p.name === entry.key);
-        const value = param ? serializeParameterValue(param.type, entry.varName, false, param.explode) : entry.varName;
+        const value = param
+          ? serializeParameterValue(param.type, entry.varName, false, (param as ParameterExt).explode)
+          : entry.varName;
         lines.push(`            "${entry.key}": ${value},`);
       }
       lines.push('        }.items() if v is not None}');
@@ -522,13 +528,13 @@ function emitMethodBody(
     lines.push('            "before": before,');
     lines.push('            "after": after,');
     lines.push(
-      `            "order": ${serializeParameterValue(orderParam?.type, 'order', false, orderParam?.explode)},`,
+      `            "order": ${serializeParameterValue(orderParam?.type, 'order', false, (orderParam as ParameterExt | undefined)?.explode)},`,
     );
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       if (hiddenParams.has(param.name)) continue;
       const pn = fieldName(param.name);
-      const value = serializeParameterValue(param.type, pn, param.required, param.explode);
+      const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
       lines.push(`            "${param.name}": ${value},`);
     }
     lines.push('        }.items() if v is not None}');
@@ -716,7 +722,7 @@ function emitMethodBody(
         lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
         for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
-          const value = serializeParameterValue(param.type, pn, param.required, param.explode);
+          const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }.items() if v is not None}');
@@ -724,7 +730,7 @@ function emitMethodBody(
         lines.push('        params: Dict[str, Any] = {');
         for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
-          const value = serializeParameterValue(param.type, pn, param.required, param.explode);
+          const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }');
@@ -1139,7 +1145,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, param.explode)},`,
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }.items() if v is not None}');
@@ -1147,7 +1153,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, param.explode)},`,
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }');

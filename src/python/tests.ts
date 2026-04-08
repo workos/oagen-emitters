@@ -940,14 +940,14 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
-    if (param.type.kind === 'array' && param.explode !== false) continue;
+    if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
       const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
-    if (param.explode === false && param.type.kind === 'array') {
+    if ((param as any).explode === false && param.type.kind === 'array') {
       args.push(`${paramName}=["val1", "val2"]`);
     } else {
       args.push(`${paramName}=${generateQueryEncodingValue(param.type, param.name)}`);
@@ -996,7 +996,7 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
-    if (param.type.kind === 'array' && param.explode !== false) continue;
+    if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
     if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -1005,7 +1005,7 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
       );
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
-    if (param.explode === false && param.type.kind === 'array') {
+    if ((param as any).explode === false && param.type.kind === 'array') {
       assertions.push(`assert request.url.params["${param.name}"] == "val1,val2"`);
     } else {
       assertions.push(
