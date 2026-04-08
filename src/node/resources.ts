@@ -617,15 +617,13 @@ function renderMethod(
     validParamNames = actualParams;
   }
 
-  // When the method already exists in the baseline (overlay match), skip JSDoc
-  // generation entirely.  The merger only replaces existing docstrings when the
-  // generated member HAS a docstring — by omitting it, the merger preserves
-  // the hand-written JSDoc (including @deprecated notices, SDK-specific docs
-  // like PKCE flow descriptions, and custom @throws annotations).
-  // New methods (no overlay match) still get full spec-derived JSDoc.
-  const skipJSDoc = !!overlayMethod;
-
-  if (!skipJSDoc) {
+  // Always generate JSDoc for all methods (both existing and new).
+  // The merger matches docstrings by member name — if we skip JSDoc for
+  // existing methods, previously misplaced docstrings can never be corrected.
+  // Hand-written docs (e.g., @deprecated, PKCE flow descriptions) are
+  // preserved by the merger's @deprecated-preservation and @oagen-ignore
+  // mechanisms instead.
+  {
     const docParts: string[] = [];
     if (op.description) docParts.push(op.description);
     for (const param of op.pathParams) {
