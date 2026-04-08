@@ -539,6 +539,7 @@ export function generateSerializers(
       files.push({
         path: serializerPath,
         content: `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`,
+        overwriteExisting: true,
       });
       continue;
     }
