@@ -313,7 +313,7 @@ function generateServiceTest(
       // For POST/PUT/PATCH with required body fields, verify specific field values
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
         const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-        const reqFields = bodyModel?.fields.filter((f) => f.required) ?? [];
+        const reqFields = bodyModel?.fields.filter((f) => f.required && !hiddenParams?.has(f.name)) ?? [];
         if (reqFields.length > 0) {
           lines.push('        body = json.loads(request.content)');
           for (const f of reqFields) {
