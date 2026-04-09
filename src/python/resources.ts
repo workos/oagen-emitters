@@ -674,9 +674,9 @@ function emitMethodBody(
       }
     }
     if (isArrayResponse) {
-      // Array response with body: request without model, then deserialize each item
+      // Array response with body: request_list returns List[Dict], then deserialize each item
       const itemModel = className(plan.responseModelName!);
-      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`        raw = ${awaitPrefix}self._client.request_list(`);
       lines.push(`            method="${httpMethod}",`);
       lines.push(`            path=${pathStr},`);
       lines.push(`            body=${bodyVarName},`);
@@ -688,9 +688,7 @@ function emitMethodBody(
       }
       lines.push('            request_options=request_options,');
       lines.push('        )');
-      lines.push(
-        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-      );
+      lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
     } else {
       const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${bodyReturnPrefix}${awaitPrefix}self._client.request(`);
@@ -765,9 +763,9 @@ function emitMethodBody(
     }
     const emittedParams = hasVisibleQueryParams || hasInjections;
     if (isArrayResponse) {
-      // Array response: request without model, then deserialize each item
+      // Array response: request_list returns List[Dict], then deserialize each item
       const itemModel = className(plan.responseModelName!);
-      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`        raw = ${awaitPrefix}self._client.request_list(`);
       lines.push(`            method="${httpMethod}",`);
       lines.push(`            path=${pathStr},`);
       if (emittedParams) {
@@ -775,9 +773,7 @@ function emitMethodBody(
       }
       lines.push('            request_options=request_options,');
       lines.push('        )');
-      lines.push(
-        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-      );
+      lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
     } else {
       const returnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${returnPrefix}${awaitPrefix}self._client.request(`);
