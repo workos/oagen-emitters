@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/workos/oagen-emitters/compare/v0.2.1...v0.3.0) (2026-04-09)
+
+
+### Features
+
+* Improve PHP and Python emitter generation ([#30](https://github.com/workos/oagen-emitters/issues/30)) ([9f4aa98](https://github.com/workos/oagen-emitters/commit/9f4aa981a35e125a6e9316bb91b666eaf0e2d2bd))
+* oagen-emitter updates to handle Golang ([#33](https://github.com/workos/oagen-emitters/issues/33)) ([bf8b872](https://github.com/workos/oagen-emitters/commit/bf8b872a93f20c77f64e6cec9657adfd24d14871))
+
 ## [0.2.1](https://github.com/workos/oagen-emitters/compare/v0.2.0...v0.2.1) (2026-03-26)
 
 
