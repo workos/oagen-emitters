@@ -164,7 +164,7 @@ function generateMethod(
     docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
   }
 
-  // @return — use generic annotation for paginated responses
+  // @return -- use generic annotation for paginated responses
   if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
     const itemType = op.pagination.itemType;
     const itemModel = ctx.spec.models.find((m) => m.name === itemType.name);

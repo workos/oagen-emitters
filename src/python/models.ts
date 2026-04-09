@@ -16,7 +16,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
-  const modelMap = new Map(models.map((m) => [m.name, m]));
   const files: GeneratedFile[] = [];
   const emittedModelSymbolsByDir = new Map<string, string[]>();
   const modelUsage = collectModelUsage(ctx.spec);
@@ -229,7 +228,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // even when the field itself is required (the key must be present, but value can be null).
       const deserRequired = isRequired && field.type.kind !== 'nullable';
       const walrusVar = `_v_${pyFieldName}`;
-      const deserExpr = deserializeField(field.type, accessor, deserRequired, modelMap, walrusVar);
+      const deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
       lines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
@@ -514,14 +513,7 @@ function isDateTimeType(ref: any): boolean {
   return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
 }
 
-// oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
-function deserializeField(
-  ref: any,
-  accessor: string,
-  isRequired: boolean,
-  modelMap: Map<string, Model>,
-  walrusVar: string = '_v',
-): string {
+function deserializeField(ref: any, accessor: string, isRequired: boolean, walrusVar: string = '_v'): string {
   if (isDateTimeType(ref)) {
     if (isRequired) {
       return `_parse_datetime(${accessor})`;
@@ -562,12 +554,12 @@ function deserializeField(
       return `${enumClass}(${walrusVar}) if (${walrusVar} := ${accessor}) is not None else None`;
     }
     case 'nullable':
-      return deserializeField(ref.inner, accessor, false, modelMap, walrusVar);
+      return deserializeField(ref.inner, accessor, false, walrusVar);
     case 'union': {
       const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
       const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
       if (uniqueModels.length === 1) {
-        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, modelMap, walrusVar);
+        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, walrusVar);
       }
       // Mixed unions — pass through (would need runtime discriminant logic)
       return accessor;

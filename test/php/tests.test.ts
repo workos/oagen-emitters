@@ -81,7 +81,7 @@ describe('generateTests', () => {
     expect(resourceTest!.content).toContain('class OrganizationsTest extends TestCase');
     expect(resourceTest!.content).toContain('use TestHelper;');
     expect(resourceTest!.content).toContain('testGet');
-    // Round-trip assertion: fromArray → toArray must not throw
+    // Round-trip assertion: fromArray -> toArray must not throw
     expect(resourceTest!.content).toContain('$result->toArray()');
   });
 

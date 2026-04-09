@@ -160,12 +160,12 @@ function generateMountGroupTest(
         lines.push('        $this->assertIsArray($result);');
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
         emitFieldHydrationAssertions(lines, plan.responseModelName, '$result[0]', '$fixture', ctx);
-        // Round-trip: fromArray → toArray must not throw
+        // Round-trip: fromArray -> toArray must not throw
         lines.push('        $this->assertIsArray($result[0]->toArray());');
       } else {
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
         emitFieldHydrationAssertions(lines, plan.responseModelName, '$result', '$fixture', ctx);
-        // Round-trip: fromArray → toArray must not throw
+        // Round-trip: fromArray -> toArray must not throw
         lines.push('        $this->assertIsArray($result->toArray());');
       }
       // Request assertions
