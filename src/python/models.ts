@@ -228,7 +228,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // For deserialization expressions, nullable types must always handle None
       // even when the field itself is required (the key must be present, but value can be null).
       const deserRequired = isRequired && field.type.kind !== 'nullable';
-      const deserExpr = deserializeField(field.type, accessor, deserRequired, modelMap);
+      const walrusVar = `_v_${pyFieldName}`;
+      const deserExpr = deserializeField(field.type, accessor, deserRequired, modelMap, walrusVar);
       lines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
@@ -514,36 +515,42 @@ function isDateTimeType(ref: any): boolean {
 }
 
 // oxlint-disable-next-line only-used-in-recursion -- modelMap is forwarded through recursive calls
-function deserializeField(ref: any, accessor: string, isRequired: boolean, modelMap: Map<string, Model>): string {
+function deserializeField(
+  ref: any,
+  accessor: string,
+  isRequired: boolean,
+  modelMap: Map<string, Model>,
+  walrusVar: string = '_v',
+): string {
   if (isDateTimeType(ref)) {
     if (isRequired) {
       return `_parse_datetime(${accessor})`;
     }
-    return `_parse_datetime(_v) if (_v := ${accessor}) is not None else None`;
+    return `_parse_datetime(${walrusVar}) if (${walrusVar} := ${accessor}) is not None else None`;
   }
   switch (ref.kind) {
     case 'model': {
       if (isRequired) {
         return `${className(ref.name)}.from_dict(cast(Dict[str, Any], ${accessor}))`;
       }
-      return `${className(ref.name)}.from_dict(cast(Dict[str, Any], _v)) if (_v := ${accessor}) is not None else None`;
+      return `${className(ref.name)}.from_dict(cast(Dict[str, Any], ${walrusVar})) if (${walrusVar} := ${accessor}) is not None else None`;
     }
     case 'array': {
       if (ref.items.kind === 'model') {
-        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
+        const listExpr = `[${className(ref.items.name)}.from_dict(cast(Dict[str, Any], item)) for item in cast(list[Any], ${isRequired ? accessor : walrusVar})]`;
         if (isRequired) {
           return listExpr;
         }
         // For optional arrays, preserve None instead of converting to []
-        return `${listExpr} if (_v := ${accessor}) is not None else None`;
+        return `${listExpr} if (${walrusVar} := ${accessor}) is not None else None`;
       }
       if (ref.items.kind === 'enum') {
         const enumClass = className(ref.items.name);
-        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? accessor : '_v'})]`;
+        const listExpr = `[${enumClass}(item) for item in cast(list[Any], ${isRequired ? accessor : walrusVar})]`;
         if (isRequired) {
           return listExpr;
         }
-        return `${listExpr} if (_v := ${accessor}) is not None else None`;
+        return `${listExpr} if (${walrusVar} := ${accessor}) is not None else None`;
       }
       return accessor;
     }
@@ -552,15 +559,15 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, model
       if (isRequired) {
         return `${enumClass}(${accessor})`;
       }
-      return `${enumClass}(_v) if (_v := ${accessor}) is not None else None`;
+      return `${enumClass}(${walrusVar}) if (${walrusVar} := ${accessor}) is not None else None`;
     }
     case 'nullable':
-      return deserializeField(ref.inner, accessor, false, modelMap);
+      return deserializeField(ref.inner, accessor, false, modelMap, walrusVar);
     case 'union': {
       const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
       const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
       if (uniqueModels.length === 1) {
-        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, modelMap);
+        return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, modelMap, walrusVar);
       }
       // Mixed unions — pass through (would need runtime discriminant logic)
       return accessor;
