@@ -1,4 +1,5 @@
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import { collectReferencedNames } from '@workos/oagen';
 import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
   docComment,
@@ -126,47 +127,36 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   // exports a name (e.g., AuditLogSchema from create-audit-log-schema-options),
   // the generated model with the same name must be skipped to prevent the
   // merger from adding a duplicate `export *` that causes TS2308.
+  //
+  // Also track baseline file stems per directory so we can detect when the
+  // barrel needs updating with new export lines (see hasNewExports below).
+  const dirSymbolsFromBaseline = new Map<string, Set<string>>();
+  const seedFromBaseline = (sourceFile: string, name: string) => {
+    const match = sourceFile.match(/^src\/([^/]+)\/interfaces\/(.+)\.ts$/);
+    if (!match) return;
+    const dirName = match[1];
+    const fileStem = match[2];
+    if (!dirSymbols.has(dirName)) dirSymbols.set(dirName, new Set());
+    dirSymbols.get(dirName)!.add(name);
+    if (!dirSymbolsFromBaseline.has(dirName)) dirSymbolsFromBaseline.set(dirName, new Set());
+    dirSymbolsFromBaseline.get(dirName)!.add(fileStem);
+  };
   if (ctx.apiSurface?.interfaces) {
     for (const [name, iface] of Object.entries(ctx.apiSurface.interfaces)) {
       const sourceFile = (iface as any).sourceFile as string | undefined;
-      if (!sourceFile) continue;
-      // Match paths like "src/audit-logs/interfaces/foo.interface.ts" to directory "audit-logs"
-      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
-      if (match) {
-        const dirName = match[1];
-        if (!dirSymbols.has(dirName)) {
-          dirSymbols.set(dirName, new Set());
-        }
-        dirSymbols.get(dirName)!.add(name);
-      }
+      if (sourceFile) seedFromBaseline(sourceFile, name);
     }
   }
   if (ctx.apiSurface?.enums) {
     for (const [name, enumDef] of Object.entries(ctx.apiSurface.enums)) {
       const sourceFile = (enumDef as any).sourceFile as string | undefined;
-      if (!sourceFile) continue;
-      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
-      if (match) {
-        const dirName = match[1];
-        if (!dirSymbols.has(dirName)) {
-          dirSymbols.set(dirName, new Set());
-        }
-        dirSymbols.get(dirName)!.add(name);
-      }
+      if (sourceFile) seedFromBaseline(sourceFile, name);
     }
   }
   if (ctx.apiSurface?.typeAliases) {
     for (const [name, alias] of Object.entries(ctx.apiSurface.typeAliases)) {
       const sourceFile = (alias as any).sourceFile as string | undefined;
-      if (!sourceFile) continue;
-      const match = sourceFile.match(/^src\/([^/]+)\/interfaces\//);
-      if (match) {
-        const dirName = match[1];
-        if (!dirSymbols.has(dirName)) {
-          dirSymbols.set(dirName, new Set());
-        }
-        dirSymbols.get(dirName)!.add(name);
-      }
+      if (sourceFile) seedFromBaseline(sourceFile, name);
     }
   }
 
@@ -185,8 +175,12 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   // Models -> service directories
   // Skip list wrapper and list metadata models — they use shared List<T>/ListMetadata
   // from common utils, so no per-resource interface file is generated.
+  // Also skip unreachable models — oagen only passes service-referenced models
+  // to generateModels, so unreachable models have no interface file to export.
+  const barrelReachable = collectReferencedNames(spec.services, spec.models);
   for (const model of spec.models) {
     if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
+    if (!barrelReachable.models.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     if (!dirExports.has(dirName)) {
@@ -238,14 +232,57 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   }
 
   for (const [dirName, exports] of dirExports) {
-    // Deduplicate (an enum and model could theoretically share a file name)
-    const uniqueExports = [...new Set(exports)];
+    const exportSet = new Set(exports);
+
+    // When integrating into an existing SDK, include baseline exports from
+    // the api-surface so the barrel is comprehensive.  This ensures stale
+    // entries (e.g., renamed files from previous generations) are removed
+    // when overwriteExisting replaces the barrel.
+    if (ctx.apiSurface) {
+      const addBaselineExports = (items: Record<string, any> | undefined) => {
+        if (!items) return;
+        for (const item of Object.values(items)) {
+          const sourceFile = (item as any).sourceFile as string | undefined;
+          if (!sourceFile) continue;
+          const match = sourceFile.match(/^src\/([^/]+)\/interfaces\/(.+)\.ts$/);
+          if (match && match[1] === dirName) {
+            exportSet.add(`export * from './${match[2].replace(/\.ts$/, '')}';`);
+          }
+        }
+      };
+      addBaselineExports(ctx.apiSurface.interfaces);
+      addBaselineExports(ctx.apiSurface.typeAliases);
+      addBaselineExports(ctx.apiSurface.enums);
+    }
+
+    // Deduplicate and sort
+    const uniqueExports = [...exportSet];
     uniqueExports.sort();
-    files.push({
-      path: `src/${dirName}/interfaces/index.ts`,
-      content: uniqueExports.join('\n'),
-      skipIfExists: true,
-    });
+
+    if (ctx.apiSurface) {
+      // Integration mode: overwrite the barrel so stale entries are removed.
+      files.push({
+        path: `src/${dirName}/interfaces/index.ts`,
+        content: uniqueExports.join('\n'),
+        overwriteExisting: true,
+      });
+    } else {
+      // Standalone generation: only update if there are new exports.
+      const baselineSymbols = dirSymbolsFromBaseline.get(dirName);
+      const hasNewExports = baselineSymbols
+        ? uniqueExports.some((exp) => {
+            const match = exp.match(/from '\.\/(.*?)'/);
+            if (!match) return false;
+            return !baselineSymbols.has(match[1]);
+          })
+        : false;
+
+      files.push({
+        path: `src/${dirName}/interfaces/index.ts`,
+        content: uniqueExports.join('\n'),
+        skipIfExists: !hasNewExports,
+      });
+    }
   }
 
   return files;
@@ -455,7 +492,11 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   }
 
   // Unassigned models (common) — use barrel if any exist
-  const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name));
+  // Filter to reachable models only: oagen's generateAllFiles passes only
+  // service-referenced models to generateModels, so unreachable models
+  // never get interface files.  Exporting them here would create broken imports.
+  const reachable = collectReferencedNames(spec.services, spec.models);
+  const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name) && reachable.models.has(m.name));
   const commonEnums = spec.enums.filter((e) => {
     const enumService = findEnumService(e.name, spec.services);
     return !enumService;

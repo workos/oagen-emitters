@@ -111,8 +111,25 @@ describe('generateResources', () => {
             path: '/organizations',
             pathParams: [],
             queryParams: [
-              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
-              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+                description: 'Upper limit on the number of objects to return, between `1` and `100`.',
+              },
+              {
+                name: 'after',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description:
+                  'An object ID that defines your place in the list. When the ID is not present, you are at the end of the list.',
+              },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Order the results by the creation time.',
+              },
             ],
             headerParams: [],
             response: { kind: 'model', name: 'OrganizationList' },
@@ -144,6 +161,77 @@ describe('generateResources', () => {
     expect(content).toContain(') -> SyncPage[Organization]:');
     expect(content).toContain('request_page(');
     expect(content).toContain('model=Organization');
+    expect(content).toContain('limit: Upper limit on the number of objects to return, between `1` and `100`.');
+    expect(content).toContain(
+      'after: An object ID that defines your place in the list. When the ID is not present, you are at the end of the list.',
+    );
+    expect(content).toContain('order: Order the results by the creation time.');
+  });
+
+  it('indents multiline argument descriptions in docstrings', () => {
+    const models: Model[] = [
+      {
+        name: 'GenerateLinkRequest',
+        fields: [
+          {
+            name: 'intent',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description: [
+              'The intent of the Admin Portal.',
+              '- `sso` - Launch Admin Portal for creating SSO connections',
+              '- `dsync` - Launch Admin Portal for creating Directory Sync connections',
+            ].join('\n'),
+          },
+          {
+            name: 'organization',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'An organization identifier.',
+          },
+        ],
+      },
+      {
+        name: 'PortalLinkResponse',
+        fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AdminPortal',
+        operations: [
+          {
+            name: 'generateLink',
+            httpMethod: 'post',
+            path: '/portal/generate_link',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'GenerateLinkRequest' },
+            response: { kind: 'model', name: 'PortalLinkResponse' },
+            description: 'Generate a Portal Link scoped to an Organization.',
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    expect(content).toContain('intent: The intent of the Admin Portal.');
+    expect(content).toContain('                - `sso` - Launch Admin Portal for creating SSO connections');
+    expect(content).toContain(
+      '                - `dsync` - Launch Admin Portal for creating Directory Sync connections',
+    );
+    expect(content).toContain('organization: An organization identifier.');
   });
 
   it('unwraps list wrapper models in paginated methods', () => {

@@ -1,15 +1,21 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
+import { stripUrnPrefix } from '../shared/naming-utils.js';
+
+/** Strip spec-noise suffixes (e.g., "Dto") from an IR name. */
+export function stripNoiseSuffixes(name: string): string {
+  return name.replace(/Dto$/i, '');
+}
 
 /** PascalCase class/interface name. */
 export function className(name: string): string {
-  return toPascalCase(name);
+  return toPascalCase(stripUrnPrefix(name));
 }
 
 /** kebab-case file name (without extension). */
 export function fileName(name: string): string {
-  return toKebabCase(name);
+  return toKebabCase(stripUrnPrefix(name));
 }
 
 /** camelCase method name. */
@@ -104,9 +110,29 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
   return toPascalCase(service.name);
 }
 
-/** Resolve the interface name for a model, checking overlay first. */
-export function resolveInterfaceName(name: string, ctx: EmitterContext): string {
+/** Resolve the interface name for a model, checking overlay first.
+ *
+ * @param opts.skipTypeAlias - When true, skip apiSurface typeAlias resolution.
+ *   Use this for dedup models to ensure the file exports match the import
+ *   names (preserved files export the raw name, not the resolved alias).
+ */
+export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: { skipTypeAlias?: boolean }): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
-  return toPascalCase(name);
+
+  // If the model name is a type alias that points to a canonical interface,
+  // use the canonical name.  This prevents the merger from generating unused
+  // backward-compat aliases (e.g., `type FlagOwner = FeatureFlagOwner`).
+  if (!opts?.skipTypeAlias && ctx.apiSurface?.typeAliases) {
+    const alias = ctx.apiSurface.typeAliases[name] as { value?: string } | undefined;
+    if (alias?.value && ctx.apiSurface.interfaces?.[alias.value]) {
+      return alias.value;
+    }
+  }
+
+  // Strip spec-noise suffixes (e.g., "Dto") only for models without a
+  // baseline.  When an overlay exists (Scenario A), the overlay check above
+  // handles existing models.  New models (no overlay entry) get clean names.
+  const cleaned = ctx.apiSurface ? name : stripNoiseSuffixes(name);
+  return toPascalCase(stripUrnPrefix(cleaned));
 }

@@ -291,6 +291,94 @@ describe('generateResources', () => {
     expect(result[0].content).toContain("'slug' => $bodySlug,");
   });
 
+  it('adds @deprecated PHPDoc for deprecated operations', () => {
+    const deprecatedServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganizationOld',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deprecatedServices };
+    const result = generateResources(deprecatedServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('@deprecated');
+  });
+
+  it('adds description in PHPDoc for operations with description', () => {
+    const describedServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+            description: 'Fetch a single organization by ID',
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: describedServices };
+    const result = generateResources(describedServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('Fetch a single organization by ID');
+  });
+
+  it('adds (deprecated) prefix in @param for deprecated path params', () => {
+    const deprecatedParamServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                deprecated: true,
+                description: 'The organization ID',
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: deprecatedParamServices };
+    const result = generateResources(deprecatedParamServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('(deprecated) The organization ID');
+  });
+
   it('requires inferred client credentials in wrapper methods', () => {
     const lines = generateWrapperMethods(
       {
@@ -325,5 +413,232 @@ describe('generateResources', () => {
     expect(lines).toContain("$body['client_secret'] = $this->client->requireApiKey();");
     expect(lines).not.toContain('\\WorkOS\\WorkOS::getClientId()');
     expect(lines).not.toContain('\\WorkOS\\WorkOS::getApiKey()');
+  });
+
+  it('hides defaults and inferFromClient params from method signature', () => {
+    const ssoServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [
+              { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'response_type', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'state', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ssoSpec = { ...emptySpec, services: ssoServices };
+    const ssoCtx: EmitterContext = {
+      ...ctx,
+      spec: ssoSpec,
+      resolvedOperations: [
+        {
+          operation: ssoServices[0].operations[0],
+          service: ssoServices[0],
+          methodName: 'get_authorization_url',
+          mountOn: 'SSO',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(ssoServices, ssoCtx);
+    const content = result[0].content;
+
+    // Should NOT include hidden params in method signature
+    expect(content).not.toContain('$clientId');
+    expect(content).not.toContain('$responseType');
+
+    // Should include the remaining params
+    expect(content).toContain('string $redirectUri');
+    expect(content).toContain('?string $state');
+
+    // Should inject default and inferred values into query
+    expect(content).toContain("'response_type' => 'code'");
+    expect(content).toContain("$query['client_id'] = $this->client->requireClientId()");
+  });
+
+  it('skips base method when wrappers exist', () => {
+    const authServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrganizationRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const authSpec = { ...emptySpec, services: authServices };
+    const authCtx: EmitterContext = {
+      ...ctx,
+      spec: authSpec,
+      resolvedOperations: [
+        {
+          operation: authServices[0].operations[0],
+          service: authServices[0],
+          methodName: 'authenticate',
+          mountOn: 'UserManagement',
+          wrappers: [
+            {
+              name: 'authenticate_with_password',
+              targetVariant: 'PasswordSessionAuthenticateRequest',
+              defaults: { grant_type: 'password' },
+              inferFromClient: ['client_id', 'client_secret'],
+              exposedParams: ['email'],
+            },
+          ],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(authServices, authCtx);
+    const content = result[0].content;
+
+    // Wrapper method should be emitted
+    expect(content).toContain('authenticateWithPassword');
+    // Base method should NOT be emitted
+    expect(content).not.toContain('public function authenticate(');
+  });
+
+  it('does not produce |null|null in PHPDoc for nullable optional body fields', () => {
+    const nullableModels: Model[] = [
+      ...models,
+      {
+        name: 'UpdateOrgRequest',
+        fields: [
+          {
+            name: 'domain',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const nullableServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateOrgRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: nullableServices, models: nullableModels };
+    const result = generateResources(nullableServices, { ...ctx, spec });
+
+    expect(result[0].content).toContain('string|null $domain');
+    expect(result[0].content).not.toContain('|null|null');
+  });
+
+  it('hides body params from PHPDoc when in hiddenParams', () => {
+    const tokenModels: Model[] = [
+      ...models,
+      {
+        name: 'TokenRequest',
+        fields: [
+          { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'client_secret', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'grant_type', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const tokenServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getProfileAndToken',
+            httpMethod: 'post',
+            path: '/sso/token',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'TokenRequest' },
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: tokenServices, models: tokenModels };
+    const tokenCtx: EmitterContext = {
+      ...ctx,
+      spec,
+      resolvedOperations: [
+        {
+          operation: tokenServices[0].operations[0],
+          service: tokenServices[0],
+          methodName: 'get_profile_and_token',
+          mountOn: 'SSO',
+          defaults: { grant_type: 'authorization_code' },
+          inferFromClient: ['client_id', 'client_secret'],
+        } as any,
+      ],
+    };
+
+    const result = generateResources(tokenServices, tokenCtx);
+    const content = result[0].content;
+
+    // Hidden params should not appear in PHPDoc
+    expect(content).not.toContain('@param string $clientId');
+    expect(content).not.toContain('@param string $clientSecret');
+    expect(content).not.toContain('@param string $grantType');
+    // Visible params should appear
+    expect(content).toContain('@param string $code');
+
+    // Body should NOT reference hidden fields as variables
+    expect(content).not.toContain("'client_id' => $clientId");
+    expect(content).not.toContain("'client_secret' => $clientSecret");
+    expect(content).not.toContain("'grant_type' => $grantType");
+    // Body should inject defaults and inferred fields
+    expect(content).toContain("'grant_type' => 'authorization_code'");
+    expect(content).toContain("$body['client_id'] = $this->client->requireClientId()");
+    expect(content).toContain("$body['client_secret'] = $this->client->requireApiKey()");
+    // Visible field should still be in the body array
+    expect(content).toContain("'code' => $code");
+    // Developer should only need to pass code
+    expect(content).toContain('public function getProfileAndToken(');
+    expect(content).toMatch(/function getProfileAndToken\(\s*string \$code/);
   });
 });

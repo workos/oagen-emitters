@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
+import { snakeName } from './naming.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -42,7 +42,7 @@ export function generateFixtures(spec: {
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `tests/Fixtures/${toSnakeCase(model.name)}.json`,
+      path: `tests/Fixtures/${snakeName(model.name)}.json`,
       content: JSON.stringify(fixture, null, 2),
     });
   }
@@ -65,7 +65,7 @@ export function generateFixtures(spec: {
             },
           };
           files.push({
-            path: `tests/Fixtures/list_${toSnakeCase(itemModel.name)}.json`,
+            path: `tests/Fixtures/list_${snakeName(itemModel.name)}.json`,
             content: JSON.stringify(listFixture, null, 2),
           });
         }

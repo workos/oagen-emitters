@@ -1,4 +1,16 @@
-import type { Service, Operation, OperationPlan, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
+import type {
+  Service,
+  Operation,
+  OperationPlan,
+  EmitterContext,
+  GeneratedFile,
+  TypeRef,
+  ResolvedOperation,
+  Parameter,
+} from '@workos/oagen';
+
+/** Extend Parameter with `explode` until @workos/oagen publishes the field. */
+type ParameterExt = Parameter & { explode?: boolean };
 import {
   planOperation,
   toPascalCase,
@@ -11,14 +23,28 @@ import { mapTypeRefUnquoted } from './type-map.js';
 import {
   className,
   fieldName,
+  fileName,
   moduleName,
   resolveClassName,
   buildMountDirMap,
   dirToModule,
   relativeImportPrefix,
 } from './naming.js';
-import { buildResolvedLookup, lookupMethodName, lookupResolved, groupByMount } from '../shared/resolved-ops.js';
-import { generateSyncWrapperMethods, generateAsyncWrapperMethods } from './wrappers.js';
+import {
+  buildResolvedLookup,
+  lookupMethodName,
+  lookupResolved,
+  groupByMount,
+  getOpDefaults,
+  getOpInferFromClient,
+  buildHiddenParams as buildHiddenParamsShared,
+} from '../shared/resolved-ops.js';
+import {
+  generateSyncWrapperMethods,
+  generateAsyncWrapperMethods,
+  pythonLiteral,
+  clientFieldExpression,
+} from './wrappers.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -36,6 +62,9 @@ export function resolveResourceClassName(service: Service, ctx: EmitterContext):
   return resolveClassName(service, ctx);
 }
 
+// buildHiddenParams is imported from ../shared/resolved-ops.js as buildHiddenParamsShared
+const buildHiddenParams = buildHiddenParamsShared;
+
 // ─── Shared method-emission helpers ──────────────────────────────────
 
 /** Metadata returned by emitMethodSignature, consumed by docstring & body emitters. */
@@ -45,6 +74,25 @@ interface SignatureMetadata {
   isArrayResponse: boolean;
   isRedirect: boolean;
   hasBearerOverride: boolean;
+}
+
+function emitDocArg(lines: string[], name: string, desc?: string): void {
+  const fallback = `The ${name.replace(/_/g, ' ')}.`;
+  const description = desc ?? fallback;
+  const descLines = description
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (descLines.length === 0) {
+    lines.push(`            ${name}: ${fallback}`);
+    return;
+  }
+
+  lines.push(`            ${name}: ${descLines[0]}`);
+  for (const line of descLines.slice(1)) {
+    lines.push(`                ${line}`);
+  }
 }
 
 /**
@@ -60,10 +108,14 @@ function emitMethodSignature(
   modelImports: Set<string>,
   listWrapperNames: Set<string>,
   ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
 ): SignatureMetadata {
+  const hiddenParams = buildHiddenParams(resolvedOp);
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
-  const defKeyword = isAsync ? 'async def' : 'def';
+  // Redirect endpoints never await, so emit as plain def even in async class
+  const isRedirectOp = isRedirectEndpoint(op);
+  const defKeyword = isAsync && !isRedirectOp ? 'async def' : 'def';
   const usesClientCredentialDefaults = false;
 
   lines.push(`    ${defKeyword} ${method}(`);
@@ -84,8 +136,8 @@ function emitMethodSignature(
   if (plan.hasBody && op.requestBody) {
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
-      const reqFields = bodyModel.fields.filter((f) => f.required);
-      const optFields = bodyModel.fields.filter((f) => !f.required);
+      const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams.has(f.name));
+      const optFields = bodyModel.fields.filter((f) => !f.required && !hiddenParams.has(f.name));
       for (const f of reqFields) {
         const fieldType = mapTypeRefUnquoted(f.type, specEnumNames, true);
         if (usesClientCredentialDefaults && (f.name === 'client_id' || f.name === 'client_secret')) {
@@ -125,6 +177,7 @@ function emitMethodSignature(
   // Query params for non-paginated methods
   if (plan.hasQueryParams && !isPaginated) {
     for (const param of op.queryParams) {
+      if (hiddenParams.has(param.name)) continue;
       const paramName = fieldName(param.name);
       if (pathParamNames.has(paramName)) continue;
       // Skip query params that collide with body field names (using possibly-renamed names)
@@ -158,6 +211,7 @@ function emitMethodSignature(
     // Additional non-pagination query params
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+      if (hiddenParams.has(param.name)) continue;
       const paramName = fieldName(param.name);
       const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
       if (param.required) {
@@ -221,9 +275,11 @@ function emitMethodDocstring(
   meta: SignatureMetadata,
   specEnumNames: Set<string>,
   ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
 ): void {
   const { returnType, pathParamNames, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
+  const hiddenParams = buildHiddenParams(resolvedOp);
 
   // Description — indent continuation lines to align with the opening `"""`
   if (op.description) {
@@ -249,6 +305,7 @@ function emitMethodDocstring(
       const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
       if (bodyModel) {
         for (const f of bodyModel.fields) {
+          if (hiddenParams.has(f.name)) continue;
           allParams.push({
             name: bodyParamName(f, pathParamNames),
             desc: f.deprecated ? (f.description ? `(deprecated) ${f.description}` : '(deprecated)') : f.description,
@@ -271,33 +328,50 @@ function emitMethodDocstring(
   // Add query params for non-paginated methods
   if (plan.hasQueryParams && !isPaginated) {
     for (const param of op.queryParams) {
+      if (hiddenParams.has(param.name)) continue;
       const pn = fieldName(param.name);
       if (pathParamNames.has(pn)) continue;
       // Skip params already documented from body fields
       if (allParams.some((p) => p.name === pn)) continue;
-      allParams.push({
-        name: pn,
-        desc: param.deprecated
-          ? param.description
-            ? `(deprecated) ${param.description}`
-            : '(deprecated)'
-          : param.description,
-      });
+      let desc = param.deprecated
+        ? param.description
+          ? `(deprecated) ${param.description}`
+          : '(deprecated)'
+        : param.description;
+      if (param.default != null) {
+        const defaultStr = `Defaults to \`${param.default}\`.`;
+        desc = desc ? `${desc} ${defaultStr}` : defaultStr;
+      }
+      allParams.push({ name: pn, desc });
     }
   }
 
   // Add extra non-standard pagination query params
   if (isPaginated) {
+    for (const paramName of ['limit', 'before', 'after', 'order']) {
+      const param = op.queryParams.find((p) => p.name === paramName);
+      let desc = param?.description;
+      if (param?.default != null) {
+        const defaultStr = `Defaults to \`${param.default}\`.`;
+        desc = desc ? `${desc} ${defaultStr}` : defaultStr;
+      }
+      allParams.push({
+        name: fieldName(paramName),
+        desc,
+      });
+    }
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
-      allParams.push({
-        name: fieldName(param.name),
-        desc: param.deprecated
-          ? param.description
-            ? `(deprecated) ${param.description}`
-            : '(deprecated)'
-          : param.description,
-      });
+      let desc = param.deprecated
+        ? param.description
+          ? `(deprecated) ${param.description}`
+          : '(deprecated)'
+        : param.description;
+      if (param.default != null) {
+        const defaultStr = `Defaults to \`${param.default}\`.`;
+        desc = desc ? `${desc} ${defaultStr}` : defaultStr;
+      }
+      allParams.push({ name: fieldName(param.name), desc });
     }
   }
 
@@ -316,13 +390,7 @@ function emitMethodDocstring(
     lines.push('');
     lines.push('        Args:');
     for (const p of allParams) {
-      lines.push(`            ${p.name}: ${p.desc ?? 'The ' + p.name.replace(/_/g, ' ') + '.'}`);
-    }
-    if (isPaginated) {
-      lines.push('            limit: Maximum number of records to return (1-100, default: 10).');
-      lines.push('            before: Pagination cursor for previous page.');
-      lines.push('            after: Pagination cursor for next page.');
-      lines.push('            order: Sort order.');
+      emitDocArg(lines, p.name, p.desc);
     }
     lines.push(
       '            request_options: Per-request options. Supports extra_headers, timeout, max_retries, and base_url override.',
@@ -345,7 +413,7 @@ function emitMethodDocstring(
   if (op.deprecated) {
     lines.push('');
     lines.push('        .. deprecated::');
-    lines.push('            This operation is deprecated.');
+    lines.push('            This operation is deprecated. See the migration guide for alternatives.');
   }
   lines.push('        """');
 }
@@ -362,11 +430,15 @@ function emitMethodBody(
   modelImports: Set<string>,
   listWrapperNames: Set<string>,
   ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
 ): void {
   const { pathParamNames, isArrayResponse, isRedirect, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
   const usesClientCredentialDefaults = false;
+  const hiddenParams = buildHiddenParams(resolvedOp);
+  const opDefaults = getOpDefaults(resolvedOp);
+  const opInferFromClient = getOpInferFromClient(resolvedOp);
 
   if (op.deprecated) {
     const method = toSnakeCase(op.name);
@@ -395,23 +467,43 @@ function emitMethodBody(
     const redirectParamEntries: { key: string; varName: string }[] = [];
     if (bodyModel) {
       for (const f of bodyModel.fields) {
+        if (hiddenParams.has(f.name)) continue;
         redirectParamEntries.push({ key: f.name, varName: bodyParamName(f, pathParamNames) });
       }
     }
     for (const param of op.queryParams) {
+      if (hiddenParams.has(param.name)) continue;
       const pn = fieldName(param.name);
       if (!redirectParamEntries.some((e) => e.varName === pn)) {
         redirectParamEntries.push({ key: param.name, varName: pn });
       }
     }
-    if (redirectParamEntries.length > 0) {
+    const hasHiddenInjections =
+      (opDefaults && Object.keys(opDefaults).length > 0) || (opInferFromClient && opInferFromClient.length > 0);
+    if (redirectParamEntries.length > 0 || hasHiddenInjections) {
       lines.push('        params = {k: v for k, v in {');
       for (const entry of redirectParamEntries) {
         const param = op.queryParams.find((p) => p.name === entry.key);
-        const value = param ? serializeParameterValue(param.type, entry.varName, false) : entry.varName;
+        const value = param
+          ? serializeParameterValue(param.type, entry.varName, false, (param as ParameterExt).explode)
+          : entry.varName;
         lines.push(`            "${entry.key}": ${value},`);
       }
       lines.push('        }.items() if v is not None}');
+      // Inject constant defaults
+      if (Object.keys(opDefaults).length > 0) {
+        for (const [key, value] of Object.entries(opDefaults)) {
+          lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+        }
+      }
+      // Inject fields from client config
+      if (opInferFromClient.length > 0) {
+        for (const field of opInferFromClient) {
+          const expr = clientFieldExpression(field);
+          lines.push(`        if ${expr} is not None:`);
+          lines.push(`            params["${field}"] = ${expr}`);
+        }
+      }
       if (usesClientCredentialDefaults) {
         if (op.queryParams.some((param) => param.name === 'client_id')) {
           lines.push('        params["client_id"] = params.get("client_id") or self._client._require_client_id()');
@@ -435,14 +527,31 @@ function emitMethodBody(
     lines.push('            "limit": limit,');
     lines.push('            "before": before,');
     lines.push('            "after": after,');
-    lines.push(`            "order": ${serializeParameterValue(orderParam?.type, 'order', false)},`);
+    lines.push(
+      `            "order": ${serializeParameterValue(orderParam?.type, 'order', false, (orderParam as ParameterExt | undefined)?.explode)},`,
+    );
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+      if (hiddenParams.has(param.name)) continue;
       const pn = fieldName(param.name);
-      const value = serializeParameterValue(param.type, pn, param.required);
+      const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
       lines.push(`            "${param.name}": ${value},`);
     }
     lines.push('        }.items() if v is not None}');
+    // Inject constant defaults
+    if (Object.keys(opDefaults).length > 0) {
+      for (const [key, value] of Object.entries(opDefaults)) {
+        lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+      }
+    }
+    // Inject fields from client config
+    if (opInferFromClient.length > 0) {
+      for (const field of opInferFromClient) {
+        const expr = clientFieldExpression(field);
+        lines.push(`        if ${expr} is not None:`);
+        lines.push(`            params["${field}"] = ${expr}`);
+      }
+    }
     lines.push(`        return ${awaitPrefix}self._client.request_page(`);
     lines.push(`            method="${httpMethod}",`);
     lines.push(`            path=${pathStr},`);
@@ -456,7 +565,7 @@ function emitMethodBody(
     if (plan.hasBody && op.requestBody) {
       const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
       if (bodyModel) {
-        const bodyFields = bodyModel.fields;
+        const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name));
         for (const f of bodyFields) deleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
         const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
         if (bodyFields.length > 0 && hasOptionalBodyFields) {
@@ -476,10 +585,25 @@ function emitMethodBody(
           }
           lines.push('        }');
         }
+        // Inject constant defaults into body
+        if (Object.keys(opDefaults).length > 0) {
+          for (const [key, value] of Object.entries(opDefaults)) {
+            lines.push(`        body["${key}"] = ${pythonLiteral(value)}`);
+          }
+        }
+        // Inject fields from client config into body
+        if (opInferFromClient.length > 0) {
+          for (const field of opInferFromClient) {
+            const expr = clientFieldExpression(field);
+            lines.push(`        if ${expr} is not None:`);
+            lines.push(`            body["${field}"] = ${expr}`);
+          }
+        }
       }
     }
     // Build query params dict if any exist alongside the body/path
-    const deleteHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, deleteBodyFieldNames);
+    const deleteHasParams =
+      plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, deleteBodyFieldNames, hiddenParams);
     lines.push(`        ${awaitPrefix}self._client.request(`);
     lines.push(`            method="${httpMethod}",`);
     lines.push(`            path=${pathStr},`);
@@ -497,7 +621,7 @@ function emitMethodBody(
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     const bodyFieldNamesSet = new Set<string>();
     if (bodyModel) {
-      const bodyFields = bodyModel.fields;
+      const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name));
       for (const f of bodyFields) bodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
       const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
       if (bodyFields.length > 0 && hasOptionalBodyFields) {
@@ -519,12 +643,27 @@ function emitMethodBody(
       } else {
         lines.push('        body: Dict[str, Any] = {}');
       }
+      // Inject constant defaults into body
+      if (Object.keys(opDefaults).length > 0) {
+        for (const [key, value] of Object.entries(opDefaults)) {
+          lines.push(`        body["${key}"] = ${pythonLiteral(value)}`);
+        }
+      }
+      // Inject fields from client config into body
+      if (opInferFromClient.length > 0) {
+        for (const field of opInferFromClient) {
+          const expr = clientFieldExpression(field);
+          lines.push(`        if ${expr} is not None:`);
+          lines.push(`            body["${field}"] = ${expr}`);
+        }
+      }
     } else {
       // Union or non-model body — convert model instances to dicts
       lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
     }
     // Build query params dict if any exist alongside the body
-    const bodyHasParams = plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet);
+    const bodyHasParams =
+      plan.hasQueryParams && emitQueryParamsDict(lines, op, pathParamNames, bodyFieldNamesSet, hiddenParams);
     const bodyVarName = bodyModel ? 'body' : '_body';
     if (bodyModel && usesClientCredentialDefaults) {
       if (bodyModel.fields.some((f) => f.name === 'client_id')) {
@@ -535,9 +674,9 @@ function emitMethodBody(
       }
     }
     if (isArrayResponse) {
-      // Array response with body: request without model, then deserialize each item
+      // Array response with body: request_list returns List[Dict], then deserialize each item
       const itemModel = className(plan.responseModelName!);
-      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`        raw = ${awaitPrefix}self._client.request_list(`);
       lines.push(`            method="${httpMethod}",`);
       lines.push(`            path=${pathStr},`);
       lines.push(`            body=${bodyVarName},`);
@@ -549,9 +688,7 @@ function emitMethodBody(
       }
       lines.push('            request_options=request_options,');
       lines.push('        )');
-      lines.push(
-        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-      );
+      lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
     } else {
       const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${bodyReturnPrefix}${awaitPrefix}self._client.request(`);
@@ -573,24 +710,45 @@ function emitMethodBody(
   } else {
     // GET or similar with query params
     const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
-    if (plan.hasQueryParams) {
-      const hasOptionalQueryParams = op.queryParams.some((p) => !p.required);
+    const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name));
+    const hasVisibleQueryParams = plan.hasQueryParams && visibleQueryParams.length > 0;
+    const hasInjections =
+      (opDefaults && Object.keys(opDefaults).length > 0) || (opInferFromClient && opInferFromClient.length > 0);
+    if (hasVisibleQueryParams || hasInjections) {
+      const hasOptionalQueryParams = visibleQueryParams.some((p) => !p.required);
       if (hasOptionalQueryParams) {
         lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
-        for (const param of op.queryParams) {
+        for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
-          const value = serializeParameterValue(param.type, pn, param.required);
+          const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }.items() if v is not None}');
-      } else {
+      } else if (visibleQueryParams.length > 0) {
         lines.push('        params: Dict[str, Any] = {');
-        for (const param of op.queryParams) {
+        for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
-          const value = serializeParameterValue(param.type, pn, param.required);
+          const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
           lines.push(`            "${param.name}": ${value},`);
         }
         lines.push('        }');
+      } else {
+        // No visible query params but we have injections — start with empty dict
+        lines.push('        params: Dict[str, Any] = {}');
+      }
+      // Inject constant defaults
+      if (Object.keys(opDefaults).length > 0) {
+        for (const [key, value] of Object.entries(opDefaults)) {
+          lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+        }
+      }
+      // Inject fields from client config
+      if (opInferFromClient.length > 0) {
+        for (const field of opInferFromClient) {
+          const expr = clientFieldExpression(field);
+          lines.push(`        if ${expr} is not None:`);
+          lines.push(`            params["${field}"] = ${expr}`);
+        }
       }
       if (usesClientCredentialDefaults) {
         if (op.queryParams.some((param) => param.name === 'client_id')) {
@@ -603,26 +761,25 @@ function emitMethodBody(
         }
       }
     }
+    const emittedParams = hasVisibleQueryParams || hasInjections;
     if (isArrayResponse) {
-      // Array response: request without model, then deserialize each item
+      // Array response: request_list returns List[Dict], then deserialize each item
       const itemModel = className(plan.responseModelName!);
-      lines.push(`        raw = ${awaitPrefix}self._client.request(`);
+      lines.push(`        raw = ${awaitPrefix}self._client.request_list(`);
       lines.push(`            method="${httpMethod}",`);
       lines.push(`            path=${pathStr},`);
-      if (plan.hasQueryParams) {
+      if (emittedParams) {
         lines.push('            params=params,');
       }
       lines.push('            request_options=request_options,');
       lines.push('        )');
-      lines.push(
-        `        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in (raw if isinstance(raw, list) else [])]`,
-      );
+      lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
     } else {
       const returnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${returnPrefix}${awaitPrefix}self._client.request(`);
       lines.push(`            method="${httpMethod}",`);
       lines.push(`            path=${pathStr},`);
-      if (plan.hasQueryParams) {
+      if (emittedParams) {
         lines.push('            params=params,');
       }
       if (responseModel !== 'None') {
@@ -784,10 +941,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     }
     for (const [csDir, names] of [...crossServiceModels].sort()) {
       const unique = names.filter((n) => !localSet.has(n));
-      if (unique.length > 0) {
-        lines.push(
-          `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${unique.map((n) => className(n)).join(', ')}`,
-        );
+      for (const n of unique) {
+        lines.push(`from ${ctx.namespace}.${dirToModule(csDir)}.models.${fileName(n)} import ${className(n)}`);
       }
     }
 
@@ -833,9 +988,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       lines.push(`from .models import ${localEnums.map((n) => className(n)).join(', ')}`);
     }
     for (const [csDir, names] of [...crossServiceEnums].sort()) {
-      lines.push(
-        `from ${ctx.namespace}.${dirToModule(csDir)}.models import ${names.map((n) => className(n)).join(', ')}`,
-      );
+      for (const n of names) {
+        lines.push(`from ${ctx.namespace}.${dirToModule(csDir)}.models.${fileName(n)} import ${className(n)}`);
+      }
     }
 
     const hasPaginated = allOperations.some((op) => op.pagination);
@@ -869,6 +1024,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
       emittedMethods.add(method);
 
+      // Look up the resolved operation for defaults/inferFromClient support
+      const resolvedSync = lookupResolved(op, resolvedLookup);
+
       lines.push('');
       const meta = emitMethodSignature(
         lines,
@@ -880,12 +1038,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         modelImports,
         listWrapperNames,
         ctx,
+        resolvedSync,
       );
-      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
-      emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx);
+      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx, resolvedSync);
+      emitMethodBody(lines, op, plan, meta, false, modelImports, listWrapperNames, ctx, resolvedSync);
 
       // Emit union split wrapper methods (e.g., authenticate_with_password)
-      const resolvedSync = lookupResolved(op, resolvedLookup);
       if (resolvedSync?.wrappers && resolvedSync.wrappers.length > 0) {
         lines.push(...generateSyncWrapperMethods(resolvedSync, ctx));
         for (const w of resolvedSync.wrappers) emittedMethods.add(w.name);
@@ -920,6 +1078,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
       asyncEmittedMethods.add(method);
 
+      // Look up the resolved operation for defaults/inferFromClient support
+      const resolvedAsync = lookupResolved(op, resolvedLookup);
+
       lines.push('');
       const meta = emitMethodSignature(
         lines,
@@ -931,12 +1092,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         modelImports,
         listWrapperNames,
         ctx,
+        resolvedAsync,
       );
-      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx);
-      emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx);
+      emitMethodDocstring(lines, op, plan, method, meta, specEnumNames, ctx, resolvedAsync);
+      emitMethodBody(lines, op, plan, meta, true, modelImports, listWrapperNames, ctx, resolvedAsync);
 
       // Emit union split wrapper methods (e.g., authenticate_with_password)
-      const resolvedAsync = lookupResolved(op, resolvedLookup);
       if (resolvedAsync?.wrappers && resolvedAsync.wrappers.length > 0) {
         lines.push(...generateAsyncWrapperMethods(resolvedAsync, ctx));
         for (const w of resolvedAsync.wrappers) asyncEmittedMethods.add(w.name);
@@ -965,9 +1126,11 @@ function emitQueryParamsDict(
   op: Operation,
   pathParamNames: Set<string>,
   bodyFieldNames: Set<string>,
+  hiddenParams?: Set<string>,
 ): boolean {
-  // Filter to query params that aren't already path params or body fields
+  // Filter to query params that aren't already path params, body fields, or hidden
   const queryParams = op.queryParams.filter((p) => {
+    if (hiddenParams?.has(p.name)) return false;
     const pn = fieldName(p.name);
     return !pathParamNames.has(pn) && !bodyFieldNames.has(pn);
   });
@@ -978,7 +1141,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required)},`,
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }.items() if v is not None}');
@@ -986,7 +1149,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required)},`,
+        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }');
@@ -1019,13 +1182,23 @@ function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: bo
   return varName;
 }
 
-function serializeParameterValue(type: TypeRef | undefined, varName: string, isRequired: boolean): string {
+function serializeParameterValue(
+  type: TypeRef | undefined,
+  varName: string,
+  isRequired: boolean,
+  explode?: boolean,
+): string {
   if (type?.kind === 'nullable') {
-    return serializeParameterValue(type.inner, varName, false);
+    return serializeParameterValue(type.inner, varName, false, explode);
   }
   if (type?.kind === 'enum') {
     const expr = `enum_value(${varName})`;
     return isRequired ? expr : `${expr} if ${varName} is not None else None`;
+  }
+  // For explode=false array params, emit comma-joined string
+  if (explode === false && type?.kind === 'array') {
+    const joinExpr = `",".join(str(v) for v in ${varName})`;
+    return isRequired ? joinExpr : `${joinExpr} if ${varName} is not None else None`;
   }
   return varName;
 }
@@ -1139,7 +1312,11 @@ function buildPathString(op: Operation): string {
   // Convert {paramName} to {fieldName(paramName)}
   let fPath = path;
   for (const param of op.pathParams) {
-    fPath = fPath.replace(`{${param.name}}`, `{${fieldName(param.name)}}`);
+    if (param.type.kind === 'enum' || (param.type.kind === 'nullable' && (param.type as any).inner?.kind === 'enum')) {
+      fPath = fPath.replace(`{${param.name}}`, `{enum_value(${fieldName(param.name)})}`);
+    } else {
+      fPath = fPath.replace(`{${param.name}}`, `{${fieldName(param.name)}}`);
+    }
   }
   return `f"${fPath}"`;
 }

@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, enumClassName } from './naming.js';
 
 /**
  * Map an IR TypeRef to a PHP type hint string.
@@ -12,7 +12,7 @@ export function mapTypeRef(ref: TypeRef, opts?: { qualified?: boolean }): string
     primitive: mapPrimitive,
     array: (_ref, _items) => 'array',
     model: (r) => `${prefix}${className(r.name)}`,
-    enum: (r) => `${prefix}${className(r.name)}`,
+    enum: (r) => `${prefix}${enumClassName(r.name)}`,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_ref, inner) => `?${inner}`,
     literal: (r) => (typeof r.value === 'number' ? (Number.isInteger(r.value) ? 'int' : 'float') : 'string'),
@@ -22,13 +22,16 @@ export function mapTypeRef(ref: TypeRef, opts?: { qualified?: boolean }): string
 
 /**
  * Map an IR TypeRef to a PHPDoc type string for richer documentation.
+ * Uses fully-qualified names (leading \) so types resolve correctly
+ * regardless of the namespace the docblock appears in.
  */
-export function mapTypeRefForPHPDoc(ref: TypeRef): string {
+export function mapTypeRefForPHPDoc(ref: TypeRef, opts?: { prefix?: string }): string {
+  const prefix = opts?.prefix ?? '\\WorkOS\\Resource\\';
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitiveDoc,
     array: (_ref, items) => `array<${items}>`,
-    model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    model: (r) => `${prefix}${className(r.name)}`,
+    enum: (r) => `${prefix}${enumClassName(r.name)}`,
     union: (r, variants) => joinDocUnionVariants(r, variants),
     nullable: (_ref, inner) => `${inner}|null`,
     literal: (r) => (typeof r.value === 'string' ? 'string' : typeof r.value === 'number' ? 'int' : 'string'),

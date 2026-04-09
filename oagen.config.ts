@@ -3,6 +3,7 @@ import { toCamelCase } from '@workos/oagen';
 import { nodeEmitter } from './src/node/index.js';
 import { pythonEmitter } from './src/python/index.js';
 import { phpEmitter } from './src/php/index.js';
+import { goEmitter } from './src/go/index.js';
 import { nodeExtractor } from './src/compat/extractors/node.js';
 import { rubyExtractor } from './src/compat/extractors/ruby.js';
 import { pythonExtractor } from './src/compat/extractors/python.js';
@@ -34,16 +35,28 @@ const operationHints: Record<string, OperationHint> = {
   'DELETE /radar/lists/{type}/{action}': { name: 'remove_list_entry' },
 
   // ── SSO ──────────────────────────────────────────────────────────────────
-  'GET /sso/authorize': { name: 'get_authorization_url' },
+  'GET /sso/authorize': {
+    name: 'get_authorization_url',
+    defaults: { response_type: 'code' },
+    inferFromClient: ['client_id'],
+  },
   'GET /sso/logout': { name: 'get_logout_url' },
   'GET /sso/profile': { name: 'get_profile' },
-  'POST /sso/token': { name: 'get_profile_and_token' },
+  'POST /sso/token': {
+    name: 'get_profile_and_token',
+    defaults: { grant_type: 'authorization_code' },
+    inferFromClient: ['client_id', 'client_secret'],
+  },
 
   // ── SSO / JWKS (mounted on UserManagement via mountRules) ────────────────
   'GET /sso/jwks/{clientId}': { name: 'get_jwks' },
 
   // ── User Management — auth ──────────────────────────────────────────────
-  'GET /user_management/authorize': { name: 'get_authorization_url' },
+  'GET /user_management/authorize': {
+    name: 'get_authorization_url',
+    defaults: { response_type: 'code' },
+    inferFromClient: ['client_id'],
+  },
   'GET /user_management/sessions/logout': { name: 'get_logout_url' },
 
   // ── User Management — org membership actions ────────────────────────────
@@ -64,6 +77,81 @@ const operationHints: Record<string, OperationHint> = {
   // ── External ID lookups (not derivable from path) ──────────────────────
   'GET /organizations/external_id/{external_id}': { name: 'get_organization_by_external_id' },
   'GET /user_management/users/external_id/{external_id}': { name: 'get_user_by_external_id' },
+
+  // ── Authorization — environment-scoped roles ─────────────────────────────
+  'GET /authorization/roles': { name: 'list_environment_roles' },
+  'POST /authorization/roles': { name: 'create_environment_role' },
+  'GET /authorization/roles/{slug}': { name: 'get_environment_role' },
+  'PATCH /authorization/roles/{slug}': { name: 'update_environment_role' },
+  'PUT /authorization/roles/{slug}/permissions': {
+    name: 'set_environment_role_permissions',
+  },
+  'POST /authorization/roles/{slug}/permissions': {
+    name: 'add_environment_role_permission',
+  },
+
+  // ── Authorization — singularized/shortened names ────────────────────────
+  'POST /authorization/permissions': { name: 'create_permission' },
+  'POST /authorization/resources': { name: 'create_resource' },
+  'POST /authorization/organization_memberships/{organization_membership_id}/check': {
+    name: 'check',
+  },
+  'POST /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
+    name: 'assign_role',
+  },
+  'DELETE /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
+    name: 'remove_role',
+  },
+  'POST /authorization/organizations/{organizationId}/roles': {
+    name: 'create_organization_role',
+  },
+
+  // ── Authorization — env-scoped resource memberships ────────────────────
+  'GET /authorization/resources/{resource_id}/organization_memberships': { name: 'list_memberships_for_resource' },
+
+  // ── User Management — singularized/shortened names ─────────────────────
+  'POST /user_management/users': { name: 'create_user' },
+  'POST /user_management/organization_memberships': {
+    name: 'create_organization_membership',
+  },
+  'POST /user_management/invitations': { name: 'send_invitation' },
+  'GET /user_management/invitations/by_token/{token}': {
+    name: 'find_invitation_by_token',
+  },
+  'POST /user_management/users/{id}/email_verification/send': {
+    name: 'send_verification_email',
+  },
+  'POST /user_management/users/{id}/email_verification/confirm': {
+    name: 'verify_email',
+  },
+  'POST /user_management/password_reset': { name: 'reset_password' },
+  'POST /user_management/password_reset/confirm': {
+    name: 'confirm_password_reset',
+  },
+  'GET /user_management/users/{id}/sessions': { name: 'list_sessions' },
+  'GET /user_management/users/{id}/identities': { name: 'get_user_identities' },
+  'POST /user_management/cors_origins': { name: 'create_cors_origin' },
+  'POST /user_management/redirect_uris': { name: 'create_redirect_uri' },
+
+  // ── Organizations — singularized names ─────────────────────────────────
+  'POST /organizations': { name: 'create_organization' },
+
+  // ── Directory Sync — shortened names ───────────────────────────────────
+  'GET /directory_groups': { name: 'list_groups' },
+  'GET /directory_groups/{id}': { name: 'get_group' },
+  'GET /directory_users': { name: 'list_users' },
+  'GET /directory_users/{id}': { name: 'get_user' },
+
+  // ── Audit Logs — singularized names ────────────────────────────────────
+  'POST /audit_logs/events': { name: 'create_event' },
+  'POST /audit_logs/exports': { name: 'create_export' },
+  'POST /audit_logs/actions/{actionName}/schemas': { name: 'create_schema' },
+
+  // ── Feature Flags — match SDK conventions ──────────────────────────────
+  'POST /feature-flags/{slug}/targets/{resourceId}': { name: 'add_flag_target' },
+  'DELETE /feature-flags/{slug}/targets/{resourceId}': {
+    name: 'remove_flag_target',
+  },
 
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
   'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
@@ -136,7 +224,7 @@ const operationHints: Record<string, OperationHint> = {
     split: [
       {
         name: 'create_oauth_application',
-        targetVariant: 'OAuthApplicationCreateRequest',
+        targetVariant: 'CreateOAuthApplication',
         defaults: { application_type: 'oauth' },
         exposedParams: [
           'name',
@@ -150,7 +238,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'create_m2m_application',
-        targetVariant: 'M2MApplicationCreateRequest',
+        targetVariant: 'CreateM2MApplication',
         defaults: { application_type: 'm2m' },
         exposedParams: ['name', 'organization_id', 'description', 'scopes'],
       },
@@ -211,7 +299,7 @@ const mountRules: Record<string, string> = {
 };
 
 const config: OagenConfig = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter],
+  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter],
   extractors: [
     nodeExtractor,
     rubyExtractor,
@@ -236,7 +324,23 @@ const config: OagenConfig = {
   },
   docUrl: 'https://workos.com/docs',
   operationIdTransform: nestjsOperationIdTransform,
-  schemaNameTransform: (name: string) => name.replace(/Dto/g, '').replace(/DTO/g, ''),
+  schemaNameTransform: (name: string) => {
+    // Explicit renames for Dto models that collide with response models
+    const COLLISION_RENAMES: Record<string, string> = {
+      OrganizationDto: 'OrganizationInput',
+      RedirectUriDto: 'RedirectUriInput',
+      // Generic list-derived names that need domain-specific identifiers
+      ListData: 'Role',
+      ListModel: 'RoleList',
+      // Double-List naming artifact
+      EventListListMetadata: 'EventListMetadata',
+    };
+    if (COLLISION_RENAMES[name]) return COLLISION_RENAMES[name];
+    return name
+      .replace(/Dto/g, '')
+      .replace(/DTO/g, '')
+      .replace(/^Urn(?:IetfParams|Workos)O[Aa]uthGrantType/, '');
+  },
   operationHints,
   mountRules,
 };

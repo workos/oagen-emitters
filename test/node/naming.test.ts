@@ -10,11 +10,31 @@ import {
   servicePropertyName,
   resolveServiceName,
   buildServiceNameMap,
+  stripNoiseSuffixes,
 } from '../../src/node/naming.js';
 import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
 describe('naming', () => {
+  describe('stripNoiseSuffixes', () => {
+    it('strips trailing Dto', () => {
+      expect(stripNoiseSuffixes('OrganizationDto')).toBe('Organization');
+      expect(stripNoiseSuffixes('UpdateOrganizationDto')).toBe('UpdateOrganization');
+    });
+
+    it('is case-insensitive for the Dto suffix', () => {
+      expect(stripNoiseSuffixes('OrganizationDTO')).toBe('Organization');
+    });
+
+    it('does not strip Dto from the middle of a name', () => {
+      expect(stripNoiseSuffixes('DtoFactory')).toBe('DtoFactory');
+    });
+
+    it('leaves names without Dto unchanged', () => {
+      expect(stripNoiseSuffixes('Organization')).toBe('Organization');
+    });
+  });
+
   describe('className', () => {
     it('converts to PascalCase', () => {
       expect(className('organizations')).toBe('Organizations');

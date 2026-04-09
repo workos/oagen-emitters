@@ -74,3 +74,36 @@ export function getMountTarget(service: Service, ctx: EmitterContext): string {
   }
   return toPascalCase(service.name);
 }
+
+// ---------------------------------------------------------------------------
+// Defaults / inferFromClient helpers
+//
+// For non-split operations with operationHints that specify `defaults` or
+// `inferFromClient`, oagen attaches these properties at runtime but they
+// are not part of the ResolvedOperation TypeScript interface (they live on
+// ResolvedWrapper for split operations). These helpers provide type-safe
+// access so individual emitters don't need `as any` casts.
+// ---------------------------------------------------------------------------
+
+/** Extract constant defaults from a resolved operation (if any). */
+export function getOpDefaults(resolvedOp?: ResolvedOperation): Record<string, string | number | boolean> {
+  return ((resolvedOp as any)?.defaults as Record<string, string | number | boolean> | undefined) ?? {};
+}
+
+/** Extract inferFromClient fields from a resolved operation (if any). */
+export function getOpInferFromClient(resolvedOp?: ResolvedOperation): string[] {
+  return ((resolvedOp as any)?.inferFromClient as string[] | undefined) ?? [];
+}
+
+/** Build the set of param names hidden from the public API (injected as defaults or inferred from client config). */
+export function buildHiddenParams(resolvedOp?: ResolvedOperation): Set<string> {
+  const hidden = new Set<string>();
+  for (const key of Object.keys(getOpDefaults(resolvedOp))) hidden.add(key);
+  for (const key of getOpInferFromClient(resolvedOp)) hidden.add(key);
+  return hidden;
+}
+
+/** Check whether a resolved operation has any hidden params. */
+export function hasHiddenParams(resolvedOp?: ResolvedOperation): boolean {
+  return Object.keys(getOpDefaults(resolvedOp)).length > 0 || getOpInferFromClient(resolvedOp).length > 0;
+}

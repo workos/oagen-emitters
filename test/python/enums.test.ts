@@ -160,7 +160,7 @@ describe('generateEnums', () => {
     const alias = files.find((f) => f.path.includes('profile_connection_type.py'))!;
     expect(alias).toBeDefined();
     expect(alias.content).toContain('import ConnectionType');
-    expect(alias.content).toContain('ProfileConnectionType = ConnectionType');
+    expect(alias.content).toContain('ProfileConnectionType: TypeAlias = ConnectionType');
     expect(alias.content).not.toContain('Literal');
   });
 
@@ -221,7 +221,6 @@ describe('generateEnums', () => {
 
     // Non-deprecated value should not get a docstring
     expect(content).toContain('ACTIVE = "active"');
-    // ACTIVE should not have a docstring immediately after it
     const activeIdx = content.indexOf('ACTIVE = "active"');
     const nextLine = content.slice(activeIdx).split('\n')[1];
     expect(nextLine).not.toContain('"""');

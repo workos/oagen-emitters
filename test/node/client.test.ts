@@ -299,9 +299,10 @@ describe('generateClient', () => {
     expect(content).not.toContain('export type { Event,');
     expect(content).not.toContain('export type { Event }');
 
-    // EventCursor is NOT in apiSurface.exports, so it should still be exported
-    // (via common barrel wildcard since it's unassigned to any service)
-    expect(content).toContain("export * from './common/interfaces'");
+    // EventCursor is unreachable (not referenced by any service), so it should
+    // NOT be exported — oagen only generates interface files for reachable models
+    expect(content).not.toContain("export * from './common/interfaces'");
+    expect(content).not.toContain('EventCursor');
 
     // The resource class export should still be present
     expect(content).toContain("export { Events } from './events/events'");

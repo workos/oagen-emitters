@@ -16,6 +16,51 @@ npm test          # run emitter unit tests
 npm run typecheck # verify types
 ```
 
+### Using a local `oagen` checkout
+
+This repo depends on a published `@workos/oagen` by default.
+
+If you are actively changing the sibling checkout at `../oagen`, you can switch this repo to a local linked copy:
+
+```bash
+npm run oagen:use:local
+```
+
+That script:
+
+1. builds `../oagen`
+2. links it into this repo with `npm link`
+
+`@workos/oagen` exports from `dist/`, so rebuild the local repo after changes:
+
+```bash
+npm run oagen:build:local
+```
+
+To go back to the published package from npm:
+
+```bash
+npm run oagen:use:published
+```
+
+Git does not provide a standard `post-push` hook, so the reliable way to push with the published package and then restore the local link is the wrapper script:
+
+```bash
+npm run git:push -- <git push args>
+```
+
+Example:
+
+```bash
+npm run git:push -- origin HEAD
+```
+
+That command:
+
+1. switches to the published `@workos/oagen`
+2. runs `git push ...`
+3. restores the local `../oagen` link on exit, even if the push fails
+
 ## Workflows
 
 ### Setting up a new language
@@ -119,7 +164,7 @@ Emitters read runtime policy (retry, errors, telemetry, pagination, etc.) from `
 function generateHttpClient(ctx: EmitterContext) {
   const sdk = ctx.spec.sdk;
   const retryCodes = sdk.retry.retryableStatusCodes; // [429, 500, 502, 503, 504]
-  const timeout = sdk.timeout.defaultTimeoutSeconds;  // 60
+  const timeout = sdk.timeout.defaultTimeoutSeconds; // 60
 }
 ```
 
@@ -130,7 +175,10 @@ Per-language overrides go in the SDK's `oagen.config.ts`:
 export default {
   sdkBehavior: {
     retry: { backoff: { initialDelay: 0.5, maxDelay: 8.0 } },
-    timeout: { defaultTimeoutSeconds: 30, timeoutEnvVar: 'WORKOS_REQUEST_TIMEOUT' },
+    timeout: {
+      defaultTimeoutSeconds: 30,
+      timeoutEnvVar: "WORKOS_REQUEST_TIMEOUT",
+    },
   },
 };
 ```
@@ -148,10 +196,10 @@ When the spec adds a new endpoint and the algorithm-derived name is wrong, add a
 ```ts
 const operationHints: Record<string, OperationHint> = {
   // Override derived name
-  'GET /sso/authorize': { name: 'get_authorization_url' },
+  "GET /sso/authorize": { name: "get_authorization_url" },
 
   // Remount to a different service
-  'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
+  "GET /organizations/{id}/audit_logs_retention": { mountOn: "AuditLogs" },
 };
 ```
 
@@ -180,9 +228,9 @@ Instead of adding `mountOn` to every operation individually, use `mountRules` fo
 
 ```ts
 const mountRules: Record<string, string> = {
-  Connections: 'SSO',           // All Connections ops → SSO namespace
-  DirectoryGroups: 'DirectorySync',
-  UserManagementUsers: 'UserManagement',
+  Connections: "SSO", // All Connections ops → SSO namespace
+  DirectoryGroups: "DirectorySync",
+  UserManagementUsers: "UserManagement",
 };
 ```
 

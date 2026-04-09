@@ -28,6 +28,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "git:push": "sh ./scripts/git-push-with-published-oagen.sh",
+    "oagen:build:local": "npm --prefix ../oagen run build",
+    "oagen:use:local": "npm run oagen:build:local && npm link ../oagen",
+    "oagen:use:published": "sh -c 'npm unlink @workos/oagen >/dev/null 2>&1 || true; npm install --ignore-scripts @workos/oagen@^0.4.0'",
     "prepare": "husky",
     "sdk:generate:dotnet": "oagen generate --lang dotnet --output ./sdk-dotnet --namespace workos --api-surface ./sdk-dotnet-surface.json",
     "sdk:verify:dotnet": "oagen verify --lang dotnet --output ./sdk-dotnet --api-surface ./sdk-dotnet-surface.json",
@@ -57,9 +61,6 @@
     "sdk:verify:rust": "oagen verify --lang rust --output ./sdk-rust --api-surface ./sdk-rust-surface.json",
     "sdk:extract:rust": "oagen extract --lang rust --sdk-path ../backend/workos-rust --output ./sdk-rust-surface.json"
   },
-  "dependencies": {
-    "@workos/oagen": "^0.3.0"
-  },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
@@ -75,5 +76,8 @@
   },
   "engines": {
     "node": ">=24.10.0"
+  },
+  "dependencies": {
+    "@workos/oagen": "^0.5.0"
   }
 }

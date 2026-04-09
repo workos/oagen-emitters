@@ -17,6 +17,8 @@ interface PythonNonSpecWiring {
   asyncClass: string | null;
   /** Constructor expression — 'self' if the class takes the client, '' if stateless */
   ctorArg: 'self' | '';
+  /** One-line docstring for the client property */
+  docstring?: string;
 }
 
 const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
@@ -26,6 +28,7 @@ const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
     syncClass: 'Passwordless',
     asyncClass: 'AsyncPasswordless',
     ctorArg: 'self',
+    docstring: 'Passwordless authentication sessions.',
   },
   vault: {
     importLine: 'from .vault import AsyncVault, Vault',
@@ -33,6 +36,7 @@ const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
     syncClass: 'Vault',
     asyncClass: 'AsyncVault',
     ctorArg: 'self',
+    docstring: 'Vault encryption, key management, and secret storage.',
   },
   actions: {
     importLine: 'from .actions import Actions, AsyncActions',
@@ -40,6 +44,7 @@ const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
     syncClass: 'Actions',
     asyncClass: 'AsyncActions',
     ctorArg: '',
+    docstring: 'Actions logging and audit trail.',
   },
   pkce: {
     importLine: 'from .pkce import PKCE',
@@ -47,6 +52,7 @@ const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
     syncClass: 'PKCE',
     asyncClass: null,
     ctorArg: '',
+    docstring: 'PKCE (Proof Key for Code Exchange) utilities.',
   },
 };
 
@@ -279,6 +285,9 @@ function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
     lines.push('');
     lines.push('    @functools.cached_property');
     lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
+    if (w.docstring) {
+      lines.push(`        """${w.docstring}"""`);
+    }
     lines.push(`        return ${typeName}(${arg})`);
   }
 }

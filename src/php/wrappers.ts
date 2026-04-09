@@ -1,7 +1,9 @@
-import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
+import type { EmitterContext, ResolvedOperation, ResolvedWrapper, TypeRef } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
+import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName } from './naming.js';
+import { phpDocComment } from './utils.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 
 /**
  * Generate PHP wrapper methods for split union operations.
@@ -22,28 +24,43 @@ function emitWrapperMethod(
 ): void {
   const method = toCamelCase(wrapper.name);
   const ns = ctx.namespacePascal;
+  const wrapperParams = resolveWrapperParams(wrapper, ctx);
 
   lines.push('');
+
+  // PHPDoc block
+  const docParts: string[] = [];
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    const docType = field ? mapTypeRefForPHPDoc(field.type) : 'mixed';
+    const nullSuffix = isOptional && !docType.endsWith('|null') ? '|null' : '';
+    docParts.push(`@param ${docType}${nullSuffix} $${fieldName(paramName)}`);
+  }
+  const op2 = resolvedOp.operation;
+  const returnDocType = op2.response.kind === 'model' ? `\\${ns}\\Resource\\${className(op2.response.name)}` : 'mixed';
+  docParts.push(`@return ${returnDocType}`);
+  lines.push(...phpDocComment(docParts.join('\n'), 4));
+
   lines.push(`    public function ${method}(`);
 
-  // Exposed params
-  const params: string[] = [];
-  for (const paramName of wrapper.exposedParams) {
-    const field = findFieldInVariant(wrapper, paramName, resolvedOp);
+  // Build params: required first, then optional, to avoid PHP deprecation
+  const requiredParams: string[] = [];
+  const optionalParamLines: string[] = [];
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    const phpName = fieldName(paramName);
     if (field) {
       const phpType = mapTypeRef(field.type);
-      const phpName = fieldName(paramName);
-      if (field.required) {
-        params.push(`        ${phpType} $${phpName},`);
+      if (isOptional) {
+        const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
+        optionalParamLines.push(`        ${nullableType} $${phpName} = null,`);
       } else {
-        params.push(`        ?${phpType} $${phpName} = null,`);
+        requiredParams.push(`        ${phpType} $${phpName},`);
       }
     } else {
-      params.push(`        mixed $${fieldName(paramName)} = null,`);
+      optionalParamLines.push(`        mixed $${phpName} = null,`);
     }
   }
-  params.push(`        ?\\${ns}\\RequestOptions $options = null,`);
-  for (const p of params) {
+  optionalParamLines.push(`        ?\\${ns}\\RequestOptions $options = null,`);
+  for (const p of [...requiredParams, ...optionalParamLines]) {
     lines.push(p);
   }
 
@@ -62,9 +79,14 @@ function emitWrapperMethod(
     }
   }
 
-  // Exposed params
-  for (const paramName of wrapper.exposedParams) {
-    bodyEntries.push(`'${paramName}' => $${fieldName(paramName)}`);
+  // Exposed params (extract enum values)
+  for (const { paramName, field } of wrapperParams) {
+    const phpName = fieldName(paramName);
+    if (field && isEnumType(field.type)) {
+      bodyEntries.push(`'${paramName}' => $${phpName}?->value`);
+    } else {
+      bodyEntries.push(`'${paramName}' => $${phpName}`);
+    }
   }
 
   lines.push('        $body = array_filter([');
@@ -103,13 +125,10 @@ function emitWrapperMethod(
   lines.push('    }');
 }
 
-function findFieldInVariant(
-  _wrapper: ResolvedWrapper,
-  _paramName: string,
-  _resolvedOp: ResolvedOperation,
-): { type: import('@workos/oagen').TypeRef; required: boolean } | null {
-  // For wrappers, exposed params are generally optional
-  return { type: { kind: 'primitive', type: 'string' }, required: false };
+function isEnumType(ref: TypeRef): boolean {
+  if (ref.kind === 'enum') return true;
+  if (ref.kind === 'nullable') return isEnumType(ref.inner);
+  return false;
 }
 
 function phpLiteral(value: unknown): string {

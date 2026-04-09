@@ -1,28 +1,41 @@
 import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
-import { className, fieldName } from './naming.js';
+import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
+import { className, enumClassName, fieldName } from './naming.js';
+import { phpDocComment } from './utils.js';
 
-/**
- * Check if a model is a list metadata model (e.g., ListMetadata).
- */
-export function isListMetadataModel(model: Model): boolean {
-  return /list.?metadata$/i.test(model.name);
-}
-
-/**
- * Check if a model is a list wrapper (has `data` array + `list_metadata`).
- */
-export function isListWrapperModel(model: Model): boolean {
-  const hasData = model.fields.some((f) => f.name === 'data' && f.type.kind === 'array');
-  const hasListMeta = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  return hasData && hasListMeta;
-}
+// Import and re-export shared model detection utilities
+import { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
+export { isListMetadataModel, isListWrapperModel };
 
 /**
  * Generate PHP model files from IR models.
  */
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
+
+  // Build structural hash for deduplication
+  const modelHashMap = new Map<string, string>();
+  const hashGroups = new Map<string, string[]>();
+  for (const model of models) {
+    if (isListMetadataModel(model)) continue;
+    if (isListWrapperModel(model)) continue;
+    const hash = structuralHash(model);
+    modelHashMap.set(model.name, hash);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(model.name);
+  }
+
+  // Pick canonical for each duplicate group (shortest class name wins)
+  const aliasOf = new Map<string, string>();
+  for (const [hash, names] of hashGroups) {
+    if (names.length <= 1) continue;
+    if (hash === '') continue;
+    const sorted = [...names].sort((a, b) => className(a).length - className(b).length);
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i], canonical);
+    }
+  }
 
   const files: GeneratedFile[] = [];
 
@@ -46,6 +59,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
+    if (aliasOf.has(model.name)) continue; // skip structural duplicates
 
     const name = className(model.name);
     const lines: string[] = [];
@@ -53,6 +67,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // No <?php here — the file header from fileHeader() provides it
     lines.push(`namespace ${ctx.namespacePascal}\\Resource;`);
     lines.push('');
+    if (model.description) {
+      lines.push(...phpDocComment(model.description, 0));
+    }
     lines.push(`readonly class ${name} implements \\JsonSerializable`);
     lines.push('{');
     lines.push('    use JsonSerializableTrait;');
@@ -77,6 +94,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpType = mapTypeRef(field.type);
       const isOptional = !field.required;
       const comma = i < allFields.length - 1 ? ',' : ',';
+
+      const varDocType = mapTypeRefForPHPDoc(field.type);
+      const varNullSuffix = isOptional && !varDocType.endsWith('|null') ? '|null' : '';
+      const varAnnotation = needsVarAnnotation(field.type) ? `@var ${varDocType}${varNullSuffix}` : null;
+      if (field.description || field.deprecated || varAnnotation) {
+        const parts: string[] = [];
+        if (field.description) parts.push(field.description);
+        if (varAnnotation) parts.push(varAnnotation);
+        if (field.deprecated) parts.push('@deprecated');
+        lines.push(...phpDocComment(parts.join('\n'), 8));
+      }
 
       if (isOptional) {
         const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
@@ -169,13 +197,20 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
       return `${name}::fromArray(${accessor})`;
     }
     case 'enum': {
-      const name = className(ref.name);
+      const name = enumClassName(ref.name);
       return `${name}::from(${accessor})`;
     }
     case 'array':
       if (ref.items.kind === 'model') {
         const itemName = className(ref.items.name);
         return `array_map(fn ($item) => ${itemName}::fromArray($item), ${accessor})`;
+      }
+      if (ref.items.kind === 'enum') {
+        const itemName = enumClassName(ref.items.name);
+        return `array_map(fn ($item) => ${itemName}::from($item), ${accessor})`;
+      }
+      if (ref.items.kind === 'primitive' && ref.items.format === 'date-time') {
+        return `array_map(fn ($item) => new \\DateTimeImmutable($item), ${accessor})`;
       }
       return accessor;
     case 'nullable':
@@ -199,6 +234,8 @@ function isComplexType(ref: TypeRef): boolean {
     case 'model':
     case 'enum':
       return true;
+    case 'array':
+      return isComplexType(ref.items);
     case 'nullable':
       return isComplexType(ref.inner);
     default:
@@ -220,12 +257,22 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
     case 'model':
       return `${accessor}${ns}->toArray()`;
     case 'enum':
-      return nullable ? `${accessor} instanceof \\BackedEnum ? ${accessor}->value : ${accessor}` : `${accessor}->value`;
+      return nullable ? `${accessor}?->value` : `${accessor}->value`;
     case 'array':
       if (ref.items.kind === 'model') {
         return nullable
-          ? `array_map(fn ($item) => $item->toArray(), ${accessor} ?? [])`
+          ? `${accessor} !== null ? array_map(fn ($item) => $item->toArray(), ${accessor}) : null`
           : `array_map(fn ($item) => $item->toArray(), ${accessor})`;
+      }
+      if (ref.items.kind === 'enum') {
+        return nullable
+          ? `${accessor} !== null ? array_map(fn ($item) => $item->value, ${accessor}) : null`
+          : `array_map(fn ($item) => $item->value, ${accessor})`;
+      }
+      if (ref.items.kind === 'primitive' && ref.items.format === 'date-time') {
+        return nullable
+          ? `${accessor} !== null ? array_map(fn ($item) => $item->format(\\DateTimeInterface::RFC3339_EXTENDED), ${accessor}) : null`
+          : `array_map(fn ($item) => $item->format(\\DateTimeInterface::RFC3339_EXTENDED), ${accessor})`;
       }
       return accessor;
     case 'nullable':
@@ -237,4 +284,27 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
     case 'literal':
       return accessor;
   }
+}
+
+/**
+ * Check if a TypeRef needs a @var PHPDoc annotation because the PHP type hint
+ * loses information (e.g., `array` vs `array<ConnectionDomain>`).
+ */
+function needsVarAnnotation(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'array':
+    case 'map':
+      return true;
+    case 'nullable':
+      return needsVarAnnotation(ref.inner);
+    default:
+      return false;
+  }
+}
+
+function structuralHash(model: Model): string {
+  return model.fields
+    .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
+    .sort()
+    .join('|');
 }

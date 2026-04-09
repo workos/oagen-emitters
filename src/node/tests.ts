@@ -856,7 +856,8 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       serializerImports.push(
         `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
       );
-      fixtureImports.push(`import ${toCamelCase(model.name)}Fixture from '${relativeImport(testPath, fixturePath)}';`);
+      const camelName = domainName.charAt(0).toLowerCase() + domainName.slice(1);
+      fixtureImports.push(`import ${camelName}Fixture from '${relativeImport(testPath, fixturePath)}';`);
     }
 
     for (const imp of serializerImports) {
@@ -869,7 +870,8 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
     for (const model of models) {
       const domainName = resolveInterfaceName(model.name, ctx);
-      const fixtureName = `${toCamelCase(model.name)}Fixture`;
+      const camelDomain = domainName.charAt(0).toLowerCase() + domainName.slice(1);
+      const fixtureName = `${camelDomain}Fixture`;
 
       lines.push(`describe('${domainName}Serializer', () => {`);
       lines.push("  it('round-trips through serialize/deserialize', () => {");

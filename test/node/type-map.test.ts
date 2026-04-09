@@ -60,6 +60,17 @@ describe('mapTypeRef', () => {
     expect(mapTypeRef(ref)).toBe('string | number');
   });
 
+  it('deduplicates union variants', () => {
+    const ref: TypeRef = {
+      kind: 'union',
+      variants: [
+        { kind: 'model', name: 'AuthenticationFactorTotp' },
+        { kind: 'model', name: 'AuthenticationFactorTotp' },
+      ],
+    };
+    expect(mapTypeRef(ref)).toBe('AuthenticationFactorTotp');
+  });
+
   it('maps map type', () => {
     const ref: TypeRef = {
       kind: 'map',
