@@ -51,11 +51,6 @@ export const pythonEmitter: Emitter = {
     return [];
   },
 
-  generateConfig(): GeneratedFile[] {
-    // _types.py and _pagination.py are now hand-maintained in the target SDK (@oagen-ignore-file)
-    return [];
-  },
-
   generateTypeSignatures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     void spec;
     void ctx;

@@ -52,11 +52,6 @@ export const nodeEmitter: Emitter = {
     return ensureTrailingNewlines(generateErrors(ctx));
   },
 
-  generateConfig(): GeneratedFile[] {
-    // Config interfaces and common utilities are now hand-maintained in the target SDK
-    return [];
-  },
-
   generateTypeSignatures(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile[] {
     // TypeScript uses inline types — no separate type signature files needed
     return [];

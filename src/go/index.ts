@@ -14,7 +14,6 @@ import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
-import { generateConfig } from './config.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
 
@@ -51,10 +50,6 @@ export const goEmitter: Emitter = {
 
   generateErrors(): GeneratedFile[] {
     return [];
-  },
-
-  generateConfig(ctx: EmitterContext): GeneratedFile[] {
-    return generateConfig(ctx);
   },
 
   generateTypeSignatures(): GeneratedFile[] {

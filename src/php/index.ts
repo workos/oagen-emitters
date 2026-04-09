@@ -61,10 +61,6 @@ export const phpEmitter: Emitter = {
     return [];
   },
 
-  generateConfig(): GeneratedFile[] {
-    return [];
-  },
-
   generateTypeSignatures(_spec: ApiSpec, _ctx: EmitterContext): GeneratedFile[] {
     // PHP uses inline type hints — no separate type signature files needed
     return [];
