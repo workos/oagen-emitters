@@ -18,16 +18,16 @@ accessed as `workos.Organization`, `workos.NewClient(...)`, etc.
 
 ## Naming Conventions
 
-| IR Name | Go Name | Context |
-|---|---|---|
-| `Organization` (model) | `Organization` | Struct type |
-| `organization` (file) | `organization.go` | File name |
-| `listUsers` (method) | `ListUsers` | Exported method |
-| `user_id` (field) | `UserID` | Struct field (PascalCase, acronym-aware) |
-| `Status` (enum) | `Status` | Type declaration |
-| `active` (enum value) | `StatusActive` | Const: `{TypeName}{PascalValue}` |
-| `Organizations` (service) | `organizationService` | Unexported struct |
-| `organizations` (accessor) | `Organizations()` | Client method returning service |
+| IR Name                    | Go Name               | Context                                  |
+| -------------------------- | --------------------- | ---------------------------------------- |
+| `Organization` (model)     | `Organization`        | Struct type                              |
+| `organization` (file)      | `organization.go`     | File name                                |
+| `listUsers` (method)       | `ListUsers`           | Exported method                          |
+| `user_id` (field)          | `UserID`              | Struct field (PascalCase, acronym-aware) |
+| `Status` (enum)            | `Status`              | Type declaration                         |
+| `active` (enum value)      | `StatusActive`        | Const: `{TypeName}{PascalValue}`         |
+| `Organizations` (service)  | `organizationService` | Unexported struct                        |
+| `organizations` (accessor) | `Organizations()`     | Client method returning service          |
 
 ### Acronym handling
 
@@ -36,25 +36,25 @@ Go convention preserves full-caps for common acronyms: `ID`, `URL`, `SSO`, `API`
 
 ## Type Mapping
 
-| IR TypeRef | Go Type |
-|---|---|
-| `primitive:string` | `string` |
-| `primitive:string:date` | `string` |
-| `primitive:string:date-time` | `string` |
-| `primitive:string:uuid` | `string` |
-| `primitive:string:binary` | `[]byte` |
-| `primitive:integer` | `int` |
-| `primitive:number` | `float64` |
-| `primitive:boolean` | `bool` |
-| `primitive:unknown` | `interface{}` |
-| `array` | `[]T` |
-| `model` | `*ModelName` (pointer for nested) |
-| `enum` | `EnumType` |
-| `nullable` | `*T` (pointer) |
-| `union` | `interface{}` |
-| `map` | `map[string]T` |
-| `literal:string` | `string` |
-| `literal:null` | `interface{}` |
+| IR TypeRef                   | Go Type                           |
+| ---------------------------- | --------------------------------- |
+| `primitive:string`           | `string`                          |
+| `primitive:string:date`      | `string`                          |
+| `primitive:string:date-time` | `string`                          |
+| `primitive:string:uuid`      | `string`                          |
+| `primitive:string:binary`    | `[]byte`                          |
+| `primitive:integer`          | `int`                             |
+| `primitive:number`           | `float64`                         |
+| `primitive:boolean`          | `bool`                            |
+| `primitive:unknown`          | `interface{}`                     |
+| `array`                      | `[]T`                             |
+| `model`                      | `*ModelName` (pointer for nested) |
+| `enum`                       | `EnumType`                        |
+| `nullable`                   | `*T` (pointer)                    |
+| `union`                      | `interface{}`                     |
+| `map`                        | `map[string]T`                    |
+| `literal:string`             | `string`                          |
+| `literal:null`               | `interface{}`                     |
 
 ## Model Pattern
 
@@ -309,17 +309,17 @@ func TestOrganizations_GetOrganization(t *testing.T) {
 
 ## Structural Guidelines
 
-| Category | Choice |
-|---|---|
-| Testing Framework | `testing` + `github.com/stretchr/testify/require` |
-| HTTP Mocking | `net/http/httptest` |
-| Documentation | GoDoc comments |
-| Type Signatures | Native Go types (inline) |
-| Linting/Formatting | `gofmt` / `go vet` |
-| HTTP Client | `net/http` (stdlib) |
-| JSON Parsing | `encoding/json` (stdlib) |
-| Package Manager | Go modules (`go.mod`) |
-| Build Tool | `go build` / `go test` |
+| Category           | Choice                                            |
+| ------------------ | ------------------------------------------------- |
+| Testing Framework  | `testing` + `github.com/stretchr/testify/require` |
+| HTTP Mocking       | `net/http/httptest`                               |
+| Documentation      | GoDoc comments                                    |
+| Type Signatures    | Native Go types (inline)                          |
+| Linting/Formatting | `gofmt` / `go vet`                                |
+| HTTP Client        | `net/http` (stdlib)                               |
+| JSON Parsing       | `encoding/json` (stdlib)                          |
+| Package Manager    | Go modules (`go.mod`)                             |
+| Build Tool         | `go build` / `go test`                            |
 
 ## Directory Structure (generated SDK)
 

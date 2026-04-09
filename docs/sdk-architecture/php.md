@@ -6,34 +6,34 @@ A PHP 8.2+ SDK using readonly classes, backed enums, Guzzle for HTTP, and PHPUni
 
 ## Naming Conventions
 
-| IR Name               | PHP Convention      | Example                |
-|-----------------------|---------------------|------------------------|
-| `UserProfile` (class) | PascalCase          | `UserProfile`          |
-| `UserProfile` (file)  | PascalCase.php      | `UserProfile.php`      |
-| `listUsers` (method)  | camelCase           | `listUsers`            |
-| `user_id` (field)     | camelCase            | `userId`               |
-| `ACTIVE` (enum case)  | PascalCase           | `Active`               |
+| IR Name               | PHP Convention | Example           |
+| --------------------- | -------------- | ----------------- |
+| `UserProfile` (class) | PascalCase     | `UserProfile`     |
+| `UserProfile` (file)  | PascalCase.php | `UserProfile.php` |
+| `listUsers` (method)  | camelCase      | `listUsers`       |
+| `user_id` (field)     | camelCase      | `userId`          |
+| `ACTIVE` (enum case)  | PascalCase     | `Active`          |
 
 ## Type Mapping
 
-| IR TypeRef                       | PHP Type Hint         | PHPDoc Type             |
-|----------------------------------|-----------------------|-------------------------|
-| `string`                         | `string`              | `string`                |
-| `string` (date)                  | `string`              | `string`                |
-| `string` (date-time)             | `\DateTimeImmutable`  | `\DateTimeImmutable`    |
-| `string` (uuid)                  | `string`              | `string`                |
-| `string` (binary)                | `string`              | `string`                |
-| `integer`                        | `int`                 | `int`                   |
-| `number`                         | `float`               | `float`                 |
-| `boolean`                        | `bool`                | `bool`                  |
-| `unknown`                        | `mixed`               | `mixed`                 |
-| `array<T>`                       | `array`               | `array<T>`              |
-| `model Foo`                      | `Foo`                 | `Foo`                   |
-| `enum Foo`                       | `Foo`                 | `Foo`                   |
-| `nullable<T>`                    | `?T`                  | `T\|null`               |
-| `union<A,B>`                     | `A\|B`                | `A\|B`                  |
-| `map<string,V>`                  | `array`               | `array<string, V>`      |
-| `literal "foo"`                  | `string`              | `string`                |
+| IR TypeRef           | PHP Type Hint        | PHPDoc Type          |
+| -------------------- | -------------------- | -------------------- |
+| `string`             | `string`             | `string`             |
+| `string` (date)      | `string`             | `string`             |
+| `string` (date-time) | `\DateTimeImmutable` | `\DateTimeImmutable` |
+| `string` (uuid)      | `string`             | `string`             |
+| `string` (binary)    | `string`             | `string`             |
+| `integer`            | `int`                | `int`                |
+| `number`             | `float`              | `float`              |
+| `boolean`            | `bool`               | `bool`               |
+| `unknown`            | `mixed`              | `mixed`              |
+| `array<T>`           | `array`              | `array<T>`           |
+| `model Foo`          | `Foo`                | `Foo`                |
+| `enum Foo`           | `Foo`                | `Foo`                |
+| `nullable<T>`        | `?T`                 | `T\|null`            |
+| `union<A,B>`         | `A\|B`               | `A\|B`               |
+| `map<string,V>`      | `array`              | `array<string, V>`   |
+| `literal "foo"`      | `string`             | `string`             |
 
 ## Model Pattern
 
@@ -272,7 +272,7 @@ class OrganizationsTest extends TestCase
 ## Structural Guidelines
 
 | Category           | Choice                     |
-|--------------------|----------------------------|
+| ------------------ | -------------------------- |
 | PHP Version        | 8.2+                       |
 | HTTP Client        | Guzzle 7                   |
 | Testing            | PHPUnit 11                 |
