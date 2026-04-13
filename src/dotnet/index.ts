@@ -11,7 +11,7 @@ import type {
 
 import { generateModels } from './models.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
-import { generateEnums } from './enums.js';
+import { generateEnums, primeEnumAliases } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
@@ -66,6 +66,7 @@ export const dotnetEmitter: Emitter = {
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     const c = fixNamespace(ctx);
+    primeEnumAliases(c.spec.enums);
     const enriched = enrichModelsFromSpec(models);
     const files = generateModels(enriched, c);
 
@@ -132,6 +133,7 @@ export const dotnetEmitter: Emitter = {
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
     const c = fixNamespace(ctx);
+    primeEnumAliases(c.spec.enums);
     const files = generateResources(services, c);
 
     // Also generate wrapper options classes
@@ -178,7 +180,9 @@ export const dotnetEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, fixNamespace(ctx))));
+    const c = fixNamespace(ctx);
+    primeEnumAliases(spec.enums);
+    return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },
 
   generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

@@ -1,21 +1,30 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString } from './naming.js';
+import { setEnumAliases } from './type-map.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
- * Each enum becomes a separate .cs file.
+ * Each enum becomes a separate .cs file. Structurally-identical enums are
+ * deduplicated: only the canonical (alphabetically-first) name is emitted,
+ * and every reference to a duplicate enum is rewritten to the canonical one
+ * by `mapTypeRef` via `setEnumAliases`.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
+
+  // Publish the alias map so model/options/wrapper emitters all resolve
+  // duplicate enum references to the canonical name.
+  const aliasOf = collectEnumAliasOf(enums);
+  setEnumAliases(aliasOf);
 
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
     const typeName = className(enumDef.name);
 
-    // C# doesn't support type aliases for enums, so emit all enums
-    // (including duplicates with identical values but different names).
+    // Skip duplicate enums — their references are retargeted to the canonical.
+    if (aliasOf.has(enumDef.name)) continue;
 
     // Skip empty enums (use string in type-map)
     if (enumDef.values.length === 0) continue;
@@ -101,6 +110,16 @@ function humanize(name: string): string {
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Populate the module-level enum alias resolver from the given spec's enums.
+ * Call from every emitter entrypoint that uses `mapTypeRef` so enum
+ * references resolve to their canonical names regardless of which emitter
+ * phase runs first.
+ */
+export function primeEnumAliases(enums: Enum[]): void {
+  setEnumAliases(collectEnumAliasOf(enums));
 }
 
 function collectEnumAliasOf(enums: Enum[]): Map<string, string> {

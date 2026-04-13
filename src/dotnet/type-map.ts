@@ -6,6 +6,26 @@ import { className } from './naming.js';
 const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal', 'byte', 'short', 'DateTimeOffset']);
 
 /**
+ * Module-level alias map for structurally-identical enums. Populated by
+ * `setEnumAliases` from the current spec's enum list; consulted by
+ * `mapTypeRef` so that every reference to a duplicate enum resolves to the
+ * canonical name. C# has no first-class type alias for enums, so dedup must
+ * happen at reference-rewrite time rather than via a runtime alias.
+ */
+const enumAliases = new Map<string, string>();
+
+/** Replace the current enum-alias map. Safe to call more than once. */
+export function setEnumAliases(aliases: Map<string, string>): void {
+  enumAliases.clear();
+  for (const [k, v] of aliases) enumAliases.set(k, v);
+}
+
+/** Resolve an enum reference name to its canonical form. */
+export function resolveEnumTypeName(name: string): string {
+  return enumAliases.get(name) ?? name;
+}
+
+/**
  * Map an IR TypeRef to a C# type string.
  */
 export function mapTypeRef(ref: TypeRef): string {
@@ -13,7 +33,7 @@ export function mapTypeRef(ref: TypeRef): string {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
     model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    enum: (r) => className(resolveEnumTypeName(r.name)),
     union: (_r, variants) => joinUnionVariants(_r, variants),
     nullable: (_ref, inner) => {
       // With <Nullable>enable</Nullable>, all nullable types need `?`
