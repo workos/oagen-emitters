@@ -8,6 +8,7 @@ import {
   clientFieldExpression,
   httpMethodCs,
   escapeXml,
+  emitXmlDoc,
   humanize,
 } from './naming.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
@@ -120,6 +121,13 @@ function emitWrapperMethod(
   lines.push('        }');
 }
 
+// NOTE: T26 (wrapper DRY) — the AuthenticateWith* wrappers share a small
+// SendAuthenticateAsync helper at runtime to avoid 8x copies of the same
+// MakeAPIRequest call. The helper itself lives in UserManagementService.cs as
+// a hand-maintained method (it can't easily be expressed as a generic because
+// the eight options classes don't share an interface). Keeping each generated
+// wrapper's body short is the practical part of the DRY win.
+
 /**
  * Generate wrapper options classes. Called from resources.ts options generation.
  */
@@ -143,9 +151,7 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
       const needsDefault = !isOptional && !csType.endsWith('?') && !(field && isValueTypeRef(field.type));
       const initializer = needsDefault ? ' = default!;' : '';
 
-      if (field?.description?.trim()) {
-        lines.push(`        /// <summary>${escapeXml(field.description.split('\n')[0])}</summary>`);
-      }
+      lines.push(...emitXmlDoc(field?.description, '        '));
       lines.push(`        [JsonProperty("${paramName}")]`);
       lines.push(`        [STJS.JsonPropertyName("${paramName}")]`);
       lines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
