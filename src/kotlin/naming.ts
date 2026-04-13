@@ -72,14 +72,14 @@ export function resolveMethodName(op: Operation, service: Service, ctx: EmitterC
   const lookup = buildResolvedLookup(ctx);
   const resolved = lookupMethodName(op, lookup);
   if (resolved) {
-    return methodName(trimMountedResourceFromMethod(resolved, resolveClassName(service, ctx)));
+    return trimMountedResourceFromMethod(methodName(resolved), resolveClassName(service, ctx));
   }
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) {
-    return methodName(trimMountedResourceFromMethod(existing.methodName, resolveClassName(service, ctx)));
+    return trimMountedResourceFromMethod(methodName(existing.methodName), resolveClassName(service, ctx));
   }
-  return methodName(trimMountedResourceFromMethod(op.name, resolveClassName(service, ctx)));
+  return trimMountedResourceFromMethod(methodName(op.name), resolveClassName(service, ctx));
 }
 
 /** Resolve the SDK class name (PascalCase) for a service. */

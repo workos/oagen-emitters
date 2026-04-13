@@ -32,6 +32,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { isHandwrittenOverride } from './overrides.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -83,6 +84,7 @@ function generateApiClass(
   const seenMethods = new Set<string>();
 
   for (const op of operations) {
+    if (isHandwrittenOverride(op)) continue;
     const resolvedOp = lookupResolved(op, resolvedLookup);
     if ((resolvedOp?.wrappers?.length ?? 0) > 0) {
       // Emit one method per wrapper instead of the raw union-split operation.
@@ -129,8 +131,11 @@ function generateApiClass(
   lines.push('');
   lines.push(`/** API accessor for ${mountName}. */`);
   // ktlint requires constructor-property parameters on their own line.
+  // The property is `internal` so hand-maintained extension files in the
+  // same module can reach the underlying [WorkOS] client (e.g. to build
+  // URLs that are not HTTP calls).
   lines.push(`class ${apiClass}(`);
-  lines.push('  private val workos: WorkOS');
+  lines.push('  internal val workos: WorkOS');
   lines.push(`) {`);
   for (const line of body) lines.push(line);
   lines.push('}');
@@ -230,7 +235,15 @@ function renderMethod(
   }
 
   // Build body / query config
-  const hasBody = bodyFields.length > 0 || Object.keys(defaults).length > 0 || inferFromClient.length > 0;
+  //
+  // POST/PUT/PATCH always need a request body — OkHttp rejects them otherwise.
+  // GET / DELETE never have a body, so defaults/inferFromClient are treated
+  // as query parameters for those methods instead.
+  const methodAllowsBody = ['POST', 'PUT', 'PATCH'].includes(httpMethod);
+  const hasBody =
+    methodAllowsBody &&
+    (bodyFields.length > 0 || Object.keys(defaults).length > 0 || inferFromClient.length > 0 || methodAllowsBody);
+  const appendDefaultsAsQuery = !methodAllowsBody && (Object.keys(defaults).length > 0 || inferFromClient.length > 0);
   const pathExpr = buildPathExpression(op.path, pathParams);
 
   if (isPaginated) {
@@ -257,6 +270,14 @@ function renderMethod(
   } else {
     lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
     for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
+    if (appendDefaultsAsQuery) {
+      for (const [k, v] of Object.entries(defaults)) lines.push(`    params += ${ktLiteral(k)} to ${ktLiteral(v)}`);
+      // Client-inferred fields may be nullable (e.g. clientId). Skip when null
+      // rather than serializing "null" into the URL.
+      for (const k of inferFromClient) {
+        lines.push(`    workos.${clientFieldExpression(k)}?.let { params += ${ktLiteral(k)} to it }`);
+      }
+    }
 
     if (hasBody) {
       lines.push(`    val body = linkedMapOf<String, Any?>()`);

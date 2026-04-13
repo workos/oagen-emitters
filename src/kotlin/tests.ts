@@ -1,22 +1,38 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Operation, Service, Model } from '@workos/oagen';
+import type {
+  ApiSpec,
+  EmitterContext,
+  GeneratedFile,
+  Operation,
+  Service,
+  Model,
+  TypeRef,
+  ResolvedOperation,
+  ResolvedWrapper,
+} from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { apiClassName, packageSegment, resolveMethodName, ktStringLiteral, className } from './naming.js';
-import { groupByMount, lookupResolved, buildResolvedLookup } from '../shared/resolved-ops.js';
+import { apiClassName, packageSegment, resolveMethodName, ktStringLiteral, className, propertyName } from './naming.js';
+import { mapTypeRef } from './type-map.js';
+import { groupByMount, lookupResolved, buildResolvedLookup, buildHiddenParams } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { isHandwrittenOverride } from './overrides.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
 
 /**
- * Generate one JUnit 5 + WireMock test class per API mount group.
+ * Generate one JUnit 5 + WireMock test class per API mount group, plus a
+ * cross-cutting model round-trip test.
  *
- * Coverage per service:
- *  - Happy-path success test exercising the simplest non-wrapper operation
- *    (deserializes response, asserts at least one typed field value).
- *  - 401/404/429/500 error mapping tests using the same operation.
+ * Per mount group the emitter produces:
+ *  - A happy-path test for every operation whose required arguments can be
+ *    synthesized (primitives, enums, arrays, maps). Deserializes a minimal
+ *    JSON response and asserts a non-null result.
+ *  - 401/404/429/500 error-mapping tests against one representative operation
+ *    in the group.
  *
- * Plus a cross-cutting "model round-trip" test that deserializes and
- * re-serializes a sample of generated models, proving that the Jackson
- * bindings actually preserve the schema.
+ * Operations with required arguments we can't synthesize (e.g. a required
+ * model object in the request body) fall back to error-only coverage using
+ * the representative operation.
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -40,137 +56,408 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   return files;
 }
 
+interface OpTest {
+  method: string;
+  httpMethod: string; // lowercase for WireMock
+  pathForWireMock: string;
+  callArgs: string;
+  responseClass: string | null;
+  minimalResponseBody: string;
+  canEmitHappyPath: boolean;
+  imports: Set<string>;
+}
+
 function generateServiceTestClass(
   mountName: string,
   operations: Operation[],
   ctx: EmitterContext,
-  resolvedLookup: Map<string, import('@workos/oagen').ResolvedOperation>,
+  resolvedLookup: Map<string, ResolvedOperation>,
 ): string | null {
-  // Pick a simple operation: GET preferred, no required body fields, no path params if possible.
-  // Falls back to any non-wrapper modelled-response op if nothing simpler exists.
-  let pick: Operation | null = null;
-  let pickMethod: string | null = null;
-  const candidates: Operation[] = [];
+  const imports = new Set<string>();
+  // Base JUnit/WireMock/exception imports — always present.
+  imports.add('com.github.tomakehurst.wiremock.client.WireMock.aResponse');
+  imports.add('com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching');
+  imports.add('com.workos.common.exceptions.GenericServerException');
+  imports.add('com.workos.common.exceptions.NotFoundException');
+  imports.add('com.workos.common.exceptions.RateLimitException');
+  imports.add('com.workos.common.exceptions.UnauthorizedException');
+  imports.add('com.workos.test.TestBase');
+  imports.add('org.junit.jupiter.api.Assertions.assertNotNull');
+  imports.add('org.junit.jupiter.api.Assertions.assertThrows');
+  imports.add('org.junit.jupiter.api.Test');
+
+  const opTests: OpTest[] = [];
+
   for (const op of operations) {
+    if (isHandwrittenOverride(op)) continue;
     const resolved = lookupResolved(op, resolvedLookup);
-    if ((resolved?.wrappers?.length ?? 0) > 0) continue;
-    const plan = planOperation(op);
-    if (!plan.isModelResponse) continue;
-    candidates.push(op);
-  }
-  // Prefer GETs with no path params, then GETs with path params, then any.
-  const preference = (op: Operation): number => {
-    let score = 0;
-    if (op.httpMethod.toUpperCase() === 'GET') score += 100;
-    score -= op.pathParams.length * 10;
-    return score;
-  };
-  candidates.sort((a, b) => preference(b) - preference(a));
-  pick = candidates[0] ?? null;
-  if (pick) {
-    const svc = findService(ctx, pick);
-    if (svc) pickMethod = resolveMethodName(pick, svc, ctx);
-  }
-  if (!pick || !pickMethod) return null;
-  // Bail if the chosen operation requires body fields beyond path params —
-  // we can't synthesize correct values for them from here.
-  const bodyModel =
-    pick.requestBody?.kind === 'model'
-      ? ctx.spec.models.find((m) => pick!.requestBody?.kind === 'model' && m.name === pick!.requestBody.name)
-      : null;
-  if (bodyModel && bodyModel.fields.some((f) => f.required)) return null;
-
-  // For the happy-path test, skip if the response model has required non-null
-  // fields — `{}` won't deserialize and we don't synthesize fixtures here.
-  const planForResponse = planOperation(pick);
-  let canEmitHappyPath = true;
-  if (!planForResponse.isPaginated && planForResponse.responseModelName) {
-    const responseModel = ctx.spec.models.find((m) => m.name === planForResponse.responseModelName);
-    if (responseModel) {
-      const hasRequiredNonNullable = responseModel.fields.some((f) => f.required && f.type.kind !== 'nullable');
-      if (hasRequiredNonNullable) canEmitHappyPath = false;
+    const wrappers = resolved?.wrappers ?? [];
+    if (wrappers.length > 0) {
+      // Union-split operation — emit one test per wrapper.
+      for (const wrapper of wrappers) {
+        const test = buildWrapperTest(op, wrapper, ctx);
+        if (test) opTests.push(test);
+      }
+      continue;
     }
+
+    const test = buildOperationTest(op, resolved, ctx);
+    if (test) opTests.push(test);
   }
 
-  const plan = planOperation(pick);
+  if (opTests.length === 0) return null;
+
+  // Deduplicate by method name (split operations map to distinct methods;
+  // non-wrapper operations already have unique names).
+  const seen = new Set<string>();
+  const uniqueTests = opTests.filter((t) => {
+    if (seen.has(t.method)) return false;
+    seen.add(t.method);
+    return true;
+  });
+
+  // Pick a "representative" op for error-mapping tests. Prefer the first op
+  // that has no path params (simplest URL to stub). Fall back to the first.
+  const repOp = uniqueTests.find((t) => !t.pathForWireMock.includes('sample-arg')) ?? uniqueTests[0];
+
+  // Only register per-op imports for tests that will actually emit a body.
+  // Ops that can't synthesize a happy path don't contribute to the file, so
+  // their imports (HTTP methods, payload types) would be unused.
+  const httpMethodsUsed = new Set<string>();
+  for (const t of uniqueTests) {
+    if (!t.canEmitHappyPath) continue;
+    t.imports.forEach((i) => imports.add(i));
+    httpMethodsUsed.add(t.httpMethod);
+  }
+  // The representative op is used for error-mapping tests regardless of its
+  // happy-path status, so its imports + HTTP method are always needed.
+  repOp.imports.forEach((i) => imports.add(i));
+  httpMethodsUsed.add(repOp.httpMethod);
+
+  for (const m of httpMethodsUsed) {
+    imports.add(`com.github.tomakehurst.wiremock.client.WireMock.${m}`);
+  }
+
   const pkg = packageSegment(mountName);
   const apiCls = apiClassName(mountName);
-
-  const responseClass = plan.isPaginated ? 'Page' : plan.responseModelName ? className(plan.responseModelName) : null;
-  if (!responseClass) return null;
-
-  // Build a minimal JSON response body for the happy path.
-  const minimalBody = plan.isPaginated ? `{"data": [], "list_metadata": {"before": null, "after": null}}` : `{}`;
-
-  const pathForWireMock = pick.path.replace(/\{[^}]+\}/g, 'sample-arg');
-  const httpMethodWireMock = pick.httpMethod.toLowerCase();
-
-  // Build arg expressions for required path params
-  const callArgs = pick.pathParams.map(() => ktStringLiteral('sample-arg')).join(', ');
 
   const lines: string[] = [];
   lines.push(`package com.workos.${pkg}`);
   lines.push('');
-  lines.push('import com.github.tomakehurst.wiremock.client.WireMock.aResponse');
-  lines.push(`import com.github.tomakehurst.wiremock.client.WireMock.${httpMethodWireMock}`);
-  lines.push('import com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching');
-  lines.push('import com.workos.common.exceptions.GenericServerException');
-  lines.push('import com.workos.common.exceptions.NotFoundException');
-  lines.push('import com.workos.common.exceptions.RateLimitException');
-  lines.push('import com.workos.common.exceptions.UnauthorizedException');
-  lines.push('import com.workos.test.TestBase');
-  if (canEmitHappyPath) lines.push('import org.junit.jupiter.api.Assertions.assertNotNull');
-  lines.push('import org.junit.jupiter.api.Assertions.assertThrows');
-  lines.push('import org.junit.jupiter.api.Test');
+  for (const imp of [...imports].sort()) {
+    lines.push(`import ${imp}`);
+  }
   lines.push('');
   lines.push(`class ${apiCls}Test : TestBase() {`);
   lines.push(`  private fun api() = ${apiCls}(createWorkOSClient())`);
-  if (canEmitHappyPath) {
-    lines.push('');
-    lines.push(`  @Test`);
-    lines.push(`  fun \`${pickMethod} returns a typed response\`() {`);
-    lines.push('    wireMockRule.stubFor(');
-    lines.push(`      ${httpMethodWireMock}(urlPathMatching(${ktStringLiteral(pathForWireMock)}))`);
-    lines.push(`        .willReturn(`);
-    lines.push(`          aResponse()`);
-    lines.push(`            .withStatus(200)`);
-    lines.push(`            .withHeader("Content-Type", "application/json")`);
-    lines.push(`            .withBody(${ktStringLiteral(minimalBody)})`);
-    lines.push(`        )`);
-    lines.push('    )');
-    if (callArgs) {
-      lines.push(`    val result = api().${pickMethod}(${callArgs})`);
-    } else {
-      lines.push(`    val result = api().${pickMethod}()`);
-    }
-    lines.push('    assertNotNull(result)');
-    lines.push('  }');
+
+  for (const t of uniqueTests) {
+    if (!t.canEmitHappyPath) continue;
+    emitHappyPathTest(lines, t);
   }
 
-  emitErrorTest(lines, '401', 'UnauthorizedException', pickMethod, httpMethodWireMock, pathForWireMock, callArgs);
-  emitErrorTest(lines, '404', 'NotFoundException', pickMethod, httpMethodWireMock, pathForWireMock, callArgs);
-  emitErrorTest(lines, '429', 'RateLimitException', pickMethod, httpMethodWireMock, pathForWireMock, callArgs);
-  emitErrorTest(lines, '500', 'GenericServerException', pickMethod, httpMethodWireMock, pathForWireMock, callArgs);
+  emitErrorTest(lines, '401', 'UnauthorizedException', repOp);
+  emitErrorTest(lines, '404', 'NotFoundException', repOp);
+  emitErrorTest(lines, '429', 'RateLimitException', repOp);
+  emitErrorTest(lines, '500', 'GenericServerException', repOp);
 
   lines.push('}');
   lines.push('');
   return lines.join('\n');
 }
 
-function emitErrorTest(
-  lines: string[],
-  status: string,
-  exceptionName: string,
-  method: string,
-  wireMockMethod: string,
-  pathForWireMock: string,
-  callArgs: string,
-): void {
+function buildOperationTest(
+  op: Operation,
+  resolved: ResolvedOperation | undefined,
+  ctx: EmitterContext,
+): OpTest | null {
+  const svc = findService(ctx, op);
+  if (!svc) return null;
+  const method = resolveMethodName(op, svc, ctx);
+  const plan = planOperation(op);
+
+  const hidden = buildHiddenParams(resolved);
+
+  // Build call args in the order expected by the generated method signature:
+  //   pathParams ++ requiredQuery ++ requiredBodyFields
+  const imports = new Set<string>();
+  const argParts: string[] = [];
+
+  for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
+
+  const queryFields = op.queryParams.filter((p) => !hidden.has(p.name));
+  const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+  for (const qp of sortedQuery) {
+    if (!qp.required) break;
+    const val = synthValue(qp.type, ctx, imports);
+    if (val === null) return null;
+    argParts.push(val);
+  }
+
+  const bodyModel = resolveBodyModel(op, ctx);
+  if (bodyModel) {
+    const bodyFields = bodyModel.fields.filter((f) => !hidden.has(f.name));
+    // Dedup: path/query params take precedence over body fields with the same name.
+    const seenNames = new Set<string>();
+    for (const pp of op.pathParams) seenNames.add(propertyName(pp.name));
+    for (const qp of queryFields) seenNames.add(propertyName(qp.name));
+    const uniqueBody = bodyFields.filter((bf) => !seenNames.has(propertyName(bf.name)));
+    const sortedBody = [...uniqueBody].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+    for (const bf of sortedBody) {
+      if (!bf.required) break;
+      const val = synthValue(bf.type, ctx, imports);
+      if (val === null) return null;
+      argParts.push(val);
+    }
+  }
+
+  const plan2 = plan;
+  const responseClass = plan2.isPaginated
+    ? 'Page'
+    : plan2.responseModelName
+      ? className(plan2.responseModelName)
+      : null;
+
+  const minimalBody = buildResponseBody(plan2, ctx);
+
+  const canEmitHappyPath = responseClass !== null && minimalBody !== null;
+
+  return {
+    method,
+    httpMethod: op.httpMethod.toLowerCase(),
+    pathForWireMock: op.path.replace(/\{[^}]+\}/g, 'sample-arg'),
+    callArgs: argParts.join(', '),
+    responseClass,
+    minimalResponseBody: minimalBody ?? '{}',
+    canEmitHappyPath,
+    imports,
+  };
+}
+
+function buildResponseBody(plan: ReturnType<typeof planOperation>, ctx: EmitterContext): string | null {
+  if (plan.isPaginated) {
+    return `{"data": [], "list_metadata": {"before": null, "after": null}}`;
+  }
+  if (!plan.responseModelName) return null;
+  return synthJsonForModelName(plan.responseModelName, ctx, new Set());
+}
+
+function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterContext): OpTest | null {
+  const method = propertyName(wrapper.name);
+  const imports = new Set<string>();
+  const argParts: string[] = [];
+
+  for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
+
+  const resolved = resolveWrapperParams(wrapper, ctx);
+  for (const rp of resolved) {
+    if (rp.isOptional) continue;
+    if (!rp.field) {
+      argParts.push(ktStringLiteral('sample-arg'));
+      continue;
+    }
+    const val = synthValue(rp.field.type, ctx, imports);
+    if (val === null) return null;
+    argParts.push(val);
+  }
+
+  const responseClass = wrapper.responseModelName ? className(wrapper.responseModelName) : null;
+  const minimalBody = wrapper.responseModelName
+    ? synthJsonForModelName(wrapper.responseModelName, ctx, new Set())
+    : null;
+  const canEmitHappyPath = responseClass !== null && minimalBody !== null;
+
+  return {
+    method,
+    httpMethod: op.httpMethod.toLowerCase(),
+    pathForWireMock: op.path.replace(/\{[^}]+\}/g, 'sample-arg'),
+    callArgs: argParts.join(', '),
+    responseClass,
+    minimalResponseBody: minimalBody ?? '{}',
+    canEmitHappyPath,
+    imports,
+  };
+}
+
+/** Synthesize a Kotlin expression for a typed value. Returns null if we cannot. */
+function synthValue(type: TypeRef, ctx: EmitterContext, imports: Set<string>): string | null {
+  if (type.kind === 'nullable') {
+    return 'null';
+  }
+  if (type.kind === 'primitive') {
+    if (type.format === 'binary') return 'ByteArray(0)';
+    if (type.format === 'date-time') {
+      imports.add('java.time.OffsetDateTime');
+      return 'OffsetDateTime.now()';
+    }
+    switch (type.type) {
+      case 'string':
+        return '"sample-arg"';
+      case 'integer':
+        if (type.format === 'int64') return '0L';
+        return '0';
+      case 'number':
+        return '0.0';
+      case 'boolean':
+        return 'false';
+    }
+    return null;
+  }
+  if (type.kind === 'enum') {
+    const cls = className(type.name);
+    imports.add(`com.workos.types.${cls}`);
+    return `${cls}.values().first()`;
+  }
+  if (type.kind === 'array') {
+    // Empty list of the right item type. Kotlin's List<T> is invariant.
+    const itemType = renderTypeForSynthesis(type.items, ctx, imports);
+    if (itemType === null) return null;
+    return `emptyList<${itemType}>()`;
+  }
+  if (type.kind === 'map') {
+    const valueType = renderTypeForSynthesis(type.valueType, ctx, imports);
+    if (valueType === null) return null;
+    return `emptyMap<String, ${valueType}>()`;
+  }
+  if (type.kind === 'literal') {
+    if (typeof type.value === 'string') return ktStringLiteral(type.value);
+    if (typeof type.value === 'number') return String(type.value);
+    if (typeof type.value === 'boolean') return String(type.value);
+    return 'null';
+  }
+  // model / union — too complex to synthesize generically.
+  return null;
+}
+
+/**
+ * Render a Kotlin type string for use as a generic type parameter in a
+ * synthesized empty collection. Registers any required imports (enums,
+ * models). Returns null when the type can't be reduced to a concrete
+ * Kotlin class.
+ */
+function renderTypeForSynthesis(type: TypeRef, ctx: EmitterContext, imports: Set<string>): string | null {
+  if (type.kind === 'model') {
+    const cls = className(type.name);
+    imports.add(`com.workos.models.${cls}`);
+    return cls;
+  }
+  if (type.kind === 'enum') {
+    const cls = className(type.name);
+    imports.add(`com.workos.types.${cls}`);
+    return cls;
+  }
+  if (type.kind === 'union') {
+    // Unions render as Any; an empty list is still valid.
+    return 'Any';
+  }
+  // For everything else (primitives, arrays, maps, literals) the IR mapping
+  // produces a self-contained Kotlin type expression.
+  return mapTypeRef(type);
+}
+
+function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
+  const body = op.requestBody;
+  if (!body) return null;
+  if (body.kind !== 'model') return null;
+  return ctx.spec.models.find((m) => m.name === body.name) ?? null;
+}
+
+/**
+ * Build a minimal JSON string whose required fields satisfy the model's
+ * contract. Nested model references are resolved recursively. Returns null
+ * if a required field has a type we can't synthesize (e.g. open union).
+ */
+function synthJsonForModelName(name: string, ctx: EmitterContext, visited: Set<string>): string | null {
+  if (visited.has(name)) return null;
+  visited.add(name);
+  const model = ctx.spec.models.find((m) => m.name === name);
+  if (!model) return null;
+
+  const entries: string[] = [];
+  for (const field of model.fields) {
+    if (!field.required) continue;
+    const val = synthJsonValue(field.type, ctx, visited);
+    if (val === null) {
+      visited.delete(name);
+      return null;
+    }
+    entries.push(`${JSON.stringify(field.name)}: ${val}`);
+  }
+  visited.delete(name);
+  return `{${entries.join(', ')}}`;
+}
+
+/** Produce a JSON literal (string) for a given IR TypeRef, or null. */
+function synthJsonValue(type: TypeRef, ctx: EmitterContext, visited: Set<string>): string | null {
+  if (type.kind === 'nullable') return 'null';
+  if (type.kind === 'primitive') {
+    if (type.format === 'binary') return '""';
+    if (type.format === 'date-time') return '"2024-01-01T00:00:00Z"';
+    if (type.format === 'date') return '"2024-01-01"';
+    switch (type.type) {
+      case 'string':
+        return '"sample"';
+      case 'integer':
+      case 'number':
+        return '0';
+      case 'boolean':
+        return 'false';
+    }
+    return null;
+  }
+  if (type.kind === 'enum') {
+    const em = ctx.spec.enums.find((e) => e.name === type.name);
+    if (em && em.values.length > 0) {
+      return JSON.stringify(String(em.values[0].value));
+    }
+    return '"unknown"';
+  }
+  if (type.kind === 'array') return '[]';
+  if (type.kind === 'map') return '{}';
+  if (type.kind === 'literal') {
+    if (typeof type.value === 'string') return JSON.stringify(type.value);
+    if (typeof type.value === 'number') return String(type.value);
+    if (typeof type.value === 'boolean') return String(type.value);
+    return 'null';
+  }
+  if (type.kind === 'model') {
+    return synthJsonForModelName(type.name, ctx, visited);
+  }
+  if (type.kind === 'union') {
+    // Try to pick a synthesizable variant.
+    for (const v of type.variants) {
+      const syn = synthJsonValue(v, ctx, visited);
+      if (syn !== null) return syn;
+    }
+    return null;
+  }
+  return null;
+}
+
+function emitHappyPathTest(lines: string[], t: OpTest): void {
   lines.push('');
   lines.push(`  @Test`);
-  lines.push(`  fun \`${method} translates ${status} to ${exceptionName}\`() {`);
+  lines.push(`  fun \`${t.method} returns a typed response\`() {`);
   lines.push('    wireMockRule.stubFor(');
-  lines.push(`      ${wireMockMethod}(urlPathMatching(${ktStringLiteral(pathForWireMock)}))`);
+  lines.push(`      ${t.httpMethod}(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
+  lines.push(`        .willReturn(`);
+  lines.push(`          aResponse()`);
+  lines.push(`            .withStatus(200)`);
+  lines.push(`            .withHeader("Content-Type", "application/json")`);
+  emitWithBody(lines, '            ', t.minimalResponseBody);
+  lines.push(`        )`);
+  lines.push('    )');
+  emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
+  lines.push('    assertNotNull(result)');
+  lines.push('  }');
+}
+
+function emitErrorTest(lines: string[], status: string, exceptionName: string, t: OpTest): void {
+  lines.push('');
+  lines.push(`  @Test`);
+  lines.push(`  fun \`${t.method} translates ${status} to ${exceptionName}\`() {`);
+  lines.push('    wireMockRule.stubFor(');
+  lines.push(`      ${t.httpMethod}(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
   lines.push(`        .willReturn(`);
   lines.push(`          aResponse()`);
   lines.push(`            .withStatus(${status})`);
@@ -179,13 +466,154 @@ function emitErrorTest(
   lines.push(`        )`);
   lines.push('    )');
   lines.push(`    assertThrows(${exceptionName}::class.java) {`);
-  if (callArgs) {
-    lines.push(`      api().${method}(${callArgs})`);
-  } else {
-    lines.push(`      api().${method}()`);
-  }
+  emitCall(lines, '      ', `api().${t.method}`, t.callArgs);
   lines.push('    }');
   lines.push('  }');
+}
+
+/**
+ * Emit `.withBody("...")` either on one line or, when the encoded literal
+ * would push the line past ktlint's 140-char limit, broken into
+ * string-plus-string chunks joined with `+`.
+ */
+function emitWithBody(lines: string[], indent: string, body: string): void {
+  const encoded = ktStringLiteral(body);
+  const single = `${indent}.withBody(${encoded})`;
+  if (single.length <= KTLINT_MAX_LINE_LENGTH) {
+    lines.push(single);
+    return;
+  }
+  const innerIndent = `${indent}  `;
+  // Continuation chunks (index >= 1) use an additional 2-space indent and a
+  // trailing ` +` suffix. That's the longest form we need to accommodate.
+  const continuationIndent = innerIndent.length + 2;
+  const maxChunkLineLen = KTLINT_MAX_LINE_LENGTH - continuationIndent - 2;
+  const chunks = splitEscapedStringLiteral(encoded, maxChunkLineLen);
+  lines.push(`${indent}.withBody(`);
+  for (let i = 0; i < chunks.length; i++) {
+    const suffix = i === chunks.length - 1 ? '' : ' +';
+    // Kotlin/ktlint: continuation chunks sit at a deeper indent than the first.
+    const prefix = i === 0 ? '' : '  ';
+    lines.push(`${innerIndent}${prefix}${chunks[i]}${suffix}`);
+  }
+  lines.push(`${indent})`);
+}
+
+/**
+ * Split a Kotlin string literal (including its wrapping quotes) into
+ * smaller literals such that each one is <= [maxChunkLen] characters. Splits
+ * preferentially after commas or spaces, and never inside a `\X` escape
+ * sequence.
+ */
+function splitEscapedStringLiteral(literal: string, maxChunkLen: number): string[] {
+  // Strip the outer wrapping quotes.
+  const inner = literal.slice(1, -1);
+  const chunks: string[] = [];
+  // Reserve 2 chars for the wrapping quotes of each output chunk.
+  const target = Math.max(20, maxChunkLen - 2);
+  let i = 0;
+  while (i < inner.length) {
+    if (inner.length - i <= target) {
+      chunks.push(`"${inner.slice(i)}"`);
+      break;
+    }
+    // Prefer a split right after a comma or space within the window. The
+    // window is `[i, i + target - 1]` so `safeEnd = j + 1 <= i + target`,
+    // keeping the emitted chunk content <= `target` characters long.
+    const windowEnd = i + target - 1;
+    let safeEnd = -1;
+    for (let j = windowEnd; j > i; j--) {
+      const ch = inner[j];
+      if ((ch === ',' || ch === ' ') && !endsWithOddBackslash(inner, i, j)) {
+        safeEnd = j + 1;
+        break;
+      }
+    }
+    if (safeEnd === -1) {
+      // No comma/space — back up over any trailing backslash pair.
+      let end = i + target;
+      while (end > i && endsWithOddBackslash(inner, i, end)) end--;
+      safeEnd = end;
+    }
+    chunks.push(`"${inner.slice(i, safeEnd)}"`);
+    i = safeEnd;
+  }
+  return chunks;
+}
+
+/** True if the number of trailing `\` chars in `inner[start..pos-1]` is odd. */
+function endsWithOddBackslash(inner: string, start: number, pos: number): boolean {
+  let count = 0;
+  for (let k = pos - 1; k >= start && inner[k] === '\\'; k--) count++;
+  return count % 2 === 1;
+}
+
+/**
+ * Emit `<prefix>(<args>)` either on a single line or, if that would exceed
+ * ktlint's 140-char limit, broken across multiple lines with one argument
+ * per line. [indent] is the leading whitespace on the expression line.
+ *
+ * When splitting a `val name = call.expr(...)` form, the assignment's RHS is
+ * moved to its own line (ktlint: "A multiline expression should start on a
+ * new line").
+ */
+function emitCall(lines: string[], indent: string, prefix: string, args: string): void {
+  const single = `${indent}${prefix}(${args})`;
+  if (single.length <= KTLINT_MAX_LINE_LENGTH) {
+    lines.push(single);
+    return;
+  }
+  // If the prefix is an assignment (`val x = expr.call`), split the assignment
+  // so the expression starts on its own line with an extra indent level.
+  const assignMatch = /^((?:val|var) [^=]+=)\s*(.+)$/.exec(prefix);
+  const exprPrefix = assignMatch ? assignMatch[2] : prefix;
+  const exprIndent = assignMatch ? `${indent}  ` : indent;
+  if (assignMatch) lines.push(`${indent}${assignMatch[1]}`);
+  lines.push(`${exprIndent}${exprPrefix}(`);
+  const argIndent = `${exprIndent}  `;
+  const parts = splitTopLevelArgs(args);
+  for (let i = 0; i < parts.length; i++) {
+    const suffix = i === parts.length - 1 ? '' : ',';
+    lines.push(`${argIndent}${parts[i]}${suffix}`);
+  }
+  lines.push(`${exprIndent})`);
+}
+
+const KTLINT_MAX_LINE_LENGTH = 140;
+
+/** Split a call-argument string on top-level commas (ignoring nested parens/quotes). */
+function splitTopLevelArgs(args: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let buf = '';
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    if (inString) {
+      buf += ch;
+      if (ch === '\\' && i + 1 < args.length) {
+        buf += args[++i];
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      buf += ch;
+      continue;
+    }
+    if (ch === '(' || ch === '<' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === '>' || ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(buf.trim());
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
 }
 
 function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
