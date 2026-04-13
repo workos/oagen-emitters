@@ -19,6 +19,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const aliasOf = collectEnumAliasOf(enums);
   setEnumAliases(aliasOf);
   setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
+  diagnoseDivergentEnums(enums);
 
   const files: GeneratedFile[] = [];
 
@@ -125,6 +126,52 @@ function escapeXml(s: string): string {
 export function primeEnumAliases(enums: Enum[]): void {
   setEnumAliases(collectEnumAliasOf(enums));
   setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
+}
+
+/**
+ * Warn when two enums share a trailing stem (e.g., `ConnectionType`) but
+ * carry divergent wire values. Such pairs usually mean the spec drifted:
+ * one endpoint documents a different set of enum members than another for
+ * the same concept. Catching this at generation time surfaces API/spec
+ * mismatches that would otherwise ship quietly.
+ */
+export function diagnoseDivergentEnums(enums: Enum[]): void {
+  const byStem = new Map<string, Enum[]>();
+  for (const e of enums) {
+    if (e.values.length < 2) continue;
+    const stem = trailingPascalStem(e.name);
+    if (!stem) continue;
+    if (!byStem.has(stem)) byStem.set(stem, []);
+    byStem.get(stem)!.push(e);
+  }
+
+  for (const [stem, group] of byStem) {
+    if (group.length < 2) continue;
+    const canonicalValues = valueSignature(group[0]);
+    const divergent = group.filter((e) => valueSignature(e) !== canonicalValues);
+    if (divergent.length === 0) continue;
+    // Don't warn for pure dedupe (same values, different names) — that's
+    // already handled by the alias pass.
+    const valueSets = new Set(group.map(valueSignature));
+    if (valueSets.size === 1) continue;
+    const summary = group.map((e) => `${e.name}[${e.values.length}]`).join(', ');
+    console.warn(`[oagen:dotnet] Divergent enums sharing stem "${stem}": ${summary}`);
+  }
+}
+
+function trailingPascalStem(name: string): string | null {
+  // Extract the last two PascalCase segments so that `SSOConnectionType`
+  // and `ConnectionFindResponseConnectionType` both map to `ConnectionType`.
+  const segments = name.match(/[A-Z]+[a-z0-9]*/g);
+  if (!segments || segments.length < 2) return null;
+  return segments.slice(-2).join('');
+}
+
+function valueSignature(e: Enum): string {
+  return [...e.values]
+    .map((v) => String(v.value))
+    .sort()
+    .join('|');
 }
 
 function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
