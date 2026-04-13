@@ -185,13 +185,28 @@ function renderMethod(
   }
 
   // Deduplicate: path params take precedence; query params second; body last.
-  // If a body field shares a name with a path/query param, prefer the path/query
-  // (caller already provided a value) and drop the body entry.
+  // If a body field collides with a path/query param, rename the body field's
+  // Kotlin parameter (e.g. `slug` → `bodySlug`) so callers can pass both
+  // values. The wire name on the body map still uses the original field name.
   const paramNames = new Set<string>();
   for (const pp of pathParams) paramNames.add(propertyName(pp.name));
   const uniqueQuery = queryParams.filter((qp) => !paramNames.has(propertyName(qp.name)));
   for (const qp of uniqueQuery) paramNames.add(propertyName(qp.name));
-  const uniqueBody = bodyFields.filter((bf) => !paramNames.has(propertyName(bf.name)));
+
+  // Map body field wire name → Kotlin parameter name. When the natural name
+  // collides with a path/query, prefix with `body` (e.g. slug → bodySlug).
+  const bodyParamNames = new Map<string, string>();
+  for (const bf of bodyFields) {
+    const natural = propertyName(bf.name);
+    if (paramNames.has(natural)) {
+      const renamed = `body${natural.charAt(0).toUpperCase()}${natural.slice(1)}`;
+      bodyParamNames.set(bf.name, renamed);
+      paramNames.add(renamed);
+    } else {
+      bodyParamNames.set(bf.name, natural);
+      paramNames.add(natural);
+    }
+  }
 
   const params: string[] = [];
   for (const pp of pathParams) params.push(`    ${propertyName(pp.name)}: String`);
@@ -201,9 +216,9 @@ function renderMethod(
     params.push(renderParam(qp.name, qp.type, qp.required));
   }
 
-  const sortedBodyFields = [...uniqueBody].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+  const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const bf of sortedBodyFields) {
-    params.push(renderParam(bf.name, bf.type, bf.required));
+    params.push(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required));
   }
 
   // Per-request options trailer (always optional)
@@ -237,13 +252,19 @@ function renderMethod(
   // Build body / query config
   //
   // POST/PUT/PATCH always need a request body — OkHttp rejects them otherwise.
-  // GET / DELETE never have a body, so defaults/inferFromClient are treated
-  // as query parameters for those methods instead.
-  const methodAllowsBody = ['POST', 'PUT', 'PATCH'].includes(httpMethod);
+  // DELETE and GET only emit a body when the spec explicitly declares one
+  // (OpenAPI allows DELETE-with-body; GET-with-body is uncommon but legal).
+  // GET never carries defaults/inferFromClient in the body — those fall back
+  // to the query string for GET.
+  const methodAlwaysHasBody = ['POST', 'PUT', 'PATCH'].includes(httpMethod);
+  const specDeclaresBody = op.requestBody !== undefined;
   const hasBody =
-    methodAllowsBody &&
-    (bodyFields.length > 0 || Object.keys(defaults).length > 0 || inferFromClient.length > 0 || methodAllowsBody);
-  const appendDefaultsAsQuery = !methodAllowsBody && (Object.keys(defaults).length > 0 || inferFromClient.length > 0);
+    methodAlwaysHasBody ||
+    (specDeclaresBody && httpMethod !== 'GET') ||
+    ((httpMethod === 'PUT' || httpMethod === 'PATCH' || httpMethod === 'POST' || httpMethod === 'DELETE') &&
+      (Object.keys(defaults).length > 0 || inferFromClient.length > 0) &&
+      specDeclaresBody);
+  const appendDefaultsAsQuery = !hasBody && (Object.keys(defaults).length > 0 || inferFromClient.length > 0);
   const pathExpr = buildPathExpression(op.path, pathParams);
 
   if (isPaginated) {
@@ -281,7 +302,7 @@ function renderMethod(
 
     if (hasBody) {
       lines.push(`    val body = linkedMapOf<String, Any?>()`);
-      for (const bf of sortedBodyFields) lines.push(...emitBodyField(bf));
+      for (const bf of sortedBodyFields) lines.push(...emitBodyField(bf, bodyParamNames.get(bf.name)!));
       for (const [k, v] of Object.entries(defaults)) lines.push(`    body[${ktLiteral(k)}] = ${ktLiteral(v)}`);
       for (const k of inferFromClient) lines.push(`    body[${ktLiteral(k)}] = workos.${clientFieldExpression(k)}`);
       lines.push(`    val config =`);
@@ -302,7 +323,13 @@ function renderMethod(
       lines.push(`      )`);
     }
 
-    if (plan.responseModelName) {
+    if (plan.responseModelName && plan.isArrayResponse) {
+      // `type: array` response — deserialize as List<T> via TypeReference.
+      const itemClass = className(plan.responseModelName);
+      imports.add('com.fasterxml.jackson.core.type.TypeReference');
+      lines.push(`    val responseType = object : TypeReference<List<${itemClass}>>() {}`);
+      lines.push(`    return workos.baseClient.request(config, responseType)`);
+    } else if (plan.responseModelName) {
       const responseClass = className(plan.responseModelName);
       lines.push(`    return workos.baseClient.request(config, ${responseClass}::class.java)`);
     } else if (plan.isDelete || !plan.isModelResponse) {
@@ -324,6 +351,11 @@ function resolveReturnType(plan: ReturnType<typeof planOperation>, imports: Set<
     const item = className(itemName);
     imports.add(`com.workos.models.${item}`);
     return `Page<${item}>`;
+  }
+  if (plan.responseModelName && plan.isArrayResponse) {
+    const cls = className(plan.responseModelName);
+    imports.add(`com.workos.models.${cls}`);
+    return `List<${cls}>`;
   }
   if (plan.responseModelName) {
     const cls = className(plan.responseModelName);
@@ -349,18 +381,58 @@ function resolvePaginatedItemName(name: string | null, ctx?: EmitterContext): st
 }
 
 function renderParam(name: string, type: TypeRef, required: boolean): string {
-  const kotlinName = propertyName(name);
+  return renderParamNamed(propertyName(name), type, required);
+}
+
+function renderParamNamed(kotlinName: string, type: TypeRef, required: boolean): string {
   const mapped = required ? mapTypeRef(type) : mapTypeRefOptional(type);
   return required ? `    ${kotlinName}: ${mapped}` : `    ${kotlinName}: ${mapped} = null`;
+}
+
+/**
+ * Unwrap a possibly-nullable type to check if the inner type is an array,
+ * and return the array's item type for downstream serialization decisions.
+ */
+function unwrapArray(t: TypeRef): TypeRef | null {
+  if (t.kind === 'array') return t.items;
+  if (t.kind === 'nullable' && t.inner.kind === 'array') return t.inner.items;
+  return null;
+}
+
+/**
+ * Serialize a single value expression for a query parameter.  For enums we
+ * use `.value` so the wire name is used; for everything else `.toString()`.
+ */
+function valueExprForQuery(type: TypeRef): string {
+  const inner = type.kind === 'nullable' ? type.inner : type;
+  if (inner.kind === 'enum') return 'it.value';
+  return 'it.toString()';
 }
 
 function emitQueryParam(p: Parameter, indent: string): string[] {
   const prop = propertyName(p.name);
   const rendered = queryParamToString(p.type, prop);
-  if (p.required) return [`${indent}params += ${ktLiteral(p.name)} to ${rendered}`];
-  if (p.type.kind === 'array' || (p.type.kind === 'nullable' && p.type.inner.kind === 'array')) {
-    return [`${indent}if (${prop} != null) ${prop}.forEach { params += ${ktLiteral(p.name)} to it.toString() }`];
+  const arrayItem = unwrapArray(p.type);
+  if (arrayItem) {
+    // Honor `style: form, explode: false` → comma-joined. Default (explode:true
+    // or unspecified for form) → repeated keys.  `p.explode ?? true` matches
+    // the OpenAPI default for query parameters when `style` is form.
+    const explode = p.explode ?? true;
+    const itemExpr = valueExprForQuery(arrayItem);
+    if (!explode) {
+      if (p.required) {
+        return [`${indent}params += ${ktLiteral(p.name)} to ${prop}.joinToString(",") { ${itemExpr} }`];
+      }
+      return [
+        `${indent}if (${prop} != null) params += ${ktLiteral(p.name)} to ${prop}.joinToString(",") { ${itemExpr} }`,
+      ];
+    }
+    if (p.required) {
+      return [`${indent}${prop}.forEach { params += ${ktLiteral(p.name)} to ${itemExpr} }`];
+    }
+    return [`${indent}if (${prop} != null) ${prop}.forEach { params += ${ktLiteral(p.name)} to ${itemExpr} }`];
   }
+  if (p.required) return [`${indent}params += ${ktLiteral(p.name)} to ${rendered}`];
   return [`${indent}if (${prop} != null) params += ${ktLiteral(p.name)} to ${rendered}`];
 }
 
@@ -370,8 +442,8 @@ function queryParamToString(type: TypeRef, varName: string): string {
   return `${varName}.toString()`;
 }
 
-function emitBodyField(field: Field): string[] {
-  const prop = propertyName(field.name);
+function emitBodyField(field: Field, kotlinParamName: string): string[] {
+  const prop = kotlinParamName;
   if (field.required) return [`    body[${ktLiteral(field.name)}] = ${prop}`];
   return [`    if (${prop} != null) body[${ktLiteral(field.name)}] = ${prop}`];
 }

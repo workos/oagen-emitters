@@ -196,13 +196,11 @@ function buildOperationTest(
 
   const bodyModel = resolveBodyModel(op, ctx);
   if (bodyModel) {
+    // Body fields always pass; colliding names are renamed (e.g. slug →
+    // bodySlug) by the resources emitter, so every required body field still
+    // needs a test argument here.
     const bodyFields = bodyModel.fields.filter((f) => !hidden.has(f.name));
-    // Dedup: path/query params take precedence over body fields with the same name.
-    const seenNames = new Set<string>();
-    for (const pp of op.pathParams) seenNames.add(propertyName(pp.name));
-    for (const qp of queryFields) seenNames.add(propertyName(qp.name));
-    const uniqueBody = bodyFields.filter((bf) => !seenNames.has(propertyName(bf.name)));
-    const sortedBody = [...uniqueBody].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+    const sortedBody = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
     for (const bf of sortedBody) {
       if (!bf.required) break;
       const val = synthValue(bf.type, ctx, imports);
@@ -239,7 +237,12 @@ function buildResponseBody(plan: ReturnType<typeof planOperation>, ctx: EmitterC
     return `{"data": [], "list_metadata": {"before": null, "after": null}}`;
   }
   if (!plan.responseModelName) return null;
-  return synthJsonForModelName(plan.responseModelName, ctx, new Set());
+  const itemJson = synthJsonForModelName(plan.responseModelName, ctx, new Set());
+  if (itemJson === null) return null;
+  // For `type: array` responses, the Kotlin method returns `List<T>` and
+  // Jackson expects a JSON array on the wire, not a single object.
+  if (plan.isArrayResponse) return `[${itemJson}]`;
+  return itemJson;
 }
 
 function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterContext): OpTest | null {
