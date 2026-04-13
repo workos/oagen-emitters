@@ -1,6 +1,6 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { mapTypeRef, isValueTypeRef } from './type-map.js';
-import { className, fieldName } from './naming.js';
+import { className, fieldName, emitXmlDoc, deprecationMessage, escapeCsAttributeString } from './naming.js';
 
 // Import and re-export shared model detection utilities
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
@@ -87,13 +87,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     // XML doc comment
     if (model.description) {
-      const descLines = model.description.split('\n').filter((l) => l.trim());
-      lines.push(`    /// <summary>${escapeXml(descLines[0])}</summary>`);
+      lines.push(...emitXmlDoc(model.description, '    '));
     } else {
       lines.push(`    /// <summary>Represents a ${humanize(model.name)}.</summary>`);
     }
 
-    lines.push(`    public class ${csClassName} : WorkOSEntity<${csClassName}>`);
+    lines.push(`    public class ${csClassName}`);
     lines.push('    {');
 
     // Deduplicate fields by C# property name
@@ -126,17 +125,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         }
       }
 
-      // Field description
-      if (field.description?.trim()) {
+      // Field description (full multi-line, with continuations as <remarks>)
+      const fieldDocs = emitXmlDoc(field.description, '        ');
+      if (fieldDocs.length > 0) {
         lines.push('');
-        const fdLines = field.description.split('\n').filter((l) => l.trim());
-        if (fdLines.length > 0) {
-          lines.push(`        /// <summary>${escapeXml(fdLines[0])}</summary>`);
-        }
+        lines.push(...fieldDocs);
       }
 
       if (field.deprecated) {
-        lines.push(`        [System.Obsolete("This field is deprecated.")]`);
+        const msg = escapeCsAttributeString(deprecationMessage(field.description, 'field'));
+        lines.push(`        [System.Obsolete("${msg}")]`);
       }
 
       lines.push(`        [JsonProperty("${field.name}")]`);
@@ -195,8 +193,4 @@ function humanize(name: string): string {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .toLowerCase();
-}
-
-function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
