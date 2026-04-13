@@ -125,12 +125,10 @@ const operationHints: Record<string, OperationHint> = {
   'POST /user_management/users/{id}/email_verification/confirm': {
     name: 'verify_email',
   },
-  // Password-reset names previously matched the spec literally but were
-  // semantically inverted: POST /password_reset *creates* a reset request,
-  // POST /password_reset/confirm is the operation that actually resets the
-  // password. Pick names that reflect what each endpoint does.
-  'POST /user_management/password_reset': { name: 'create_password_reset' },
-  'POST /user_management/password_reset/confirm': { name: 'reset_password' },
+  'POST /user_management/password_reset': { name: 'reset_password' },
+  'POST /user_management/password_reset/confirm': {
+    name: 'confirm_password_reset',
+  },
   'GET /user_management/users/{id}/sessions': { name: 'list_sessions' },
   'GET /user_management/users/{id}/identities': { name: 'get_user_identities' },
   'POST /user_management/cors_origins': { name: 'create_cors_origin' },
