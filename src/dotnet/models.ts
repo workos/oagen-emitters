@@ -113,6 +113,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push(`    public class ${csClassName}`);
     lines.push('    {');
 
+    // Track Dictionary<string, object> fields so we can emit a typed
+    // accessor helper per field at the end of the class body.
+    const dictObjectFields: Array<{ csName: string; typeText: string }> = [];
+
     // Deduplicate fields by C# property name
     const seenFieldNames = new Set<string>();
     for (const field of model.fields) {
@@ -167,6 +171,34 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isRequiredEnum = field.required && isEnumRef(field.type) && constValue === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
       lines.push(`        public ${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
+
+      // Track additional-properties / metadata dictionaries for typed accessors.
+      if (isDictionaryOfObject(csType)) {
+        dictObjectFields.push({ csName: csFieldName, typeText: csType });
+      }
+    }
+
+    for (const dict of dictObjectFields) {
+      lines.push('');
+      lines.push(`        /// <summary>`);
+      lines.push(`        /// Typed accessor for <see cref="${dict.csName}"/>. Returns the value stored under`);
+      lines.push(`        /// <paramref name="key"/> coerced to <typeparamref name="T"/>, or the default`);
+      lines.push(`        /// value when the key is missing or the value is not convertible.`);
+      lines.push(`        /// </summary>`);
+      lines.push(`        /// <typeparam name="T">Expected value type.</typeparam>`);
+      lines.push(`        /// <param name="key">The key to look up.</param>`);
+      lines.push(`        public T? Get${dict.csName}Attribute<T>(string key)`);
+      lines.push('        {');
+      lines.push(`            if (this.${dict.csName} == null) return default;`);
+      lines.push(`            if (!this.${dict.csName}.TryGetValue(key, out var value)) return default;`);
+      lines.push(`            if (value is T typed) return typed;`);
+      lines.push(`            if (value is Newtonsoft.Json.Linq.JToken token) return token.ToObject<T>();`);
+      lines.push(`            if (value is System.Text.Json.JsonElement element)`);
+      lines.push('            {');
+      lines.push(`                return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText());`);
+      lines.push('            }');
+      lines.push(`            return default;`);
+      lines.push('        }');
     }
 
     lines.push('    }');
@@ -180,6 +212,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   return files;
+}
+
+/**
+ * Whether the emitted C# type is `Dictionary<string, object>` or its
+ * nullable variant — the usual shape of metadata / additional-properties
+ * fields that get typed accessors.
+ */
+function isDictionaryOfObject(csType: string): boolean {
+  const bare = csType.endsWith('?') ? csType.slice(0, -1) : csType;
+  return bare === 'Dictionary<string, object>';
 }
 
 /**
