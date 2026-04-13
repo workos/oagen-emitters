@@ -85,18 +85,36 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
   lines.push('        }');
 
   const emittedTestMethods = new Set<string>();
+  const resolvedLookupForTests = buildResolvedLookup(ctx);
 
   for (const op of service.operations) {
     const plan = planOperation(op);
     const method = resolveCsMethodName(op, resolvedName, ctx);
     const isPaginated = plan.isPaginated;
     const isDelete = plan.isDelete;
+    const resolvedOp = lookupResolved(op, resolvedLookupForTests);
+    const isUrlBuilder = resolvedOp?.urlBuilder ?? false;
 
     if (emittedTestMethods.has(method)) continue;
     emittedTestMethods.add(method);
 
     const testName = `Test${method}`;
     const expectedPath = buildExpectedPath(op);
+    if (isUrlBuilder) {
+      // URL-builder operations return a string synchronously without issuing
+      // an HTTP request. Assert the URL structure instead of mocking HTTP.
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public void ${testName}()`);
+      lines.push('        {');
+      lines.push(`            var url = this.service.${method}(${callArgs});`);
+      lines.push('            Assert.NotNull(url);');
+      lines.push(`            Assert.Contains("${expectedPath}", url);`);
+      lines.push('            Assert.Empty(this.httpMock.CapturedRequests);');
+      lines.push('        }');
+      continue;
+    }
     if (isPaginated && op.pagination) {
       // Paginated test
       let fixturePath: string | null = null;
@@ -359,8 +377,9 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     }
   }
 
-  // Error tests
-  const sampleOp = service.operations[0];
+  // Error tests — pick the first non-URL-builder operation so the error
+  // assertions run against a real HTTP call.
+  const sampleOp = service.operations.find((o) => !(lookupResolved(o, resolvedLookupForTests)?.urlBuilder ?? false));
   if (sampleOp) {
     const plan = planOperation(sampleOp);
     const method = resolveCsMethodName(sampleOp, resolvedName, ctx);
