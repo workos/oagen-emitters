@@ -1,6 +1,14 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
 import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
-import { className, fieldName, emitXmlDoc, deprecationMessage, escapeCsAttributeString } from './naming.js';
+import {
+  articleFor,
+  className,
+  fieldName,
+  humanize,
+  emitXmlDoc,
+  deprecationMessage,
+  escapeCsAttributeString,
+} from './naming.js';
 
 // Import and re-export shared model detection utilities
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
@@ -107,7 +115,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (model.description) {
       lines.push(...emitXmlDoc(model.description, '    '));
     } else {
-      lines.push(`    /// <summary>Represents a ${humanize(model.name)}.</summary>`);
+      const human = humanize(model.name);
+      lines.push(`    /// <summary>Represents ${articleFor(human)} ${human}.</summary>`);
     }
 
     lines.push(`    public class ${csClassName}`);
@@ -285,11 +294,4 @@ function structuralHash(model: Model, aliasOf: Map<string, string> = new Map()):
     .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type, aliasOf))}:${f.required}`)
     .sort()
     .join('|');
-}
-
-function humanize(name: string): string {
-  return name
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .toLowerCase();
 }

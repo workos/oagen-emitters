@@ -285,10 +285,46 @@ export function emitXmlDoc(description: string | undefined | null, indent: strin
   return out;
 }
 
-/** Convert a snake_case or camelCase name to a human-readable lowercase string. */
+/**
+ * Convert a snake_case or camelCase name to a human-readable string.
+ * Preserves acronyms (SSO, API, URL, JWT, OIDC, …) as uppercase tokens and
+ * lowercases the rest so generated XML docs read naturally.
+ */
 export function humanize(name: string): string {
-  return name
-    .replace(/_/g, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .toLowerCase();
+  // Split on underscores and at camelCase boundaries, keeping acronym runs
+  // intact: `SSOConnection` → ["SSO", "Connection"]; `listUsers` → ["list",
+  // "Users"]; `api_key` → ["api", "key"].
+  const parts = name.split('_').flatMap((segment) =>
+    segment
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+  return parts.map((p) => (isAcronymToken(p) ? p : p.toLowerCase())).join(' ');
+}
+
+/** True when a single token looks like a runtime acronym (2+ uppercase letters). */
+function isAcronymToken(token: string): boolean {
+  if (token.length < 2) return false;
+  return /^[A-Z0-9]+$/.test(token);
+}
+
+/**
+ * Return the English indefinite article ("a" or "an") appropriate for the
+ * given humanized phrase. Uses the first spoken letter of the first word
+ * and accounts for common silent-h / vowel-like-consonant cases so
+ * generated docs read correctly.
+ */
+export function articleFor(phrase: string): string {
+  const trimmed = phrase.trim();
+  if (!trimmed) return 'a';
+  const firstWord = trimmed.split(/\s+/)[0];
+  if (!firstWord) return 'a';
+  // Acronyms are voiced letter-by-letter — use the first letter's sound.
+  if (isAcronymToken(firstWord)) {
+    return /^[AEFHILMNORSX]/.test(firstWord) ? 'an' : 'a';
+  }
+  const first = firstWord.toLowerCase();
+  return /^[aeiou]/.test(first) ? 'an' : 'a';
 }

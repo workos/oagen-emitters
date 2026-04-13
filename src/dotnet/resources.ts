@@ -96,7 +96,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('    using System.Threading;');
   lines.push('    using System.Threading.Tasks;');
   lines.push('');
-  lines.push(`    /// <summary>Service for ${mountName} API operations.</summary>`);
+  lines.push(
+    `    /// <summary>Service that exposes the ${humanize(mountName)} API operations on <see cref="WorkOSClient"/>.</summary>`,
+  );
   lines.push(`    public class ${svcTypeName} : Service`);
   lines.push('    {');
   lines.push(`        /// <summary>`);

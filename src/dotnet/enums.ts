@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
-import { className, deprecationMessage, escapeCsAttributeString } from './naming.js';
+import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 
 /**
@@ -104,13 +104,6 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   }
 
   return files;
-}
-
-function humanize(name: string): string {
-  return name
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .toLowerCase();
 }
 
 function escapeXml(s: string): string {
