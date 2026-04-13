@@ -192,6 +192,76 @@ export function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Distill a deprecation message from a spec description. Looks for common
+ * WorkOS patterns ("Deprecated. Use X.", "Use X instead.", etc.) and falls
+ * back to a generic message scoped to the item kind.
+ *
+ * Output is suitable for inlining into `[System.Obsolete("...")]`.
+ */
+export function deprecationMessage(
+  description: string | undefined | null,
+  kind: 'field' | 'parameter' | 'operation' | 'value',
+): string {
+  const generic = `This ${kind} is deprecated.`;
+  if (!description) return generic;
+
+  const text = description.replace(/\s+/g, ' ').trim();
+  if (!text) return generic;
+
+  // Match: "Deprecated. Use `foo` instead." / "Deprecated: use Foo."
+  const deprecatedClause = text.match(/Deprecated[.:][\s]*(.*?)(?:\.|$)/i);
+  if (deprecatedClause?.[1]?.trim()) {
+    return `Deprecated. ${deprecatedClause[1].trim().replace(/\.$/, '')}.`;
+  }
+
+  // Match: "Use `foo` instead." anywhere in the description
+  const useInstead = text.match(/Use\s+`?([^`.\s]+)`?\s+instead/i);
+  if (useInstead) {
+    return `${generic.replace(/\.$/, '')} Use \`${useInstead[1]}\` instead.`;
+  }
+
+  return generic;
+}
+
+/**
+ * Escape a C# string literal for use inside `[System.Obsolete("...")]`.
+ * Doubles embedded quotes and escapes backslashes.
+ */
+export function escapeCsAttributeString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Emit an XML doc summary block from a possibly multi-line spec description.
+ * The first non-empty line becomes the `<summary>`. If there are additional
+ * non-empty lines, they are emitted as `<remarks>...</remarks>` so users get
+ * the full context in tooling (IntelliSense / `dotnet help`) instead of just
+ * the first sentence.
+ *
+ * Returns an empty array if `description` is null/empty so callers can spread
+ * the result unconditionally.
+ */
+export function emitXmlDoc(description: string | undefined | null, indent: string): string[] {
+  if (!description) return [];
+  const lines = description
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l);
+  if (lines.length === 0) return [];
+
+  const out: string[] = [];
+  out.push(`${indent}/// <summary>${escapeXml(lines[0])}</summary>`);
+  if (lines.length > 1) {
+    out.push(`${indent}/// <remarks>`);
+    for (const remark of lines.slice(1)) {
+      out.push(`${indent}/// ${escapeXml(remark)}`);
+    }
+    out.push(`${indent}/// </remarks>`);
+  }
+  return out;
+}
+
 /** Convert a snake_case or camelCase name to a human-readable lowercase string. */
 export function humanize(name: string): string {
   return name
