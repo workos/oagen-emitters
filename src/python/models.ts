@@ -62,7 +62,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const canonicalDir = resolveDir(canonicalService);
       const canonicalClassName = className(canonicalName);
       const lines: string[] = [];
-      lines.push('from typing_extensions import TypeAlias');
+      lines.push('from typing import TypeAlias');
       // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);

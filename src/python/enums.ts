@@ -42,7 +42,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalCls = className(canonicalName);
       const aliasCls = className(enumDef.name);
       const lines: string[] = [];
-      lines.push('from typing_extensions import TypeAlias');
+      lines.push('from typing import TypeAlias');
       // Use explicit __all__ to prevent ruff F401 from stripping the re-export
       // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
@@ -71,7 +71,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
           content: [
-            'from typing_extensions import TypeAlias',
+            'from typing import TypeAlias',
             importLine,
             '',
             `${aliasName}: TypeAlias = ${canonicalCls}`,
@@ -96,7 +96,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     if (enumDef.values.length === 0) {
       lines.push('from typing import Union');
-      lines.push('from typing_extensions import TypeAlias');
+      lines.push('from typing import TypeAlias');
       lines.push('');
       lines.push(`${cls}: TypeAlias = str`);
     } else {
@@ -118,7 +118,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (allStrings) {
         lines.push('from enum import Enum');
         lines.push('from typing import Optional');
-        lines.push('from typing_extensions import Literal, TypeAlias');
+        lines.push('from typing import Literal, TypeAlias');
         lines.push('');
         lines.push('');
         lines.push(`class ${cls}(str, Enum):`);
@@ -126,7 +126,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('');
       } else if (allIntegers) {
         lines.push('from enum import IntEnum');
-        lines.push('from typing_extensions import Literal, TypeAlias');
+        lines.push('from typing import Literal, TypeAlias');
         lines.push('');
         lines.push('');
         lines.push(`class ${cls}(IntEnum):`);
@@ -135,7 +135,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       } else {
         // Mixed types — fall back to Union[Literal[...], str]
         lines.push('from typing import Union');
-        lines.push('from typing_extensions import Literal, TypeAlias');
+        lines.push('from typing import Literal, TypeAlias');
         lines.push('');
         const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
         lines.push(`${cls}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
@@ -196,7 +196,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
         content: [
-          'from typing_extensions import TypeAlias',
+          'from typing import TypeAlias',
           `from .${fileName(enumDef.name)} import ${cls}`,
           '',
           `${aliasName}: TypeAlias = ${cls}`,
