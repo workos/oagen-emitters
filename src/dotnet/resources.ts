@@ -21,6 +21,9 @@ import {
   clientFieldExpression,
   httpMethodCs,
   escapeXml,
+  emitXmlDoc,
+  deprecationMessage,
+  escapeCsAttributeString,
   humanize,
 } from './naming.js';
 import {
@@ -92,11 +95,20 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('    using System.Threading;');
   lines.push('    using System.Threading.Tasks;');
   lines.push('');
-  lines.push(`    /// <summary>Handles ${mountName} operations.</summary>`);
+  lines.push(`    /// <summary>Service for ${mountName} API operations.</summary>`);
   lines.push(`    public class ${svcTypeName} : Service`);
   lines.push('    {');
+  lines.push(`        /// <summary>`);
+  lines.push(`        /// Parameterless constructor for mocking. The service uses the singleton`);
+  lines.push(`        /// client configured via <see cref="WorkOSConfiguration.WorkOSClient"/>.`);
+  lines.push(`        /// </summary>`);
   lines.push(`        public ${svcTypeName}() { }`);
   lines.push('');
+  lines.push(`        /// <summary>`);
+  lines.push(`        /// Initializes a new instance of <see cref="${svcTypeName}"/> bound to the`);
+  lines.push(`        /// supplied <paramref name="client"/>.`);
+  lines.push(`        /// </summary>`);
+  lines.push(`        /// <param name="client">The HTTP client used to make API requests.</param>`);
   lines.push(`        public ${svcTypeName}(WorkOSClient client) : base(client) { }`);
 
   const emittedMethods = new Set<string>();
@@ -108,23 +120,29 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     emittedMethods.add(method);
 
     const resolvedOp = lookupResolved(op, resolvedLookup);
+    const isUnionSplit = (resolvedOp?.wrappers?.length ?? 0) > 0;
 
-    lines.push('');
-    const methodCode = generateMethod(svcTypeName, mountName, method, op, plan, ctx, resolvedOp);
-    lines.push(methodCode);
-
-    // Generate auto-pagination method for paginated list operations
-    if (plan.isPaginated && op.pagination) {
+    // For union-split operations (e.g. POST /user_management/authenticate), do
+    // NOT emit the raw method — its options class is empty and any caller will
+    // get a 422 from the API. Only emit the typed AuthenticateWith* wrappers.
+    if (!isUnionSplit) {
       lines.push('');
-      const autoPagingCode = generateAutoPagingMethod(mountName, method, op, plan, ctx, resolvedOp);
-      lines.push(autoPagingCode);
+      const methodCode = generateMethod(svcTypeName, mountName, method, op, plan, ctx, resolvedOp);
+      lines.push(methodCode);
+
+      // Generate auto-pagination method for paginated list operations
+      if (plan.isPaginated && op.pagination) {
+        lines.push('');
+        const autoPagingCode = generateAutoPagingMethod(mountName, method, op, plan, ctx, resolvedOp);
+        lines.push(autoPagingCode);
+      }
     }
 
     // Generate union split wrapper methods
-    if (resolvedOp?.wrappers && resolvedOp.wrappers.length > 0) {
-      const wrapperLines = generateWrapperMethods(svcTypeName, resolvedOp, ctx);
+    if (isUnionSplit) {
+      const wrapperLines = generateWrapperMethods(svcTypeName, resolvedOp!, ctx);
       lines.push(...wrapperLines);
-      for (const w of resolvedOp.wrappers) {
+      for (const w of resolvedOp!.wrappers!) {
         emittedMethods.add(methodName(w.name));
       }
     }
@@ -159,6 +177,11 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const resolvedOp = lookupResolved(op, resolvedLookup);
     const hidden = buildHiddenParams(resolvedOp);
 
+    // Union-split operations expose typed wrapper option classes
+    // (AuthenticateWith*Options) instead of a generic raw options class.
+    // Skip emitting an empty *CreateAuthenticateOptions placeholder.
+    if ((resolvedOp?.wrappers?.length ?? 0) > 0) continue;
+
     const optionsClass = optionsClassName(mountName, method);
     if (emittedOptions.has(optionsClass)) continue;
 
@@ -182,6 +205,10 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const baseClass = isPaginated ? 'ListOptions' : 'BaseOptions';
 
     optionsLines.push('');
+    const opSummary = op.description?.split('\n').find((l) => l.trim()) ?? `${method} on ${mountName}`;
+    optionsLines.push(
+      `    /// <summary>Request options for <see cref="${className(mountName)}Service.${method}"/>: ${escapeXml(opSummary.trim())}</summary>`,
+    );
     optionsLines.push(`    public class ${optionsClass} : ${baseClass}`);
     optionsLines.push('    {');
 
@@ -218,13 +245,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
             }
           }
 
-          const fieldDescLine = field.description
-            ?.split('\n')
-            .map((l) => l.trim())
-            .find((l) => l);
-          if (fieldDescLine) {
-            optionsLines.push(`        /// <summary>${escapeXml(fieldDescLine)}</summary>`);
-          }
+          optionsLines.push(...emitXmlDoc(field.description, '        '));
           optionsLines.push(`        [JsonProperty("${field.name}")]`);
           optionsLines.push(`        [STJS.JsonPropertyName("${field.name}")]`);
           optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
@@ -263,15 +284,10 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
         }
       }
 
-      const paramDescLine = param.description
-        ?.split('\n')
-        .map((l) => l.trim())
-        .find((l) => l);
-      if (paramDescLine) {
-        optionsLines.push(`        /// <summary>${escapeXml(paramDescLine)}</summary>`);
-      }
+      optionsLines.push(...emitXmlDoc(param.description, '        '));
       if (param.deprecated) {
-        optionsLines.push(`        [System.Obsolete("This parameter is deprecated.")]`);
+        const msg = escapeCsAttributeString(deprecationMessage(param.description, 'parameter'));
+        optionsLines.push(`        [System.Obsolete("${msg}")]`);
       }
       optionsLines.push(`        [JsonProperty("${param.name}")]`);
       optionsLines.push(`        [STJS.JsonPropertyName("${param.name}")]`);
@@ -349,9 +365,15 @@ function generateMethod(
     ? op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName
     : null;
 
+  // URL-builder operations (e.g., /sso/authorize redirect endpoints) build a URL
+  // string for the caller to redirect to instead of issuing an HTTP request.
+  const isUrlBuilder = resolvedOp?.urlBuilder ?? false;
+
   // Return type
   let returnType: string;
-  if (isPaginated && op.pagination) {
+  if (isUrlBuilder) {
+    returnType = 'string';
+  } else if (isPaginated && op.pagination) {
     const itemType = resolveListItemType(op.pagination.itemType, ctx);
     returnType = `Task<WorkOSList<${itemType}>>`;
   } else if (isDelete) {
@@ -367,11 +389,8 @@ function generateMethod(
     returnType = 'Task';
   }
 
-  // XML doc comment
-  if (op.description) {
-    const descLines = op.description.split('\n').filter((l) => l.trim());
-    lines.push(`        /// <summary>${escapeXml(descLines[0])}</summary>`);
-  }
+  // XML doc comment (full multi-line description from the spec)
+  lines.push(...emitXmlDoc(op.description, '        '));
   for (const p of sortPathParamsByTemplateOrder(op)) {
     const paramDesc = p.description ? escapeXml(p.description) : `The ${humanize(p.name)}.`;
     lines.push(`        /// <param name="${localName(p.name)}">${paramDesc}</param>`);
@@ -382,9 +401,13 @@ function generateMethod(
   if (optionsClass) {
     lines.push(`        /// <param name="options">Request options.</param>`);
   }
-  lines.push(`        /// <param name="requestOptions">Per-request configuration overrides.</param>`);
-  lines.push(`        /// <param name="cancellationToken">Cancellation token.</param>`);
-  if (isPaginated && op.pagination) {
+  if (!isUrlBuilder) {
+    lines.push(`        /// <param name="requestOptions">Per-request configuration overrides.</param>`);
+    lines.push(`        /// <param name="cancellationToken">Cancellation token.</param>`);
+  }
+  if (isUrlBuilder) {
+    lines.push(`        /// <returns>The fully-qualified URL for the caller to redirect to.</returns>`);
+  } else if (isPaginated && op.pagination) {
     const itemType = resolveListItemType(op.pagination.itemType, ctx);
     lines.push(`        /// <returns>A page of <see cref="${itemType}"/> results.</returns>`);
   } else if (plan.responseModelName) {
@@ -392,7 +415,8 @@ function generateMethod(
     lines.push(`        /// <returns>The <see cref="${respType}"/> result.</returns>`);
   }
   if (op.deprecated) {
-    lines.push(`        [System.Obsolete("This operation is deprecated.")]`);
+    const msg = escapeCsAttributeString(deprecationMessage(op.description, 'operation'));
+    lines.push(`        [System.Obsolete("${msg}")]`);
   }
 
   // Method signature
@@ -407,10 +431,13 @@ function generateMethod(
     const isRequired = hasVisibleBodyFields && !isPaginated;
     params.push(isRequired ? `${optionsClass} options` : `${optionsClass}? options = null`);
   }
-  params.push('RequestOptions? requestOptions = null');
-  params.push('CancellationToken cancellationToken = default');
+  if (!isUrlBuilder) {
+    params.push('RequestOptions? requestOptions = null');
+    params.push('CancellationToken cancellationToken = default');
+  }
 
-  lines.push(`        public virtual async ${returnType} ${method}(${params.join(', ')})`);
+  const asyncKeyword = isUrlBuilder ? '' : 'async ';
+  lines.push(`        public virtual ${asyncKeyword}${returnType} ${method}(${params.join(', ')})`);
   lines.push('        {');
 
   // Inject hidden params
@@ -449,11 +476,15 @@ function generateMethod(
   if (hasBearerOverride && bearerParamName) {
     lines.push(`                AccessToken = ${localName(bearerParamName)},`);
   }
-  lines.push(`                RequestOptions = requestOptions,`);
+  if (!isUrlBuilder) {
+    lines.push(`                RequestOptions = requestOptions,`);
+  }
   lines.push('            };');
 
   // Make the call
-  if (isDelete) {
+  if (isUrlBuilder) {
+    lines.push('            return this.Client.BuildRequestUri(request).ToString();');
+  } else if (isDelete) {
     lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
   } else if (returnType.startsWith('Task<')) {
     const innerType = returnType.slice(5, -1);
