@@ -1,7 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString } from './naming.js';
-import { setEnumAliases } from './type-map.js';
+import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -13,10 +13,12 @@ import { setEnumAliases } from './type-map.js';
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
-  // Publish the alias map so model/options/wrapper emitters all resolve
-  // duplicate enum references to the canonical name.
+  // Publish the alias map + single-value enum set so model/options/wrapper
+  // emitters all resolve duplicate enum references to the canonical name and
+  // rewrite 1-value enum refs to `string`.
   const aliasOf = collectEnumAliasOf(enums);
   setEnumAliases(aliasOf);
+  setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
 
   const files: GeneratedFile[] = [];
 
@@ -26,8 +28,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // Skip duplicate enums — their references are retargeted to the canonical.
     if (aliasOf.has(enumDef.name)) continue;
 
-    // Skip empty enums (use string in type-map)
-    if (enumDef.values.length === 0) continue;
+    // Skip empty and single-value enums — the single-value case is a discriminator
+    // masquerading as an enum, and mapTypeRef rewrites such refs to `string` with
+    // a const initializer on the owning property.
+    if (enumDef.values.length <= 1) continue;
 
     // Deduplicate values
     const seenValues = new Set<string>();
@@ -120,6 +124,7 @@ function escapeXml(s: string): string {
  */
 export function primeEnumAliases(enums: Enum[]): void {
   setEnumAliases(collectEnumAliasOf(enums));
+  setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
 }
 
 function collectEnumAliasOf(enums: Enum[]): Map<string, string> {

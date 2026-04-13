@@ -14,10 +14,23 @@ const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal'
  */
 const enumAliases = new Map<string, string>();
 
+/**
+ * Names of enums that resolve to a single wire value and should therefore be
+ * mapped to C# `string` at reference sites (the owning property emits a
+ * const initializer). Populated by `setSingleValueEnumNames`.
+ */
+const singleValueEnumNames = new Set<string>();
+
 /** Replace the current enum-alias map. Safe to call more than once. */
 export function setEnumAliases(aliases: Map<string, string>): void {
   enumAliases.clear();
   for (const [k, v] of aliases) enumAliases.set(k, v);
+}
+
+/** Replace the set of enum names that are single-value discriminator stand-ins. */
+export function setSingleValueEnumNames(names: Iterable<string>): void {
+  singleValueEnumNames.clear();
+  for (const n of names) singleValueEnumNames.add(n);
 }
 
 /** Resolve an enum reference name to its canonical form. */
@@ -33,7 +46,14 @@ export function mapTypeRef(ref: TypeRef): string {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
     model: (r) => className(r.name),
-    enum: (r) => className(resolveEnumTypeName(r.name)),
+    enum: (r) => {
+      // Single-value enums (discriminator consts in disguise) map to `string`
+      // so the caller can't misuse a public one-member enum type. The
+      // owning property emits a const initializer separately.
+      if ((r.values?.length ?? 0) === 1) return 'string';
+      if (singleValueEnumNames.has(r.name)) return 'string';
+      return className(resolveEnumTypeName(r.name));
+    },
     union: (_r, variants) => joinUnionVariants(_r, variants),
     nullable: (_ref, inner) => {
       // With <Nullable>enable</Nullable>, all nullable types need `?`

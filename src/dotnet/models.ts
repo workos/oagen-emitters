@@ -14,6 +14,16 @@ export { isListWrapperModel, isListMetadataModel };
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
+  // Build a lookup from enum name → single wire value for 1-value enums so
+  // we can emit a const initializer on the owning property without needing
+  // the full EnumRef.values payload (which the IR sometimes omits on refs).
+  const enumConstByName = new Map<string, string>();
+  for (const e of ctx.spec.enums) {
+    if (e.values.length === 1) {
+      enumConstByName.set(e.name, String(e.values[0].value));
+    }
+  }
+
   const files: GeneratedFile[] = [];
 
   // Build structural hash for deduplication. Run the hash → canonical pass
@@ -113,10 +123,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isOptional = !field.required;
       const baseType = mapTypeRef(field.type);
       const isAlreadyNullable = baseType.endsWith('?');
+      const constValue = singleValueEnumConst(field.type, enumConstByName);
       let csType: string;
       let initializer = '';
+      let setterModifier = '';
 
-      if (isOptional) {
+      if (constValue !== null) {
+        // Discriminator-style single-value enum: emit as string with a const
+        // initializer and a non-public setter so callers can't drift the
+        // wire value. The converter still reads whatever the server sends.
+        csType = baseType; // already `string` for 1-value enum via mapTypeRef
+        initializer = ` = "${constValue}";`;
+        setterModifier = 'internal ';
+      } else if (isOptional) {
         if (isAlreadyNullable) {
           csType = baseType;
         } else if (isValueTypeRef(field.type)) {
@@ -145,9 +164,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         lines.push(`        [System.Obsolete("${msg}")]`);
       }
 
-      const isRequiredEnum = field.required && isEnumRef(field.type);
+      const isRequiredEnum = field.required && isEnumRef(field.type) && constValue === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
-      lines.push(`        public ${csType} ${csFieldName} { get; set; }${initializer}`);
+      lines.push(`        public ${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
     }
 
     lines.push('    }');
@@ -161,6 +180,31 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   return files;
+}
+
+/**
+ * If the given TypeRef is a single-value enum (a discriminator const
+ * masquerading as an enum), return the wire value as a raw string so the
+ * emitter can lock the field down with a const initializer and non-public
+ * setter. Returns null for any other type.
+ */
+function singleValueEnumConst(ref: TypeRef, enumConstByName: Map<string, string>): string | null {
+  // OpenAPI `enum: [value]` (single-value) is normalized by the IR to a
+  // LiteralType on the field, not an EnumRef.
+  if (ref.kind === 'literal') {
+    if (ref.value === null) return null;
+    if (typeof ref.value === 'string' || typeof ref.value === 'number' || typeof ref.value === 'boolean') {
+      return String(ref.value);
+    }
+    return null;
+  }
+  if (ref.kind !== 'enum') return null;
+  if (ref.values && ref.values.length === 1) {
+    const v = ref.values[0] as string | number | { value: string | number };
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    return String(v.value);
+  }
+  return enumConstByName.get(ref.name) ?? null;
 }
 
 /**
