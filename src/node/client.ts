@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { collectReferencedNames } from '@workos/oagen';
 import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
@@ -253,6 +255,45 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
       addBaselineExports(ctx.apiSurface.interfaces);
       addBaselineExports(ctx.apiSurface.typeAliases);
       addBaselineExports(ctx.apiSurface.enums);
+
+      // Scan the target directory for interface files not captured by the
+      // api-surface (e.g., list wrappers, hand-written types).  Only add
+      // files whose exported symbols don't collide with symbols already
+      // claimed by another directory's barrel (TS2308 prevention).
+      if (ctx.targetDir) {
+        const interfacesDir = path.join(ctx.targetDir, 'src', dirName, 'interfaces');
+        const symbols = dirSymbols.get(dirName) ?? new Set<string>();
+        try {
+          for (const entry of fs.readdirSync(interfacesDir)) {
+            if (entry === 'index.ts') continue;
+            if (!entry.endsWith('.ts')) continue;
+            const stem = entry.replace(/\.ts$/, '');
+            const exportLine = `export * from './${stem}';`;
+            if (exportSet.has(exportLine)) continue;
+
+            // Extract exported symbol names from the file to check for conflicts
+            const content = fs.readFileSync(path.join(interfacesDir, entry), 'utf-8');
+            const exportedNames: string[] = [];
+            for (const m of content.matchAll(/export\s+(?:interface|type|enum|class|const|function)\s+(\w+)/g)) {
+              exportedNames.push(m[1]);
+            }
+
+            // Skip if any exported name collides with a symbol already
+            // claimed by any file (same or different directory)
+            const hasCollision = exportedNames.some((name) => globalExistingSymbols.has(name));
+            if (hasCollision) continue;
+
+            // Safe to add — register symbols and include in barrel
+            for (const name of exportedNames) {
+              symbols.add(name);
+              globalExistingSymbols.add(name);
+            }
+            exportSet.add(exportLine);
+          }
+        } catch {
+          // Directory doesn't exist in target — nothing to scan
+        }
+      }
     }
 
     // Deduplicate and sort
