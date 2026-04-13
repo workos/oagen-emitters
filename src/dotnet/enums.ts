@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, deprecationMessage, escapeCsAttributeString } from './naming.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -71,7 +71,8 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push(`        /// <summary>${escapeXml(v.description)}</summary>`);
       }
       if (v.deprecated) {
-        lines.push(`        [System.Obsolete("This value is deprecated.")]`);
+        const msg = escapeCsAttributeString(deprecationMessage(v.description, 'value'));
+        lines.push(`        [System.Obsolete("${msg}")]`);
       }
       lines.push(`        [EnumMember(Value = "${v.value}")]`);
       const comma = i < uniqueValues.length - 1 ? ',' : ',';
