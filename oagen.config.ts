@@ -153,8 +153,16 @@ const operationHints: Record<string, OperationHint> = {
     name: 'remove_flag_target',
   },
 
+  // ── Organizations — audit log config (singular fetch, not a list) ───────
+  'GET /organizations/{id}/audit_log_configuration': {
+    name: 'get_audit_log_configuration',
+  },
+
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
-  'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
+  'GET /organizations/{id}/audit_logs_retention': {
+    name: 'get_organization_audit_logs_retention',
+    mountOn: 'AuditLogs',
+  },
   'PUT /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
 
   // ── Union split: POST /user_management/authenticate (8 variants) ────────
