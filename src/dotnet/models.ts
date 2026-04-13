@@ -16,27 +16,35 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const files: GeneratedFile[] = [];
 
-  // Build structural hash for deduplication
-  const modelHashMap = new Map<string, string>();
-  const hashGroups = new Map<string, string[]>();
-  for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
-    const hash = structuralHash(model);
-    modelHashMap.set(model.name, hash);
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(model.name);
-  }
-
-  // Pick canonical for each duplicate group
+  // Build structural hash for deduplication. Run the hash → canonical pass
+  // iteratively so that parent classes whose only structural difference is
+  // an already-aliased child type also collapse. Terminates when a full
+  // round produces no new aliases.
+  const eligibleModels = models.filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
   const aliasOf = new Map<string, string>();
-  for (const [hash, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    if (hash === '') continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
+  while (true) {
+    const hashGroups = new Map<string, string[]>();
+    for (const model of eligibleModels) {
+      const hash = structuralHash(model, aliasOf);
+      if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+      hashGroups.get(hash)!.push(model.name);
     }
+
+    let added = false;
+    for (const [hash, names] of hashGroups) {
+      if (names.length <= 1) continue;
+      if (hash === '') continue;
+      const sorted = [...names].sort();
+      const canonical = sorted[0];
+      for (let i = 1; i < sorted.length; i++) {
+        const name = sorted[i];
+        if (aliasOf.get(name) !== canonical) {
+          aliasOf.set(name, canonical);
+          added = true;
+        }
+      }
+    }
+    if (!added) break;
   }
 
   for (const model of models) {
@@ -159,31 +167,36 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
  * Normalize a TypeRef for structural comparison.
  * Enum references are normalized to their values (not names) so that
  * structurally identical enums with different names still match.
+ * Model references are rewritten to their canonical alias (if any) so that
+ * parents whose only difference is an already-aliased child collapse too.
  */
-function normalizeTypeForHash(ref: TypeRef): any {
+function normalizeTypeForHash(ref: TypeRef, aliasOf: Map<string, string>): any {
   if (ref.kind === 'enum') {
     // Normalize enum refs by their sorted values, not their name
     const vals = ref.values ? [...ref.values].sort() : [];
     return { kind: 'enum', values: vals };
   }
+  if (ref.kind === 'model') {
+    return { kind: 'model', name: aliasOf.get(ref.name) ?? ref.name };
+  }
   if (ref.kind === 'nullable') {
-    return { kind: 'nullable', inner: normalizeTypeForHash(ref.inner) };
+    return { kind: 'nullable', inner: normalizeTypeForHash(ref.inner, aliasOf) };
   }
   if (ref.kind === 'array') {
-    return { kind: 'array', items: normalizeTypeForHash(ref.items) };
+    return { kind: 'array', items: normalizeTypeForHash(ref.items, aliasOf) };
   }
   if (ref.kind === 'union') {
-    return { kind: 'union', variants: ref.variants.map(normalizeTypeForHash) };
+    return { kind: 'union', variants: ref.variants.map((v) => normalizeTypeForHash(v, aliasOf)) };
   }
   if (ref.kind === 'map') {
-    return { kind: 'map', valueType: normalizeTypeForHash(ref.valueType) };
+    return { kind: 'map', valueType: normalizeTypeForHash(ref.valueType, aliasOf) };
   }
   return ref;
 }
 
-function structuralHash(model: Model): string {
+function structuralHash(model: Model, aliasOf: Map<string, string> = new Map()): string {
   return model.fields
-    .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type))}:${f.required}`)
+    .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type, aliasOf))}:${f.required}`)
     .sort()
     .join('|');
 }
