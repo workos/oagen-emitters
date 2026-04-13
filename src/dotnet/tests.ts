@@ -9,7 +9,7 @@ import {
   serviceTypeName,
 } from './naming.js';
 import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
-import { generateFixtures } from './fixtures.js';
+import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
 import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
 
@@ -220,7 +220,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       if (!isArrayResp) {
         const respModelDef = spec.models.find((m) => m.name === respModel);
         if (respModelDef) {
-          const assertions = buildFixtureAssertions(respModelDef);
+          const assertions = buildFixtureAssertions(respModelDef, spec);
           for (const assertion of assertions) {
             lines.push(`            ${assertion}`);
           }
@@ -623,16 +623,35 @@ function buildExpectedPath(op: Operation): string {
   return expected;
 }
 
-function buildFixtureAssertions(model: import('@workos/oagen').Model): string[] {
+function buildFixtureAssertions(model: import('@workos/oagen').Model, spec: ApiSpec): string[] {
   const assertions: string[] = [];
 
-  // Assert 'id' field if present (use NotEmpty since fixture values may come from api-surface)
-  const idField = model.fields.find((f) => f.required && f.name === 'id');
-  if (idField) {
-    assertions.push(`Assert.NotEmpty(result.Id);`);
+  // Compute the exact fixture payload the generator emits for this model so
+  // we can assert against those values verbatim. Mapping regressions
+  // (snake_case drift, nested field loss) fail deterministically instead of
+  // silently passing NotEmpty checks.
+  const modelMap = new Map(spec.models.map((m) => [m.name, m]));
+  const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
+  let fixture: Record<string, unknown> = {};
+  try {
+    fixture = generateModelFixture(model, modelMap, enumMap);
+  } catch {
+    // Fall back to shape-only assertions if the fixture builder throws.
   }
 
-  // Assert 1-2 other required string fields (exclude date-time which maps to DateTimeOffset)
+  const idField = model.fields.find((f) => f.required && f.name === 'id');
+  if (idField) {
+    const idVal = fixture['id'];
+    if (typeof idVal === 'string' && idVal.length > 0) {
+      assertions.push(`Assert.Equal(${csStringLiteral(idVal)}, result.Id);`);
+    } else {
+      assertions.push(`Assert.NotEmpty(result.Id);`);
+    }
+  }
+
+  // Assert up to 2 additional required simple fields using the exact fixture
+  // value so snake_case mapping is verified. Skip date-time, binary, and
+  // anything that doesn't come out of the fixture as a non-empty string.
   let extraCount = 0;
   for (const field of model.fields) {
     if (extraCount >= 2) break;
@@ -640,10 +659,21 @@ function buildFixtureAssertions(model: import('@workos/oagen').Model): string[] 
     if (!field.required) continue;
     if (field.type.kind !== 'primitive' || field.type.type !== 'string') continue;
     if (field.type.format === 'date-time' || field.type.format === 'date') continue;
+    if (field.type.format === 'binary') continue;
     const csField = csFieldName(field.name);
-    assertions.push(`Assert.NotEmpty(result.${csField});`);
+    const val = fixture[field.name];
+    if (typeof val === 'string' && val.length > 0) {
+      assertions.push(`Assert.Equal(${csStringLiteral(val)}, result.${csField});`);
+    } else {
+      assertions.push(`Assert.NotEmpty(result.${csField});`);
+    }
     extraCount++;
   }
 
   return assertions;
+}
+
+/** Escape a JS string for use as a C# verbatim-friendly string literal. */
+function csStringLiteral(s: string): string {
+  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"`;
 }
