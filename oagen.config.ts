@@ -41,8 +41,9 @@ const operationHints: Record<string, OperationHint> = {
     name: 'get_authorization_url',
     defaults: { response_type: 'code' },
     inferFromClient: ['client_id'],
+    urlBuilder: true,
   },
-  'GET /sso/logout': { name: 'get_logout_url' },
+  'GET /sso/logout': { name: 'get_logout_url', urlBuilder: true },
   'GET /sso/profile': { name: 'get_profile' },
   'POST /sso/token': {
     name: 'get_profile_and_token',
@@ -58,8 +59,9 @@ const operationHints: Record<string, OperationHint> = {
     name: 'get_authorization_url',
     defaults: { response_type: 'code' },
     inferFromClient: ['client_id'],
+    urlBuilder: true,
   },
-  'GET /user_management/sessions/logout': { name: 'get_logout_url' },
+  'GET /user_management/sessions/logout': { name: 'get_logout_url', urlBuilder: true },
 
   // ── User Management — org membership actions ────────────────────────────
   'PUT /user_management/organization_memberships/{id}/deactivate': {
