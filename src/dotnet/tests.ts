@@ -192,6 +192,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
 
       const isArrayResp = !isPaginated && op.response?.kind === 'array';
+      const shapeSeed = buildRequestShapeSeed(op, plan, ctx, resolvedName);
 
       lines.push('');
       lines.push('        [Fact]');
@@ -208,7 +209,12 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
           `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, fixture);`,
         );
       }
-      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      const callArgs = shapeSeed.seededCallArgs ?? buildMethodCallArgs(op, plan, ctx, resolvedName);
+      if (shapeSeed.setupLines.length > 0) {
+        for (const setupLine of shapeSeed.setupLines) {
+          lines.push(`            ${setupLine}`);
+        }
+      }
       lines.push(`            var result = await this.service.${method}(${callArgs});`);
       lines.push('            Assert.NotNull(result);');
       if (!isArrayResp) {
@@ -222,6 +228,9 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       }
 
       lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.${httpMethodCs}, "${expectedPath}");`);
+      for (const assertLine of shapeSeed.assertLines) {
+        lines.push(`            ${assertLine}`);
+      }
       lines.push('        }');
     } else {
       lines.push('');
@@ -503,6 +512,107 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   }
 
   return args.join(', ');
+}
+
+/**
+ * Seed required request fields on the generated options expression and
+ * produce matching body/query assertions. Catches snake_case mapping
+ * regressions and missing-required-field bugs without requiring
+ * hand-written tests.
+ */
+interface RequestShapeSeed {
+  setupLines: string[];
+  seededCallArgs: string | null;
+  assertLines: string[];
+}
+
+function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mountName: string): RequestShapeSeed {
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const resolvedOp = lookupResolved(op, resolvedLookup);
+  const hidden = buildHiddenParams(resolvedOp);
+
+  // Collect required simple fields that we can seed with a string literal.
+  const bodySeeds: Array<{ wire: string; prop: string; value: string }> = [];
+  const querySeeds: Array<{ wire: string; prop: string; value: string }> = [];
+
+  const hasBody = plan.hasBody && op.requestBody;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) {
+      for (const field of bodyModel.fields) {
+        if (hidden.has(field.name)) continue;
+        if (!field.required) continue;
+        if (!isSeedableStringRef(field.type)) continue;
+        bodySeeds.push({
+          wire: field.name,
+          prop: csFieldName(field.name),
+          value: `test_${field.name}`,
+        });
+        if (bodySeeds.length >= 2) break;
+      }
+    }
+  }
+
+  for (const param of op.queryParams) {
+    if (hidden.has(param.name)) continue;
+    if (!param.required) continue;
+    if (!isSeedableStringRef(param.type)) continue;
+    // Skip pagination fields — they're set by the caller or the autopaging loop
+    if (['before', 'after', 'limit', 'order'].includes(param.name)) continue;
+    querySeeds.push({
+      wire: param.name,
+      prop: csFieldName(param.name),
+      value: `test_${param.name}`,
+    });
+    if (querySeeds.length >= 2) break;
+  }
+
+  if (bodySeeds.length === 0 && querySeeds.length === 0) {
+    return { setupLines: [], seededCallArgs: null, assertLines: [] };
+  }
+
+  const method = resolveCsMethodName(op, mountName, ctx);
+  const optName = optionsClassName(mountName, method);
+
+  // Rebuild call args with a seeded options variable named `options`.
+  const args: string[] = [];
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    args.push(`"test_${p.name}"`);
+  }
+  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+    args.push(`"test_${bearerParamName}"`);
+  }
+  args.push('options');
+
+  const setupLines: string[] = [`var options = new ${optName}();`];
+  for (const s of [...bodySeeds, ...querySeeds]) {
+    setupLines.push(`options.${s.prop} = "${s.value}";`);
+  }
+
+  const assertLines: string[] = [];
+  for (const s of bodySeeds) {
+    assertLines.push(`await this.httpMock.AssertRequestBodyContainsAsync("${s.wire}", "${s.value}");`);
+  }
+  for (const s of querySeeds) {
+    assertLines.push(`this.httpMock.AssertQueryParam("${s.wire}", "${s.value}");`);
+  }
+
+  return { setupLines, seededCallArgs: args.join(', '), assertLines };
+}
+
+/**
+ * A TypeRef is seedable as a string literal in a generated test when it maps
+ * to C# `string` (plain strings, formats like email/uuid, dates-as-strings).
+ * Enums and numeric types need dedicated representations and are skipped here.
+ */
+function isSeedableStringRef(ref: import('@workos/oagen').TypeRef): boolean {
+  if (ref.kind !== 'primitive') return false;
+  if (ref.type !== 'string') return false;
+  // `binary` maps to byte[], not a string literal
+  if (ref.format === 'binary') return false;
+  return true;
 }
 
 function buildExpectedPath(op: Operation): string {
