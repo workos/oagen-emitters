@@ -405,14 +405,33 @@ function buildBatchedCSharpScript(port: number, ns: string, calls: PlannedCall[]
 // ---------------------------------------------------------------------------
 
 /**
- * Find the .csproj file in the SDK directory. Returns the full resolved path.
+ * Find the .csproj file in the SDK directory. Searches the root first, then
+ * common subdirectory patterns (src/{Name}/) used by the generated SDK layout.
  */
 function findCsproj(sdkPath: string): string {
-  const files = readdirSync(sdkPath).filter((f) => f.endsWith('.csproj'));
-  if (files.length === 0) {
-    throw new Error(`No .csproj file found in ${sdkPath}`);
+  // Check root directory first
+  const rootFiles = readdirSync(sdkPath).filter((f) => f.endsWith('.csproj'));
+  if (rootFiles.length > 0) {
+    return resolve(sdkPath, rootFiles[0]);
   }
-  return resolve(sdkPath, files[0]);
+
+  // Check src/ subdirectories (generated SDK layout: src/WorkOS.net/WorkOS.net.csproj)
+  const srcDir = resolve(sdkPath, 'src');
+  if (existsSync(srcDir)) {
+    for (const subdir of readdirSync(srcDir)) {
+      const subdirPath = resolve(srcDir, subdir);
+      try {
+        const subFiles = readdirSync(subdirPath).filter((f) => f.endsWith('.csproj'));
+        if (subFiles.length > 0) {
+          return resolve(subdirPath, subFiles[0]);
+        }
+      } catch {
+        // Not a directory, skip
+      }
+    }
+  }
+
+  throw new Error(`No .csproj file found in ${sdkPath} or ${sdkPath}/src/*/`);
 }
 
 /**
@@ -427,6 +446,18 @@ function detectNamespace(sdkPath: string): string {
   // Fallback: use .csproj filename without extension
   const base = csprojPath.split('/').pop() ?? '';
   return base.replace('.csproj', '');
+}
+
+/**
+ * Detect the assembly name from the .csproj file's AssemblyName property.
+ * Falls back to namespace if not found.
+ */
+function detectAssemblyName(sdkPath: string): string {
+  const csprojPath = findCsproj(sdkPath);
+  const content = readFileSync(csprojPath, 'utf-8');
+  const match = content.match(/<AssemblyName>([^<]+)<\/AssemblyName>/);
+  if (match) return match[1];
+  return detectNamespace(sdkPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,9 +621,10 @@ async function main(): Promise<void> {
   const spec = await parseSpec(specPath);
   console.log(`Spec: ${spec.name} v${spec.version}`);
 
-  // Detect SDK namespace
+  // Detect SDK namespace and assembly name
   const ns = detectNamespace(sdkPath);
-  console.log(`SDK namespace: ${ns}`);
+  const assemblyName = detectAssemblyName(sdkPath);
+  console.log(`SDK namespace: ${ns}, assembly: ${assemblyName}`);
 
   // Load manifest
   const manifest = loadManifest(sdkPath);
@@ -620,10 +652,12 @@ async function main(): Promise<void> {
 
   // Step 1: Build the SDK project to a DLL
   const sdkCsprojPath = findCsproj(sdkPath);
+  const sdkCsprojDir = sdkCsprojPath.substring(0, sdkCsprojPath.lastIndexOf('/'));
+  const sdkDllDir = resolve(sdkPath, 'bin/Release');
   console.log('Building SDK...');
   try {
-    execSync(`dotnet build "${sdkCsprojPath}" -c Release -o "${resolve(sdkPath, 'bin/Release/net8.0')}"`, {
-      cwd: sdkPath,
+    execSync(`dotnet build "${sdkCsprojPath}" -c Release -o "${sdkDllDir}"`, {
+      cwd: sdkCsprojDir,
       timeout: 120000,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, DOTNET_NOLOGO: '1' },
@@ -635,9 +669,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Find the SDK DLL
-  const sdkDllDir = resolve(sdkPath, 'bin/Release/net8.0');
-  const sdkDll = resolve(sdkDllDir, `${ns}.dll`);
+  // Find the SDK DLL (use AssemblyName, not namespace)
+  const sdkDll = resolve(sdkDllDir, `${assemblyName}.dll`);
 
   // Step 2: Bootstrap the driver project referencing the built DLL
   mkdirSync(tmpDir, { recursive: true });

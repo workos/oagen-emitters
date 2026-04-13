@@ -1,0 +1,520 @@
+import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { planOperation } from '@workos/oagen';
+import {
+  className,
+  fixtureFileName,
+  fieldName as csFieldName,
+  methodName as csMethodName,
+  resolveMethodName,
+  serviceTypeName,
+} from './naming.js';
+import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
+import { generateFixtures } from './fixtures.js';
+import { isListWrapperModel } from './models.js';
+import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+
+/**
+ * Generate C# test files and JSON fixtures.
+ */
+export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+
+  // Generate fixture JSON files
+  const fixtures = generateFixtures(spec);
+  for (const fixture of fixtures) {
+    files.push({
+      path: fixture.path,
+      content: fixture.content,
+      headerPlacement: 'skip',
+    });
+  }
+
+  // Generate per-mount-target test files
+  const mountGroups = groupByMount(ctx);
+  const testEntries: Array<{ name: string; operations: Operation[] }> =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : spec.services.map((s) => ({
+          name: resolveResourceClassName(s, ctx),
+          operations: s.operations,
+        }));
+
+  for (const { name: mountName, operations } of testEntries) {
+    if (operations.length === 0) continue;
+    const mergedService: Service = { name: mountName, operations };
+    const testFile = generateServiceTest(mergedService, spec, ctx);
+    if (testFile) files.push(testFile);
+  }
+
+  return files;
+}
+
+function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContext): GeneratedFile | null {
+  if (service.operations.length === 0) return null;
+
+  const resolvedName = resolveResourceClassName(service, ctx);
+  const svcType = serviceTypeName(resolvedName);
+  const testClassName = `${svcType}Test`;
+  const testFile = `Tests/${testClassName}.cs`;
+
+  const lines: string[] = [];
+  lines.push(`namespace ${ctx.namespacePascal}Tests`);
+  lines.push('{');
+  lines.push('    using System.Collections.Generic;');
+  lines.push('    using System.Net;');
+  lines.push('    using System.Net.Http;');
+  lines.push('    using System.Threading.Tasks;');
+  lines.push(`    using ${ctx.namespacePascal};`);
+  lines.push('    using Xunit;');
+  lines.push('');
+  lines.push(`    public class ${testClassName}`);
+  lines.push('    {');
+  lines.push('        private readonly HttpMock httpMock;');
+  lines.push(`        private readonly ${svcType} service;`);
+  lines.push('');
+  lines.push(`        public ${testClassName}()`);
+  lines.push('        {');
+  lines.push('            this.httpMock = new HttpMock();');
+  lines.push(`            var client = new WorkOSClient(new WorkOSOptions`);
+  lines.push('            {');
+  lines.push('                ApiKey = "sk_test",');
+  lines.push('                ClientId = "client_test",');
+  lines.push('                HttpClient = this.httpMock.HttpClient,');
+  lines.push('            });');
+  lines.push(`            this.service = new ${svcType}(client);`);
+  lines.push('        }');
+
+  const emittedTestMethods = new Set<string>();
+
+  for (const op of service.operations) {
+    const plan = planOperation(op);
+    const method = resolveCsMethodName(op, resolvedName, ctx);
+    const isPaginated = plan.isPaginated;
+    const isDelete = plan.isDelete;
+
+    if (emittedTestMethods.has(method)) continue;
+    emittedTestMethods.add(method);
+
+    const testName = `Test${method}`;
+    const expectedPath = buildExpectedPath(op);
+    if (isPaginated && op.pagination) {
+      // Paginated test
+      let fixturePath: string | null = null;
+      const paginationItemType = op.pagination.itemType;
+      if (paginationItemType.kind === 'model') {
+        const itemModel = spec.models.find((m) => m.name === paginationItemType.name);
+        if (itemModel) {
+          let resolved = itemModel;
+          if (isListWrapperModel(itemModel)) {
+            const dataField = itemModel.fields.find((f) => f.name === 'data');
+            if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+              const inner = spec.models.find((m) => m.name === (dataField.type as any).items.name);
+              if (inner) resolved = inner;
+            }
+          }
+          fixturePath = `testdata/list_${fixtureFileName(resolved.name)}.json`;
+        }
+      }
+
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${testName}()`);
+      lines.push('        {');
+      if (fixturePath) {
+        lines.push(`            var fixture = System.IO.File.ReadAllText("${fixturePath}");`);
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, fixture);`,
+        );
+      } else {
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, "{\\"data\\":[],\\"list_metadata\\":{\\"before\\":null,\\"after\\":null}}");`,
+        );
+      }
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      lines.push(`            var result = await this.service.${method}(${callArgs});`);
+      lines.push('            Assert.NotNull(result);');
+      if (fixturePath) {
+        lines.push('            Assert.NotEmpty(result.Data);');
+      }
+      lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.Get, "${expectedPath}");`);
+      lines.push('        }');
+
+      // Empty list test
+      const emptyTestName = `Test${method}Empty`;
+      if (!emittedTestMethods.has(emptyTestName)) {
+        emittedTestMethods.add(emptyTestName);
+        const callArgsEmpty = buildMethodCallArgs(op, plan, ctx, resolvedName);
+        lines.push('');
+        lines.push('        [Fact]');
+        lines.push(`        public async Task ${emptyTestName}()`);
+        lines.push('        {');
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, "{\\"data\\":[],\\"list_metadata\\":{\\"before\\":null,\\"after\\":null}}");`,
+        );
+        lines.push(`            var result = await this.service.${method}(${callArgsEmpty});`);
+        lines.push('            Assert.NotNull(result);');
+        lines.push('            Assert.Empty(result.Data);');
+        lines.push('        }');
+      }
+    } else if (isDelete) {
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${testName}()`);
+      lines.push('        {');
+      lines.push(
+        `            this.httpMock.MockResponse(HttpMethod.Delete, "${expectedPath}", HttpStatusCode.NoContent, "");`,
+      );
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      lines.push(`            await this.service.${method}(${callArgs});`);
+      lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.Delete, "${expectedPath}");`);
+      lines.push('        }');
+    } else if (plan.responseModelName) {
+      const respModel = plan.responseModelName;
+      const fixturePath = `testdata/${fixtureFileName(respModel)}.json`;
+      const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
+
+      const isArrayResp = !isPaginated && op.response?.kind === 'array';
+
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${testName}()`);
+      lines.push('        {');
+      lines.push(`            var fixture = System.IO.File.ReadAllText("${fixturePath}");`);
+      if (isArrayResp) {
+        // Wrap single-object fixture in array for List<T> deserialization
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, "[" + fixture + "]");`,
+        );
+      } else {
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, fixture);`,
+        );
+      }
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      lines.push(`            var result = await this.service.${method}(${callArgs});`);
+      lines.push('            Assert.NotNull(result);');
+      if (!isArrayResp) {
+        const respModelDef = spec.models.find((m) => m.name === respModel);
+        if (respModelDef) {
+          const assertions = buildFixtureAssertions(respModelDef);
+          for (const assertion of assertions) {
+            lines.push(`            ${assertion}`);
+          }
+        }
+      }
+
+      lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.${httpMethodCs}, "${expectedPath}");`);
+      lines.push('        }');
+    } else {
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${testName}()`);
+      lines.push('        {');
+      const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
+      lines.push(
+        `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, "");`,
+      );
+      const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+      lines.push(`            await this.service.${method}(${callArgs});`);
+      lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.${httpMethodCs}, "${expectedPath}");`);
+      lines.push('        }');
+    }
+  }
+
+  // Auto-paging tests (P0-5)
+  const resolvedLookupForPaging = buildResolvedLookup(ctx);
+  for (const op of service.operations) {
+    const plan = planOperation(op);
+    if (!plan.isPaginated || !op.pagination) continue;
+
+    const method = resolveCsMethodName(op, resolvedName, ctx);
+    const autoPagingTestName = `Test${method}AutoPagingAsync`;
+    if (emittedTestMethods.has(autoPagingTestName)) continue;
+    emittedTestMethods.add(autoPagingTestName);
+
+    const expectedPath = buildExpectedPath(op);
+    const paginationItemType = op.pagination.itemType;
+    let itemTypeName: string | null = null;
+    let fixtureName: string | null = null;
+
+    if (paginationItemType.kind === 'model') {
+      const itemModel = spec.models.find((m) => m.name === paginationItemType.name);
+      if (itemModel) {
+        let resolved = itemModel;
+        if (isListWrapperModel(itemModel)) {
+          const dataField = itemModel.fields.find((f) => f.name === 'data');
+          if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+            const inner = spec.models.find((m) => m.name === (dataField.type as any).items.name);
+            if (inner) resolved = inner;
+          }
+        }
+        itemTypeName = className(resolved.name);
+        fixtureName = fixtureFileName(resolved.name);
+      }
+    }
+
+    if (!itemTypeName || !fixtureName) continue;
+
+    const callArgs = buildMethodCallArgs(op, plan, ctx, resolvedName);
+    // Remove the trailing options arg since auto-paging uses the same options
+    const autoPagingArgs = callArgs;
+
+    // Test with two pages
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task ${autoPagingTestName}()`);
+    lines.push('        {');
+    lines.push(`            var fixture = System.IO.File.ReadAllText("testdata/${fixtureName}.json");`);
+    lines.push(
+      `            var page1 = "{\\"data\\":[" + fixture + "],\\"list_metadata\\":{\\"before\\":null,\\"after\\":\\"cursor_123\\"}}";`,
+    );
+    lines.push(
+      `            var page2 = "{\\"data\\":[" + fixture + "],\\"list_metadata\\":{\\"before\\":null,\\"after\\":null}}";`,
+    );
+    lines.push(
+      `            this.httpMock.MockSequentialResponses(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, new[] { page1, page2 });`,
+    );
+    lines.push('');
+    lines.push(`            var items = new List<${itemTypeName}>();`);
+    lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+    lines.push('            {');
+    lines.push('                items.Add(item);');
+    lines.push('            }');
+    lines.push('');
+    lines.push('            Assert.Equal(2, items.Count);');
+    lines.push('        }');
+
+    // Test with empty first page
+    const emptyTestName = `Test${method}AutoPagingAsyncEmpty`;
+    if (!emittedTestMethods.has(emptyTestName)) {
+      emittedTestMethods.add(emptyTestName);
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${emptyTestName}()`);
+      lines.push('        {');
+      lines.push(`            var empty = "{\\"data\\":[],\\"list_metadata\\":{\\"before\\":null,\\"after\\":null}}";`);
+      lines.push(
+        `            this.httpMock.MockSequentialResponses(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, new[] { empty });`,
+      );
+      lines.push('');
+      lines.push(`            var items = new List<${itemTypeName}>();`);
+      lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+      lines.push('            {');
+      lines.push('                items.Add(item);');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            Assert.Empty(items);');
+      lines.push('        }');
+    }
+  }
+
+  // Wrapper/convenience method tests (P0-6)
+  for (const op of service.operations) {
+    const resolvedOp = lookupResolved(op, resolvedLookupForPaging);
+    if (!resolvedOp?.wrappers || resolvedOp.wrappers.length === 0) continue;
+
+    for (const wrapper of resolvedOp.wrappers) {
+      const wrapperMethod = csMethodName(wrapper.name);
+      const wrapperTestName = `Test${wrapperMethod}`;
+      if (emittedTestMethods.has(wrapperTestName)) continue;
+      emittedTestMethods.add(wrapperTestName);
+
+      const expectedPath = buildExpectedPath(op);
+      const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
+      const responseType = wrapper.responseModelName;
+
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${wrapperTestName}()`);
+      lines.push('        {');
+
+      if (responseType) {
+        const fixturePath = `testdata/${fixtureFileName(responseType)}.json`;
+        lines.push(`            var fixture = System.IO.File.ReadAllText("${fixturePath}");`);
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, fixture);`,
+        );
+      } else {
+        lines.push(
+          `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, "");`,
+        );
+      }
+
+      // Build wrapper call args
+      const wrapperArgs: string[] = [];
+      for (const p of sortPathParamsByTemplateOrder(op)) {
+        wrapperArgs.push(`"test_${p.name}"`);
+      }
+      wrapperArgs.push(`new ${wrapperMethod}Options()`);
+
+      if (responseType) {
+        lines.push(`            var result = await this.service.${wrapperMethod}(${wrapperArgs.join(', ')});`);
+        lines.push('            Assert.NotNull(result);');
+      } else {
+        lines.push(`            await this.service.${wrapperMethod}(${wrapperArgs.join(', ')});`);
+      }
+
+      lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.${httpMethodCs}, "${expectedPath}");`);
+      lines.push('        }');
+    }
+  }
+
+  // Error tests
+  const sampleOp = service.operations[0];
+  if (sampleOp) {
+    const plan = planOperation(sampleOp);
+    const method = resolveCsMethodName(sampleOp, resolvedName, ctx);
+    const callArgs = buildMethodCallArgs(sampleOp, plan, ctx, resolvedName);
+
+    // 401
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task TestError401()`);
+    lines.push('        {');
+    lines.push(
+      `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.Unauthorized, "{\\"code\\":\\"unauthorized\\",\\"message\\":\\"Unauthorized\\"}");`,
+    );
+    if (plan.isPaginated || plan.isDelete || !plan.responseModelName) {
+      lines.push(
+        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+      );
+    } else {
+      lines.push(
+        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+      );
+    }
+    lines.push('        }');
+
+    // 404
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task TestError404()`);
+    lines.push('        {');
+    lines.push(
+      `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.NotFound, "{\\"code\\":\\"not_found\\",\\"message\\":\\"Not Found\\"}");`,
+    );
+    lines.push(`            await Assert.ThrowsAsync<NotFoundError>(() => this.service.${method}(${callArgs}));`);
+    lines.push('        }');
+
+    // 422
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task TestError422()`);
+    lines.push('        {');
+    lines.push(
+      `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)422, "{\\"code\\":\\"unprocessable_entity\\",\\"message\\":\\"Unprocessable\\"}");`,
+    );
+    lines.push(
+      `            await Assert.ThrowsAsync<UnprocessableEntityError>(() => this.service.${method}(${callArgs}));`,
+    );
+    lines.push('        }');
+
+    // 429
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task TestError429()`);
+    lines.push('        {');
+    lines.push(
+      `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)429, "{\\"code\\":\\"too_many_requests\\",\\"message\\":\\"Too Many Requests\\"}");`,
+    );
+    lines.push(
+      `            await Assert.ThrowsAsync<RateLimitExceededError>(() => this.service.${method}(${callArgs}));`,
+    );
+    lines.push('        }');
+
+    // 500
+    lines.push('');
+    lines.push('        [Fact]');
+    lines.push(`        public async Task TestError500()`);
+    lines.push('        {');
+    lines.push(
+      `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.InternalServerError, "{\\"code\\":\\"server_error\\",\\"message\\":\\"Server Error\\"}");`,
+    );
+    lines.push(`            await Assert.ThrowsAsync<ServerError>(() => this.service.${method}(${callArgs}));`);
+    lines.push('        }');
+  }
+
+  lines.push('    }');
+  lines.push('}');
+
+  return {
+    path: testFile,
+    content: lines.join('\n'),
+    overwriteExisting: true,
+  };
+}
+
+function resolveCsMethodName(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
+}
+
+function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
+  const args: string[] = [];
+
+  // Path params
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    args.push(`"test_${p.name}"`);
+  }
+
+  // Bearer auth override param (e.g., SSO GetProfile uses access_token)
+  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+    args.push(`"test_${bearerParamName}"`);
+  }
+
+  // Options struct if needed
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const resolvedOp = lookupResolved(op, resolvedLookup);
+  const hidden = buildHiddenParams(resolvedOp);
+  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const hasBody = plan.hasBody && op.requestBody;
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+  } else if (hasBody) {
+    hasVisibleBodyFields = true;
+  }
+
+  if (hasVisibleBodyFields || hasVisibleQueryParams) {
+    const method = resolveCsMethodName(op, mountName, ctx);
+    const optName = optionsClassName(mountName, method);
+    args.push(`new ${optName}()`);
+  }
+
+  return args.join(', ');
+}
+
+function buildExpectedPath(op: Operation): string {
+  let expected = op.path;
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    expected = expected.replace(`{${p.name}}`, `test_${p.name}`);
+  }
+  return expected;
+}
+
+function buildFixtureAssertions(model: import('@workos/oagen').Model): string[] {
+  const assertions: string[] = [];
+
+  // Assert 'id' field if present (use NotEmpty since fixture values may come from api-surface)
+  const idField = model.fields.find((f) => f.required && f.name === 'id');
+  if (idField) {
+    assertions.push(`Assert.NotEmpty(result.Id);`);
+  }
+
+  // Assert 1-2 other required string fields (exclude date-time which maps to DateTimeOffset)
+  let extraCount = 0;
+  for (const field of model.fields) {
+    if (extraCount >= 2) break;
+    if (field.name === 'id') continue;
+    if (!field.required) continue;
+    if (field.type.kind !== 'primitive' || field.type.type !== 'string') continue;
+    if (field.type.format === 'date-time' || field.type.format === 'date') continue;
+    const csField = csFieldName(field.name);
+    assertions.push(`Assert.NotEmpty(result.${csField});`);
+    extraCount++;
+  }
+
+  return assertions;
+}
