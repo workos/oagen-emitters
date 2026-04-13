@@ -1,5 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
-import { mapTypeRef, isValueTypeRef } from './type-map.js';
+import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
 import { className, fieldName, emitXmlDoc, deprecationMessage, escapeCsAttributeString } from './naming.js';
 
 // Import and re-export shared model detection utilities
@@ -137,8 +137,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         lines.push(`        [System.Obsolete("${msg}")]`);
       }
 
-      lines.push(`        [JsonProperty("${field.name}")]`);
-      lines.push(`        [STJS.JsonPropertyName("${field.name}")]`);
+      const isRequiredEnum = field.required && isEnumRef(field.type);
+      lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
       lines.push(`        public ${csType} ${csFieldName} { get; set; }${initializer}`);
     }
 

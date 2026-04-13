@@ -73,6 +73,33 @@ export function isValueTypeRef(ref: TypeRef): boolean {
   return false;
 }
 
+/**
+ * Whether a TypeRef directly names an enum (no nullable wrapper).
+ * Used to detect required enum request fields that must not silently serialize
+ * their default Unknown sentinel.
+ */
+export function isEnumRef(ref: TypeRef): boolean {
+  return ref.kind === 'enum';
+}
+
+/**
+ * Emit JSON attributes for a request-side property. When `isRequiredEnum` is
+ * true, configure both serializers to skip the field when its value equals the
+ * enum default (0 = Unknown sentinel). This converts "unset required enum"
+ * from a silent `"unknown"` wire value into a clean omission so the API
+ * returns a clear `missing required field` error instead of a confusing 422.
+ */
+export function emitJsonPropertyAttributes(wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
+  if (options.isRequiredEnum) {
+    return [
+      `        [JsonProperty("${wireName}", DefaultValueHandling = DefaultValueHandling.Ignore)]`,
+      `        [STJS.JsonPropertyName("${wireName}")]`,
+      `        [STJS.JsonIgnore(Condition = STJS.JsonIgnoreCondition.WhenWritingDefault)]`,
+    ];
+  }
+  return [`        [JsonProperty("${wireName}")]`, `        [STJS.JsonPropertyName("${wireName}")]`];
+}
+
 function mapPrimitive(ref: PrimitiveType): string {
   if (ref.format === 'binary') return 'byte[]';
   if (ref.format === 'int32') return 'int';

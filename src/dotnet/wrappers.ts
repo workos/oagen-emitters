@@ -13,7 +13,7 @@ import {
 } from './naming.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
 import { resolveWrapperParams, formatWrapperDescription, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
-import { mapTypeRef, isValueTypeRef } from './type-map.js';
+import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
 
 /**
  * Generate C# wrapper method lines for union split operations.
@@ -151,9 +151,9 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
       const needsDefault = !isOptional && !csType.endsWith('?') && !(field && isValueTypeRef(field.type));
       const initializer = needsDefault ? ' = default!;' : '';
 
+      const isRequiredEnum = !isOptional && !!field && isEnumRef(field.type);
       lines.push(...emitXmlDoc(field?.description, '        '));
-      lines.push(`        [JsonProperty("${paramName}")]`);
-      lines.push(`        [STJS.JsonPropertyName("${paramName}")]`);
+      lines.push(...emitJsonPropertyAttributes(paramName, { isRequiredEnum }));
       lines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
       lines.push('');
     }

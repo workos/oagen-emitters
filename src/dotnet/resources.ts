@@ -8,7 +8,7 @@ import type {
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
-import { mapTypeRef, isValueTypeRef } from './type-map.js';
+import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
 import {
   className,
   fieldName,
@@ -99,13 +99,15 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push(`    public class ${svcTypeName} : Service`);
   lines.push('    {');
   lines.push(`        /// <summary>`);
-  lines.push(`        /// Parameterless constructor for mocking. The service uses the singleton`);
+  lines.push(
+    `        /// Initializes a new instance of the <see cref="${svcTypeName}"/> class for mocking. The service uses the singleton`,
+  );
   lines.push(`        /// client configured via <see cref="WorkOSConfiguration.WorkOSClient"/>.`);
   lines.push(`        /// </summary>`);
   lines.push(`        public ${svcTypeName}() { }`);
   lines.push('');
   lines.push(`        /// <summary>`);
-  lines.push(`        /// Initializes a new instance of <see cref="${svcTypeName}"/> bound to the`);
+  lines.push(`        /// Initializes a new instance of the <see cref="${svcTypeName}"/> class bound to the`);
   lines.push(`        /// supplied <paramref name="client"/>.`);
   lines.push(`        /// </summary>`);
   lines.push(`        /// <param name="client">The HTTP client used to make API requests.</param>`);
@@ -245,9 +247,9 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
             }
           }
 
+          const isRequiredEnum = field.required && isEnumRef(field.type);
           optionsLines.push(...emitXmlDoc(field.description, '        '));
-          optionsLines.push(`        [JsonProperty("${field.name}")]`);
-          optionsLines.push(`        [STJS.JsonPropertyName("${field.name}")]`);
+          optionsLines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
           optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
           optionsLines.push('');
         }
@@ -284,13 +286,13 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
         }
       }
 
+      const isRequiredEnum = param.required && isEnumRef(param.type);
       optionsLines.push(...emitXmlDoc(param.description, '        '));
       if (param.deprecated) {
         const msg = escapeCsAttributeString(deprecationMessage(param.description, 'parameter'));
         optionsLines.push(`        [System.Obsolete("${msg}")]`);
       }
-      optionsLines.push(`        [JsonProperty("${param.name}")]`);
-      optionsLines.push(`        [STJS.JsonPropertyName("${param.name}")]`);
+      optionsLines.push(...emitJsonPropertyAttributes(param.name, { isRequiredEnum }));
       optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
       optionsLines.push('');
     }
