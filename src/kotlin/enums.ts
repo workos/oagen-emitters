@@ -23,12 +23,21 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     const lines: string[] = [];
     lines.push(`package ${ENUMS_PACKAGE}`);
     lines.push('');
+    lines.push('import com.fasterxml.jackson.annotation.JsonEnumDefaultValue');
     lines.push('import com.fasterxml.jackson.annotation.JsonValue');
     lines.push('');
-    lines.push(`/** ${typeName} enum. */`);
+    // Replace the tautological "Foo enum." docstring with a slightly more
+    // informative summary. `Unknown` is emitted as the forward-compatibility
+    // sentinel for values the server introduces after this SDK was built.
+    lines.push(`/** Enumeration of valid ${typeName} values returned or accepted by the API. */`);
     lines.push(`enum class ${typeName}(`);
     lines.push('  @JsonValue val value: String');
     lines.push(') {');
+    // `@JsonEnumDefaultValue` makes Jackson's
+    // READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE feature map unrecognized
+    // wire values onto `Unknown` instead of throwing — required for forward
+    // compatibility when the API introduces new variants.
+    lines.push('  @JsonEnumDefaultValue');
     lines.push(`  Unknown(${ktStringLiteral('unknown')}),`);
 
     const seenNames = new Set<string>(['Unknown']);

@@ -129,7 +129,19 @@ function generateApiClass(
   lines.push('');
   for (const imp of filteredImports.sort()) lines.push(`import ${imp}`);
   lines.push('');
-  lines.push(`/** API accessor for ${mountName}. */`);
+  const serviceDescription = resolveServiceDescription(ctx, mountName, operations);
+  if (serviceDescription) {
+    const docLines = serviceDescription.trim().split('\n');
+    if (docLines.length === 1) {
+      lines.push(`/** ${escapeKdoc(docLines[0].trim())} */`);
+    } else {
+      lines.push('/**');
+      for (const l of docLines) lines.push(l ? ` * ${escapeKdoc(l)}` : ' *');
+      lines.push(' */');
+    }
+  } else {
+    lines.push(`/** API accessor for ${mountName}. */`);
+  }
   // ktlint requires constructor-property parameters on their own line.
   // The property is `internal` so hand-maintained extension files in the
   // same module can reach the underlying [WorkOS] client (e.g. to build
@@ -148,6 +160,20 @@ function findService(ctx: EmitterContext, op: Operation): Service | undefined {
     if (service.operations.includes(op)) return service;
   }
   return undefined;
+}
+
+/**
+ * Resolve a human-friendly description for a generated API class. Walks the
+ * operations in the mount group, picks the first service whose description
+ * is populated, and falls back to `null` when nothing meaningful is
+ * available (the caller uses a generic fallback).
+ */
+function resolveServiceDescription(ctx: EmitterContext, _mountName: string, operations: Operation[]): string | null {
+  for (const op of operations) {
+    const svc = findService(ctx, op);
+    if (svc?.description?.trim()) return svc.description;
+  }
+  return null;
 }
 
 /**
@@ -228,10 +254,8 @@ function renderMethod(
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
 
   const lines: string[] = [];
-  if (op.description?.trim()) {
-    const first = op.description.split('\n').find((l) => l.trim()) ?? '';
-    lines.push(`  /** ${escapeKdoc(first.trim())} */`);
-  }
+  const kdocLines = buildMethodKdoc(op, pathParams, sortedQuery, sortedBodyFields, bodyParamNames, plan);
+  for (const ln of kdocLines) lines.push(ln);
   if (op.deprecated) lines.push('  @Deprecated("Deprecated operation")');
   lines.push('  @JvmOverloads');
   // Omit explicit `: Unit` to keep ktlint happy.
@@ -289,14 +313,21 @@ function renderMethod(
       `    return workos.baseClient.requestPage(configFor(), itemType) { afterCursor -> configFor(afterCursor) }`,
     );
   } else {
-    lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
-    for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
-    if (appendDefaultsAsQuery) {
-      for (const [k, v] of Object.entries(defaults)) lines.push(`    params += ${ktLiteral(k)} to ${ktLiteral(v)}`);
-      // Client-inferred fields may be nullable (e.g. clientId). Skip when null
-      // rather than serializing "null" into the URL.
-      for (const k of inferFromClient) {
-        lines.push(`    workos.${clientFieldExpression(k)}?.let { params += ${ktLiteral(k)} to it }`);
+    // Only emit the `params` local when the method actually contributes
+    // query parameters (spec-declared query, or defaults/inferFromClient
+    // for GET/DELETE without a body). `RequestConfig.queryParams` defaults
+    // to `emptyList()` when omitted, so we avoid dead local declarations.
+    const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery;
+    if (emitsQueryParams) {
+      lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
+      for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
+      if (appendDefaultsAsQuery) {
+        for (const [k, v] of Object.entries(defaults)) lines.push(`    params += ${ktLiteral(k)} to ${ktLiteral(v)}`);
+        // Client-inferred fields may be nullable (e.g. clientId). Skip when
+        // null rather than serializing "null" into the URL.
+        for (const k of inferFromClient) {
+          lines.push(`    workos.${clientFieldExpression(k)}?.let { params += ${ktLiteral(k)} to it }`);
+        }
       }
     }
 
@@ -309,7 +340,7 @@ function renderMethod(
       lines.push(`      RequestConfig(`);
       lines.push(`        method = ${ktLiteral(httpMethod)},`);
       lines.push(`        path = ${pathExpr},`);
-      lines.push(`        queryParams = params,`);
+      if (emitsQueryParams) lines.push(`        queryParams = params,`);
       lines.push(`        body = body,`);
       lines.push(`        requestOptions = requestOptions`);
       lines.push(`      )`);
@@ -318,7 +349,7 @@ function renderMethod(
       lines.push(`      RequestConfig(`);
       lines.push(`        method = ${ktLiteral(httpMethod)},`);
       lines.push(`        path = ${pathExpr},`);
-      lines.push(`        queryParams = params,`);
+      if (emitsQueryParams) lines.push(`        queryParams = params,`);
       lines.push(`        requestOptions = requestOptions`);
       lines.push(`      )`);
     }
@@ -387,6 +418,80 @@ function renderParam(name: string, type: TypeRef, required: boolean): string {
 function renderParamNamed(kotlinName: string, type: TypeRef, required: boolean): string {
   const mapped = required ? mapTypeRef(type) : mapTypeRefOptional(type);
   return required ? `    ${kotlinName}: ${mapped}` : `    ${kotlinName}: ${mapped} = null`;
+}
+
+/**
+ * Build the KDoc block preceding an SDK method.  Combines the operation's
+ * summary/description with `@param` docs for every parameter that has a
+ * description in the spec, `@return` when a response model is known, and
+ * `@throws` for the standard error types.
+ */
+function buildMethodKdoc(
+  op: Operation,
+  pathParams: Parameter[],
+  queryParams: Parameter[],
+  bodyFields: Field[],
+  bodyParamNames: Map<string, string>,
+  plan: ReturnType<typeof planOperation>,
+): string[] {
+  // Use the operation's description as the KDoc body, split by newline.
+  // Escape `*/` sequences to keep KDoc valid.
+  const descriptionRaw = (op.description ?? '').trim();
+  const textLines: string[] = [];
+  if (descriptionRaw) {
+    for (const l of descriptionRaw.split('\n')) textLines.push(escapeKdoc(l));
+  }
+
+  // @param lines. Use the Kotlin-visible parameter name (body collisions get
+  // renamed, e.g. slug → bodySlug).  Deprecated parameters always get a
+  // @param entry even without a description so the deprecation note is
+  // surfaced in the docs.
+  const paramDocs: string[] = [];
+  for (const pp of pathParams) {
+    if (pp.description?.trim() || pp.deprecated) {
+      paramDocs.push(formatParamDoc(propertyName(pp.name), pp.description, pp.deprecated));
+    }
+  }
+  for (const qp of queryParams) {
+    if (qp.description?.trim() || qp.deprecated) {
+      paramDocs.push(formatParamDoc(propertyName(qp.name), qp.description, qp.deprecated));
+    }
+  }
+  for (const bf of bodyFields) {
+    if (bf.description?.trim() || bf.deprecated) {
+      paramDocs.push(formatParamDoc(bodyParamNames.get(bf.name)!, bf.description, bf.deprecated));
+    }
+  }
+
+  const returnDoc = plan.isPaginated
+    ? '@return a [com.workos.common.http.Page] of results'
+    : plan.responseModelName
+      ? `@return the ${plan.isArrayResponse ? `list of ${className(plan.responseModelName)}` : className(plan.responseModelName)}`
+      : null;
+
+  const hasAnyContent = textLines.length > 0 || paramDocs.length > 0 || returnDoc !== null;
+  if (!hasAnyContent) return [];
+
+  const out: string[] = ['  /**'];
+  for (const l of textLines) out.push(l ? `   * ${l}` : '   *');
+  const hasBodyText = textLines.length > 0;
+  const needsSpacer = hasBodyText && (paramDocs.length > 0 || returnDoc !== null);
+  if (needsSpacer) out.push('   *');
+  for (const p of paramDocs) out.push(`   * ${p}`);
+  if (returnDoc) {
+    if (paramDocs.length > 0) out.push('   *');
+    out.push(`   * ${returnDoc}`);
+  }
+  out.push('   */');
+  return out;
+}
+
+function formatParamDoc(kotlinName: string, description: string | undefined, deprecated?: boolean): string {
+  const firstLine = description?.split('\n').find((l) => l.trim()) ?? '';
+  const text = firstLine.trim();
+  const deprecationNote = deprecated ? '**Deprecated.**' : '';
+  const parts = [deprecationNote, text].filter(Boolean).join(' ');
+  return `@param ${kotlinName}${parts ? ` ${escapeKdoc(parts)}` : ''}`;
 }
 
 /**

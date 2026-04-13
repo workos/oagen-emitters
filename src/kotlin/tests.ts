@@ -141,6 +141,12 @@ function generateServiceTestClass(
   const pkg = packageSegment(mountName);
   const apiCls = apiClassName(mountName);
 
+  // If any operation would emit a disabled placeholder test, preregister
+  // the `Disabled` import before we serialize the header.
+  if (uniqueTests.some((t) => !t.canEmitHappyPath)) {
+    imports.add('org.junit.jupiter.api.Disabled');
+  }
+
   const lines: string[] = [];
   lines.push(`package com.workos.${pkg}`);
   lines.push('');
@@ -152,8 +158,15 @@ function generateServiceTestClass(
   lines.push(`  private fun api() = ${apiCls}(createWorkOSClient())`);
 
   for (const t of uniqueTests) {
-    if (!t.canEmitHappyPath) continue;
-    emitHappyPathTest(lines, t);
+    if (t.canEmitHappyPath) {
+      emitHappyPathTest(lines, t);
+    } else {
+      // Previously these were silently dropped.  Emitting a disabled test
+      // keeps the method visible in test reports so contributors know there
+      // is intentionally no synthesized coverage, rather than being surprised
+      // that the method has zero tests.
+      emitDisabledHappyPathTest(lines, t);
+    }
   }
 
   emitErrorTest(lines, '401', 'UnauthorizedException', repOp);
@@ -452,6 +465,21 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
   lines.push('    )');
   emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
   lines.push('    assertNotNull(result)');
+  lines.push('  }');
+}
+
+/**
+ * Emit a `@Disabled` placeholder for operations whose happy-path arguments
+ * could not be synthesized (for example, a required body union that the
+ * test generator cannot construct).  The disabled test keeps the method in
+ * the test report so CI surfaces the coverage gap.
+ */
+function emitDisabledHappyPathTest(lines: string[], t: OpTest): void {
+  lines.push('');
+  lines.push(`  @Test`);
+  lines.push(`  @Disabled("generator: could not synthesize required arguments for ${t.method}")`);
+  lines.push(`  fun \`${t.method} returns a typed response\`() {`);
+  lines.push(`    // Intentionally empty: the generator could not synthesize required arguments.`);
   lines.push('  }');
 }
 
