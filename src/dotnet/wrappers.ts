@@ -6,7 +6,7 @@ import {
   localName,
   csLiteral,
   clientFieldExpression,
-  httpMethodCs,
+  httpMethodHelperName,
   escapeXml,
   emitXmlDoc,
   humanize,
@@ -103,19 +103,16 @@ function emitWrapperMethod(
     pathExpr = `"${op.path}"`;
   }
 
-  // Build request
-  lines.push('            var request = new WorkOSRequest');
-  lines.push('            {');
-  lines.push(`                Method = HttpMethod.${httpMethodCs(op.httpMethod)},`);
-  lines.push(`                Path = ${pathExpr},`);
-  lines.push('                Options = options,');
-  lines.push('                RequestOptions = requestOptions,');
-  lines.push('            };');
-
+  // Use the Service base-class helper so wrappers read as one-liners.
+  const helper = httpMethodHelperName(op.httpMethod);
   if (responseType) {
-    lines.push(`            return await this.Client.MakeAPIRequest<${responseType}>(request, cancellationToken);`);
+    lines.push(
+      `            return await this.${helper}<${responseType}>(${pathExpr}, options, requestOptions, cancellationToken);`,
+    );
+  } else if (helper === 'DeleteAsync') {
+    lines.push(`            await this.${helper}(${pathExpr}, options, requestOptions, cancellationToken);`);
   } else {
-    lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
+    lines.push(`            await this.${helper}<object>(${pathExpr}, options, requestOptions, cancellationToken);`);
   }
 
   lines.push('        }');

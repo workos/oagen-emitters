@@ -187,6 +187,29 @@ export function httpMethodCs(method: string): string {
   }
 }
 
+/**
+ * Return the name of the Service base-class helper that handles the given
+ * HTTP method (e.g., `GetAsync`, `PostAsync`). Used by the resource emitter
+ * to produce one-line service methods instead of inlined WorkOSRequest blocks.
+ */
+export function httpMethodHelperName(method: string): string {
+  const m = method.toLowerCase();
+  switch (m) {
+    case 'get':
+      return 'GetAsync';
+    case 'post':
+      return 'PostAsync';
+    case 'put':
+      return 'PutAsync';
+    case 'patch':
+      return 'PatchAsync';
+    case 'delete':
+      return 'DeleteAsync';
+    default:
+      return 'GetAsync';
+  }
+}
+
 /** Escape XML special characters for use in XML doc comments. */
 export function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

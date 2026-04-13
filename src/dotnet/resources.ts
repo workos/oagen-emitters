@@ -20,6 +20,7 @@ import {
   csLiteral,
   clientFieldExpression,
   httpMethodCs,
+  httpMethodHelperName,
   escapeXml,
   emitXmlDoc,
   deprecationMessage,
@@ -467,32 +468,49 @@ function generateMethod(
   // Build path
   const pathExpr = buildPathExpr(op);
 
-  // Build request
-  lines.push('            var request = new WorkOSRequest');
-  lines.push('            {');
-  lines.push(`                Method = HttpMethod.${httpMethodCs(op.httpMethod)},`);
-  lines.push(`                Path = ${pathExpr},`);
-  if (optionsClass) {
-    lines.push('                Options = options,');
-  }
-  if (hasBearerOverride && bearerParamName) {
-    lines.push(`                AccessToken = ${localName(bearerParamName)},`);
-  }
-  if (!isUrlBuilder) {
-    lines.push(`                RequestOptions = requestOptions,`);
-  }
-  lines.push('            };');
+  // URL-builders and bearer-override operations keep the inlined WorkOSRequest
+  // form because the Service helpers don't expose BuildRequestUri or
+  // AccessToken configuration. Everything else uses the helper one-liners.
+  const needsInlineRequest = isUrlBuilder || (hasBearerOverride && !!bearerParamName);
+  const optionsArg = optionsClass ? 'options' : 'null';
 
-  // Make the call
-  if (isUrlBuilder) {
-    lines.push('            return this.Client.BuildRequestUri(request).ToString();');
+  if (needsInlineRequest) {
+    lines.push('            var request = new WorkOSRequest');
+    lines.push('            {');
+    lines.push(`                Method = HttpMethod.${httpMethodCs(op.httpMethod)},`);
+    lines.push(`                Path = ${pathExpr},`);
+    if (optionsClass) {
+      lines.push('                Options = options,');
+    }
+    if (hasBearerOverride && bearerParamName) {
+      lines.push(`                AccessToken = ${localName(bearerParamName)},`);
+    }
+    if (!isUrlBuilder) {
+      lines.push(`                RequestOptions = requestOptions,`);
+    }
+    lines.push('            };');
+
+    if (isUrlBuilder) {
+      lines.push('            return this.Client.BuildRequestUri(request).ToString();');
+    } else if (returnType.startsWith('Task<')) {
+      const innerType = returnType.slice(5, -1);
+      lines.push(`            return await this.Client.MakeAPIRequest<${innerType}>(request, cancellationToken);`);
+    } else {
+      lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
+    }
   } else if (isDelete) {
-    lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
+    lines.push(`            await this.DeleteAsync(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`);
   } else if (returnType.startsWith('Task<')) {
     const innerType = returnType.slice(5, -1);
-    lines.push(`            return await this.Client.MakeAPIRequest<${innerType}>(request, cancellationToken);`);
+    const helper = httpMethodHelperName(op.httpMethod);
+    lines.push(
+      `            return await this.${helper}<${innerType}>(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
+    );
   } else {
-    lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
+    const helper = httpMethodHelperName(op.httpMethod);
+    lines.push(
+      `            await this.${helper}<object>(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
+    );
   }
 
   lines.push('        }');
@@ -552,16 +570,10 @@ function generateAutoPagingMethod(
   lines.push('        {');
 
   const pathExpr = buildPathExpr(op);
-  lines.push('            var request = new WorkOSRequest');
-  lines.push('            {');
-  lines.push(`                Method = HttpMethod.${httpMethodCs(op.httpMethod)},`);
-  lines.push(`                Path = ${pathExpr},`);
-  if (optionsClass) {
-    lines.push('                Options = options,');
-  }
-  lines.push('                RequestOptions = requestOptions,');
-  lines.push('            };');
-  lines.push(`            return this.Client.ListAutoPagingAsync<${itemType}>(request, cancellationToken);`);
+  const optionsArg = optionsClass ? 'options' : 'null';
+  lines.push(
+    `            return this.ListAutoPagingAsync<${itemType}>(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
+  );
   lines.push('        }');
 
   return lines.join('\n');
