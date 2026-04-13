@@ -189,5 +189,13 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
   }
 
   if (unique.length >= 2 && unique.length <= 3) return `AnyOf<${unique.join(', ')}>`;
+  // AnyOf only supports arity 2 and 3. Higher-arity unions collapse to
+  // `object`, losing type information. Warn so the author knows the spec
+  // outgrew the runtime support instead of silently degrading.
+  if (unique.length >= 4) {
+    console.warn(
+      `[oagen:dotnet] Union with ${unique.length} variants exceeds AnyOf<T1,T2,T3> arity; falling back to object. Variants: ${unique.join(', ')}`,
+    );
+  }
   return 'object';
 }
