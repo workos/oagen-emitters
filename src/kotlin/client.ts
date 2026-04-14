@@ -5,44 +5,43 @@ import { getMountTarget } from '../shared/resolved-ops.js';
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
 /**
- * Generate `WorkOS.Generated.kt` — a set of extension properties that expose
- * each service on the hand-maintained [com.workos.WorkOS] client. Each
- * accessor is cached on the client instance via `WorkOS.service(...)`, so
- * consecutive reads return the same service object.
+ * Generate service accessor properties for the hand-maintained `WorkOS` class.
+ *
+ * Each accessor is a `val` property with a custom getter that delegates to
+ * `WorkOS.service(...)` for lazy, cached construction. The generated file
+ * contains a `WorkOS` class stub with only these properties — the oagen
+ * merger deep-merges them into the existing hand-written `WorkOS.kt`.
+ *
+ * Accessors use fully-qualified type names so the merger doesn't need to
+ * inject imports into the hand-written file.
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const targets = deduplicateByMount(spec.services, ctx);
   if (targets.length === 0) return [];
 
-  const imports = new Set<string>();
-  imports.add('com.workos.WorkOS');
-
   const accessorLines: string[] = [];
   for (const mount of targets) {
     const apiCls = apiClassName(mount);
-    const pkg = `com.workos.${packageSegment(mount)}`;
-    imports.add(`${pkg}.${apiCls}`);
+    const fqn = `com.workos.${packageSegment(mount)}.${apiCls}`;
     const prop = servicePropertyName(mount);
     accessorLines.push('');
-    accessorLines.push(`/** Lazily-constructed [${apiCls}] accessor for this [WorkOS] client. */`);
-    accessorLines.push(`val WorkOS.${prop}: ${apiCls}`);
-    accessorLines.push(`  get() = service(${apiCls}::class) { ${apiCls}(this) }`);
+    accessorLines.push(`  /** Lazily-constructed [${apiCls}] accessor for this [WorkOS] client. */`);
+    accessorLines.push(`  val ${prop}: ${fqn}`);
+    accessorLines.push(`    get() = service(${fqn}::class) { ${fqn}(this) }`);
   }
 
   const lines: string[] = [];
   lines.push('package com.workos');
   lines.push('');
-  for (const imp of [...imports].sort()) lines.push(`import ${imp}`);
-  lines.push('');
-  lines.push('// Generated service accessors. One extension property per mount group.');
+  lines.push('open class WorkOS {');
   for (const line of accessorLines) lines.push(line);
+  lines.push('}');
   lines.push('');
 
   return [
     {
-      path: `${KOTLIN_SRC_PREFIX}com/workos/WorkOS.Generated.kt`,
+      path: `${KOTLIN_SRC_PREFIX}com/workos/WorkOS.kt`,
       content: lines.join('\n'),
-      overwriteExisting: true,
     },
   ];
 }

@@ -698,16 +698,18 @@ function emitJsonVal(lines: string[], indent: string, rawJson: string): void {
   }
   // ktlint: "A multiline expression should start on a new line"
   lines.push(`${indent}val json =`);
-  const continuationIndent = `${indent}  `;
-  // ktlint re-indents continuation lines of a `+` expression by an extra
-  // 2 spaces beyond the first operand line. Budget for the widest case
-  // (continuation) so every chunk fits after formatting.
-  const ktlintContinuationExtra = 2;
-  const maxChunkLineLen = KTLINT_MAX_LINE_LENGTH - continuationIndent.length - ktlintContinuationExtra - 2; // 2 for " +"
+  // ktlint indent rules (with indent_size=2, continuation_indent=2):
+  //   first continuation after `=`:  indent + 2  (e.g. 6 spaces)
+  //   subsequent `+` continuations:  indent + 4  (e.g. 8 spaces)
+  const firstIndent = `${indent}  `;
+  const restIndent = `${indent}    `;
+  // Budget for the widest indent so every chunk fits.
+  const maxChunkLineLen = KTLINT_MAX_LINE_LENGTH - restIndent.length - 2; // 2 for " +"
   const chunks = splitEscapedStringLiteral(encoded, maxChunkLineLen);
   for (let i = 0; i < chunks.length; i++) {
     const suffix = i === chunks.length - 1 ? '' : ' +';
-    lines.push(`${continuationIndent}${chunks[i]}${suffix}`);
+    const lineIndent = i === 0 ? firstIndent : restIndent;
+    lines.push(`${lineIndent}${chunks[i]}${suffix}`);
   }
 }
 
