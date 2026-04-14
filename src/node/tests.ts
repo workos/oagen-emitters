@@ -919,7 +919,6 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       path: testPath,
       content: lines.join('\n'),
       skipIfExists: true,
-      integrateTarget: false,
     });
   }
 
