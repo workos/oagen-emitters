@@ -1,6 +1,31 @@
 import type { ApiSpec, Service, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { toPascalCase, toCamelCase } from '@workos/oagen';
 import { className, servicePropertyName } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
+import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
+
+/**
+ * PHP-specific class-name overrides for non-spec services.
+ * If a service id isn't listed here, PascalCase(id) is used.
+ */
+const PHP_NON_SPEC_CLASS_NAMES: Record<string, string> = {
+  webhook_verification: 'WebhookVerification',
+  session_manager: 'SessionManager',
+  pkce: 'PKCEHelper',
+};
+
+/** Derive PHP class name + property name from a non-spec service id. */
+function phpNonSpecAccessor(id: string): { className: string; propName: string } {
+  return {
+    className: PHP_NON_SPEC_CLASS_NAMES[id] ?? toPascalCase(id),
+    propName:
+      id === 'webhook_verification'
+        ? 'webhookVerification'
+        : id === 'session_manager'
+          ? 'sessionManager'
+          : toCamelCase(id),
+  };
+}
 
 /**
  * Generate the main PHP client class (service wiring only).
@@ -61,8 +86,7 @@ function generateMainClient(
   lines.push('');
 
   // Use imports (sorted case-insensitively for PSR-12)
-  // Non-spec service accessors are now hand-maintained in the target SDK
-  // via @oagen-ignore-start/@oagen-ignore-end regions.
+  const nonSpecAccessors = NON_SPEC_SERVICES.map((s) => phpNonSpecAccessor(s.id));
   const allImports: string[] = [];
   for (const svc of services) {
     allImports.push(`use ${ns}\\Service\\${svc.name};`);
@@ -103,6 +127,14 @@ function generateMainClient(
   for (const svc of services) {
     lines.push(`    private ?Service\\${svc.name} $${svc.propName} = null;`);
   }
+  // Non-spec service properties — wrapped in ignore markers so the target
+  // SDK can hand-maintain the list. The emitter provides a positional anchor.
+  lines.push('    // @oagen-ignore-start — non-spec service properties (hand-maintained)');
+  for (const a of nonSpecAccessors) {
+    lines.push(`    private ?${a.className} $${a.propName} = null;`);
+  }
+  lines.push('    // @oagen-ignore-end');
+
   lines.push('');
   lines.push('    public function __construct(');
   lines.push('        ?string $apiKey = null,');
@@ -128,6 +160,19 @@ function generateMainClient(
     lines.push(`        return $this->${svc.propName} ??= new Service\\${svc.name}($this->httpClient);`);
     lines.push('    }');
   }
+
+  // Non-spec service accessors — wrapped in ignore markers so the target
+  // SDK can hand-maintain these. The emitter provides a positional anchor.
+  lines.push('');
+  lines.push('    // @oagen-ignore-start — non-spec service accessors (hand-maintained)');
+  for (const a of nonSpecAccessors) {
+    lines.push('');
+    lines.push(`    public function ${a.propName}(): ${a.className}`);
+    lines.push('    {');
+    lines.push(`        return $this->${a.propName} ??= new ${a.className}($this->httpClient);`);
+    lines.push('    }');
+  }
+  lines.push('    // @oagen-ignore-end');
 
   lines.push('}');
   return lines.join('\n');

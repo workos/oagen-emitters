@@ -3,6 +3,52 @@ import { toPascalCase } from '@workos/oagen';
 import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
+import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
+
+/** Python-specific wiring for each non-spec service. */
+interface PythonNonSpecWiring {
+  importLine: string;
+  prop: string;
+  syncClass: string;
+  asyncClass: string | null;
+  ctorArg: 'self' | '';
+  docstring?: string;
+}
+
+const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
+  passwordless: {
+    importLine: 'from .passwordless import AsyncPasswordless, Passwordless',
+    prop: 'passwordless',
+    syncClass: 'Passwordless',
+    asyncClass: 'AsyncPasswordless',
+    ctorArg: 'self',
+    docstring: 'Passwordless authentication sessions.',
+  },
+  vault: {
+    importLine: 'from .vault import AsyncVault, Vault',
+    prop: 'vault',
+    syncClass: 'Vault',
+    asyncClass: 'AsyncVault',
+    ctorArg: 'self',
+    docstring: 'Vault encryption, key management, and secret storage.',
+  },
+  actions: {
+    importLine: 'from .actions import Actions, AsyncActions',
+    prop: 'actions',
+    syncClass: 'Actions',
+    asyncClass: 'AsyncActions',
+    ctorArg: '',
+    docstring: 'Actions logging and audit trail.',
+  },
+  pkce: {
+    importLine: 'from .pkce import PKCE',
+    prop: 'pkce',
+    syncClass: 'PKCE',
+    asyncClass: null,
+    ctorArg: '',
+    docstring: 'PKCE (Proof Key for Code Exchange) utilities.',
+  },
+};
 
 /**
  * Generate the slim Python client class (service-wiring only),
@@ -107,10 +153,25 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const clsName = className(resolvedName);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
-    lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
+    const importLine = `from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`;
+    if (importLine.length > 88) {
+      lines.push(`from .${dirToModule(dirName)}._resource import (`);
+      lines.push(`    ${clsName},`);
+      lines.push(`    Async${clsName},`);
+      lines.push(')');
+    } else {
+      lines.push(importLine);
+    }
   }
-  // Non-spec service imports and accessors are now hand-maintained in the
-  // target SDK via @oagen-ignore-start/@oagen-ignore-end regions.
+  // Non-spec service imports — wrapped in ignore markers so the merger
+  // matches them positionally and doesn't displace them.
+  lines.push('');
+  lines.push('# @oagen-ignore-start — non-spec service imports (hand-maintained)');
+  for (const s of NON_SPEC_SERVICES) {
+    const w = PYTHON_NON_SPEC_WIRING[s.id];
+    if (w) lines.push(w.importLine);
+  }
+  lines.push('# @oagen-ignore-end');
   lines.push('');
   lines.push('');
 
@@ -133,6 +194,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     generatedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, generatedProps, false);
+  emitNonSpecClientAccessors(lines, false);
 
   lines.push('');
   lines.push('');
@@ -155,15 +217,36 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     asyncGeneratedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
+  emitNonSpecClientAccessors(lines, true);
 
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
       content: lines.join('\n'),
-      integrateTarget: true,
       overwriteExisting: true,
     },
   ];
+}
+
+function emitNonSpecClientAccessors(lines: string[], isAsync: boolean): void {
+  lines.push('');
+  lines.push('    # @oagen-ignore-start — non-spec service accessors (hand-maintained)');
+  for (const s of NON_SPEC_SERVICES) {
+    const w = PYTHON_NON_SPEC_WIRING[s.id];
+    if (!w) continue;
+    const typeName = isAsync ? (w.asyncClass ?? w.syncClass) : w.syncClass;
+    const arg = w.ctorArg === 'self' ? 'self' : '';
+
+    lines.push('');
+    lines.push('    @functools.cached_property');
+    lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
+    if (w.docstring) {
+      lines.push(`        """${w.docstring}"""`);
+    }
+    lines.push(`        return ${typeName}(${arg})`);
+  }
+  lines.push('');
+  lines.push('    # @oagen-ignore-end');
 }
 
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
