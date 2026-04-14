@@ -2,6 +2,7 @@ import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen
 import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
+import { enrichModelsFromSpec } from '../shared/model-utils.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -21,6 +22,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
   diagnoseDivergentEnums(enums);
 
+  // Collect all enum names actually referenced by models and operations so we
+  // can suppress orphan enums that would otherwise be emitted but never used.
+  const referencedEnums = collectReferencedEnumNames(ctx);
+
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
@@ -33,6 +38,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // masquerading as an enum, and mapTypeRef rewrites such refs to `string` with
     // a const initializer on the owning property.
     if (enumDef.values.length <= 1) continue;
+
+    // Skip orphan enums that are not referenced by any model field or operation
+    // parameter. Resolve aliases so that a canonical enum is kept if any of its
+    // aliases are referenced.
+    const isReferenced =
+      referencedEnums.has(enumDef.name) ||
+      [...aliasOf.entries()].some(([alias, canon]) => canon === enumDef.name && referencedEnums.has(alias));
+    if (!isReferenced) continue;
 
     // Deduplicate values
     const seenValues = new Set<string>();
@@ -123,10 +136,11 @@ export function primeEnumAliases(enums: Enum[]): void {
 
 /**
  * Warn when two enums share a trailing stem (e.g., `ConnectionType`) but
- * carry divergent wire values. Such pairs usually mean the spec drifted:
- * one endpoint documents a different set of enum members than another for
- * the same concept. Catching this at generation time surfaces API/spec
- * mismatches that would otherwise ship quietly.
+ * carry *contradictory* wire values — each side has values the other lacks.
+ * Pure subset relationships (event-specific payloads that narrow a shared
+ * base set — the usual shape of WorkOS event enums) are legitimate and not
+ * flagged. Only true divergences, which typically indicate spec drift, are
+ * reported.
  */
 export function diagnoseDivergentEnums(enums: Enum[]): void {
   const byStem = new Map<string, Enum[]>();
@@ -140,16 +154,71 @@ export function diagnoseDivergentEnums(enums: Enum[]): void {
 
   for (const [stem, group] of byStem) {
     if (group.length < 2) continue;
-    const canonicalValues = valueSignature(group[0]);
-    const divergent = group.filter((e) => valueSignature(e) !== canonicalValues);
-    if (divergent.length === 0) continue;
-    // Don't warn for pure dedupe (same values, different names) — that's
-    // already handled by the alias pass.
-    const valueSets = new Set(group.map(valueSignature));
-    if (valueSets.size === 1) continue;
+    // Skip generic event-payload stems (`DataState`, `DataStatus`,
+    // `DataActorSource`, …). Many unrelated event subtypes expose a
+    // `data.{state,status}` field whose allowed values are scoped per
+    // event; grouping them by the generic `Data*` suffix surfaces
+    // false-positive divergences, not real drift.
+    if (stem.startsWith('Data')) continue;
+    // Identical value sets are handled by the alias/dedupe pass.
+    const distinctSigs = new Set(group.map(valueSignature));
+    if (distinctSigs.size === 1) continue;
+    // Only warn when some pair is *mutually exclusive*: each enum has a
+    // value the other doesn't. Subsets are not drift.
+    if (!hasMutuallyExclusivePair(group)) continue;
     const summary = group.map((e) => `${e.name}[${e.values.length}]`).join(', ');
     console.warn(`[oagen:dotnet] Divergent enums sharing stem "${stem}": ${summary}`);
   }
+}
+
+/**
+ * True if some pair in the group both:
+ *   (a) shares enough values to plausibly be the same concept, AND
+ *   (b) has values exclusive to each side (i.e., is not a subset/equal).
+ * Sharing the trailing stem alone is insufficient — `DataStatus` shows up on
+ * unrelated domains (connection link state vs. membership state) that only
+ * coincidentally overlap on a sentinel like `unknown`. Require a non-trivial
+ * intersection before treating two enums as the same logical enum.
+ */
+function hasMutuallyExclusivePair(group: Enum[]): boolean {
+  // Compare case-insensitively so cosmetic drift like `GitHubOAuth` vs
+  // `GithubOAuth` — an intentional historical spelling carried forward by
+  // the spec — doesn't register as divergence.
+  const valueSets = group.map((e) => new Set(e.values.map((v) => String(v.value).toLowerCase())));
+  for (let i = 0; i < valueSets.length; i++) {
+    for (let j = i + 1; j < valueSets.length; j++) {
+      const a = valueSets[i];
+      const b = valueSets[j];
+      // Concept-similarity gate: two enums are treated as the same logical
+      // enum only when they share >= 3 values AND those shared values
+      // dominate both sides (>= 50% of the larger set). A handful of
+      // shared sentinels (`unknown`, `pending`) recurs across unrelated
+      // domains (`AuthMethod` on Radar assessments vs. sessions: only
+      // `password`/`passkey`/`sso`/`unknown` overlap out of ~15 total), and
+      // that sparse overlap shouldn't count as drift.
+      let shared = 0;
+      for (const v of a) {
+        if (b.has(v)) shared++;
+      }
+      if (shared < 3) continue;
+      const larger = Math.max(a.size, b.size);
+      if (larger === 0 || shared / larger < 0.5) continue;
+      // Both sides must have values the other lacks — a subset is legitimate
+      // narrowing, not drift.
+      let aHasExtra = false;
+      for (const v of a) {
+        if (!b.has(v)) {
+          aHasExtra = true;
+          break;
+        }
+      }
+      if (!aHasExtra) continue;
+      for (const v of b) {
+        if (!a.has(v)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function trailingPascalStem(name: string): string | null {
@@ -188,6 +257,37 @@ function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
     }
   }
   return aliasOf;
+}
+
+/**
+ * Collect all enum names referenced anywhere in the spec — model fields,
+ * operation params, request bodies, and responses. Used to prune orphan
+ * enums that the IR extracted from the spec but that no generated code
+ * actually references.
+ */
+function collectReferencedEnumNames(ctx: EmitterContext): Set<string> {
+  const refs = new Set<string>();
+  const collect = (ref: any) => {
+    walkTypeRef(ref, { enum: (r: any) => refs.add(r.name) });
+  };
+  // Walk the enriched models (which include synthetic fields from oneOf
+  // flattening) so synthetic enums are also counted as referenced.
+  const enrichedModels = enrichModelsFromSpec(ctx.spec.models);
+  for (const model of enrichedModels) {
+    for (const field of model.fields) {
+      collect(field.type);
+    }
+  }
+  for (const service of ctx.spec.services) {
+    for (const op of service.operations) {
+      if (op.requestBody) collect(op.requestBody);
+      if (op.response) collect(op.response);
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+        collect(p.type);
+      }
+    }
+  }
+  return refs;
 }
 
 /** Get the canonical enum name if the given enum is an alias. */
