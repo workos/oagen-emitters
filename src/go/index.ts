@@ -10,7 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
-import { enrichModelsFromSpec } from '../shared/model-utils.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
@@ -37,7 +37,10 @@ export const goEmitter: Emitter = {
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateEnums(enums, ctx));
+    // Merge synthetic enums produced during model enrichment (inline oneOf
+    // definitions) so they get proper type definitions in enums.go.
+    const syntheticEnums = getSyntheticEnums();
+    return ensureTrailingNewlines(generateEnums([...enums, ...syntheticEnums], ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
