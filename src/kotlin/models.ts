@@ -105,9 +105,20 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   return files;
 }
 
+/**
+ * Detect whether a model follows the webhook event envelope pattern:
+ * has required `id`, `event`, `created_at` fields plus a `data` field.
+ */
+function isEventEnvelopeModel(model: Model): boolean {
+  const fieldNames = new Set(model.fields.map((f) => f.name));
+  return fieldNames.has('id') && fieldNames.has('event') && fieldNames.has('created_at') && fieldNames.has('data');
+}
+
 function emitDataClass(model: Model): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
+  const implementsEvent = isEventEnvelopeModel(model);
+  if (implementsEvent) imports.add('com.workos.common.http.WorkOSEvent');
   const lines: string[] = [];
   lines.push(`package ${MODELS_PACKAGE}`);
   lines.push('');
@@ -122,6 +133,7 @@ function emitDataClass(model: Model): GeneratedFile {
     lines.push(`class ${typeName}`);
     lines.push('');
   } else {
+    const implClause = implementsEvent ? ' : WorkOSEvent' : '';
     lines.push(`data class ${typeName}(`);
 
     // Emit non-defaulted params first, then defaulted — Kotlin requires
@@ -134,13 +146,15 @@ function emitDataClass(model: Model): GeneratedFile {
       if (aDef === bDef) return 0;
       return aDef ? 1 : -1;
     });
-    const rendered = renderFields(ordered);
+    // When implementing WorkOSEvent, matching fields need `override`.
+    const overrideFields = implementsEvent ? new Set(['id', 'event', 'createdAt']) : new Set<string>();
+    const rendered = renderFields(ordered, overrideFields);
     for (let i = 0; i < rendered.length; i++) {
       const suffix = i === rendered.length - 1 ? '' : ',';
       lines.push(`${rendered[i]}${suffix}`);
     }
 
-    lines.push(')');
+    lines.push(`)${implClause}`);
     lines.push('');
   }
 
@@ -187,7 +201,7 @@ function emitSealedUnion(
   };
 }
 
-function renderFields(fields: Field[]): string[] {
+function renderFields(fields: Field[], overrideFields: Set<string> = new Set()): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
 
@@ -217,8 +231,11 @@ function renderFields(fields: Field[]): string[] {
       kotlinType = baseType;
     }
 
+    const isOverride = overrideFields.has(kotlinName);
     const annotations: string[] = [];
-    annotations.push('@JvmField');
+    // @JvmField cannot be applied to override properties in Kotlin.
+    // Java callers can still reach the field through the generated getter.
+    if (!isOverride) annotations.push('@JvmField');
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
     if (field.deprecated) annotations.push('@Deprecated("Deprecated field")');
 
@@ -231,7 +248,8 @@ function renderFields(fields: Field[]): string[] {
     }
     for (const anno of annotations) lines.push(`  ${anno}`);
 
-    const rendered = `  val ${kotlinName}: ${kotlinType}`;
+    const overridePrefix = isOverride ? 'override ' : '';
+    const rendered = `  ${overridePrefix}val ${kotlinName}: ${kotlinType}`;
     paramParts.push(rendered);
     if (defaultExpr !== null) paramParts[0] = `${paramParts[0]} = ${defaultExpr}`;
     lines.push(paramParts[0]);
@@ -249,7 +267,7 @@ function collapseFieldEntries(rawLines: string[]): string[] {
   let current: string[] = [];
   for (const line of rawLines) {
     const trimmed = line.trimStart();
-    const isDeclaration = trimmed.startsWith('val ');
+    const isDeclaration = trimmed.startsWith('val ') || trimmed.startsWith('override val ');
     current.push(line);
     if (isDeclaration) {
       entries.push(current.join('\n'));
