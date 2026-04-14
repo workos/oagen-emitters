@@ -252,6 +252,10 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
           const isRequiredEnum = field.required && isEnumRef(field.type);
           optionsLines.push(...emitXmlDoc(field.description, '        '));
+          if (field.deprecated) {
+            const msg = escapeCsAttributeString(deprecationMessage(field.description, 'field'));
+            optionsLines.push(`        [System.Obsolete("${msg}")]`);
+          }
           optionsLines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
           optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
           optionsLines.push('');
