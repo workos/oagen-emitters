@@ -1,7 +1,7 @@
 import type { Service, Operation, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
-import { stripUrnPrefix } from '../shared/naming-utils.js';
+import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -15,22 +15,6 @@ export interface NamespaceGrouping {
   standalone: { service: Service; prop: string; resolvedName: string }[];
   namespaces: NamespaceGroup[];
 }
-
-/**
- * Map of lowercase acronym forms to their correct casing.
- */
-const ACRONYM_FIXES: [RegExp, string][] = [
-  [/Workos/g, 'WorkOS'],
-  [/Sso/g, 'SSO'],
-  [/Mfa/g, 'MFA'],
-  [/Jwt/g, 'JWT'],
-  [/Cors/g, 'CORS'],
-  [/Saml/g, 'SAML'],
-  [/Scim/g, 'SCIM'],
-  [/Rbac/g, 'RBAC'],
-  [/Oauth/g, 'OAuth'],
-  [/Oidc/g, 'OIDC'],
-];
 
 /**
  * PHP reserved class names that would collide with builtins.
@@ -99,10 +83,7 @@ export function enumClassName(name: string): string {
 
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(stripUrnPrefix(name));
-  for (const [pattern, replacement] of ACRONYM_FIXES) {
-    result = result.replace(pattern, replacement);
-  }
+  let result = applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));
   if (PHP_RESERVED_CLASS_NAMES.has(result)) {
     result += 'Model';
   }
