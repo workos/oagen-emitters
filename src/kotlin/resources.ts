@@ -360,12 +360,14 @@ function renderMethod(
         bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k)}`);
       }
       if (bodyEntries.length > 0) {
-        lines.push(`    val body = ${helperFn}(`);
+        // ktlint: "A multiline expression should start on a new line"
+        lines.push(`    val body =`);
+        lines.push(`      ${helperFn}(`);
         for (let i = 0; i < bodyEntries.length; i++) {
           const sep = i === bodyEntries.length - 1 ? '' : ',';
-          lines.push(`${bodyEntries[i]}${sep}`);
+          lines.push(`  ${bodyEntries[i]}${sep}`);
         }
-        lines.push(`    )`);
+        lines.push(`      )`);
       } else {
         // Empty body (POST/PUT/PATCH still require one for OkHttp).
         lines.push(`    val body = linkedMapOf<String, Any?>()`);

@@ -81,8 +81,7 @@ function generateServiceTestClass(
   resolvedLookup: Map<string, ResolvedOperation>,
 ): string | null {
   const imports = new Set<string>();
-  // Base JUnit/WireMock/exception imports — always present.
-  imports.add('com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching');
+  // Base JUnit/exception imports — always present.
   imports.add('com.workos.common.exceptions.GenericServerException');
   imports.add('com.workos.common.exceptions.NotFoundException');
   imports.add('com.workos.common.exceptions.RateLimitException');
@@ -140,15 +139,25 @@ function generateServiceTestClass(
   repOp.imports.forEach((i) => imports.add(i));
   httpMethodsUsed.add(repOp.httpMethod);
 
-  // Register request-verification imports when any operation contributes
-  // body/query assertions.
-  const anyBody = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredBodyPaths.length > 0);
-  const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
-  if (anyBody || anyQuery) {
-    for (const m of httpMethodsUsed) {
+  // Register request-verification imports only for operations that actually
+  // emit verify() calls (i.e., have body/query assertions). This avoids
+  // unused `*RequestedFor` and `urlPathMatching` imports in test files where
+  // no happy-path test has scalar required params.
+  const verifyMethods = new Set<string>();
+  for (const t of uniqueTests) {
+    if (!t.canEmitHappyPath) continue;
+    if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0) {
+      verifyMethods.add(t.httpMethod);
+    }
+  }
+  if (verifyMethods.size > 0) {
+    imports.add('com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching');
+    for (const m of verifyMethods) {
       imports.add(`com.github.tomakehurst.wiremock.client.WireMock.${m}RequestedFor`);
     }
   }
+  const anyBody = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredBodyPaths.length > 0);
+  const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
   if (anyBody) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath');
   if (anyQuery) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matching');
 

@@ -65,7 +65,11 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     const canonicalName = aliasOf.get(enumDef.name);
     if (canonicalName) {
       const canonicalType = className(canonicalName);
-      const aliasContent = [`package ${ENUMS_PACKAGE}`, '', `typealias ${typeName} = ${canonicalType}`, ''].join('\n');
+      const aliasLine = `typealias ${typeName} = ${canonicalType}`;
+      // ktlint enforces a 140-char max line length. When the typealias
+      // exceeds that, add a @file:Suppress to avoid an unfixable violation.
+      const suppressLine = aliasLine.length > 140 ? `@file:Suppress("ktlint:standard:max-line-length")\n\n` : '';
+      const aliasContent = [`${suppressLine}package ${ENUMS_PACKAGE}`, '', aliasLine, ''].join('\n');
       files.push({
         path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
         content: aliasContent,
