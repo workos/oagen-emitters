@@ -28,25 +28,46 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   const files: GeneratedFile[] = [];
 
   // Deduplication: identical structures become typealiases.
-  const hashGroups = new Map<string, string[]>();
+  // Pass 1: hash without nested-alias resolution.
+  modelAliasMap = null;
+  const hashGroupsPass1 = new Map<string, string[]>();
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     const hash = structuralHash(model);
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(model.name);
+    if (!hashGroupsPass1.has(hash)) hashGroupsPass1.set(hash, []);
+    hashGroupsPass1.get(hash)!.push(model.name);
   }
 
   const aliasOf = new Map<string, string>();
-  for (const [hash, names] of hashGroups) {
+  for (const [hash, names] of hashGroupsPass1) {
     if (names.length <= 1 || hash === '') continue;
     const sorted = [...names].sort();
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
-      // Safety guard: do not alias two models when one name carries a
-      // request-like suffix and the other does not. This prevents aliasing
-      // request DTOs to response models that happen to be structurally
-      // identical today but may diverge in the future.
+      if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
+      aliasOf.set(sorted[i], canonical);
+    }
+  }
+
+  // Pass 2: re-hash with the alias map so models whose only difference was
+  // referencing aliased vs canonical nested types now collide.
+  modelAliasMap = aliasOf;
+  const hashGroupsPass2 = new Map<string, string[]>();
+  for (const model of models) {
+    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
+    if (aliasOf.has(model.name)) continue; // already aliased in pass 1
+    const hash = structuralHash(model);
+    if (!hashGroupsPass2.has(hash)) hashGroupsPass2.set(hash, []);
+    hashGroupsPass2.get(hash)!.push(model.name);
+  }
+  for (const [hash, names] of hashGroupsPass2) {
+    if (names.length <= 1 || hash === '') continue;
+    const sorted = [...names].sort();
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      if (aliasOf.has(sorted[i])) continue;
       if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
       aliasOf.set(sorted[i], canonical);
     }
@@ -303,10 +324,23 @@ function hasRequestSuffix(name: string): boolean {
 
 // --- Structural dedup ---
 
+/**
+ * Resolve a model name through the alias map so that two models referencing
+ * aliased nested types produce the same structural hash. Called after the
+ * first alias pass to catch transitive matches.
+ */
+let modelAliasMap: Map<string, string> | null = null;
+
 function normalizeTypeForHash(ref: TypeRef): unknown {
   if (ref.kind === 'enum') {
     const vals = ref.values ? [...ref.values].sort() : [];
     return { kind: 'enum', values: vals };
+  }
+  if (ref.kind === 'model') {
+    // Resolve through the alias map so `FooData` and `BarData` (aliased to
+    // FooData) produce the same hash when referenced as nested types.
+    const resolved = modelAliasMap?.get(ref.name) ?? ref.name;
+    return { kind: 'model', name: resolved };
   }
   if (ref.kind === 'nullable') return { kind: 'nullable', inner: normalizeTypeForHash(ref.inner) };
   if (ref.kind === 'array') return { kind: 'array', items: normalizeTypeForHash(ref.items) };

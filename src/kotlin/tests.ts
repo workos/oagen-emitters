@@ -718,8 +718,10 @@ function splitTopLevelArgs(args: string): string[] {
 }
 
 function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
-  // Only emit if we have at least one round-trippable model.
-  const target = spec.models.find(
+  // Collect ALL round-trippable models: non-list-wrapper data classes whose
+  // required fields are all primitive/nullable (so we can synthesize a JSON
+  // literal without guessing nested model shapes).
+  const targets = spec.models.filter(
     (m) =>
       !isListWrapperModel(m) &&
       !isListMetadataModel(m) &&
@@ -727,12 +729,9 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
       m.fields.every((f) => f.required) &&
       m.fields.every((f) => f.type.kind === 'primitive' || f.type.kind === 'nullable'),
   );
-  if (!target) return null;
+  if (targets.length === 0) return null;
 
-  const cls = className(target.name);
-  const jsonLiteral = buildTrivialJson(target);
-
-  const content = [
+  const lines: string[] = [
     'package com.workos.models',
     '',
     'import com.workos.common.json.ObjectMapperFactory',
@@ -740,23 +739,31 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
     'import org.junit.jupiter.api.Test',
     '',
     'class GeneratedModelRoundTripTest {',
-    '  @Test',
-    `  fun \`${cls} round-trips through Jackson\`() {`,
-    '    val mapper = ObjectMapperFactory.create()',
-    `    val json = ${ktStringLiteral(jsonLiteral)}`,
-    `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
-    '    val reserialized = mapper.writeValueAsString(parsed)',
-    '    val tree1 = mapper.readTree(json)',
-    '    val tree2 = mapper.readTree(reserialized)',
-    '    assertEquals(tree1, tree2)',
-    '  }',
-    '}',
-    '',
-  ].join('\n');
+    '  private val mapper = ObjectMapperFactory.create()',
+  ];
+
+  for (const target of targets) {
+    const cls = className(target.name);
+    const jsonLiteral = buildTrivialJson(target);
+    lines.push(
+      '',
+      '  @Test',
+      `  fun \`${cls} round-trips through Jackson\`() {`,
+      `    val json = ${ktStringLiteral(jsonLiteral)}`,
+      `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
+      '    val reserialized = mapper.writeValueAsString(parsed)',
+      '    val tree1 = mapper.readTree(json)',
+      '    val tree2 = mapper.readTree(reserialized)',
+      '    assertEquals(tree1, tree2)',
+      '  }',
+    );
+  }
+
+  lines.push('}', '');
 
   return {
     path: `${TEST_PREFIX}com/workos/models/GeneratedModelRoundTripTest.kt`,
-    content,
+    content: lines.join('\n'),
     overwriteExisting: true,
   };
 }
