@@ -209,6 +209,16 @@ function generateMethod(
     docParts.push(`@return ${returnType}`);
   }
 
+  // @throws — scope to what the method actually calls
+  if (!isRedirect) {
+    // HTTP methods can throw any WorkOSException (config, transport, API response)
+    docParts.push(`@throws \\${ctx.namespacePascal}\\Exception\\WorkOSException`);
+  } else if (getOpInferFromClient(resolvedOp).length > 0) {
+    // Redirect endpoints that inject client fields can throw ConfigurationException
+    docParts.push(`@throws \\${ctx.namespacePascal}\\Exception\\ConfigurationException`);
+  }
+  // Redirect endpoints with no inferFromClient: buildUrl() is pure, no @throws
+
   if (op.deprecated) docParts.push('@deprecated');
   lines.push(...phpDocComment(docParts.join('\n'), 4));
 

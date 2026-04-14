@@ -38,6 +38,7 @@ function emitWrapperMethod(
   const op2 = resolvedOp.operation;
   const returnDocType = op2.response.kind === 'model' ? `\\${ns}\\Resource\\${className(op2.response.name)}` : 'mixed';
   docParts.push(`@return ${returnDocType}`);
+  docParts.push(`@throws \\${ns}\\Exception\\WorkOSException`);
   lines.push(...phpDocComment(docParts.join('\n'), 4));
 
   lines.push(`    public function ${method}(`);

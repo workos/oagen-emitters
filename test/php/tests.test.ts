@@ -106,6 +106,73 @@ describe('generateTests', () => {
     expect(resourceTest!.content).toContain('foreach ($result as $item)');
   });
 
+  it('generates redirect endpoint test with query param assertions', () => {
+    const ssoServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [
+              { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'response_type', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'state', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ssoSpec = { ...spec, services: ssoServices };
+    const ssoCtx: EmitterContext = {
+      ...ctx,
+      spec: ssoSpec,
+      resolvedOperations: [
+        {
+          operation: ssoServices[0].operations[0],
+          service: ssoServices[0],
+          methodName: 'get_authorization_url',
+          mountOn: 'SSO',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+        } as any,
+      ],
+    };
+
+    const result = generateTests(ssoSpec, ssoCtx);
+    const testFile = result.find((f) => f.path === 'tests/Service/SSOTest.php');
+    expect(testFile).toBeDefined();
+    const content = testFile!.content;
+
+    // Should be a redirect endpoint test (no mock responses, returns string)
+    expect(content).toContain('$this->assertIsString($result)');
+    expect(content).toContain("assertStringContainsString('sso/authorize'");
+
+    // Should parse query params from URL
+    expect(content).toContain('parse_str(parse_url($result, PHP_URL_QUERY)');
+
+    // Should assert visible query params (required and optional)
+    expect(content).toContain("assertSame('test_value', $query['redirect_uri'])");
+    expect(content).toContain("assertSame('test_value', $query['state'])");
+
+    // Should pass optional params in the method call
+    expect(content).toContain("state: 'test_value'");
+
+    // Should assert hidden defaults
+    expect(content).toContain("assertSame('code', $query['response_type'])");
+
+    // Should assert inferred client fields
+    expect(content).toContain("assertArrayHasKey('client_id', $query)");
+  });
+
   it('generates fixture JSON files', () => {
     const result = generateTests(spec, ctx);
 

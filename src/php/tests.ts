@@ -7,11 +7,17 @@ import type {
   Model,
   ResolvedOperation,
 } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
+import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { className, enumClassName, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
-import { getMountTarget, groupByMount, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  getMountTarget,
+  groupByMount,
+  buildHiddenParams,
+  getOpDefaults,
+  getOpInferFromClient,
+} from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isRedirectEndpoint } from './resources.js';
 
@@ -20,16 +26,6 @@ import { isRedirectEndpoint } from './resources.js';
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-
-  // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
-  for (const fixture of fixtures) {
-    files.push({
-      path: fixture.path,
-      content: fixture.content,
-      headerPlacement: 'skip',
-    });
-  }
 
   // TestHelper is now hand-maintained in the target SDK (@oagen-ignore-file).
 
@@ -72,6 +68,16 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     content: generateClientTest(ctx),
     overwriteExisting: true,
   });
+
+  // Generate fixture JSON files
+  const fixtures = generateFixtures(spec);
+  for (const fixture of fixtures) {
+    files.push({
+      path: fixture.path,
+      content: fixture.content,
+      headerPlacement: 'skip',
+    });
+  }
 
   return files;
 }
@@ -148,11 +154,16 @@ function generateMountGroupTest(
       // Query string serialization assertions
       emitQueryAssertions(lines, op, ctx, hidden);
     } else if (isRedirectEndpoint(op, resolvedOp)) {
-      // Redirect endpoint: URL is built locally, no HTTP request made
+      // Redirect endpoint: URL is built locally, no HTTP request made.
+      // Pass all params (including optional) to verify they appear in the URL.
       lines.push('        $client = $this->createMockClient([]);');
-      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
+      lines.push(
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden })});`,
+      );
       lines.push('        $this->assertIsString($result);');
       lines.push(`        $this->assertStringContainsString('${expectedPath}', $result);`);
+      // Query param assertions for the generated URL
+      emitRedirectQueryAssertions(lines, op, ctx, hidden, resolvedOp);
     } else if (plan.responseModelName) {
       const modelName = className(plan.responseModelName);
       const fixtureName = `${snakeName(plan.responseModelName)}`;
@@ -370,11 +381,8 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
         const e = ctx.spec.enums.find((en) => en.name === ref.name);
         if (e && e.values.length > 0) {
           const enumClass = enumClassName(ref.name);
-          const caseName = String(e.values[0].name)
-            .split(/[_\s-]+/)
-            .filter(Boolean)
-            .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
-            .join('');
+          // Must match the case-name logic in enums.ts
+          const caseName = toPascalCase(String(e.values[0].name).toLowerCase());
           return `\\WorkOS\\Resource\\${enumClass}::${caseName}`;
         }
       }
@@ -382,6 +390,13 @@ function generateTestValue(ref: { kind: string; type?: string; name?: string }, 
     }
     case 'array':
       return '[]';
+    case 'map':
+      return '[]';
+    case 'nullable':
+      return generateTestValue(
+        (ref as unknown as { inner: { kind: string; type?: string; name?: string } }).inner,
+        ctx,
+      );
     case 'model': {
       if (ref.name) {
         const modelClass = className(ref.name);
@@ -503,6 +518,60 @@ function emitQueryAssertions(lines: string[], op: Operation, ctx: EmitterContext
           break;
       }
     }
+  }
+}
+
+/**
+ * Emit query param assertions for redirect endpoint URLs.
+ * Parses the query string from the built URL and asserts visible params,
+ * hidden defaults (e.g., response_type), and inferred client fields (e.g., client_id).
+ */
+function emitRedirectQueryAssertions(
+  lines: string[],
+  op: Operation,
+  ctx: EmitterContext,
+  hidden: Set<string>,
+  resolvedOp?: ResolvedOperation,
+): void {
+  const hasVisibleQueryParams = op.queryParams.some((q) => !hidden.has(q.name));
+  const defaults = getOpDefaults(resolvedOp);
+  const inferred = getOpInferFromClient(resolvedOp);
+  if (!hasVisibleQueryParams && Object.keys(defaults).length === 0 && inferred.length === 0) return;
+
+  lines.push("        parse_str(parse_url($result, PHP_URL_QUERY) ?? '', $query);");
+
+  // Assert visible query params (same logic as emitQueryAssertions but reading from $query parsed from URL)
+  for (const q of op.queryParams) {
+    if (hidden.has(q.name)) continue;
+    const innerType =
+      q.type.kind === 'nullable' ? (q.type as { inner: { kind: string; type?: string; name?: string } }).inner : q.type;
+    if (innerType.kind === 'enum' && innerType.name) {
+      const e = ctx.spec.enums.find((en) => en.name === innerType.name);
+      if (e && e.values.length > 0) {
+        lines.push(`        $this->assertSame('${e.values[0].value}', $query['${q.name}']);`);
+      }
+    } else if (innerType.kind === 'primitive') {
+      switch (innerType.type) {
+        case 'string':
+          lines.push(`        $this->assertSame('test_value', $query['${q.name}']);`);
+          break;
+        case 'integer':
+        case 'number':
+        case 'boolean':
+          lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+          break;
+      }
+    }
+  }
+
+  // Assert hidden defaults (e.g., response_type => 'code')
+  for (const [key, value] of Object.entries(defaults)) {
+    lines.push(`        $this->assertSame('${value}', $query['${key}']);`);
+  }
+
+  // Assert inferred client fields are present (e.g., client_id)
+  for (const key of inferred) {
+    lines.push(`        $this->assertArrayHasKey('${key}', $query);`);
   }
 }
 
