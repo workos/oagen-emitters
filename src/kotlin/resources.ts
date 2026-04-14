@@ -12,6 +12,7 @@ import type {
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefOptional, implicitImportsFor } from './type-map.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { enumCanonicalMap } from './enums.js';
 import {
   className,
   propertyName,
@@ -242,9 +243,19 @@ function renderMethod(
     params.push(renderParam(qp.name, qp.type, qp.required));
   }
 
+  // PATCH operations use PatchField<T> for optional body fields so callers
+  // can distinguish "omit" (Absent) from "clear" (Present(null)).
+  const isPatch = httpMethod === 'PATCH';
+
   const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const bf of sortedBodyFields) {
-    params.push(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required));
+    if (isPatch && !bf.required) {
+      const baseType = mapTypeRef(bf.type);
+      imports.add('com.workos.common.http.PatchField');
+      params.push(`    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`);
+    } else {
+      params.push(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required));
+    }
   }
 
   // Per-request options trailer (always optional)
@@ -333,7 +344,7 @@ function renderMethod(
 
     if (hasBody) {
       lines.push(`    val body = linkedMapOf<String, Any?>()`);
-      for (const bf of sortedBodyFields) lines.push(...emitBodyField(bf, bodyParamNames.get(bf.name)!));
+      for (const bf of sortedBodyFields) lines.push(...emitBodyField(bf, bodyParamNames.get(bf.name)!, isPatch));
       for (const [k, v] of Object.entries(defaults)) lines.push(`    body[${ktLiteral(k)}] = ${ktLiteral(v)}`);
       for (const k of inferFromClient) lines.push(`    body[${ktLiteral(k)}] = workos.${clientFieldExpression(k)}`);
       lines.push(`    val config =`);
@@ -547,9 +558,14 @@ function queryParamToString(type: TypeRef, varName: string): string {
   return `${varName}.toString()`;
 }
 
-function emitBodyField(field: Field, kotlinParamName: string): string[] {
+function emitBodyField(field: Field, kotlinParamName: string, isPatch: boolean): string[] {
   const prop = kotlinParamName;
   if (field.required) return [`    body[${ktLiteral(field.name)}] = ${prop}`];
+  // PATCH: PatchField<T> — serialize Present(value) including explicit null;
+  // skip Absent entirely so the server preserves the field's current value.
+  if (isPatch) {
+    return [`    if (${prop} is PatchField.Present) body[${ktLiteral(field.name)}] = ${prop}.value`];
+  }
   return [`    if (${prop} != null) body[${ktLiteral(field.name)}] = ${prop}`];
 }
 
@@ -589,7 +605,11 @@ function registerTypeImports(ref: TypeRef, imports: Set<string>, ctx: EmitterCon
   for (const imp of implicitImportsFor(mapped)) imports.add(imp);
 
   walk(ref, (r) => {
-    if (r.kind === 'enum') imports.add(`com.workos.types.${className(r.name)}`);
+    if (r.kind === 'enum') {
+      // When an enum is aliased, import the canonical class instead of the alias.
+      const canonicalName = enumCanonicalMap.get(r.name) ?? r.name;
+      imports.add(`com.workos.types.${className(canonicalName)}`);
+    }
     if (r.kind === 'model') {
       const referenced = ctx.spec.models.find((m) => m.name === r.name);
       if (referenced && (isListWrapperModel(referenced) || isListMetadataModel(referenced))) return;

@@ -91,7 +91,6 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
   lines.push(`        method = ${ktLiteral(httpMethod)},`);
   lines.push(`        path = ${pathExpr},`);
   lines.push(`        body = body,`);
-  lines.push(`        formBody = null,`);
   if (op.requestBodyEncoding === 'form-urlencoded') {
     // Some ops (SSO token, User Management authenticate) are form-encoded.
     // Rewrite as formBody mapping string→string instead of JSON body.

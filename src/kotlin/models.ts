@@ -42,7 +42,14 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
     if (names.length <= 1 || hash === '') continue;
     const sorted = [...names].sort();
     const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
+    for (let i = 1; i < sorted.length; i++) {
+      // Safety guard: do not alias two models when one name carries a
+      // request-like suffix and the other does not. This prevents aliasing
+      // request DTOs to response models that happen to be structurally
+      // identical today but may diverge in the future.
+      if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
+      aliasOf.set(sorted[i], canonical);
+    }
   }
 
   for (const model of models) {
@@ -96,11 +103,15 @@ function emitDataClass(model: Model): GeneratedFile {
   } else {
     lines.push(`data class ${typeName}(`);
 
-    // Emit required fields first, then optional — Kotlin requires non-defaulted
-    // params before defaulted ones.
+    // Emit non-defaulted params first, then defaulted — Kotlin requires
+    // non-defaulted params before defaulted ones. Literal-typed fields always
+    // receive a default, so they sort after plain required fields.
+    const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
     const ordered = [...model.fields].sort((a, b) => {
-      if (a.required === b.required) return 0;
-      return a.required ? -1 : 1;
+      const aDef = hasDefault(a);
+      const bDef = hasDefault(b);
+      if (aDef === bDef) return 0;
+      return aDef ? 1 : -1;
     });
     const rendered = renderFields(ordered);
     for (let i = 0; i < rendered.length; i++) {
@@ -168,7 +179,14 @@ function renderFields(fields: Field[]): string[] {
     let kotlinType: string;
     let defaultExpr: string | null = null;
 
-    if (!field.required) {
+    // Const literal fields: always emit a hardcoded default matching the
+    // literal value so callers don't have to pass it.
+    const literalDefault = literalDefaultExpr(field.type);
+
+    if (literalDefault !== null) {
+      kotlinType = baseType;
+      defaultExpr = literalDefault;
+    } else if (!field.required) {
       kotlinType = baseType.endsWith('?') ? baseType : `${baseType}?`;
       defaultExpr = 'null';
     } else if (baseType.endsWith('?')) {
@@ -187,6 +205,8 @@ function renderFields(fields: Field[]): string[] {
     if (field.description?.trim()) {
       const line = field.description.split('\n').find((l) => l.trim()) ?? '';
       lines.push(`  /** ${escapeKdoc(line.trim())} */`);
+    } else if (literalDefault !== null) {
+      lines.push(`  /** Always \`${literalDefault}\`. */`);
     }
     for (const anno of annotations) lines.push(`  ${anno}`);
 
@@ -217,6 +237,18 @@ function collapseFieldEntries(rawLines: string[]): string[] {
   }
   if (current.length > 0) entries.push(current.join('\n'));
   return entries;
+}
+
+/**
+ * If the TypeRef is a literal (const) with a string, number, or boolean value,
+ * return the Kotlin expression for that default. Otherwise return null.
+ */
+function literalDefaultExpr(ref: TypeRef): string | null {
+  if (ref.kind !== 'literal' || ref.value === null) return null;
+  if (typeof ref.value === 'string') return ktStringLiteral(ref.value);
+  if (typeof ref.value === 'number') return Number.isInteger(ref.value) ? `${ref.value}L` : String(ref.value);
+  if (typeof ref.value === 'boolean') return ref.value ? 'true' : 'false';
+  return null;
 }
 
 function collectImports(fields: Field[]): Set<string> {
@@ -254,6 +286,20 @@ function escapeKdoc(s: string): string {
 
 // Re-exported so downstream emitters (resources, tests) can filter wrapper models.
 export { isListWrapperModel, isListMetadataModel };
+
+// --- Unsafe typealias guard ---
+
+/** Suffixes that indicate a request / mutation DTO. */
+const REQUEST_SUFFIXES = /(?:Dto|Request|Create|Update|Add|Remove|Set)$/i;
+
+/**
+ * Returns true when [name] looks like a request DTO based on its suffix.
+ * Used to prevent aliasing request DTOs to response models that happen to
+ * share the same field shapes today.
+ */
+function hasRequestSuffix(name: string): boolean {
+  return REQUEST_SUFFIXES.test(className(name));
+}
 
 // --- Structural dedup ---
 

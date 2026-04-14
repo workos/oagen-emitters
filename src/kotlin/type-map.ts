@@ -1,6 +1,12 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
+import { enumCanonicalMap } from './enums.js';
+
+/** Resolve an enum name through the canonical map (identity when no alias). */
+function resolveEnumName(name: string): string {
+  return className(enumCanonicalMap.get(name) ?? name);
+}
 
 /**
  * Map an IR TypeRef to a non-nullable Kotlin type expression.
@@ -13,7 +19,7 @@ export function mapTypeRef(ref: TypeRef): string {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
     model: (r) => className(r.name),
-    enum: (r) => className(r.name),
+    enum: (r) => resolveEnumName(r.name),
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_ref, inner) => (inner.endsWith('?') ? inner : `${inner}?`),
     literal: (r) => {

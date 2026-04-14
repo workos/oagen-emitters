@@ -6,20 +6,74 @@ const ENUMS_PACKAGE = 'com.workos.types';
 const ENUMS_DIR = 'com/workos/types';
 
 /**
+ * Mapping from an IR enum name to its canonical enum name. When two enums
+ * share identical sorted wire values the shorter-named one is canonical and
+ * the others become `typealias` files. Downstream consumers (type-map,
+ * resources) use this map to resolve references to the canonical class.
+ */
+export const enumCanonicalMap = new Map<string, string>();
+
+/**
  * Generate Kotlin `enum class` types from the IR enums. Each enum is emitted
  * to its own file under `com.workos.types`, annotated with Jackson
  * `@JsonValue` on the wire value. An `Unknown` sentinel is always the first
  * constant so that responses with new variants still deserialize instead of
  * throwing.
+ *
+ * Enums with identical sets of wire values are deduplicated: the one with the
+ * shortest PascalCase name becomes canonical and the rest emit `typealias`
+ * files pointing at the canonical class.
  */
 export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
+
+  // Reset the canonical map on every generation run (guards against re-entry).
+  enumCanonicalMap.clear();
+
+  // --- Dedup: group enums by a hash of their sorted wire values. ---
+  const hashGroups = new Map<string, Enum[]>();
+  for (const enumDef of enums) {
+    if (enumDef.values.length === 0) continue;
+    const hash = enumWireHash(enumDef);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(enumDef);
+  }
+
+  // Within each group, pick the shortest className as canonical.
+  const aliasOf = new Map<string, string>(); // enum name → canonical enum name
+  for (const [, group] of hashGroups) {
+    if (group.length <= 1) continue;
+    const sorted = [...group].sort(
+      (a, b) =>
+        className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
+    );
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i].name, canonical.name);
+      enumCanonicalMap.set(sorted[i].name, canonical.name);
+    }
+  }
+
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
     if (enumDef.values.length === 0) continue;
 
     const typeName = className(enumDef.name);
+
+    // Non-canonical enum: emit a typealias instead of a full enum class.
+    const canonicalName = aliasOf.get(enumDef.name);
+    if (canonicalName) {
+      const canonicalType = className(canonicalName);
+      const aliasContent = [`package ${ENUMS_PACKAGE}`, '', `typealias ${typeName} = ${canonicalType}`, ''].join('\n');
+      files.push({
+        path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
+        content: aliasContent,
+        overwriteExisting: true,
+      });
+      continue;
+    }
+
     const lines: string[] = [];
     lines.push(`package ${ENUMS_PACKAGE}`);
     lines.push('');
@@ -89,6 +143,14 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
   }
 
   return files;
+}
+
+/** Hash an enum by its sorted wire values so identical enums collide. */
+function enumWireHash(enumDef: Enum): string {
+  return [...enumDef.values]
+    .map((v) => String(v.value))
+    .sort()
+    .join('|');
 }
 
 function escapeKdoc(s: string): string {

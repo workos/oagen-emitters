@@ -82,7 +82,6 @@ function generateServiceTestClass(
 ): string | null {
   const imports = new Set<string>();
   // Base JUnit/WireMock/exception imports — always present.
-  imports.add('com.github.tomakehurst.wiremock.client.WireMock.aResponse');
   imports.add('com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching');
   imports.add('com.workos.common.exceptions.GenericServerException');
   imports.add('com.workos.common.exceptions.NotFoundException');
@@ -137,13 +136,9 @@ function generateServiceTestClass(
     httpMethodsUsed.add(t.httpMethod);
   }
   // The representative op is used for error-mapping tests regardless of its
-  // happy-path status, so its imports + HTTP method are always needed.
+  // happy-path status, so its type imports are always needed.
   repOp.imports.forEach((i) => imports.add(i));
   httpMethodsUsed.add(repOp.httpMethod);
-
-  for (const m of httpMethodsUsed) {
-    imports.add(`com.github.tomakehurst.wiremock.client.WireMock.${m}`);
-  }
 
   // Register request-verification imports when any operation contributes
   // body/query assertions.
@@ -389,7 +384,10 @@ function synthValue(type: TypeRef, ctx: EmitterContext, imports: Set<string>): s
   if (type.kind === 'enum') {
     const cls = className(type.name);
     imports.add(`com.workos.types.${cls}`);
-    return `${cls}.values().first()`;
+    // Skip `Unknown` (index 0) — serializing the Unknown sentinel throws
+    // because it exists only for forward-compat deserialization. Pick the
+    // first concrete variant instead.
+    return `${cls}.values().first { it != ${cls}.Unknown }`;
   }
   if (type.kind === 'array') {
     // Empty list of the right item type. Kotlin's List<T> is invariant.
@@ -521,15 +519,18 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
   lines.push('');
   lines.push(`  @Test`);
   lines.push(`  fun \`${t.method} returns a typed response\`() {`);
-  lines.push('    wireMockRule.stubFor(');
-  lines.push(`      ${t.httpMethod}(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
-  lines.push(`        .willReturn(`);
-  lines.push(`          aResponse()`);
-  lines.push(`            .withStatus(200)`);
-  lines.push(`            .withHeader("Content-Type", "application/json")`);
-  emitWithBody(lines, '            ', t.minimalResponseBody);
-  lines.push(`        )`);
-  lines.push('    )');
+  const bodyString = ktStringLiteral(t.minimalResponseBody);
+  const stubLine = `    stubResponse(${ktStringLiteral(t.httpMethod.toUpperCase())}, ${ktStringLiteral(t.pathForWireMock)}, 200, ${bodyString})`;
+  if (stubLine.length <= KTLINT_MAX_LINE_LENGTH) {
+    lines.push(stubLine);
+  } else {
+    lines.push('    stubResponse(');
+    lines.push(`      ${ktStringLiteral(t.httpMethod.toUpperCase())},`);
+    lines.push(`      ${ktStringLiteral(t.pathForWireMock)},`);
+    lines.push('      200,');
+    emitStubResponseBody(lines, '      ', t.minimalResponseBody);
+    lines.push('    )');
+  }
   emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
   lines.push('    assertNotNull(result)');
 
@@ -569,15 +570,9 @@ function emitErrorTest(lines: string[], status: string, exceptionName: string, t
   lines.push('');
   lines.push(`  @Test`);
   lines.push(`  fun \`${t.method} translates ${status} to ${exceptionName}\`() {`);
-  lines.push('    wireMockRule.stubFor(');
-  lines.push(`      ${t.httpMethod}(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
-  lines.push(`        .willReturn(`);
-  lines.push(`          aResponse()`);
-  lines.push(`            .withStatus(${status})`);
-  lines.push(`            .withHeader("Content-Type", "application/json")`);
-  lines.push(`            .withBody("{}")`);
-  lines.push(`        )`);
-  lines.push('    )');
+  lines.push(
+    `    stubResponse(${ktStringLiteral(t.httpMethod.toUpperCase())}, ${ktStringLiteral(t.pathForWireMock)}, ${status})`,
+  );
   lines.push(`    assertThrows(${exceptionName}::class.java) {`);
   emitCall(lines, '      ', `api().${t.method}`, t.callArgs);
   lines.push('    }');
@@ -585,31 +580,24 @@ function emitErrorTest(lines: string[], status: string, exceptionName: string, t
 }
 
 /**
- * Emit `.withBody("...")` either on one line or, when the encoded literal
- * would push the line past ktlint's 140-char limit, broken into
- * string-plus-string chunks joined with `+`.
+ * Emit the body argument for a multi-line `stubResponse(...)` call. When the
+ * encoded literal fits on one line it is emitted directly; otherwise it is
+ * broken into string-plus-string chunks joined with `+`.
  */
-function emitWithBody(lines: string[], indent: string, body: string): void {
+function emitStubResponseBody(lines: string[], indent: string, body: string): void {
   const encoded = ktStringLiteral(body);
-  const single = `${indent}.withBody(${encoded})`;
-  if (single.length <= KTLINT_MAX_LINE_LENGTH) {
-    lines.push(single);
+  if (`${indent}${encoded}`.length <= KTLINT_MAX_LINE_LENGTH) {
+    lines.push(`${indent}${encoded}`);
     return;
   }
-  const innerIndent = `${indent}  `;
-  // Continuation chunks (index >= 1) use an additional 2-space indent and a
-  // trailing ` +` suffix. That's the longest form we need to accommodate.
-  const continuationIndent = innerIndent.length + 2;
+  const continuationIndent = indent.length + 2;
   const maxChunkLineLen = KTLINT_MAX_LINE_LENGTH - continuationIndent - 2;
   const chunks = splitEscapedStringLiteral(encoded, maxChunkLineLen);
-  lines.push(`${indent}.withBody(`);
   for (let i = 0; i < chunks.length; i++) {
     const suffix = i === chunks.length - 1 ? '' : ' +';
-    // Kotlin/ktlint: continuation chunks sit at a deeper indent than the first.
     const prefix = i === 0 ? '' : '  ';
-    lines.push(`${innerIndent}${prefix}${chunks[i]}${suffix}`);
+    lines.push(`${indent}${prefix}${chunks[i]}${suffix}`);
   }
-  lines.push(`${indent})`);
 }
 
 /**
