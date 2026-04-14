@@ -13,6 +13,7 @@ import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
 import { getMountTarget, groupByMount, buildHiddenParams } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { isRedirectEndpoint } from './resources.js';
 
 /**
  * Generate PHPUnit test files and fixture JSON files.
@@ -146,6 +147,12 @@ function generateMountGroupTest(
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Query string serialization assertions
       emitQueryAssertions(lines, op, ctx, hidden);
+    } else if (isRedirectEndpoint(op, resolvedOp)) {
+      // Redirect endpoint: URL is built locally, no HTTP request made
+      lines.push('        $client = $this->createMockClient([]);');
+      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
+      lines.push('        $this->assertIsString($result);');
+      lines.push(`        $this->assertStringContainsString('${expectedPath}', $result);`);
     } else if (plan.responseModelName) {
       const modelName = className(plan.responseModelName);
       const fixtureName = `${snakeName(plan.responseModelName)}`;

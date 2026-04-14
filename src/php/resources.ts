@@ -50,8 +50,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push(`namespace ${ctx.namespacePascal}\\Service;`);
     lines.push('');
 
+    // Build resolved lookup early — used by both imports and method generation
+    const resolvedLookup = buildResolvedLookup(ctx);
+
     // Collect imports
-    const imports = collectImports(mergedService, ctx);
+    const imports = collectImports(mergedService, ctx, resolvedLookup);
     for (const imp of imports) {
       lines.push(`use ${imp};`);
     }
@@ -66,7 +69,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
     // Track emitted method names to avoid duplicates
     const emittedMethods = new Set<string>();
-    const resolvedLookup = buildResolvedLookup(ctx);
     for (const op of operations) {
       const method = resolveMethodName(op, mergedService, ctx);
       if (emittedMethods.has(method)) continue;
@@ -94,6 +96,29 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   return files;
 }
 
+/**
+ * Check if an operation is a redirect endpoint that should construct a URL
+ * instead of making an HTTP request.
+ *
+ * Detection: GET endpoints with no response body (primitive unknown) and query
+ * params are redirect endpoints (e.g., SSO/OAuth authorize and logout flows).
+ * Also respects an explicit urlBuilder flag on the resolved operation and
+ * catches endpoints with 302 success responses.
+ */
+export function isRedirectEndpoint(op: Operation, resolvedOp?: ResolvedOperation): boolean {
+  if ((resolvedOp as any)?.urlBuilder) return true;
+  if ((op as any).successResponses?.some((r: any) => r.statusCode >= 300 && r.statusCode < 400)) return true;
+  if (
+    op.httpMethod === 'get' &&
+    op.response.kind === 'primitive' &&
+    (op.response as any).type === 'unknown' &&
+    op.queryParams.length > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function generateMethod(
   lines: string[],
   op: Operation,
@@ -112,8 +137,9 @@ function generateMethod(
     ...getOpInferFromClient(resolvedOp),
   ]);
 
+  const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams);
-  const returnType = getReturnType(plan, ctx);
+  const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block
   const docParts: string[] = [];
@@ -198,7 +224,41 @@ function generateMethod(
   const httpMethod = op.httpMethod.toUpperCase();
   const path = buildPathString(op);
 
-  if (plan.isPaginated) {
+  if (isRedirect) {
+    // Redirect endpoint: construct URL client-side instead of making HTTP request
+    const queryLines = buildQueryArray(op, hiddenParams);
+    const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
+    const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
+    const needsQuery = queryLines.length > 0 || hasDefaults || hasInferred;
+
+    if (needsQuery) {
+      const hasOptionalQuery = op.queryParams.some((q) => !q.required && !hiddenParams.has(q.name));
+      if (hasOptionalQuery) {
+        lines.push('        $query = array_filter([');
+      } else {
+        lines.push('        $query = [');
+      }
+      for (const q of queryLines) {
+        lines.push(`            ${q}`);
+      }
+      // Inject constant defaults
+      for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+        lines.push(`            '${key}' => ${phpLiteral(value)},`);
+      }
+      if (hasOptionalQuery) {
+        lines.push('        ], fn ($v) => $v !== null);');
+      } else {
+        lines.push('        ];');
+      }
+      // Inject fields from client config
+      for (const clientField of getOpInferFromClient(resolvedOp)) {
+        lines.push(`        $query['${clientField}'] = ${clientFieldExpression(clientField)};`);
+      }
+      lines.push(`        return $this->client->buildUrl(${path}, $query, $options);`);
+    } else {
+      lines.push(`        return $this->client->buildUrl(${path}, [], $options);`);
+    }
+  } else if (plan.isPaginated) {
     const queryLines = buildQueryArray(op);
     if (queryLines.length > 0) {
       lines.push('        $query = array_filter([');
@@ -534,13 +594,18 @@ function clientFieldExpression(field: string): string {
   }
 }
 
-function collectImports(service: Service, ctx: EmitterContext): string[] {
+function collectImports(
+  service: Service,
+  ctx: EmitterContext,
+  resolvedLookup?: Map<string, ResolvedOperation>,
+): string[] {
   const imports = new Set<string>();
   const ns = ctx.namespacePascal;
 
   for (const op of service.operations) {
     const plan = planOperation(op);
-    if (plan.responseModelName && !plan.isPaginated) {
+    const resolved = resolvedLookup ? lookupResolved(op, resolvedLookup) : undefined;
+    if (plan.responseModelName && !plan.isPaginated && !isRedirectEndpoint(op, resolved)) {
       imports.add(`${ns}\\Resource\\${className(plan.responseModelName)}`);
     }
     if (op.pagination?.itemType.kind === 'model') {

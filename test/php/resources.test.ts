@@ -470,6 +470,44 @@ describe('generateResources', () => {
     // Should inject default and inferred values into query
     expect(content).toContain("'response_type' => 'code'");
     expect(content).toContain("$query['client_id'] = $this->client->requireClientId()");
+
+    // Redirect endpoint: should return string and build URL, not make HTTP request
+    expect(content).toContain('): string {');
+    expect(content).toContain('$this->client->buildUrl(');
+    expect(content).not.toContain('$this->client->request(');
+    expect(content).toContain('@return string');
+    // Should pass $options to buildUrl for base URL overrides
+    expect(content).toContain('$options);');
+  });
+
+  it('generates redirect endpoint that builds URL for GET with primitive unknown response', () => {
+    const logoutServices: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getLogoutUrl',
+            httpMethod: 'get',
+            path: '/sso/logout',
+            pathParams: [],
+            queryParams: [{ name: 'token', type: { kind: 'primitive', type: 'string' }, required: true }],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: logoutServices };
+    const result = generateResources(logoutServices, { ...ctx, spec });
+    const content = result[0].content;
+
+    expect(content).toContain('): string {');
+    expect(content).toContain("return $this->client->buildUrl('sso/logout', $query, $options);");
+    expect(content).not.toContain('$this->client->request(');
+    expect(content).toContain('@return string');
   });
 
   it('skips base method when wrappers exist', () => {
