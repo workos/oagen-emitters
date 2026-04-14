@@ -40,6 +40,7 @@ import {
   getOpInferFromClient,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -192,6 +193,62 @@ function deduplicateMethodNames(
   }
 }
 
+/**
+ * Emit one interface file per paginated list operation that has extension
+ * query params.  Placing the options interface under `interfaces/` lets the
+ * per-service barrel pick it up via `export * from './interfaces'`, which
+ * is what the root `src/index.ts` re-exports.  When the interface was
+ * declared inline in the resource file, it was unreachable from the barrel
+ * and callers couldn't import the type by name from the package root.
+ */
+function generatePaginatedOptionsInterfaces(
+  service: Service,
+  ctx: EmitterContext,
+  specEnumNames: Set<string>,
+): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const resolvedName = resolveResourceClassName(service, ctx);
+  const serviceDir = resolveServiceDir(resolvedName);
+
+  const plans = service.operations.map((op) => ({
+    op,
+    plan: planOperation(op),
+    method: resolveMethodName(op, service, ctx),
+  }));
+
+  for (const { op, plan, method } of plans) {
+    if (!plan.isPaginated) continue;
+    const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+    if (extraParams.length === 0) continue;
+
+    const optionsName = paginatedOptionsName(method, resolvedName);
+    const filePath = `src/${serviceDir}/interfaces/${fileName(optionsName)}.interface.ts`;
+
+    const lines: string[] = [];
+    lines.push("import type { PaginationOptions } from '../../common/interfaces/pagination-options.interface';");
+    lines.push('');
+    lines.push(`export interface ${optionsName} extends PaginationOptions {`);
+    for (const param of extraParams) {
+      const opt = !param.required ? '?' : '';
+      if (param.description || param.deprecated) {
+        const parts: string[] = [];
+        if (param.description) parts.push(param.description);
+        if (param.deprecated) parts.push('@deprecated');
+        lines.push(...docComment(parts.join('\n'), 2));
+      }
+      lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
+    }
+    lines.push('}');
+
+    files.push({
+      path: filePath,
+      content: lines.join('\n'),
+    });
+  }
+
+  return files;
+}
+
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
   const files: GeneratedFile[] = [];
@@ -201,6 +258,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   const mountGroups = groupByMount(ctx);
   const mergedServices: Service[] =
     mountGroups.size > 0 ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations })) : services;
+
+  const topLevelEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
 
   for (const service of mergedServices) {
     if (isServiceCoveredByExisting(service, ctx)) {
@@ -233,8 +292,22 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       file.headerPlacement = 'skip';
       files.push(file);
     } else {
-      files.push(generateResourceClass(service, ctx));
+      // Purely oagen-managed: no baseline class exists, so the file is owned
+      // end-to-end by the emitter.  Remove skipIfExists so regeneration always
+      // overwrites — emitter improvements (serializer dispatch, JSDoc, etc.)
+      // must propagate without manual intervention.
+      const file = generateResourceClass(service, ctx);
+      delete file.skipIfExists;
+      files.push(file);
     }
+  }
+
+  // Emit paginated list options interfaces AFTER the resource classes so
+  // tests and manifest ordering that index `files[0]` as the class stay
+  // stable.  Placing them under `interfaces/` lets the per-service barrel
+  // pick them up automatically.
+  for (const service of mergedServices) {
+    files.push(...generatePaginatedOptionsInterfaces(service, ctx, topLevelEnumNames));
   }
 
   return files;
@@ -367,6 +440,9 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   // Collect response models from union split wrappers so their types and
   // deserializers are imported alongside the primary operation models.
+  // Also collect models referenced in wrapper param signatures (e.g.,
+  // `redirect_uris: RedirectUriInput[]`) — otherwise the wrapper emits a
+  // reference to a type it never imported.
   const resolvedLookup = buildResolvedLookup(ctx);
   for (const { op, method } of plans) {
     if (baselineMethodSet.has(method)) continue;
@@ -374,6 +450,11 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     if (resolved) {
       for (const name of collectWrapperResponseModels(resolved)) {
         responseModels.add(name);
+      }
+      for (const wrapper of resolved.wrappers ?? []) {
+        for (const { field } of resolveWrapperParams(wrapper, ctx)) {
+          if (field) collectParamTypeRefs(field.type, paramEnums, paramModels);
+        }
       }
     }
   }
@@ -388,6 +469,17 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
     lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
     lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
+  }
+
+  // Paginated list options live in their own interface files so they're
+  // picked up by the per-service barrel (and flow through to the root
+  // package barrel).  Import them here rather than declaring inline.
+  for (const { op, plan, method } of plans) {
+    if (!plan.isPaginated) continue;
+    const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+    if (extraParams.length === 0) continue;
+    const optionsName = paginatedOptionsName(method, resolvedName);
+    lines.push(`import type { ${optionsName} } from './interfaces/${fileName(optionsName)}.interface';`);
   }
 
   // Check if any operation needs PostOptions (idempotent POST or custom encoding)
@@ -493,32 +585,43 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   lines.push('');
 
-  // Options interfaces for operations with query params.
-  // Paginated operations extend PaginationOptions; non-paginated operations get standalone interfaces.
+  // Per-operation helpers (wire-format option serializers etc.) emitted
+  // alongside the resource class.  The options interfaces themselves live
+  // in separate files under `interfaces/` so the per-service barrel can
+  // re-export them; see the earlier import block at the top of the file.
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
       const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
       if (extraParams.length > 0) {
         const optionsName = paginatedOptionsName(method, resolvedName);
-        // Always generate the options interface locally in the resource file.
-        // Previously we skipped generation when a baseline interface with a matching
-        // name existed, but the baseline interface may live in a different module
-        // (e.g., `user-management/` vs `user-management-users/`) and would not be
-        // available without an import.  Generating locally is safe and avoids
-        // cross-module import resolution issues.
-        lines.push(`export interface ${optionsName} extends PaginationOptions {`);
-        for (const param of extraParams) {
-          const opt = !param.required ? '?' : '';
-          if (param.description || param.deprecated) {
-            const parts: string[] = [];
-            if (param.description) parts.push(param.description);
-            if (param.deprecated) parts.push('@deprecated');
-            lines.push(...docComment(parts.join('\n'), 2));
+
+        // When any extension param has a camelCase domain name that differs
+        // from its snake_case wire name, emit a serializer that translates
+        // the user-facing options into the wire query shape.  Without this,
+        // the query string uses camelCase keys (e.g. `organizationId=...`)
+        // that the API silently ignores — the filter becomes a no-op.
+        const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
+        if (needsWireSerializer) {
+          const serializerName = `serialize${optionsName}`;
+          lines.push(`const ${serializerName} = (options: ${optionsName}): PaginationOptions => {`);
+          // Pagination fields pass through unchanged (limit/before/after/order
+          // share spelling in both cases).  Spread first so that wire-named
+          // extension fields land on top and the camelCase keys don't also
+          // leak into the query string.
+          lines.push('  const wire: Record<string, unknown> = {');
+          for (const p of PAGINATION_PARAM_NAMES) {
+            lines.push(`    ${p}: options.${p},`);
           }
-          lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
+          lines.push('  };');
+          for (const param of extraParams) {
+            const camel = fieldName(param.name);
+            const snake = wireFieldName(param.name);
+            lines.push(`  if (options.${camel} !== undefined) wire.${snake} = options.${camel};`);
+          }
+          lines.push('  return wire as PaginationOptions;');
+          lines.push('};');
+          lines.push('');
         }
-        lines.push('}');
-        lines.push('');
       }
     } else if (!plan.isPaginated && !plan.hasBody && !plan.isDelete && op.queryParams.length > 0) {
       // Non-paginated GET or void methods with query params get a typed options interface
@@ -708,7 +811,8 @@ function renderMethod(
       const itemTypeName = resolveInterfaceName(itemRawName, ctx);
       docParts.push(`@returns {Promise<AutoPaginatable<${itemTypeName}>>}`);
     } else if (responseModel) {
-      docParts.push(`@returns {Promise<${responseModel}>}`);
+      const returnTypeDoc = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
+      docParts.push(`@returns {Promise<${returnTypeDoc}>}`);
     } else {
       docParts.push('@returns {Promise<void>}');
     }
@@ -811,13 +915,18 @@ function renderPaginatedMethod(
 ): void {
   const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
   const optionsType = extraParams.length > 0 ? paginatedOptionsName(method, resolvedServiceName) : 'PaginationOptions';
+  // When any extension param has a camelCase/snake_case divergence, the
+  // resource file emits a `serialize<OptionsName>` helper — pass it to
+  // createPaginatedList so the wire query uses snake_case keys.
+  const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
+  const serializerArg = needsWireSerializer ? `, serialize${optionsType}` : '';
 
   const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
   lines.push(
-    `    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options);`,
+    `    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options${serializerArg});`,
   );
   lines.push('  }');
 }
@@ -926,16 +1035,22 @@ function renderBodyMethod(
   const encodingOption = encoding && encoding !== 'json' ? `, encoding: '${encoding}' as const` : '';
   const hasCustomEncoding = encodingOption !== '';
 
-  lines.push(`  async ${method}(${paramsStr}): Promise<${responseModel}> {`);
+  const returnType = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
+  const wireType = plan.isArrayResponse ? `${wireInterfaceName(responseModel)}[]` : wireInterfaceName(responseModel);
+  const returnExpr = plan.isArrayResponse
+    ? `data.map(deserialize${responseModel})`
+    : `deserialize${responseModel}(data)`;
+
+  lines.push(`  async ${method}(${paramsStr}): Promise<${returnType}> {`);
   if (plan.isIdempotentPost) {
     if (hasCustomEncoding) {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push(`      { ...requestOptions${encodingOption} },`);
       lines.push('    );');
     } else {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push('      requestOptions,');
@@ -943,19 +1058,19 @@ function renderBodyMethod(
     }
   } else {
     if (hasCustomEncoding) {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push(`      { ${encodingOption.slice(2)} },`);
       lines.push('    );');
     } else {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push('    );');
     }
   }
-  lines.push(`    return deserialize${responseModel}(data);`);
+  lines.push(`    return ${returnExpr};`);
   lines.push('  }');
 }
 
@@ -989,7 +1104,13 @@ function renderGetMethod(
       : `options?: ${optionsType}`
     : params;
 
-  lines.push(`  async ${method}(${allParams}): Promise<${responseModel}> {`);
+  const returnType = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
+  const wireType = plan.isArrayResponse ? `${wireInterfaceName(responseModel)}[]` : wireInterfaceName(responseModel);
+  const returnExpr = plan.isArrayResponse
+    ? `data.map(deserialize${responseModel})`
+    : `deserialize${responseModel}(data)`;
+
+  lines.push(`  async ${method}(${allParams}): Promise<${returnType}> {`);
   if (hasQuery) {
     if (hasInjected) {
       // Build the query object with visible params, defaults, and inferred fields
@@ -1026,30 +1147,22 @@ function renderGetMethod(
         queryParts.push(`${field}: ${clientFieldExpression(field)}`);
       }
 
-      lines.push(
-        `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
-      );
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
       lines.push(`      query: { ${queryParts.join(', ')} },`);
       lines.push('    });');
     } else {
       const queryExpr = renderQueryExpr(visibleQueryParams);
-      lines.push(
-        `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {`,
-      );
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
       lines.push(`      query: ${queryExpr},`);
       lines.push('    });');
     }
   } else if (httpMethodNeedsBody(op.httpMethod)) {
     // PUT/PATCH/POST require a body argument even when the spec has no request body
-    lines.push(
-      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr}, {});`,
-    );
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {});`);
   } else {
-    lines.push(
-      `    const { data } = await this.workos.${op.httpMethod}<${wireInterfaceName(responseModel)}>(${pathStr});`,
-    );
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr});`);
   }
-  lines.push(`    return deserialize${responseModel}(data);`);
+  lines.push(`    return ${returnExpr};`);
   lines.push('  }');
 }
 
@@ -1263,9 +1376,16 @@ function renderUnionBodySerializer(
   const cases: string[] = [];
   for (const [value, modelName] of Object.entries(disc.mapping)) {
     const resolved = resolveInterfaceName(modelName, ctx);
-    cases.push(`case '${value}': return serialize${resolved}(payload as any)`);
+    // Switch on a typed discriminator narrows `payload` to the variant, so the
+    // serializer call type-checks without any casts.
+    cases.push(`case '${value}': return serialize${resolved}(payload)`);
   }
-  return `(() => { switch ((payload as any).${prop}) { ${cases.join('; ')}; default: return payload } })()`;
+  // Assign `payload` to `never` in the default branch to get a compile-time
+  // exhaustiveness check — if a new variant is added to the union but not to
+  // the switch, the build fails here.  At runtime, we still throw so an
+  // unknown discriminator slipping through via `as any` fails loudly rather
+  // than silently forwarding camelCase to the API.
+  return `(() => { switch (payload.${prop}) { ${cases.join('; ')}; default: { const _unknown: never = payload; throw new Error(\`Unknown ${prop}: \${(_unknown as { ${prop}?: unknown }).${prop}}\`) } } })()`;
 }
 
 /**

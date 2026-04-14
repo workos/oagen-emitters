@@ -87,6 +87,15 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const propName = servicePropertyName(resolvedName);
     if (existingProps.has(propName)) continue;
+    // Propagate `@deprecated` from the service class to the property so
+    // IDEs surface the strikethrough at `workos.xyz` access sites, not
+    // just when users `new Xyz()` directly.  TS's deprecation-lint reads
+    // the property JSDoc, not the underlying type declaration.
+    const classDeprecation = ctx.apiSurface?.classes?.[resolvedName]?.deprecationMessage;
+    if (classDeprecation !== undefined) {
+      const body = classDeprecation ? ` ${classDeprecation}` : '';
+      lines.push(`  /** @deprecated${body} */`);
+    }
     lines.push(`  readonly ${propName} = new ${resolvedName}(this);`);
   }
 

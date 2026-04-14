@@ -102,13 +102,93 @@ describe('generateResources', () => {
     // Should have AutoPaginatable type import and createPaginatedList import
     expect(content).toContain("import type { AutoPaginatable } from '../common/utils/pagination'");
     expect(content).toContain("import { createPaginatedList } from '../common/utils/fetch-and-deserialize'");
+    // Options interface lives in its own file under interfaces/ so the
+    // per-service barrel picks it up.
+    expect(content).toContain(
+      "import type { ListOrganizationsOptions } from './interfaces/list-organizations-options.interface';",
+    );
 
-    // Should generate options interface
-    expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
-    expect(content).toContain('domains?: string[];');
+    // The options interface file is emitted separately.
+    const optionsFile = files.find(
+      (f) => f.path === 'src/organizations/interfaces/list-organizations-options.interface.ts',
+    );
+    expect(optionsFile).toBeDefined();
+    expect(optionsFile!.content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
+    expect(optionsFile!.content).toContain('domains?: string[];');
 
     // Should return AutoPaginatable
     expect(content).toContain('Promise<AutoPaginatable<Organization, ListOrganizationsOptions>>');
+
+    // `domains` has the same camelCase and snake_case spelling, so no wire
+    // serializer should be emitted and createPaginatedList should be called
+    // with just options (no 5th arg).
+    expect(content).not.toContain('serializeListOrganizationsOptions');
+    expect(content).toMatch(/createPaginatedList<[^>]+>\([^)]+options\);/);
+  });
+
+  it('emits wire-options serializer for paginated list with camelCase filter fields', () => {
+    // Regression test for PR #1535 reviewer comment r3075477146: list
+    // methods whose extended filter fields have divergent camelCase/snake_case
+    // spellings (e.g. `organizationId` ↔ `organization_id`) must translate
+    // keys before hitting the wire, otherwise the API silently ignores them.
+    const services: Service[] = [
+      {
+        name: 'Applications',
+        operations: [
+          {
+            name: 'listApplications',
+            httpMethod: 'get',
+            path: '/connect/applications',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'organization_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                description: 'Filter by organization ID.',
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'ConnectApplication' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'ConnectApplication' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Options interface uses camelCase (user-facing) and lives in its own file.
+    const optionsFile = files.find(
+      (f) => f.path === 'src/applications/interfaces/list-applications-options.interface.ts',
+    );
+    expect(optionsFile).toBeDefined();
+    expect(optionsFile!.content).toContain('export interface ListApplicationsOptions extends PaginationOptions {');
+    expect(optionsFile!.content).toContain('organizationId?: string;');
+
+    // Resource class imports the options type from the interface file.
+    expect(content).toContain(
+      "import type { ListApplicationsOptions } from './interfaces/list-applications-options.interface';",
+    );
+
+    // Wire-options serializer emits snake_case key for the extension field
+    // and leaves standard pagination fields unchanged.
+    expect(content).toContain(
+      'const serializeListApplicationsOptions = (options: ListApplicationsOptions): PaginationOptions => {',
+    );
+    expect(content).toContain('wire.organization_id = options.organizationId');
+    expect(content).not.toContain('wire.organizationId');
+
+    // createPaginatedList is invoked with the serializer as the 5th arg.
+    expect(content).toMatch(/createPaginatedList<[^>]+>\([^)]+options,\s*serializeListApplicationsOptions\);/);
   });
 
   it('uses item type not list wrapper type for paginated methods', () => {
@@ -189,6 +269,47 @@ describe('generateResources', () => {
     const content = files[0].content;
     expect(content).toContain('async deleteOrganization(id: string): Promise<void>');
     expect(content).toContain('await this.workos.delete(');
+  });
+
+  it('generates unpaginated GET returning an array of models', () => {
+    // Regression test for PR #1535 reviewer comment (r3074705330): endpoints
+    // whose OpenAPI response is `type: array` must return `Model[]` and map
+    // the deserializer over each element, not treat the array as a single
+    // object (which silently produces garbage at runtime).
+    const services: Service[] = [
+      {
+        name: 'Secrets',
+        operations: [
+          {
+            name: 'listSecrets',
+            httpMethod: 'get',
+            path: '/applications/{id}/secrets',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'Secret' } },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    expect(content).toContain('async listSecrets(id: string): Promise<Secret[]>');
+    expect(content).toContain('this.workos.get<SecretResponse[]>');
+    expect(content).toContain('return data.map(deserializeSecret);');
+    // Should NOT produce the single-object form — that was the bug.
+    expect(content).not.toMatch(/Promise<Secret>\s*\{/);
+    expect(content).not.toContain('return deserializeSecret(data);');
   });
 
   it('generates POST method with body and idempotency', () => {
@@ -891,13 +1012,19 @@ describe('generateResources', () => {
     // Should use the union type for the payload parameter
     expect(content).toContain('payload: AuthByPassword | AuthByCode | AuthByMagicAuth');
 
-    // Should dispatch to the correct serializer based on the discriminator
-    expect(content).toContain('switch ((payload as any).grantType)');
-    expect(content).toContain("case 'password': return serializeAuthByPassword(payload as any)");
-    expect(content).toContain("case 'authorization_code': return serializeAuthByCode(payload as any)");
+    // Should dispatch to the correct serializer based on the discriminator,
+    // using the typed discriminator so TS narrows payload per case.
+    expect(content).toContain('switch (payload.grantType)');
+    expect(content).toContain("case 'password': return serializeAuthByPassword(payload)");
+    expect(content).toContain("case 'authorization_code': return serializeAuthByCode(payload)");
     expect(content).toContain(
-      "case 'urn:workos:oauth:grant-type:magic-auth:code': return serializeAuthByMagicAuth(payload as any)",
+      "case 'urn:workos:oauth:grant-type:magic-auth:code': return serializeAuthByMagicAuth(payload)",
     );
+
+    // Should not use `as any` casts — TS discriminated-union narrowing makes
+    // them unnecessary and they suppress real type mismatches.
+    expect(content).not.toContain('switch ((payload as any)');
+    expect(content).not.toMatch(/return serialize\w+\(payload as any\)/);
 
     // Should import serializers for all union variants
     expect(content).toContain('serializeAuthByPassword');
@@ -906,6 +1033,13 @@ describe('generateResources', () => {
 
     // Should NOT pass payload directly without serialization
     expect(content).not.toMatch(/,\n\s+payload,\n/);
+
+    // Default branch must throw — silently forwarding unserialized camelCase
+    // to the API produces malformed requests when the discriminator is unknown.
+    expect(content).toContain('default:');
+    expect(content).toContain('const _unknown: never = payload');
+    expect(content).toContain('throw new Error');
+    expect(content).not.toMatch(/default:\s*return payload/);
   });
 
   it('generates discriminated union serializer dispatch for void method', () => {
@@ -945,10 +1079,10 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should dispatch to the correct serializer
-    expect(content).toContain('switch ((payload as any).grantType)');
-    expect(content).toContain("case 'authorization_code': return serializeTokenByCode(payload as any)");
-    expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload as any)");
+    // Should dispatch to the correct serializer using the typed discriminator.
+    expect(content).toContain('switch (payload.grantType)');
+    expect(content).toContain("case 'authorization_code': return serializeTokenByCode(payload)");
+    expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload)");
   });
 
   it('uses createPaginatedList helper in paginated methods', () => {
@@ -1048,10 +1182,13 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use service-prefixed options name instead of generic "ListOptions"
-    expect(content).toContain('export interface PaymentsListOptions extends PaginationOptions {');
+    const optionsFile = files.find((f) => f.path.endsWith('payments-list-options.interface.ts'));
+    expect(optionsFile).toBeDefined();
+    expect(optionsFile!.content).toContain('export interface PaymentsListOptions extends PaginationOptions {');
     expect(content).toContain('Promise<AutoPaginatable<Connection, PaymentsListOptions>>');
     // Should NOT use the generic "ListOptions"
     expect(content).not.toContain('export interface ListOptions ');
+    expect(files.every((f) => !f.path.endsWith('/list-options.interface.ts'))).toBe(true);
   });
 
   it('does not prefix ListOptions when method is not "list"', () => {
@@ -1090,10 +1227,11 @@ describe('generateResources', () => {
     ];
 
     const files = generateResources(services, ctx);
-    const content = files[0].content;
 
     // Method is "listOrganizations", not "list", so options name should be normal
-    expect(content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
+    const optionsFile = files.find((f) => f.path.endsWith('list-organizations-options.interface.ts'));
+    expect(optionsFile).toBeDefined();
+    expect(optionsFile!.content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
   });
 
   it('removes skipIfExists when fully-covered service has methods absent from baseline', () => {
@@ -1273,6 +1411,69 @@ describe('generateResources', () => {
 
     // skipIfExists should stay true because all methods exist in baseline
     expect(files[0].skipIfExists).toBe(true);
+  });
+
+  it('removes skipIfExists for purely oagen-managed services (no baseline)', () => {
+    const services: Service[] = [
+      {
+        name: 'Applications',
+        operations: [
+          {
+            name: 'create',
+            httpMethod: 'post',
+            path: '/connect/applications',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'ConnectApplication' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /connect/applications',
+            {
+              className: 'Applications',
+              methodName: 'create',
+              params: [],
+              returnType: 'ConnectApplication',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        // No baseline class for Applications — purely oagen-managed.
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    expect(files.length).toBe(1);
+
+    // skipIfExists must be removed so emitter improvements always overwrite.
+    expect(files[0].skipIfExists).toBeUndefined();
   });
 });
 

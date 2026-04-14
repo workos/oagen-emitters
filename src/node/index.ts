@@ -16,6 +16,7 @@ import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateErrors } from './errors.js';
+
 import { generateTests } from './tests.js';
 import { generateManifest } from './manifest.js';
 

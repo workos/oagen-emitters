@@ -583,7 +583,7 @@ function queryParamToString(type: TypeRef, varName: string): string {
   return `${varName}.toString()`;
 }
 
-function emitBodyField(field: Field, kotlinParamName: string, isPatch: boolean): string[] {
+function _emitBodyField(field: Field, kotlinParamName: string, isPatch: boolean): string[] {
   const prop = kotlinParamName;
   if (field.required) return [`    body[${ktLiteral(field.name)}] = ${prop}`];
   // PATCH: PatchField<T> — serialize Present(value) including explicit null;
