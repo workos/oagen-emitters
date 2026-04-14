@@ -94,6 +94,13 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     const isDelete = plan.isDelete;
     const resolvedOp = lookupResolved(op, resolvedLookupForTests);
     const isUrlBuilder = resolvedOp?.urlBuilder ?? false;
+    const isUnionSplit = (resolvedOp?.wrappers?.length ?? 0) > 0;
+
+    // Union-split operations (e.g. POST /user_management/authenticate) don't
+    // expose the base method or options class — only the typed wrappers —
+    // so skip the generic base test; the wrapper loop below emits tests for
+    // each AuthenticateWith* / CreateOAuthApplication variant instead.
+    if (isUnionSplit) continue;
 
     if (emittedTestMethods.has(method)) continue;
     emittedTestMethods.add(method);
@@ -553,12 +560,19 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
     }
   }
 
+  // Wire names already covered by body seeds. For operations that duplicate a
+  // body field as a query param (e.g. POST /sso/token lists `code` in both),
+  // the generated options class only exposes the field once and the service
+  // call sends it via the body — so skip the query assertion to avoid a
+  // false-failing `AssertQueryParam`.
+  const bodyWireNames = new Set(bodySeeds.map((s) => s.wire));
   for (const param of op.queryParams) {
     if (hidden.has(param.name)) continue;
     if (!param.required) continue;
     if (!isSeedableStringRef(param.type)) continue;
     // Skip pagination fields — they're set by the caller or the autopaging loop
     if (['before', 'after', 'limit', 'order'].includes(param.name)) continue;
+    if (bodyWireNames.has(param.name)) continue;
     querySeeds.push({
       wire: param.name,
       prop: csFieldName(param.name),
