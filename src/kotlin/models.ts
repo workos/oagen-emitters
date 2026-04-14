@@ -1,6 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
 import { className, propertyName, ktStringLiteral } from './naming.js';
+import { enumCanonicalMap } from './enums.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -42,7 +43,7 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroupsPass1) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort(preferShorterCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
@@ -64,7 +65,7 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   }
   for (const [hash, names] of hashGroupsPass2) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort(preferShorterCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (aliasOf.has(sorted[i])) continue;
@@ -298,7 +299,10 @@ function collectImports(fields: Field[]): Set<string> {
     const mapped = mapTypeRef(field.type);
     if (/\bOffsetDateTime\b/.test(mapped)) imports.add('java.time.OffsetDateTime');
     for (const enumName of collectEnumNames(field.type)) {
-      imports.add(`com.workos.types.${className(enumName)}`);
+      // Resolve through the canonical map so imports point at the actual
+      // enum class, not an alias that may not have its own file.
+      const canonical = enumCanonicalMap.get(enumName) ?? enumName;
+      imports.add(`com.workos.types.${className(canonical)}`);
     }
   }
   return imports;
@@ -325,6 +329,22 @@ function escapeKdoc(s: string): string {
 
 // Re-exported so downstream emitters (resources, tests) can filter wrapper models.
 export { isListWrapperModel, isListMetadataModel };
+
+// --- Canonical name selection ---
+
+/**
+ * When picking which model name should be the concrete class (canonical) vs.
+ * a typealias, prefer shorter names first (they tend to be the public-facing
+ * names like `User`, `Role`), then fall back to alphabetical order for
+ * stability. This avoids situations where `User = EmailChangeConfirmationUser`
+ * or `SlimRole = AddRolePermission`.
+ */
+function preferShorterCanonical(a: string, b: string): number {
+  const aName = className(a);
+  const bName = className(b);
+  if (aName.length !== bName.length) return aName.length - bName.length;
+  return aName.localeCompare(bName);
+}
 
 // --- Unsafe typealias guard ---
 

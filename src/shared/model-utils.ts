@@ -312,6 +312,68 @@ function collectOneOfFields(
 }
 
 // ---------------------------------------------------------------------------
+// Array-item type upgrade
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a TypeRef is `unknown` (the degraded type for inline objects).
+ */
+function isUnknownType(ref: TypeRef): boolean {
+  return ref.kind === 'primitive' && (ref as any).type === 'unknown';
+}
+
+/**
+ * If a field is an `array<unknown>` (or `nullable<array<unknown>>`) and the
+ * raw spec defines inline object/enum items, replace the item type with a
+ * synthetic model/enum. Returns the original field unchanged when no upgrade
+ * is needed.
+ */
+function upgradeArrayItemType(
+  field: Field,
+  rawSchema: Record<string, any>,
+  parentModelName: string,
+  collector: SyntheticCollector,
+): Field {
+  // Unwrap nullable to find the array
+  let arrayRef: TypeRef | null = null;
+  let isNullableWrapper = false;
+  if (field.type.kind === 'array') {
+    arrayRef = field.type;
+  } else if (field.type.kind === 'nullable' && field.type.inner.kind === 'array') {
+    arrayRef = field.type.inner;
+    isNullableWrapper = true;
+  }
+  if (!arrayRef || arrayRef.kind !== 'array') return field;
+  if (!isUnknownType(arrayRef.items)) return field;
+
+  // Look up the raw spec for this field
+  const rawProp = rawSchema.properties?.[field.name];
+  if (!rawProp) return field;
+
+  // Handle the case where the raw property is inside a nullable type array
+  let rawArraySchema = rawProp;
+  if (Array.isArray(rawProp.type)) {
+    const nonNull = rawProp.type.filter((t: string) => t !== 'null');
+    if (nonNull[0] === 'array') {
+      rawArraySchema = rawProp;
+    }
+  }
+  if (rawArraySchema.type !== 'array' && !(Array.isArray(rawArraySchema.type) && rawArraySchema.type.includes('array')))
+    return field;
+  if (!rawArraySchema.items) return field;
+
+  // Generate a proper TypeRef from the raw items schema
+  const itemFieldName = singularizeSnake(field.name);
+  const newItemRef = rawSchemaToTypeRef(rawArraySchema.items, parentModelName, itemFieldName, collector);
+  if (isUnknownType(newItemRef)) return field;
+
+  const newArrayRef: TypeRef = { kind: 'array', items: newItemRef } as TypeRef;
+  const newType: TypeRef = isNullableWrapper ? ({ kind: 'nullable', inner: newArrayRef } as TypeRef) : newArrayRef;
+
+  return { ...field, type: newType };
+}
+
+// ---------------------------------------------------------------------------
 // Module-level store for synthetic enums produced during enrichment.
 // Consumed by `getSyntheticEnums()` after `enrichModelsFromSpec` runs.
 // ---------------------------------------------------------------------------
@@ -383,6 +445,22 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
     };
   });
 
+  // Second pass: fix array fields whose items degraded to `unknown` in the
+  // IR but are actually inline objects or enums in the raw spec.
+  const enriched2 = enriched.map((model) => {
+    const rawSchema = lookupRawSchema(model.name);
+    if (!rawSchema?.properties) return model;
+
+    let modified = false;
+    const newFields = model.fields.map((field) => {
+      const upgraded = upgradeArrayItemType(field, rawSchema, model.name, collector);
+      if (upgraded !== field) modified = true;
+      return upgraded;
+    });
+
+    return modified ? { ...model, fields: newFields } : model;
+  });
+
   // Convert synthetic enum collector entries to proper Enum objects
   _lastSyntheticEnums = collector.enums.map((e) => ({
     name: e.name,
@@ -390,5 +468,5 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
   })) as Enum[];
 
   // Append synthetic models to the output
-  return [...enriched, ...collector.models];
+  return [...enriched2, ...collector.models];
 }

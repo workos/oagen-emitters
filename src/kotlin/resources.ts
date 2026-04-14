@@ -99,6 +99,8 @@ function generateApiClass(
           if (rp.field) registerTypeImports(rp.field.type, imports, ctx);
         }
       }
+      // Wrapper methods use bodyOf() for request body construction.
+      imports.add('com.workos.common.http.bodyOf');
       const wrapperLines = generateWrapperMethods(resolvedOp!, ctx);
       if (body.length > 0) body.push('');
       for (const line of wrapperLines) body.push(line);

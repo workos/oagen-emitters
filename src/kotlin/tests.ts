@@ -50,10 +50,10 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  const roundTripFile = generateModelRoundTripTest(spec);
+  const roundTripFile = generateModelRoundTripTest(spec, ctx);
   if (roundTripFile) files.push(roundTripFile);
 
-  const forwardCompatFile = generateForwardCompatTest(spec);
+  const forwardCompatFile = generateForwardCompatTest(spec, ctx);
   if (forwardCompatFile) files.push(forwardCompatFile);
 
   return files;
@@ -72,6 +72,8 @@ interface OpTest {
   requiredBodyPaths: string[];
   /** `name=value` pairs required on the query string — asserted via matchingRegex. */
   requiredQueryAssertions: { name: string; valueRegex: string }[];
+  /** Assertions on response fields: { kotlinAccessor, expectedExpr }. */
+  responseAssertions: { accessor: string; expectedExpr: string }[];
 }
 
 function generateServiceTestClass(
@@ -160,6 +162,10 @@ function generateServiceTestClass(
   const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
   if (anyBody) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath');
   if (anyQuery) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matching');
+  // assertEquals is needed when any test has response field assertions.
+  if (uniqueTests.some((t) => t.canEmitHappyPath && t.responseAssertions.length > 0)) {
+    imports.add('org.junit.jupiter.api.Assertions.assertEquals');
+  }
 
   const pkg = packageSegment(mountName);
   const apiCls = apiClassName(mountName);
@@ -265,7 +271,18 @@ function buildOperationTest(
 
   const minimalBody = buildResponseBody(plan2, ctx);
 
-  const canEmitHappyPath = responseClass !== null && minimalBody !== null;
+  // Void/delete methods don't need a response class or body — they succeed
+  // when the call completes without throwing. We can emit a happy-path test
+  // as long as we were able to synthesize all required arguments.
+  const isVoidMethod = responseClass === null;
+  const canEmitHappyPath = isVoidMethod || (responseClass !== null && minimalBody !== null);
+
+  // Build response field assertions for non-paginated, non-array model responses.
+  // Array responses return List<T>, so `result.field` doesn't compile.
+  const responseAssertions =
+    !plan2.isPaginated && !plan2.isArrayResponse && plan2.responseModelName
+      ? buildResponseAssertions(plan2.responseModelName, ctx)
+      : [];
 
   return {
     method,
@@ -278,6 +295,7 @@ function buildOperationTest(
     imports,
     requiredBodyPaths,
     requiredQueryAssertions,
+    responseAssertions,
   };
 }
 
@@ -350,7 +368,9 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
   const minimalBody = wrapper.responseModelName
     ? synthJsonForModelName(wrapper.responseModelName, ctx, new Set())
     : null;
-  const canEmitHappyPath = responseClass !== null && minimalBody !== null;
+  const isVoidMethod = responseClass === null;
+  const canEmitHappyPath = isVoidMethod || (responseClass !== null && minimalBody !== null);
+  const responseAssertions = wrapper.responseModelName ? buildResponseAssertions(wrapper.responseModelName, ctx) : [];
 
   return {
     method,
@@ -363,6 +383,7 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
     imports,
     requiredBodyPaths: [],
     requiredQueryAssertions: [],
+    responseAssertions,
   };
 }
 
@@ -524,24 +545,100 @@ function synthJsonValue(type: TypeRef, ctx: EmitterContext, visited: Set<string>
   return null;
 }
 
+/**
+ * Build assertEquals assertions for required scalar fields on a response model.
+ * Returns `{ accessor, expectedExpr }` pairs for fields whose JSON value we
+ * synthesize and whose Kotlin type we can assert against.
+ *
+ * Only asserts fields present on ALL structurally-identical models in the
+ * dedup group. This avoids broken assertions when the Kotlin class is a
+ * typealias pointing at a canonical model with a different field set.
+ * As a practical heuristic we restrict to fields that appear on the
+ * response model itself (models that get deduplicated share the same fields).
+ */
+const MAX_RESPONSE_ASSERTIONS = 5;
+
+function buildResponseAssertions(
+  responseModelName: string | null,
+  ctx: EmitterContext,
+): { accessor: string; expectedExpr: string }[] {
+  if (!responseModelName) return [];
+  const model = ctx.spec.models.find((m) => m.name === responseModelName);
+  if (!model) return [];
+
+  const assertions: { accessor: string; expectedExpr: string }[] = [];
+  for (const field of model.fields) {
+    if (!field.required) continue;
+    if (assertions.length >= MAX_RESPONSE_ASSERTIONS) break;
+    const ktProp = propertyName(field.name);
+    const type = field.type;
+    if (type.kind === 'primitive') {
+      if (type.format === 'date-time') continue;
+      switch (type.type) {
+        case 'string':
+          assertions.push({ accessor: ktProp, expectedExpr: '"sample"' });
+          break;
+        case 'integer':
+          assertions.push({ accessor: ktProp, expectedExpr: type.format === 'int32' ? '0' : '0L' });
+          break;
+        case 'number':
+          assertions.push({ accessor: ktProp, expectedExpr: '0.0' });
+          break;
+        case 'boolean':
+          assertions.push({ accessor: ktProp, expectedExpr: 'false' });
+          break;
+      }
+    } else if (type.kind === 'literal') {
+      if (typeof type.value === 'string') {
+        assertions.push({ accessor: ktProp, expectedExpr: ktStringLiteral(type.value) });
+      } else if (typeof type.value === 'number') {
+        assertions.push({ accessor: ktProp, expectedExpr: String(type.value) });
+      } else if (typeof type.value === 'boolean') {
+        assertions.push({ accessor: ktProp, expectedExpr: String(type.value) });
+      }
+    }
+  }
+  return assertions;
+}
+
 function emitHappyPathTest(lines: string[], t: OpTest): void {
   lines.push('');
   lines.push(`  @Test`);
-  lines.push(`  fun \`${t.method} returns a typed response\`() {`);
-  const bodyString = ktStringLiteral(t.minimalResponseBody);
-  const stubLine = `    stubResponse(${ktStringLiteral(t.httpMethod.toUpperCase())}, ${ktStringLiteral(t.pathForWireMock)}, 200, ${bodyString})`;
-  if (stubLine.length <= KTLINT_MAX_LINE_LENGTH) {
-    lines.push(stubLine);
+  const isVoid = t.responseClass === null;
+  const testLabel = isVoid ? `${t.method} completes without throwing` : `${t.method} returns a typed response`;
+  lines.push(`  fun \`${testLabel}\`() {`);
+
+  // Void/delete methods don't return a body — stub with 200 and empty body.
+  const statusCode = isVoid ? (t.httpMethod === 'delete' ? 204 : 200) : 200;
+  if (isVoid) {
+    lines.push(
+      `    stubResponse(${ktStringLiteral(t.httpMethod.toUpperCase())}, ${ktStringLiteral(t.pathForWireMock)}, ${statusCode})`,
+    );
   } else {
-    lines.push('    stubResponse(');
-    lines.push(`      ${ktStringLiteral(t.httpMethod.toUpperCase())},`);
-    lines.push(`      ${ktStringLiteral(t.pathForWireMock)},`);
-    lines.push('      200,');
-    emitStubResponseBody(lines, '      ', t.minimalResponseBody);
-    lines.push('    )');
+    const bodyString = ktStringLiteral(t.minimalResponseBody);
+    const stubLine = `    stubResponse(${ktStringLiteral(t.httpMethod.toUpperCase())}, ${ktStringLiteral(t.pathForWireMock)}, ${statusCode}, ${bodyString})`;
+    if (stubLine.length <= KTLINT_MAX_LINE_LENGTH) {
+      lines.push(stubLine);
+    } else {
+      lines.push('    stubResponse(');
+      lines.push(`      ${ktStringLiteral(t.httpMethod.toUpperCase())},`);
+      lines.push(`      ${ktStringLiteral(t.pathForWireMock)},`);
+      lines.push(`      ${statusCode},`);
+      emitStubResponseBody(lines, '      ', t.minimalResponseBody);
+      lines.push('    )');
+    }
   }
-  emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
-  lines.push('    assertNotNull(result)');
+
+  if (isVoid) {
+    emitCall(lines, '    ', `api().${t.method}`, t.callArgs);
+  } else {
+    emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
+    lines.push('    assertNotNull(result)');
+    // Emit exact-value assertions for required scalar fields in the response.
+    for (const a of t.responseAssertions) {
+      lines.push(`    assertEquals(${a.expectedExpr}, result.${a.accessor})`);
+    }
+  }
 
   // Verify the outbound request shape.  Body fields and query assertions
   // live on the `OpTest` and are only emitted when we know the synthesized
@@ -586,6 +683,32 @@ function emitErrorTest(lines: string[], status: string, exceptionName: string, t
   emitCall(lines, '      ', `api().${t.method}`, t.callArgs);
   lines.push('    }');
   lines.push('  }');
+}
+
+/**
+ * Emit `val json = "..."` on a single line when it fits within KTLINT_MAX_LINE_LENGTH,
+ * otherwise split the string literal across lines joined with `+`.
+ */
+function emitJsonVal(lines: string[], indent: string, rawJson: string): void {
+  const encoded = ktStringLiteral(rawJson);
+  const singleLine = `${indent}val json = ${encoded}`;
+  if (singleLine.length <= KTLINT_MAX_LINE_LENGTH) {
+    lines.push(singleLine);
+    return;
+  }
+  // ktlint: "A multiline expression should start on a new line"
+  lines.push(`${indent}val json =`);
+  const continuationIndent = `${indent}  `;
+  // ktlint re-indents continuation lines of a `+` expression by an extra
+  // 2 spaces beyond the first operand line. Budget for the widest case
+  // (continuation) so every chunk fits after formatting.
+  const ktlintContinuationExtra = 2;
+  const maxChunkLineLen = KTLINT_MAX_LINE_LENGTH - continuationIndent.length - ktlintContinuationExtra - 2; // 2 for " +"
+  const chunks = splitEscapedStringLiteral(encoded, maxChunkLineLen);
+  for (let i = 0; i < chunks.length; i++) {
+    const suffix = i === chunks.length - 1 ? '' : ' +';
+    lines.push(`${continuationIndent}${chunks[i]}${suffix}`);
+  }
 }
 
 /**
@@ -726,18 +849,40 @@ function splitTopLevelArgs(args: string): string[] {
   return out;
 }
 
-function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
-  // Collect ALL round-trippable models: non-list-wrapper data classes whose
-  // required fields are all primitive/nullable (so we can synthesize a JSON
-  // literal without guessing nested model shapes).
-  const targets = spec.models.filter(
-    (m) =>
-      !isListWrapperModel(m) &&
-      !isListMetadataModel(m) &&
-      m.fields.length > 0 &&
-      m.fields.every((f) => f.required) &&
-      m.fields.every((f) => f.type.kind === 'primitive' || f.type.kind === 'nullable'),
-  );
+/**
+ * True when a TypeRef is safe for JSON round-trip testing: primitives,
+ * nullable wrappers around primitives, literals, and empty arrays/maps.
+ * Nested model and enum references are excluded because Jackson
+ * reserializes them with additional optional-field defaults that weren't
+ * in the original fixture JSON.
+ */
+function isRoundTripSafeType(ref: TypeRef): boolean {
+  if (ref.kind === 'primitive') return true;
+  if (ref.kind === 'literal') return true;
+  if (ref.kind === 'nullable') return isRoundTripSafeType(ref.inner);
+  if (ref.kind === 'array') return isRoundTripSafeType(ref.items);
+  if (ref.kind === 'map') return isRoundTripSafeType(ref.valueType);
+  return false;
+}
+
+function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile | null {
+  // Collect round-trippable models: non-list-wrapper data classes for which
+  // we can synthesize a complete JSON fixture (required fields only).
+  // Uses synthJsonForModelName which handles primitives, enums, nested
+  // models, arrays, maps, and literals — much broader than the old
+  // primitives-only filter.
+  const targets: { model: Model; json: string }[] = [];
+  for (const m of spec.models) {
+    if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
+    if (m.fields.length === 0) continue;
+    // Only include models where ALL fields are required AND all types are
+    // round-trip safe (primitives, nullable, literals, simple arrays/maps).
+    // Nested model/enum references break round-trip because Jackson
+    // reserializes with additional default fields not in the original JSON.
+    if (!m.fields.every((f) => f.required && isRoundTripSafeType(f.type))) continue;
+    const json = synthJsonForModelName(m.name, ctx, new Set());
+    if (json !== null) targets.push({ model: m, json });
+  }
   if (targets.length === 0) return null;
 
   const lines: string[] = [
@@ -751,14 +896,11 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
     '  private val mapper = ObjectMapperFactory.create()',
   ];
 
-  for (const target of targets) {
-    const cls = className(target.name);
-    const jsonLiteral = buildTrivialJson(target);
+  for (const { model, json } of targets) {
+    const cls = className(model.name);
+    lines.push('', '  @Test', `  fun \`${cls} round-trips through Jackson\`() {`);
+    emitJsonVal(lines, '    ', json);
     lines.push(
-      '',
-      '  @Test',
-      `  fun \`${cls} round-trips through Jackson\`() {`,
-      `    val json = ${ktStringLiteral(jsonLiteral)}`,
       `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
       '    val reserialized = mapper.writeValueAsString(parsed)',
       '    val tree1 = mapper.readTree(json)',
@@ -786,21 +928,23 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
  *  - ISO-8601 timestamps round-trip through `OffsetDateTime` without
  *    precision loss.
  *
- * The suite targets the first candidate enum in the spec (any enum with at
- * least one non-Unknown variant) and the first round-trippable model, so
- * one emitted test covers the pattern for all generated types.
+ * Tests a representative set of enums (up to MAX_ENUM_FORWARD_COMPAT) and
+ * the first synthesizable model.
  */
-function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
-  const enumTarget = spec.enums.find((e) => e.values.length > 0);
-  const modelTarget = spec.models.find(
-    (m) =>
-      !isListWrapperModel(m) &&
-      !isListMetadataModel(m) &&
-      m.fields.length > 0 &&
-      m.fields.every((f) => f.required) &&
-      m.fields.every((f) => f.type.kind === 'primitive' || f.type.kind === 'nullable'),
-  );
-  if (!enumTarget && !modelTarget) return null;
+const MAX_ENUM_FORWARD_COMPAT = 15;
+
+function generateForwardCompatTest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile | null {
+  // Select multiple enums for forward-compat testing, not just the first.
+  const enumTargets = spec.enums.filter((e) => e.values.length > 0).slice(0, MAX_ENUM_FORWARD_COMPAT);
+  const modelTarget = spec.models.find((m) => {
+    if (isListWrapperModel(m) || isListMetadataModel(m)) return false;
+    if (m.fields.length === 0) return false;
+    return synthJsonForModelName(m.name, ctx, new Set()) !== null;
+  });
+  if (enumTargets.length === 0 && !modelTarget) return null;
+
+  const enumImports = new Set<string>();
+  for (const e of enumTargets) enumImports.add(`com.workos.types.${className(e.name)}`);
 
   const lines: string[] = [
     'package com.workos.models',
@@ -808,7 +952,7 @@ function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
     'import com.fasterxml.jackson.core.type.TypeReference',
     'import com.workos.common.json.ObjectMapperFactory',
   ];
-  if (enumTarget) lines.push(`import com.workos.types.${className(enumTarget.name)}`);
+  for (const imp of [...enumImports].sort()) lines.push(`import ${imp}`);
   lines.push(
     'import org.junit.jupiter.api.Assertions.assertEquals',
     'import org.junit.jupiter.api.Assertions.assertNotNull',
@@ -818,7 +962,7 @@ function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
     '  private val mapper = ObjectMapperFactory.create()',
   );
 
-  if (enumTarget) {
+  for (const enumTarget of enumTargets) {
     const enumCls = className(enumTarget.name);
     lines.push(
       '',
@@ -833,20 +977,11 @@ function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
 
   if (modelTarget) {
     const modelCls = className(modelTarget.name);
-    const jsonLiteral = buildTrivialJson(modelTarget);
-    // Splice an extra unknown property into the JSON to prove the mapper
-    // ignores it.  `buildTrivialJson` returns a single-line `{...}` literal
-    // so a simple substring replacement is safe.
+    const jsonLiteral = synthJsonForModelName(modelTarget.name, ctx, new Set())!;
     const jsonWithExtra = jsonLiteral.replace('{', '{"__oagen_future_field__": "ignored", ');
-    lines.push(
-      '',
-      `  @Test`,
-      `  fun \`${modelCls} ignores unknown JSON fields\`() {`,
-      `    val json = ${ktStringLiteral(jsonWithExtra)}`,
-      `    val parsed = mapper.readValue(json, ${modelCls}::class.java)`,
-      '    assertNotNull(parsed)',
-      '  }',
-    );
+    lines.push('', `  @Test`, `  fun \`${modelCls} ignores unknown JSON fields\`() {`);
+    emitJsonVal(lines, '    ', jsonWithExtra);
+    lines.push(`    val parsed = mapper.readValue(json, ${modelCls}::class.java)`, '    assertNotNull(parsed)', '  }');
   }
 
   lines.push(
@@ -872,32 +1007,6 @@ function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
     content: lines.join('\n'),
     overwriteExisting: true,
   };
-}
-
-function buildTrivialJson(model: Model): string {
-  const entries: string[] = [];
-  for (const field of model.fields) {
-    const type = field.type;
-    if (type.kind !== 'primitive') {
-      entries.push(`${JSON.stringify(field.name)}: null`);
-      continue;
-    }
-    switch (type.type) {
-      case 'string':
-        entries.push(`${JSON.stringify(field.name)}: "sample"`);
-        break;
-      case 'integer':
-      case 'number':
-        entries.push(`${JSON.stringify(field.name)}: 1`);
-        break;
-      case 'boolean':
-        entries.push(`${JSON.stringify(field.name)}: true`);
-        break;
-      default:
-        entries.push(`${JSON.stringify(field.name)}: null`);
-    }
-  }
-  return `{${entries.join(', ')}}`;
 }
 
 function findService(ctx: EmitterContext, op: Operation): Service | undefined {

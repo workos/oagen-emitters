@@ -33,7 +33,41 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
   const pathParams = sortPathParamsByTemplateOrder(op);
 
   const lines: string[] = [];
-  lines.push(`  /** ${method.replace(/_/g, ' ')} */`);
+
+  // Build KDoc from operation description + @param docs for each wrapper param.
+  const kdocLines: string[] = [];
+  const opDesc = (op.description ?? '').trim();
+  const wrapperHumanName = method.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  if (opDesc) {
+    kdocLines.push(opDesc.split('\n')[0]);
+  } else {
+    kdocLines.push(`${wrapperHumanName.charAt(0).toUpperCase()}${wrapperHumanName.slice(1)}.`);
+  }
+  const paramDocs: string[] = [];
+  for (const pp of pathParams) {
+    if (pp.description?.trim()) {
+      paramDocs.push(`@param ${propertyName(pp.name)} ${escapeKdoc(pp.description.split('\n')[0].trim())}`);
+    }
+  }
+  for (const rp of resolvedParams) {
+    const desc = rp.field?.description?.trim();
+    if (desc) {
+      paramDocs.push(`@param ${propertyName(rp.paramName)} ${escapeKdoc(desc.split('\n')[0])}`);
+    }
+  }
+  if (responseClass) {
+    paramDocs.push(`@return the ${responseClass}`);
+  }
+  if (paramDocs.length > 0 || kdocLines.length > 0) {
+    lines.push('  /**');
+    for (const l of kdocLines) lines.push(`   * ${escapeKdoc(l)}`);
+    if (paramDocs.length > 0) {
+      lines.push('   *');
+      for (const p of paramDocs) lines.push(`   * ${p}`);
+    }
+    lines.push('   */');
+  }
+
   lines.push('  @JvmOverloads');
 
   // Build the method parameter list: path params, wrapper params, requestOptions
@@ -66,21 +100,29 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     lines.push(`  )${returnClause} {`);
   }
 
-  // Build body
-  lines.push(`    val body = linkedMapOf<String, Any?>()`);
+  // Build body using bodyOf() — consistent with non-wrapper methods.
+  // bodyOf() automatically drops null optional values.
+  const bodyEntries: string[] = [];
   for (const rp of resolvedParams) {
     const paramName = propertyName(rp.paramName);
-    if (rp.isOptional) {
-      lines.push(`    if (${paramName} != null) body[${ktLiteral(rp.paramName)}] = ${paramName}`);
-    } else {
-      lines.push(`    body[${ktLiteral(rp.paramName)}] = ${paramName}`);
-    }
+    bodyEntries.push(`      ${ktLiteral(rp.paramName)} to ${paramName}`);
   }
   for (const [k, v] of Object.entries(wrapper.defaults ?? {})) {
-    lines.push(`    body[${ktLiteral(k)}] = ${ktLiteral(v)}`);
+    bodyEntries.push(`      ${ktLiteral(k)} to ${ktLiteral(v)}`);
   }
   for (const k of wrapper.inferFromClient ?? []) {
-    lines.push(`    body[${ktLiteral(k)}] = workos.${clientFieldExpression(k)}`);
+    bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k)}`);
+  }
+  if (bodyEntries.length > 0) {
+    lines.push(`    val body =`);
+    lines.push(`      bodyOf(`);
+    for (let i = 0; i < bodyEntries.length; i++) {
+      const sep = i === bodyEntries.length - 1 ? '' : ',';
+      lines.push(`  ${bodyEntries[i]}${sep}`);
+    }
+    lines.push(`      )`);
+  } else {
+    lines.push(`    val body = linkedMapOf<String, Any?>()`);
   }
 
   const pathExpr = buildPathExpr(op.path, pathParams);
@@ -107,6 +149,10 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
 
   lines.push('  }');
   return lines;
+}
+
+function escapeKdoc(s: string): string {
+  return s.replace(/\*\//g, '*\u200b/');
 }
 
 function buildPathExpr(path: string, pathParams: Parameter[]): string {
