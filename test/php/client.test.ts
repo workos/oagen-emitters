@@ -82,14 +82,12 @@ describe('generateClient', () => {
     expect(result[0].content).not.toContain('self::$clientId = $clientId;');
   });
 
-  it('includes non-spec service accessors', () => {
+  it('does not generate non-spec service accessors (now hand-maintained via @oagen-ignore regions)', () => {
     const result = generateClient(emptySpec, ctx);
 
-    expect(result[0].content).toContain('public function passwordless(): Passwordless');
-    expect(result[0].content).toContain('public function vault(): Vault');
-    expect(result[0].content).toContain('public function webhookVerification(): WebhookVerification');
-    expect(result[0].content).toContain('public function actions(): Actions');
-    expect(result[0].content).toContain('public function sessionManager(): SessionManager');
-    expect(result[0].content).toContain('public function pkce(): PKCEHelper');
+    // Non-spec accessors are hand-maintained in the target SDK via
+    // @oagen-ignore-start/@oagen-ignore-end. The emitter no longer generates them.
+    expect(result[0].content).not.toContain('function passwordless()');
+    expect(result[0].content).not.toContain('function vault()');
   });
 });

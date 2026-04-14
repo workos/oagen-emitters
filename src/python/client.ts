@@ -3,58 +3,6 @@ import { toPascalCase } from '@workos/oagen';
 import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
-import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
-
-/** Python-specific wiring for each non-spec service. */
-interface PythonNonSpecWiring {
-  /** Python import line (e.g. "from .vault import Vault, AsyncVault") */
-  importLine: string;
-  /** Property name on the client class */
-  prop: string;
-  /** Sync class name */
-  syncClass: string;
-  /** Async class name, or null if no async variant */
-  asyncClass: string | null;
-  /** Constructor expression — 'self' if the class takes the client, '' if stateless */
-  ctorArg: 'self' | '';
-  /** One-line docstring for the client property */
-  docstring?: string;
-}
-
-const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
-  passwordless: {
-    importLine: 'from .passwordless import AsyncPasswordless, Passwordless',
-    prop: 'passwordless',
-    syncClass: 'Passwordless',
-    asyncClass: 'AsyncPasswordless',
-    ctorArg: 'self',
-    docstring: 'Passwordless authentication sessions.',
-  },
-  vault: {
-    importLine: 'from .vault import AsyncVault, Vault',
-    prop: 'vault',
-    syncClass: 'Vault',
-    asyncClass: 'AsyncVault',
-    ctorArg: 'self',
-    docstring: 'Vault encryption, key management, and secret storage.',
-  },
-  actions: {
-    importLine: 'from .actions import Actions, AsyncActions',
-    prop: 'actions',
-    syncClass: 'Actions',
-    asyncClass: 'AsyncActions',
-    ctorArg: '',
-    docstring: 'Actions logging and audit trail.',
-  },
-  pkce: {
-    importLine: 'from .pkce import PKCE',
-    prop: 'pkce',
-    syncClass: 'PKCE',
-    asyncClass: null,
-    ctorArg: '',
-    docstring: 'PKCE (Proof Key for Code Exchange) utilities.',
-  },
-};
 
 /**
  * Generate the slim Python client class (service-wiring only),
@@ -161,11 +109,8 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
   }
-  // Non-spec service imports (driven by shared/non-spec-services.ts)
-  for (const s of NON_SPEC_SERVICES) {
-    const w = PYTHON_NON_SPEC_WIRING[s.id];
-    if (w) lines.push(w.importLine);
-  }
+  // Non-spec service imports and accessors are now hand-maintained in the
+  // target SDK via @oagen-ignore-start/@oagen-ignore-end regions.
   lines.push('');
   lines.push('');
 
@@ -188,7 +133,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     generatedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, generatedProps, false);
-  emitCompatClientAccessors(lines, false);
 
   lines.push('');
   lines.push('');
@@ -211,7 +155,6 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     asyncGeneratedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
-  emitCompatClientAccessors(lines, true);
 
   return [
     {
@@ -271,24 +214,6 @@ function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<st
     lines.push(`    def ${alias.alias}(self) -> ${alias.typeName}:`);
     lines.push(`        ${alias.docstring}`);
     lines.push(`        return ${alias.returnExpr}`);
-  }
-}
-
-function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
-  for (const s of NON_SPEC_SERVICES) {
-    const w = PYTHON_NON_SPEC_WIRING[s.id];
-    if (!w) continue;
-    // Skip async-only services when emitting the sync client, and vice versa
-    const typeName = isAsync ? (w.asyncClass ?? w.syncClass) : w.syncClass;
-    const arg = w.ctorArg === 'self' ? 'self' : '';
-
-    lines.push('');
-    lines.push('    @functools.cached_property');
-    lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
-    if (w.docstring) {
-      lines.push(`        """${w.docstring}"""`);
-    }
-    lines.push(`        return ${typeName}(${arg})`);
   }
 }
 
