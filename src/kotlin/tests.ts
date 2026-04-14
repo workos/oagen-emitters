@@ -65,6 +65,10 @@ interface OpTest {
   minimalResponseBody: string;
   canEmitHappyPath: boolean;
   imports: Set<string>;
+  /** Wire field names required in the request body — asserted via matchingJsonPath. */
+  requiredBodyPaths: string[];
+  /** `name=value` pairs required on the query string — asserted via matchingRegex. */
+  requiredQueryAssertions: { name: string; valueRegex: string }[];
 }
 
 function generateServiceTestClass(
@@ -138,6 +142,18 @@ function generateServiceTestClass(
     imports.add(`com.github.tomakehurst.wiremock.client.WireMock.${m}`);
   }
 
+  // Register request-verification imports when any operation contributes
+  // body/query assertions.
+  const anyBody = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredBodyPaths.length > 0);
+  const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
+  if (anyBody || anyQuery) {
+    for (const m of httpMethodsUsed) {
+      imports.add(`com.github.tomakehurst.wiremock.client.WireMock.${m}RequestedFor`);
+    }
+  }
+  if (anyBody) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath');
+  if (anyQuery) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matching');
+
   const pkg = packageSegment(mountName);
   const apiCls = apiClassName(mountName);
 
@@ -195,6 +211,8 @@ function buildOperationTest(
   //   pathParams ++ requiredQuery ++ requiredBodyFields
   const imports = new Set<string>();
   const argParts: string[] = [];
+  const requiredBodyPaths: string[] = [];
+  const requiredQueryAssertions: { name: string; valueRegex: string }[] = [];
 
   for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
 
@@ -205,6 +223,10 @@ function buildOperationTest(
     const val = synthValue(qp.type, ctx, imports);
     if (val === null) return null;
     argParts.push(val);
+    // Best-effort wire assertion: for primitives/strings we know the synthesized
+    // value so we can assert equality; otherwise just assert presence.
+    const regex = queryValueRegexFor(qp.type);
+    if (regex !== null) requiredQueryAssertions.push({ name: qp.name, valueRegex: regex });
   }
 
   const bodyModel = resolveBodyModel(op, ctx);
@@ -219,6 +241,11 @@ function buildOperationTest(
       const val = synthValue(bf.type, ctx, imports);
       if (val === null) return null;
       argParts.push(val);
+      // matchingJsonPath on an array/map body field fails on empty
+      // synthesized collections because JsonPath returns an empty result
+      // set.  Scalar fields always materialize with a concrete value, so
+      // we only assert those paths.
+      if (isScalarBodyField(bf.type)) requiredBodyPaths.push(bf.name);
     }
   }
 
@@ -242,7 +269,42 @@ function buildOperationTest(
     minimalResponseBody: minimalBody ?? '{}',
     canEmitHappyPath,
     imports,
+    requiredBodyPaths,
+    requiredQueryAssertions,
   };
+}
+
+/** True if the synthesized body value serializes to a concrete JSON scalar. */
+function isScalarBodyField(type: TypeRef): boolean {
+  const inner = type.kind === 'nullable' ? type.inner : type;
+  if (inner.kind === 'primitive') return inner.format !== 'binary';
+  if (inner.kind === 'enum') return true;
+  if (inner.kind === 'literal') return true;
+  return false;
+}
+
+/**
+ * When we can recognize the synthesized test value for a query param,
+ * return a regex that matches the expected serialized form. Returns null
+ * when the value is too complex to assert (e.g. arrays, models).
+ */
+function queryValueRegexFor(type: TypeRef): string | null {
+  const inner = type.kind === 'nullable' ? type.inner : type;
+  if (inner.kind === 'primitive') {
+    if (inner.format === 'date-time') return null; // OffsetDateTime.now() — not reproducible
+    switch (inner.type) {
+      case 'string':
+        return 'sample-arg';
+      case 'integer':
+        return '0';
+      case 'number':
+        return '0\\.0';
+      case 'boolean':
+        return 'false';
+    }
+    return null;
+  }
+  return null;
 }
 
 function buildResponseBody(plan: ReturnType<typeof planOperation>, ctx: EmitterContext): string | null {
@@ -292,6 +354,8 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
     minimalResponseBody: minimalBody ?? '{}',
     canEmitHappyPath,
     imports,
+    requiredBodyPaths: [],
+    requiredQueryAssertions: [],
   };
 }
 
@@ -465,6 +529,21 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
   lines.push('    )');
   emitCall(lines, '    ', `val result = api().${t.method}`, t.callArgs);
   lines.push('    assertNotNull(result)');
+
+  // Verify the outbound request shape.  Body fields and query assertions
+  // live on the `OpTest` and are only emitted when we know the synthesized
+  // arguments produce a deterministic wire representation.
+  if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0) {
+    lines.push('    wireMockRule.verify(');
+    lines.push(`      ${t.httpMethod}RequestedFor(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
+    for (const path of t.requiredBodyPaths) {
+      lines.push(`        .withRequestBody(matchingJsonPath(${ktStringLiteral(`$.${path}`)}))`);
+    }
+    for (const qa of t.requiredQueryAssertions) {
+      lines.push(`        .withQueryParam(${ktStringLiteral(qa.name)}, matching(${ktStringLiteral(qa.valueRegex)}))`);
+    }
+    lines.push('    )');
+  }
   lines.push('  }');
 }
 
