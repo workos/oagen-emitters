@@ -194,6 +194,80 @@ describe('generateClient', () => {
     expect(serviceBarrel!.content).toContain("export * from './authentication-factor.interface';");
   });
 
+  it('propagates @deprecated from baseline service class to the property declaration', () => {
+    // Regression test for PR #1535 reviewer comment r3075509969: when a
+    // service class has `@deprecated` in its JSDoc, TS's deprecation-lint
+    // only fires at `new X()` call sites — not at `workos.x` access unless
+    // the property itself is annotated.  The emitter propagates the class
+    // deprecation to the property JSDoc so IDEs surface the strikethrough
+    // on every access.
+    const deprecatedCtx: EmitterContext = {
+      ...ctx,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2026-01-01',
+        classes: {
+          Organizations: {
+            name: 'Organizations',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+            deprecationMessage: 'Use `workos.connect` instead.',
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateClient(spec, deprecatedCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    const content = workosFile.content;
+
+    // Property JSDoc carries the deprecation and the directive is preserved
+    // on the line immediately above the accessor.
+    expect(content).toMatch(
+      /\/\*\* @deprecated Use `workos\.connect` instead\. \*\/\s+readonly organizations = new Organizations\(this\);/,
+    );
+  });
+
+  it('emits a bare @deprecated when the baseline class deprecation has no message', () => {
+    const deprecatedCtx: EmitterContext = {
+      ...ctx,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2026-01-01',
+        classes: {
+          Organizations: {
+            name: 'Organizations',
+            methods: {},
+            properties: {},
+            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+            deprecationMessage: '',
+          },
+        },
+        interfaces: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      },
+    };
+
+    const files = generateClient(spec, deprecatedCtx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    expect(workosFile.content).toMatch(/\/\*\* @deprecated \*\/\s+readonly organizations = new Organizations\(this\);/);
+  });
+
+  it('does not emit @deprecated when the baseline class has no deprecationMessage', () => {
+    const files = generateClient(spec, ctx);
+    const workosFile = files.find((f) => f.path === 'src/workos.ts')!;
+    expect(workosFile.content).not.toContain('@deprecated');
+  });
+
   it('does not generate error handling in WorkOS client (lives in WorkOSBase)', () => {
     const files = generateClient(spec, ctx);
     const workosFile = files.find((f) => f.path === 'src/workos.ts')!;

@@ -9,6 +9,7 @@ import {
   servicePropertyName,
   resolveMethodName,
   resolveInterfaceName,
+  wireInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
 import { resolveResourceClassName } from './resources.js';
@@ -751,9 +752,21 @@ function buildTestPayload(
   op: Operation,
   modelMap: Map<string, Model>,
 ): { camelCaseObj: string; snakeCaseObj: string } | null {
-  if (!op.requestBody || op.requestBody.kind !== 'model') return null;
+  if (!op.requestBody) return null;
 
-  const model = modelMap.get(op.requestBody.name);
+  // For discriminated unions, build a payload from the first variant so the
+  // generated test produces a value that satisfies the union type.  Without
+  // this, emitted tests pass `{} as any` for union bodies — fine for older
+  // permissive runtimes, but the dispatch switch now throws on unknown
+  // discriminator values, so the tests would fail before hitting fetch.
+  let model: Model | undefined;
+  if (op.requestBody.kind === 'union') {
+    const firstVariant = op.requestBody.variants.find((v) => v.kind === 'model');
+    if (!firstVariant || firstVariant.kind !== 'model') return null;
+    model = modelMap.get(firstVariant.name);
+  } else if (op.requestBody.kind === 'model') {
+    model = modelMap.get(op.requestBody.name);
+  }
   if (!model) return null;
 
   const fields = model.fields.filter((f) => f.required);
@@ -789,8 +802,14 @@ function buildTestPayload(
  * fall back to `{} as any` to bypass type checking for complex required fields.
  */
 function fallbackBodyArg(op: Operation, modelMap: Map<string, Model>): string {
-  if (!op.requestBody || op.requestBody.kind !== 'model') return '{} as any';
-  const model = modelMap.get(op.requestBody.name);
+  if (!op.requestBody) return '{} as any';
+  let model: Model | undefined;
+  if (op.requestBody.kind === 'union') {
+    const firstVariant = op.requestBody.variants.find((v) => v.kind === 'model');
+    if (firstVariant && firstVariant.kind === 'model') model = modelMap.get(firstVariant.name);
+  } else if (op.requestBody.kind === 'model') {
+    model = modelMap.get(op.requestBody.name);
+  }
   if (!model) return '{} as any';
   const hasRequiredFields = model.fields.some((f) => f.required);
   return hasRequiredFields ? '{} as any' : '{}';
@@ -844,6 +863,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
     // Collect imports
     const serializerImports: string[] = [];
+    const interfaceImports: string[] = [];
     const fixtureImports: string[] = [];
 
     for (const model of models) {
@@ -851,16 +871,22 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const service = modelToService.get(model.name);
       const modelDir = resolveDir(service);
       const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
+      const interfacePath = `src/${modelDir}/interfaces/${fileName(model.name)}.interface.ts`;
       const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.fixture.json`;
 
       serializerImports.push(
         `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
       );
+      const wireName = wireInterfaceName(domainName);
+      interfaceImports.push(`import type { ${wireName} } from '${relativeImport(testPath, interfacePath)}';`);
       const camelName = domainName.charAt(0).toLowerCase() + domainName.slice(1);
       fixtureImports.push(`import ${camelName}Fixture from '${relativeImport(testPath, fixturePath)}';`);
     }
 
     for (const imp of serializerImports) {
+      lines.push(imp);
+    }
+    for (const imp of interfaceImports) {
       lines.push(imp);
     }
     for (const imp of fixtureImports) {
@@ -873,9 +899,14 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const camelDomain = domainName.charAt(0).toLowerCase() + domainName.slice(1);
       const fixtureName = `${camelDomain}Fixture`;
 
+      const wireName = wireInterfaceName(domainName);
       lines.push(`describe('${domainName}Serializer', () => {`);
       lines.push("  it('round-trips through serialize/deserialize', () => {");
-      lines.push(`    const fixture = ${fixtureName};`);
+      // Cast the fixture to the wire-type interface — JSON imports are inferred
+      // with primitive types (e.g., `string`) that don't satisfy literal-typed
+      // response fields (e.g., `type: "enum"`), so the deserialize call needs
+      // the explicit cast to compile.
+      lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
       lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
       lines.push(`    const reserialized = serialize${domainName}(deserialized);`);
       lines.push('    expect(reserialized).toEqual(expect.objectContaining(fixture));');
@@ -888,7 +919,6 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       path: testPath,
       content: lines.join('\n'),
       skipIfExists: true,
-      integrateTarget: false,
     });
   }
 

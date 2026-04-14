@@ -1,0 +1,260 @@
+import { describe, it, expect } from 'vitest';
+import { generateModels } from '../../src/dotnet/models.js';
+import { primeEnumAliases } from '../../src/dotnet/enums.js';
+import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
+
+const emptySpec: ApiSpec = {
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
+  services: [],
+  models: [],
+  enums: [],
+  sdk: defaultSdkBehavior(),
+};
+
+const ctx: EmitterContext = {
+  namespace: 'workos',
+  namespacePascal: 'WorkOS',
+  spec: emptySpec,
+};
+
+describe('dotnet/models', () => {
+  it('returns empty for no models', () => {
+    expect(generateModels([], ctx)).toEqual([]);
+  });
+
+  it('generates a C# class with JSON attributes', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrganization',
+          httpMethod: 'get',
+          path: '/organizations/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
+            required: true,
+          },
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+
+    expect(files.length).toBeGreaterThanOrEqual(1);
+
+    const modelFile = files.find((f) => f.path === 'Entities/Organization.cs')!;
+    expect(modelFile).toBeDefined();
+
+    const content = modelFile.content;
+    // Namespace
+    expect(content).toContain('namespace WorkOS');
+    // Class definition
+    expect(content).toContain('public class Organization');
+
+    // Required fields with JSON attributes
+    expect(content).toContain('[JsonProperty("id")]');
+    expect(content).toContain('public string Id');
+    expect(content).toContain('[JsonProperty("name")]');
+    expect(content).toContain('public string Name');
+
+    // DateTime field
+    expect(content).toContain('DateTimeOffset');
+    expect(content).toContain('[JsonProperty("created_at")]');
+
+    // Optional/nullable field
+    expect(content).toContain('[JsonProperty("external_id")]');
+  });
+
+  it('skips list wrapper and list metadata models', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'OrganizationList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models },
+    });
+    const filePaths = files.map((f) => f.path);
+
+    // Should generate Organization but NOT OrganizationList or ListMetadata
+    expect(filePaths.some((p) => p.includes('Organization.cs') && !p.includes('List'))).toBe(true);
+    expect(filePaths.some((p) => p.includes('OrganizationList.cs'))).toBe(false);
+    expect(filePaths.some((p) => p.includes('ListMetadata.cs'))).toBe(false);
+  });
+
+  it('deduplicates structurally identical models', () => {
+    const models: Model[] = [
+      {
+        name: 'OrganizationDomain',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'OrganizationDomainStandAlone',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models },
+    });
+
+    // Canonical model should have a full class
+    const canonicalFile = files.find(
+      (f) => f.path.includes('OrganizationDomain.cs') && !f.path.includes('StandAlone'),
+    )!;
+    expect(canonicalFile).toBeDefined();
+    expect(canonicalFile.content).toContain('public class OrganizationDomain');
+
+    // Alias model should be a subclass of canonical
+    const aliasFile = files.find((f) => f.path.includes('OrganizationDomainStandAlone.cs'))!;
+    expect(aliasFile).toBeDefined();
+    expect(aliasFile.content).toContain('OrganizationDomain');
+  });
+
+  it('emits [System.Obsolete] for deprecated fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'old_field',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            deprecated: true,
+            description: 'Legacy field',
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models },
+    });
+    const modelFile = files.find((f) => f.path.includes('Organization.cs'))!;
+
+    expect(modelFile.content).toContain('[System.Obsolete');
+  });
+
+  it('handles map fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'metadata',
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models },
+    });
+    const modelFile = files.find((f) => f.path.includes('Organization.cs'))!;
+
+    expect(modelFile.content).toContain('Dictionary<string,');
+  });
+
+  it('handles array fields with model refs', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'domains',
+            type: { kind: 'array', items: { kind: 'model', name: 'OrganizationDomain' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'OrganizationDomain',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models },
+    });
+    const orgFile = files.find((f) => f.path.includes('Organization.cs') && !f.path.includes('Domain'))!;
+    expect(orgFile).toBeDefined();
+    expect(orgFile.content).toContain('List<OrganizationDomain>');
+  });
+});

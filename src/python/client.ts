@@ -7,17 +7,11 @@ import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
 /** Python-specific wiring for each non-spec service. */
 interface PythonNonSpecWiring {
-  /** Python import line (e.g. "from .vault import Vault, AsyncVault") */
   importLine: string;
-  /** Property name on the client class */
   prop: string;
-  /** Sync class name */
   syncClass: string;
-  /** Async class name, or null if no async variant */
   asyncClass: string | null;
-  /** Constructor expression — 'self' if the class takes the client, '' if stateless */
   ctorArg: 'self' | '';
-  /** One-line docstring for the client property */
   docstring?: string;
 }
 
@@ -159,13 +153,25 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const resolvedName = resolveResourceClassName(service, ctx);
     const clsName = className(resolvedName);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
-    lines.push(`from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`);
+    const importLine = `from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`;
+    if (importLine.length > 88) {
+      lines.push(`from .${dirToModule(dirName)}._resource import (`);
+      lines.push(`    ${clsName},`);
+      lines.push(`    Async${clsName},`);
+      lines.push(')');
+    } else {
+      lines.push(importLine);
+    }
   }
-  // Non-spec service imports (driven by shared/non-spec-services.ts)
+  // Non-spec service imports — wrapped in ignore markers so the merger
+  // matches them positionally and doesn't displace them.
+  lines.push('');
+  lines.push('# @oagen-ignore-start — non-spec service imports (hand-maintained)');
   for (const s of NON_SPEC_SERVICES) {
     const w = PYTHON_NON_SPEC_WIRING[s.id];
     if (w) lines.push(w.importLine);
   }
+  lines.push('# @oagen-ignore-end');
   lines.push('');
   lines.push('');
 
@@ -188,7 +194,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     generatedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, generatedProps, false);
-  emitCompatClientAccessors(lines, false);
+  emitNonSpecClientAccessors(lines, false);
 
   lines.push('');
   lines.push('');
@@ -211,16 +217,36 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     asyncGeneratedProps.add(prop);
   }
   emitCompatClientPropertyAliases(lines, asyncGeneratedProps, true);
-  emitCompatClientAccessors(lines, true);
+  emitNonSpecClientAccessors(lines, true);
 
   return [
     {
       path: `src/${ctx.namespace}/_client.py`,
       content: lines.join('\n'),
-      integrateTarget: true,
       overwriteExisting: true,
     },
   ];
+}
+
+function emitNonSpecClientAccessors(lines: string[], isAsync: boolean): void {
+  lines.push('');
+  lines.push('    # @oagen-ignore-start — non-spec service accessors (hand-maintained)');
+  for (const s of NON_SPEC_SERVICES) {
+    const w = PYTHON_NON_SPEC_WIRING[s.id];
+    if (!w) continue;
+    const typeName = isAsync ? (w.asyncClass ?? w.syncClass) : w.syncClass;
+    const arg = w.ctorArg === 'self' ? 'self' : '';
+
+    lines.push('');
+    lines.push('    @functools.cached_property');
+    lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
+    if (w.docstring) {
+      lines.push(`        """${w.docstring}"""`);
+    }
+    lines.push(`        return ${typeName}(${arg})`);
+  }
+  lines.push('');
+  lines.push('    # @oagen-ignore-end');
 }
 
 function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
@@ -271,24 +297,6 @@ function emitCompatClientPropertyAliases(lines: string[], generatedProps: Set<st
     lines.push(`    def ${alias.alias}(self) -> ${alias.typeName}:`);
     lines.push(`        ${alias.docstring}`);
     lines.push(`        return ${alias.returnExpr}`);
-  }
-}
-
-function emitCompatClientAccessors(lines: string[], isAsync: boolean): void {
-  for (const s of NON_SPEC_SERVICES) {
-    const w = PYTHON_NON_SPEC_WIRING[s.id];
-    if (!w) continue;
-    // Skip async-only services when emitting the sync client, and vice versa
-    const typeName = isAsync ? (w.asyncClass ?? w.syncClass) : w.syncClass;
-    const arg = w.ctorArg === 'self' ? 'self' : '';
-
-    lines.push('');
-    lines.push('    @functools.cached_property');
-    lines.push(`    def ${w.prop}(self) -> ${typeName}:`);
-    if (w.docstring) {
-      lines.push(`        """${w.docstring}"""`);
-    }
-    lines.push(`        return ${typeName}(${arg})`);
   }
 }
 

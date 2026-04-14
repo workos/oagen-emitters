@@ -1,24 +1,7 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
-import { stripUrnPrefix } from '../shared/naming-utils.js';
-
-/**
- * Map of lowercase acronym forms to their correct casing.
- * Applied as a post-processing step after toPascalCase.
- */
-const ACRONYM_FIXES: [RegExp, string][] = [
-  [/Workos/g, 'WorkOS'],
-  [/Sso/g, 'SSO'],
-  [/Mfa/g, 'MFA'],
-  [/Jwt/g, 'JWT'],
-  [/Cors/g, 'CORS'],
-  [/Saml/g, 'SAML'],
-  [/Scim/g, 'SCIM'],
-  [/Rbac/g, 'RBAC'],
-  [/Oauth/g, 'OAuth'],
-  [/Oidc/g, 'OIDC'],
-];
+import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
 
 /**
  * Python class names that collide with builtins or typing imports.
@@ -41,10 +24,7 @@ const PYTHON_RESERVED_CLASS_NAMES = new Set([
 
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = toPascalCase(stripUrnPrefix(name));
-  for (const [pattern, replacement] of ACRONYM_FIXES) {
-    result = result.replace(pattern, replacement);
-  }
+  let result = applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));
   if (PYTHON_RESERVED_CLASS_NAMES.has(result)) {
     result += 'Model';
   }

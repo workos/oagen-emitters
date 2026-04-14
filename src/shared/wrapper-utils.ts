@@ -42,7 +42,18 @@ export function resolveWrapperParams(wrapper: ResolvedWrapper, ctx: EmitterConte
   return wrapper.exposedParams.map((paramName) => {
     const field =
       variantFields.find((f) => f.name === paramName || toSnakeCase(f.name) === toSnakeCase(paramName)) ?? null;
-    const isOptional = optionalSet.has(paramName) || !field?.required;
+    // Default to required: a wrapper exists to make a specific call shape work,
+    // and exposedParams is the contract for that shape. Mark optional only when
+    // (a) the wrapper hint explicitly says so, or (b) the IR variant model
+    // resolves and reports the field as not required.
+    let isOptional: boolean;
+    if (optionalSet.has(paramName)) {
+      isOptional = true;
+    } else if (field) {
+      isOptional = !field.required;
+    } else {
+      isOptional = false;
+    }
     return { paramName, field, isOptional };
   });
 }

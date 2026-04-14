@@ -4,6 +4,8 @@ import { nodeEmitter } from './src/node/index.js';
 import { pythonEmitter } from './src/python/index.js';
 import { phpEmitter } from './src/php/index.js';
 import { goEmitter } from './src/go/index.js';
+import { dotnetEmitter } from './src/dotnet/index.js';
+import { kotlinEmitter } from './src/kotlin/index.js';
 import { nodeExtractor } from './src/compat/extractors/node.js';
 import { rubyExtractor } from './src/compat/extractors/ruby.js';
 import { pythonExtractor } from './src/compat/extractors/python.js';
@@ -39,8 +41,9 @@ const operationHints: Record<string, OperationHint> = {
     name: 'get_authorization_url',
     defaults: { response_type: 'code' },
     inferFromClient: ['client_id'],
+    urlBuilder: true,
   },
-  'GET /sso/logout': { name: 'get_logout_url' },
+  'GET /sso/logout': { name: 'get_logout_url', urlBuilder: true },
   'GET /sso/profile': { name: 'get_profile' },
   'POST /sso/token': {
     name: 'get_profile_and_token',
@@ -56,8 +59,9 @@ const operationHints: Record<string, OperationHint> = {
     name: 'get_authorization_url',
     defaults: { response_type: 'code' },
     inferFromClient: ['client_id'],
+    urlBuilder: true,
   },
-  'GET /user_management/sessions/logout': { name: 'get_logout_url' },
+  'GET /user_management/sessions/logout': { name: 'get_logout_url', urlBuilder: true },
 
   // ── User Management — org membership actions ────────────────────────────
   'PUT /user_management/organization_memberships/{id}/deactivate': {
@@ -153,11 +157,22 @@ const operationHints: Record<string, OperationHint> = {
     name: 'remove_flag_target',
   },
 
+  // ── Organizations — audit log config (singular fetch, not a list) ───────
+  'GET /organizations/{id}/audit_log_configuration': {
+    name: 'get_audit_log_configuration',
+  },
+
   // ── Organizations — audit logs retention (mounted on AuditLogs) ─────────
-  'GET /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
+  'GET /organizations/{id}/audit_logs_retention': {
+    name: 'get_organization_audit_logs_retention',
+    mountOn: 'AuditLogs',
+  },
   'PUT /organizations/{id}/audit_logs_retention': { mountOn: 'AuditLogs' },
 
   // ── Union split: POST /user_management/authenticate (8 variants) ────────
+  // Common optional fields appended to every variant's exposedParams so the
+  // generated wrappers cover the full spec body shape (fraud/audit context the
+  // server consumes when present).
   'POST /user_management/authenticate': {
     split: [
       {
@@ -165,56 +180,71 @@ const operationHints: Record<string, OperationHint> = {
         targetVariant: 'PasswordSessionAuthenticateRequest',
         defaults: { grant_type: 'password' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['email', 'password', 'invitation_token'],
+        exposedParams: ['email', 'password', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['invitation_token', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_code',
         targetVariant: 'CodeSessionAuthenticateRequest',
         defaults: { grant_type: 'authorization_code' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code'],
+        exposedParams: ['code', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_refresh_token',
         targetVariant: 'RefreshTokenSessionAuthenticateRequest',
         defaults: { grant_type: 'refresh_token' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['refresh_token', 'organization_id'],
+        exposedParams: ['refresh_token', 'organization_id', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['organization_id', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_magic_auth',
         targetVariant: 'MagicAuthSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:magic-auth:code' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code', 'email', 'invitation_token'],
+        exposedParams: ['code', 'email', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['invitation_token', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_email_verification',
         targetVariant: 'EmailVerificationSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:email-verification:code' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code', 'pending_authentication_token'],
+        exposedParams: ['code', 'pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_totp',
         targetVariant: 'TotpSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:mfa-totp' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code', 'pending_authentication_token', 'authentication_challenge_id'],
+        exposedParams: [
+          'code',
+          'pending_authentication_token',
+          'authentication_challenge_id',
+          'ip_address',
+          'device_id',
+          'user_agent',
+        ],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_organization_selection',
         targetVariant: 'OrganizationSelectionSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:organization-selection' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['pending_authentication_token', 'organization_id'],
+        exposedParams: ['pending_authentication_token', 'organization_id', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_device_code',
         targetVariant: 'DeviceCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:ietf:params:oauth:grant-type:device_code' },
         inferFromClient: ['client_id'],
-        exposedParams: ['device_code'],
+        exposedParams: ['device_code', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
     ],
   },
@@ -299,7 +329,7 @@ const mountRules: Record<string, string> = {
 };
 
 const config: OagenConfig = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter],
+  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter],
   extractors: [
     nodeExtractor,
     rubyExtractor,

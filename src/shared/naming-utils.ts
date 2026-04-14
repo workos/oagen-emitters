@@ -1,3 +1,50 @@
+// ---------------------------------------------------------------------------
+// Shared acronym fixes
+// ---------------------------------------------------------------------------
+
+/**
+ * Base set of acronym corrections applied after PascalCase conversion.
+ * These are domain-specific terms that `toPascalCase` produces as e.g.
+ * "Sso" but should be rendered as "SSO" in every SDK language.
+ *
+ * Language emitters can extend this with additional entries (e.g. Go adds
+ * API, URL, HTTP, JSON, etc. per Go naming conventions).
+ */
+export const BASE_ACRONYM_FIXES: readonly [RegExp, string][] = [
+  [/Workos/g, 'WorkOS'],
+  [/Sso/g, 'SSO'],
+  [/Mfa/g, 'MFA'],
+  [/Jwt/g, 'JWT'],
+  [/Cors/g, 'CORS'],
+  [/Saml/g, 'SAML'],
+  [/Scim/g, 'SCIM'],
+  [/Rbac/g, 'RBAC'],
+  [/Oauth/g, 'OAuth'],
+  [/Oidc/g, 'OIDC'],
+];
+
+/**
+ * Apply acronym corrections to a PascalCase string.
+ * Uses the base set by default; pass extra entries for language-specific
+ * conventions (e.g. Go's `[/Api(?=[A-Z]|$)/g, 'API']`).
+ */
+export function applyAcronymFixes(s: string, extra?: readonly [RegExp, string][]): string {
+  let result = s;
+  for (const [pattern, replacement] of BASE_ACRONYM_FIXES) {
+    result = result.replace(pattern, replacement);
+  }
+  if (extra) {
+    for (const [pattern, replacement] of extra) {
+      result = result.replace(pattern, replacement);
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// URN stripping
+// ---------------------------------------------------------------------------
+
 /** Strip URN OAuth grant-type prefixes from discriminator-derived schema names. */
 export function stripUrnPrefix(name: string): string {
   // Handles both OAuth and Oauth casing from different PascalCase implementations

@@ -1,24 +1,15 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
-import { stripUrnPrefix } from '../shared/naming-utils.js';
+import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
 
 /**
- * Acronym map: after PascalCase conversion, fix known acronyms to all-caps Go convention.
+ * Go-specific acronym extensions beyond the shared base set.
+ * Go convention requires ALL_CAPS for well-known initialisms.
  */
-const ACRONYM_FIXES: [RegExp, string][] = [
-  [/Workos/g, 'WorkOS'],
-  [/Sso/g, 'SSO'],
-  [/Mfa/g, 'MFA'],
+const GO_EXTRA_ACRONYM_FIXES: [RegExp, string][] = [
   [/Jwks(?=[A-Z]|$)/g, 'JWKS'],
-  [/Jwt/g, 'JWT'],
   [/Totp(?=[A-Z]|$)/g, 'TOTP'],
-  [/Cors/g, 'CORS'],
-  [/Saml/g, 'SAML'],
-  [/Scim/g, 'SCIM'],
-  [/Rbac/g, 'RBAC'],
-  [/Oauth/g, 'OAuth'],
-  [/Oidc/g, 'OIDC'],
   [/Api(?=[A-Z]|$)/g, 'API'],
   [/Urls(?=[A-Z]|$)/g, 'URLs'],
   [/Url(?=[A-Z]|$)/g, 'URL'],
@@ -45,10 +36,7 @@ function fixTrailingId(s: string): string {
 
 /** Apply all Go acronym conventions to a PascalCase string. */
 function applyAcronyms(s: string): string {
-  let result = s;
-  for (const [pattern, replacement] of ACRONYM_FIXES) {
-    result = result.replace(pattern, replacement);
-  }
+  let result = applyAcronymFixes(s, GO_EXTRA_ACRONYM_FIXES);
   result = fixTrailingId(result);
   return result;
 }

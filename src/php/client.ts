@@ -127,10 +127,13 @@ function generateMainClient(
   for (const svc of services) {
     lines.push(`    private ?Service\\${svc.name} $${svc.propName} = null;`);
   }
-  // Non-spec service properties (hand-maintained modules)
+  // Non-spec service properties — wrapped in ignore markers so the target
+  // SDK can hand-maintain the list. The emitter provides a positional anchor.
+  lines.push('    // @oagen-ignore-start — non-spec service properties (hand-maintained)');
   for (const a of nonSpecAccessors) {
     lines.push(`    private ?${a.className} $${a.propName} = null;`);
   }
+  lines.push('    // @oagen-ignore-end');
 
   lines.push('');
   lines.push('    public function __construct(');
@@ -140,11 +143,12 @@ function generateMainClient(
   lines.push('        int $timeout = 60,');
   lines.push('        int $maxRetries = 3,');
   lines.push('        ?\\GuzzleHttp\\HandlerStack $handler = null,');
+  lines.push('        ?string $userAgent = null,');
   lines.push('    ) {');
   lines.push("        $apiKey ??= getenv('WORKOS_API_KEY') ?: self::$apiKey ?? '';");
   lines.push("        $clientId ??= getenv('WORKOS_CLIENT_ID') ?: self::$clientId;");
   lines.push(
-    '        $this->httpClient = new HttpClient($apiKey, $clientId, $baseUrl, $timeout, $maxRetries, $handler);',
+    '        $this->httpClient = new HttpClient($apiKey, $clientId, $baseUrl, $timeout, $maxRetries, $handler, $userAgent);',
   );
   lines.push('    }');
 
@@ -157,7 +161,10 @@ function generateMainClient(
     lines.push('    }');
   }
 
-  // Non-spec service accessors (hand-maintained modules)
+  // Non-spec service accessors — wrapped in ignore markers so the target
+  // SDK can hand-maintain these. The emitter provides a positional anchor.
+  lines.push('');
+  lines.push('    // @oagen-ignore-start — non-spec service accessors (hand-maintained)');
   for (const a of nonSpecAccessors) {
     lines.push('');
     lines.push(`    public function ${a.propName}(): ${a.className}`);
@@ -165,6 +172,7 @@ function generateMainClient(
     lines.push(`        return $this->${a.propName} ??= new ${a.className}($this->httpClient);`);
     lines.push('    }');
   }
+  lines.push('    // @oagen-ignore-end');
 
   lines.push('}');
   return lines.join('\n');
