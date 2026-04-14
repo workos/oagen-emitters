@@ -1,4 +1,4 @@
-import type { Model, Field, TypeRef } from '@workos/oagen';
+import type { Model, Field, TypeRef, Enum } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 // @ts-ignore -- js-yaml has no type declarations in this project
@@ -103,13 +103,80 @@ function lookupRawSchema(name: string): Record<string, any> | null {
   return spec?.components?.schemas?.[name] ?? null;
 }
 
-/** Convert a raw OpenAPI type+format to an IR TypeRef. */
-function rawSchemaToTypeRef(schema: Record<string, any>): TypeRef {
+// ---------------------------------------------------------------------------
+// Synthetic model / enum collection
+// ---------------------------------------------------------------------------
+
+/**
+ * Accumulator for synthetic models and enums generated from inline
+ * definitions encountered during oneOf flattening.
+ */
+interface SyntheticCollector {
+  models: Model[];
+  enums: Array<{ name: string; values: Array<{ value: string; description?: string }> }>;
+  /** Track names already used to avoid duplicates. */
+  usedNames: Set<string>;
+}
+
+function createCollector(): SyntheticCollector {
+  return { models: [], enums: [], usedNames: new Set() };
+}
+
+/**
+ * Singularize a snake_case name for use as an array-item model name.
+ * `redirect_uris` -> `redirect_uri`, `scopes` -> `scope`.
+ */
+function singularizeSnake(name: string): string {
+  if (name.endsWith('ies') && name.length > 3) {
+    return `${name.slice(0, -3)}y`;
+  }
+  if (name.endsWith('s') && !name.endsWith('ss')) {
+    return name.slice(0, -1);
+  }
+  return name;
+}
+
+// ---------------------------------------------------------------------------
+// rawSchemaToTypeRef  -- with synthetic model/enum generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a raw OpenAPI type+format to an IR TypeRef.
+ *
+ * When `parentModelName` and `fieldName` are provided, inline objects and
+ * enums generate synthetic models/enums instead of degrading to `unknown`
+ * or `string`.
+ */
+function rawSchemaToTypeRef(
+  schema: Record<string, any>,
+  parentModelName?: string,
+  fName?: string,
+  collector?: SyntheticCollector,
+): TypeRef {
   if (schema.const !== undefined) {
     return { kind: 'literal', value: schema.const };
   }
+  if (schema.enum && collector && parentModelName && fName) {
+    // Generate a synthetic enum
+    const syntheticName = `${parentModelName}_${fName}`;
+    if (!collector.usedNames.has(syntheticName)) {
+      collector.usedNames.add(syntheticName);
+      collector.enums.push({
+        name: syntheticName,
+        values: (schema.enum as string[]).map((v: string) => ({
+          value: v,
+          description: undefined,
+        })),
+      });
+    }
+    return {
+      kind: 'enum',
+      name: syntheticName,
+      values: schema.enum as string[],
+    } as TypeRef;
+  }
   if (schema.enum) {
-    // Simple string enum -- represent as primitive string
+    // Simple string enum -- represent as primitive string (no collector)
     return { kind: 'primitive', type: 'string' } as TypeRef;
   }
   if (schema.$ref) {
@@ -127,11 +194,39 @@ function rawSchemaToTypeRef(schema: Record<string, any>): TypeRef {
   }
 
   let ref: TypeRef;
-  if (baseType === 'object' && schema.properties) {
-    // Inline object -- treat as unknown
+  if (baseType === 'object' && schema.properties && collector && parentModelName && fName) {
+    // Inline object -- generate a synthetic model
+    const syntheticName = `${parentModelName}_${fName}`;
+    if (!collector.usedNames.has(syntheticName)) {
+      collector.usedNames.add(syntheticName);
+      const fields: Field[] = [];
+      const requiredSet = new Set<string>(schema.required ?? []);
+      for (const [propName, propSchema] of Object.entries(schema.properties) as [string, Record<string, any>][]) {
+        fields.push({
+          name: propName,
+          type: rawSchemaToTypeRef(propSchema, syntheticName, propName, collector),
+          required: requiredSet.has(propName),
+          description: propSchema.description,
+          deprecated: propSchema.deprecated,
+        });
+      }
+      collector.models.push({
+        name: syntheticName,
+        fields,
+        description: schema.description,
+      } as Model);
+    }
+    ref = { kind: 'model', name: syntheticName } as TypeRef;
+  } else if (baseType === 'object' && schema.properties) {
+    // Inline object -- treat as unknown (no collector)
     ref = { kind: 'primitive', type: 'unknown' } as TypeRef;
   } else if (baseType === 'array' && schema.items) {
-    ref = { kind: 'array', items: rawSchemaToTypeRef(schema.items) } as TypeRef;
+    // For array items that are inline objects, use the singular field name
+    const itemFieldName = fName ? singularizeSnake(fName) : undefined;
+    ref = {
+      kind: 'array',
+      items: rawSchemaToTypeRef(schema.items, parentModelName, itemFieldName, collector),
+    } as TypeRef;
   } else if (baseType === 'boolean') {
     ref = { kind: 'primitive', type: 'boolean' } as TypeRef;
   } else if (baseType === 'integer' || baseType === 'number') {
@@ -151,13 +246,17 @@ function rawSchemaToTypeRef(schema: Record<string, any>): TypeRef {
  * All fields are returned as optional (not required) since they come from
  * oneOf variants where only one variant is active at a time.
  */
-function extractFieldsFromRawSchema(schema: Record<string, any>): Field[] {
+function extractFieldsFromRawSchema(
+  schema: Record<string, any>,
+  parentModelName?: string,
+  collector?: SyntheticCollector,
+): Field[] {
   const fields: Field[] = [];
   const props = schema.properties ?? {};
   for (const [name, propSchema] of Object.entries(props) as [string, Record<string, any>][]) {
     fields.push({
       name,
-      type: rawSchemaToTypeRef(propSchema),
+      type: rawSchemaToTypeRef(propSchema, parentModelName, name, collector),
       required: false, // All oneOf variant fields are optional
       description: propSchema.description,
       deprecated: propSchema.deprecated,
@@ -170,14 +269,18 @@ function extractFieldsFromRawSchema(schema: Record<string, any>): Field[] {
  * Recursively collect all fields from a oneOf schema, flattening nested
  * allOf+oneOf compositions. All fields are marked optional.
  */
-function collectOneOfFields(schema: Record<string, any>): Field[] {
+function collectOneOfFields(
+  schema: Record<string, any>,
+  parentModelName?: string,
+  collector?: SyntheticCollector,
+): Field[] {
   const allFields: Field[] = [];
   const seenFieldNames = new Set<string>();
 
   function walkSchema(s: Record<string, any>): void {
     // Direct properties
     if (s.properties) {
-      for (const f of extractFieldsFromRawSchema(s)) {
+      for (const f of extractFieldsFromRawSchema(s, parentModelName, collector)) {
         if (!seenFieldNames.has(f.name)) {
           seenFieldNames.add(f.name);
           allFields.push(f);
@@ -208,6 +311,21 @@ function collectOneOfFields(schema: Record<string, any>): Field[] {
   return allFields;
 }
 
+// ---------------------------------------------------------------------------
+// Module-level store for synthetic enums produced during enrichment.
+// Consumed by `getSyntheticEnums()` after `enrichModelsFromSpec` runs.
+// ---------------------------------------------------------------------------
+let _lastSyntheticEnums: Enum[] = [];
+
+/**
+ * Return the synthetic enums generated during the last call to
+ * `enrichModelsFromSpec`. Call this after enrichment to merge them into the
+ * enum generation phase.
+ */
+export function getSyntheticEnums(): Enum[] {
+  return _lastSyntheticEnums;
+}
+
 /**
  * Enrich IR models by flattening oneOf/allOf+oneOf variant fields from the raw spec.
  *
@@ -217,13 +335,24 @@ function collectOneOfFields(schema: Record<string, any>): Field[] {
  * For models whose raw spec schema has allOf containing a oneOf:
  *   - Collect the missing variant fields and add them as optional.
  *
+ * Inline objects and enums in oneOf branches are promoted to synthetic
+ * models/enums instead of degrading to `object` / `string`.
+ *
  * Returns a new array of enriched models (original models are not mutated).
+ * Synthetic enums are stored internally; retrieve them via `getSyntheticEnums()`.
  */
 export function enrichModelsFromSpec(models: Model[]): Model[] {
   const spec = loadRawSpec();
-  if (!spec) return models;
+  if (!spec) {
+    _lastSyntheticEnums = [];
+    return models;
+  }
 
-  return models.map((model) => {
+  const collector = createCollector();
+  // Avoid name collisions with existing models
+  for (const m of models) collector.usedNames.add(m.name);
+
+  const enriched = models.map((model) => {
     const rawSchema = lookupRawSchema(model.name);
     if (!rawSchema) return model;
 
@@ -237,8 +366,9 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
       rawSchema.allOf?.some((s: any) => s.discriminator || s.oneOf?.some((v: any) => v.discriminator));
     if (hasDiscriminator) return model;
 
-    // Collect all variant fields from the raw schema
-    const variantFields = collectOneOfFields(rawSchema);
+    // Collect all variant fields from the raw schema, generating synthetic
+    // models/enums for inline definitions along the way.
+    const variantFields = collectOneOfFields(rawSchema, model.name, collector);
     if (variantFields.length === 0) return model;
 
     // Merge variant fields into the existing model, skipping duplicates
@@ -252,4 +382,13 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
       fields: [...model.fields, ...newFields],
     };
   });
+
+  // Convert synthetic enum collector entries to proper Enum objects
+  _lastSyntheticEnums = collector.enums.map((e) => ({
+    name: e.name,
+    values: e.values.map((v) => ({ value: v.value, description: v.description })),
+  })) as Enum[];
+
+  // Append synthetic models to the output
+  return [...enriched, ...collector.models];
 }
