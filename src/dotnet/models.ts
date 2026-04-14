@@ -3,6 +3,7 @@ import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } fro
 import {
   articleFor,
   className,
+  escapeXml,
   fieldName,
   humanize,
   emitXmlDoc,
@@ -77,7 +78,27 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const lines: string[] = [];
       lines.push(`namespace ${ctx.namespacePascal}`);
       lines.push('{');
-      lines.push(`    /// <summary>${csClassName} is structurally identical to ${canonicalClass}.</summary>`);
+      if (model.description) {
+        const descLines = model.description
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l);
+        lines.push(`    /// <summary>${escapeXml(descLines[0])}</summary>`);
+        if (descLines.length > 1) {
+          lines.push(`    /// <remarks>`);
+          for (const remark of descLines.slice(1)) {
+            lines.push(`    /// ${escapeXml(remark)}`);
+          }
+          lines.push(`    /// Structurally identical to <see cref="${canonicalClass}"/>.`);
+          lines.push(`    /// </remarks>`);
+        } else {
+          lines.push(`    /// <remarks>Structurally identical to <see cref="${canonicalClass}"/>.</remarks>`);
+        }
+      } else {
+        const human = humanize(model.name);
+        lines.push(`    /// <summary>Represents ${articleFor(human)} ${human}.</summary>`);
+        lines.push(`    /// <remarks>Structurally identical to <see cref="${canonicalClass}"/>.</remarks>`);
+      }
       lines.push(`    public class ${csClassName} : ${canonicalClass} { }`);
       lines.push('}');
 
@@ -136,17 +157,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isOptional = !field.required;
       const baseType = mapTypeRef(field.type);
       const isAlreadyNullable = baseType.endsWith('?');
-      const constValue = singleValueEnumConst(field.type, enumConstByName);
+      const constInit = singleValueConstInitializer(field.type, enumConstByName);
       let csType: string;
       let initializer = '';
       let setterModifier = '';
 
-      if (constValue !== null) {
-        // Discriminator-style single-value enum: emit as string with a const
+      if (constInit !== null) {
+        // Discriminator-style single-value enum/literal: emit with a const
         // initializer and a non-public setter so callers can't drift the
         // wire value. The converter still reads whatever the server sends.
-        csType = baseType; // already `string` for 1-value enum via mapTypeRef
-        initializer = ` = "${constValue}";`;
+        csType = baseType;
+        initializer = ` = ${constInit};`;
         setterModifier = 'internal ';
       } else if (isOptional) {
         if (isAlreadyNullable) {
@@ -177,12 +198,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         lines.push(`        [System.Obsolete("${msg}")]`);
       }
 
-      const isRequiredEnum = field.required && isEnumRef(field.type) && constValue === null;
+      const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
       lines.push(`        public ${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
 
       // Track additional-properties / metadata dictionaries for typed accessors.
-      if (isDictionaryOfObject(csType)) {
+      // Skip deprecated fields so the generated accessor doesn't reference
+      // a field marked `[System.Obsolete]` (which would fail the build).
+      if (isDictionaryOfObject(csType) && !field.deprecated) {
         dictObjectFields.push({ csName: csFieldName, typeText: csType });
       }
     }
@@ -198,15 +221,32 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`        /// <param name="key">The key to look up.</param>`);
       lines.push(`        public T? Get${dict.csName}Attribute<T>(string key)`);
       lines.push('        {');
-      lines.push(`            if (this.${dict.csName} == null) return default;`);
-      lines.push(`            if (!this.${dict.csName}.TryGetValue(key, out var value)) return default;`);
-      lines.push(`            if (value is T typed) return typed;`);
-      lines.push(`            if (value is Newtonsoft.Json.Linq.JToken token) return token.ToObject<T>();`);
-      lines.push(`            if (value is System.Text.Json.JsonElement element)`);
+      lines.push(`            if (this.${dict.csName} == null)`);
       lines.push('            {');
-      lines.push(`                return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText());`);
+      lines.push('                return default;');
       lines.push('            }');
-      lines.push(`            return default;`);
+      lines.push('');
+      lines.push(`            if (!this.${dict.csName}.TryGetValue(key, out var value))`);
+      lines.push('            {');
+      lines.push('                return default;');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            if (value is T typed)');
+      lines.push('            {');
+      lines.push('                return typed;');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            if (value is Newtonsoft.Json.Linq.JToken token)');
+      lines.push('            {');
+      lines.push('                return token.ToObject<T>();');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            if (value is System.Text.Json.JsonElement element)');
+      lines.push('            {');
+      lines.push('                return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText());');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            return default;');
       lines.push('        }');
     }
 
@@ -234,28 +274,35 @@ function isDictionaryOfObject(csType: string): boolean {
 }
 
 /**
- * If the given TypeRef is a single-value enum (a discriminator const
- * masquerading as an enum), return the wire value as a raw string so the
- * emitter can lock the field down with a const initializer and non-public
- * setter. Returns null for any other type.
+ * If the given TypeRef is a single-value enum / literal (a discriminator
+ * const masquerading as an enum), return the C# literal expression (already
+ * quoted for strings, bare for bool/number) so the emitter can lock the
+ * field down with a const initializer and non-public setter. Returns null
+ * for any other type.
  */
-function singleValueEnumConst(ref: TypeRef, enumConstByName: Map<string, string>): string | null {
+function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, string>): string | null {
   // OpenAPI `enum: [value]` (single-value) is normalized by the IR to a
-  // LiteralType on the field, not an EnumRef.
+  // LiteralType on the field, not an EnumRef. Emit per-type: booleans and
+  // numbers are bare literals; strings get JSON-quoted.
   if (ref.kind === 'literal') {
     if (ref.value === null) return null;
-    if (typeof ref.value === 'string' || typeof ref.value === 'number' || typeof ref.value === 'boolean') {
-      return String(ref.value);
-    }
+    if (typeof ref.value === 'boolean') return ref.value ? 'true' : 'false';
+    if (typeof ref.value === 'number') return String(ref.value);
+    if (typeof ref.value === 'string') return JSON.stringify(ref.value);
     return null;
   }
   if (ref.kind !== 'enum') return null;
+  let wire: string | null = null;
   if (ref.values && ref.values.length === 1) {
     const v = ref.values[0] as string | number | { value: string | number };
-    if (typeof v === 'string' || typeof v === 'number') return String(v);
-    return String(v.value);
+    wire = typeof v === 'string' || typeof v === 'number' ? String(v) : String(v.value);
+  } else {
+    wire = enumConstByName.get(ref.name) ?? null;
   }
-  return enumConstByName.get(ref.name) ?? null;
+  if (wire === null) return null;
+  // Enum wire values serialize as strings in JSON, and mapTypeRef returns
+  // `string` for single-value enums — so always quote.
+  return JSON.stringify(wire);
 }
 
 /**
