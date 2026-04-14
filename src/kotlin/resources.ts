@@ -343,10 +343,33 @@ function renderMethod(
     }
 
     if (hasBody) {
-      lines.push(`    val body = linkedMapOf<String, Any?>()`);
-      for (const bf of sortedBodyFields) lines.push(...emitBodyField(bf, bodyParamNames.get(bf.name)!, isPatch));
-      for (const [k, v] of Object.entries(defaults)) lines.push(`    body[${ktLiteral(k)}] = ${ktLiteral(v)}`);
-      for (const k of inferFromClient) lines.push(`    body[${ktLiteral(k)}] = workos.${clientFieldExpression(k)}`);
+      // Use bodyOf() / patchBodyOf() helpers to build the request body in a
+      // single expression. This drops null optional values automatically
+      // instead of repeating `if (x != null) body["x"] = x` per field.
+      const helperFn = isPatch ? 'patchBodyOf' : 'bodyOf';
+      imports.add(`com.workos.common.http.${helperFn}`);
+      const bodyEntries: string[] = [];
+      for (const bf of sortedBodyFields) {
+        const prop = bodyParamNames.get(bf.name)!;
+        bodyEntries.push(`      ${ktLiteral(bf.name)} to ${prop}`);
+      }
+      for (const [k, v] of Object.entries(defaults)) {
+        bodyEntries.push(`      ${ktLiteral(k)} to ${ktLiteral(v)}`);
+      }
+      for (const k of inferFromClient) {
+        bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k)}`);
+      }
+      if (bodyEntries.length > 0) {
+        lines.push(`    val body = ${helperFn}(`);
+        for (let i = 0; i < bodyEntries.length; i++) {
+          const sep = i === bodyEntries.length - 1 ? '' : ',';
+          lines.push(`${bodyEntries[i]}${sep}`);
+        }
+        lines.push(`    )`);
+      } else {
+        // Empty body (POST/PUT/PATCH still require one for OkHttp).
+        lines.push(`    val body = linkedMapOf<String, Any?>()`);
+      }
       lines.push(`    val config =`);
       lines.push(`      RequestConfig(`);
       lines.push(`        method = ${ktLiteral(httpMethod)},`);
