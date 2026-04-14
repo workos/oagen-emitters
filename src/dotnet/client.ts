@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { resolveResourceClassName } from './resources.js';
-import { className, serviceTypeName } from './naming.js';
+import { className, serviceTypeName, humanize } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
@@ -70,7 +70,10 @@ function generateClientFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const propName = className(resolvedName);
     const svcType = serviceTypeName(resolvedName);
     const backingField = propName.charAt(0).toLowerCase() + propName.slice(1);
+    const human = humanize(resolvedName);
     lines.push(`        private ${svcType} ${backingField};`);
+    lines.push('');
+    lines.push(`        /// <summary>Gets the <see cref="${svcType}"/> for ${human} API operations.</summary>`);
     lines.push(`        public virtual ${svcType} ${propName} => this.${backingField} ??= new ${svcType}(this);`);
     lines.push('');
   }
