@@ -53,6 +53,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const roundTripFile = generateModelRoundTripTest(spec);
   if (roundTripFile) files.push(roundTripFile);
 
+  const forwardCompatFile = generateForwardCompatTest(spec);
+  if (forwardCompatFile) files.push(forwardCompatFile);
+
   return files;
 }
 
@@ -766,6 +769,103 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile | null {
   return {
     path: `${TEST_PREFIX}com/workos/models/GeneratedModelRoundTripTest.kt`,
     content,
+    overwriteExisting: true,
+  };
+}
+
+/**
+ * Emit a forward-compatibility suite that proves:
+ *  - unrecognized enum wire values map to the `Unknown` sentinel rather
+ *    than throwing (covers the Jackson @JsonEnumDefaultValue wiring);
+ *  - unknown top-level JSON fields on a model do not fail deserialization
+ *    (FAIL_ON_UNKNOWN_PROPERTIES=false);
+ *  - ISO-8601 timestamps round-trip through `OffsetDateTime` without
+ *    precision loss.
+ *
+ * The suite targets the first candidate enum in the spec (any enum with at
+ * least one non-Unknown variant) and the first round-trippable model, so
+ * one emitted test covers the pattern for all generated types.
+ */
+function generateForwardCompatTest(spec: ApiSpec): GeneratedFile | null {
+  const enumTarget = spec.enums.find((e) => e.values.length > 0);
+  const modelTarget = spec.models.find(
+    (m) =>
+      !isListWrapperModel(m) &&
+      !isListMetadataModel(m) &&
+      m.fields.length > 0 &&
+      m.fields.every((f) => f.required) &&
+      m.fields.every((f) => f.type.kind === 'primitive' || f.type.kind === 'nullable'),
+  );
+  if (!enumTarget && !modelTarget) return null;
+
+  const lines: string[] = [
+    'package com.workos.models',
+    '',
+    'import com.fasterxml.jackson.core.type.TypeReference',
+    'import com.workos.common.json.ObjectMapperFactory',
+  ];
+  if (enumTarget) lines.push(`import com.workos.types.${className(enumTarget.name)}`);
+  lines.push(
+    'import org.junit.jupiter.api.Assertions.assertEquals',
+    'import org.junit.jupiter.api.Assertions.assertNotNull',
+    'import org.junit.jupiter.api.Test',
+    '',
+    'class GeneratedForwardCompatTest {',
+    '  private val mapper = ObjectMapperFactory.create()',
+  );
+
+  if (enumTarget) {
+    const enumCls = className(enumTarget.name);
+    lines.push(
+      '',
+      `  @Test`,
+      `  fun \`unknown ${enumCls} wire values deserialize to Unknown\`() {`,
+      '    // Simulates a future server release that introduces a new enum variant.',
+      `    val parsed = mapper.readValue(${ktStringLiteral('"__oagen_new_variant__"')}, ${enumCls}::class.java)`,
+      `    assertEquals(${enumCls}.Unknown, parsed)`,
+      '  }',
+    );
+  }
+
+  if (modelTarget) {
+    const modelCls = className(modelTarget.name);
+    const jsonLiteral = buildTrivialJson(modelTarget);
+    // Splice an extra unknown property into the JSON to prove the mapper
+    // ignores it.  `buildTrivialJson` returns a single-line `{...}` literal
+    // so a simple substring replacement is safe.
+    const jsonWithExtra = jsonLiteral.replace('{', '{"__oagen_future_field__": "ignored", ');
+    lines.push(
+      '',
+      `  @Test`,
+      `  fun \`${modelCls} ignores unknown JSON fields\`() {`,
+      `    val json = ${ktStringLiteral(jsonWithExtra)}`,
+      `    val parsed = mapper.readValue(json, ${modelCls}::class.java)`,
+      '    assertNotNull(parsed)',
+      '  }',
+    );
+  }
+
+  lines.push(
+    '',
+    '  @Test',
+    '  fun `OffsetDateTime round-trips through the configured mapper`() {',
+    '    val jsonIn = "\\"2024-01-15T12:34:56.789Z\\""',
+    '    val parsed = mapper.readValue(jsonIn, object : TypeReference<java.time.OffsetDateTime>() {})',
+    '    val reserialized = mapper.writeValueAsString(parsed)',
+    '    // Jackson serializes OffsetDateTime as an ISO-8601 string when',
+    '    // WRITE_DATES_AS_TIMESTAMPS is disabled. The wire form may choose a',
+    '    // different offset representation (e.g. "+00:00" vs "Z") so compare',
+    '    // logical equality of the parsed value rather than the raw string.',
+    '    val reparsed = mapper.readValue(reserialized, object : TypeReference<java.time.OffsetDateTime>() {})',
+    '    assertEquals(parsed.toInstant(), reparsed.toInstant())',
+    '  }',
+    '}',
+    '',
+  );
+
+  return {
+    path: `${TEST_PREFIX}com/workos/models/GeneratedForwardCompatTest.kt`,
+    content: lines.join('\n'),
     overwriteExisting: true,
   };
 }
