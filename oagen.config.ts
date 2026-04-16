@@ -6,6 +6,7 @@ import { phpEmitter } from './src/php/index.js';
 import { goEmitter } from './src/go/index.js';
 import { dotnetEmitter } from './src/dotnet/index.js';
 import { kotlinEmitter } from './src/kotlin/index.js';
+import { rubyEmitter } from './src/ruby/index.js';
 import { nodeExtractor } from './src/compat/extractors/node.js';
 import { rubyExtractor } from './src/compat/extractors/ruby.js';
 import { pythonExtractor } from './src/compat/extractors/python.js';
@@ -100,6 +101,10 @@ const operationHints: Record<string, OperationHint> = {
   'POST /authorization/organization_memberships/{organization_membership_id}/check': {
     name: 'check',
   },
+  'GET /authorization/organization_memberships/{organization_membership_id}/resources/{resource_type_slug}/{external_id}/permissions':
+    {
+      name: 'list_effective_permissions_by_external_id',
+    },
   'POST /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
     name: 'assign_role',
   },
@@ -213,7 +218,7 @@ const operationHints: Record<string, OperationHint> = {
         defaults: { grant_type: 'urn:workos:oauth:grant-type:email-verification:code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
-        optionalParams: ['pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_totp',
@@ -329,7 +334,7 @@ const mountRules: Record<string, string> = {
 };
 
 const config: OagenConfig = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter],
+  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter, rubyEmitter],
   extractors: [
     nodeExtractor,
     rubyExtractor,
