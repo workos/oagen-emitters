@@ -193,8 +193,8 @@ const operationHints: Record<string, OperationHint> = {
         targetVariant: 'CodeSessionAuthenticateRequest',
         defaults: { grant_type: 'authorization_code' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code', 'ip_address', 'device_id', 'user_agent'],
-        optionalParams: ['ip_address', 'device_id', 'user_agent'],
+        exposedParams: ['code', 'code_verifier', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['code_verifier', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_refresh_token',
