@@ -11,7 +11,7 @@ import type {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { generateModels } from './models.js';
+import { generateModels, primeModelAliases } from './models.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { generateEnums, primeEnumAliases } from './enums.js';
 import { generateResources } from './resources.js';
@@ -151,6 +151,7 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnums = getSyntheticEnums();
     primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums);
+    primeModelAliases(enrichModelsFromSpec(c.spec.models));
     const files = generateResources(services, c);
 
     // Also generate wrapper options classes
@@ -201,6 +202,7 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnumsForTests = getSyntheticEnums();
     primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums);
+    primeModelAliases(enrichModelsFromSpec(c.spec.models));
     return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },
 

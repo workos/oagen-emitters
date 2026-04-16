@@ -167,10 +167,9 @@ describe('dotnet/models', () => {
     expect(canonicalFile).toBeDefined();
     expect(canonicalFile.content).toContain('public class OrganizationDomain');
 
-    // Alias model should be a subclass of canonical
-    const aliasFile = files.find((f) => f.path.includes('OrganizationDomainStandAlone.cs'))!;
-    expect(aliasFile).toBeDefined();
-    expect(aliasFile.content).toContain('OrganizationDomain');
+    // Alias model should NOT be emitted — references are rewritten to the canonical
+    const aliasFile = files.find((f) => f.path.includes('OrganizationDomainStandAlone.cs'));
+    expect(aliasFile).toBeUndefined();
   });
 
   it('emits [System.Obsolete] for deprecated fields', () => {

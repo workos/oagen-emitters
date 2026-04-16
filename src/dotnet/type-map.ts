@@ -21,10 +21,33 @@ const enumAliases = new Map<string, string>();
  */
 const singleValueEnumNames = new Set<string>();
 
+/**
+ * Module-level alias map for structurally-identical models. Populated by
+ * `setModelAliases` from model deduplication; consulted by `mapTypeRef` so
+ * that every reference to a duplicate model resolves to the canonical name.
+ */
+const modelAliases = new Map<string, string>();
+
 /** Replace the current enum-alias map. Safe to call more than once. */
 export function setEnumAliases(aliases: Map<string, string>): void {
   enumAliases.clear();
   for (const [k, v] of aliases) enumAliases.set(k, v);
+}
+
+/** Replace the current model-alias map. Safe to call more than once. */
+export function setModelAliases(aliases: Map<string, string>): void {
+  modelAliases.clear();
+  for (const [k, v] of aliases) modelAliases.set(k, v);
+}
+
+/** Check if a model name is an alias (i.e., structurally identical to another model). */
+export function isModelAlias(name: string): boolean {
+  return modelAliases.has(name);
+}
+
+/** Resolve a model name to its canonical form (identity if not an alias). */
+export function resolveModelName(name: string): string {
+  return modelAliases.get(name) ?? name;
 }
 
 /** Replace the set of enum names that are single-value discriminator stand-ins. */
@@ -45,7 +68,7 @@ export function mapTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
-    model: (r) => className(r.name),
+    model: (r) => className(modelAliases.get(r.name) ?? r.name),
     enum: (r) => {
       // Single-value enums (discriminator consts in disguise) map to `string`
       // so the caller can't misuse a public one-member enum type. The

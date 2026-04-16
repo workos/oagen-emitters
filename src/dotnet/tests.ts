@@ -8,6 +8,7 @@ import {
   resolveMethodName,
   serviceTypeName,
 } from './naming.js';
+import { resolveModelName } from './type-map.js';
 import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
@@ -194,7 +195,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.Delete, "${expectedPath}");`);
       lines.push('        }');
     } else if (plan.responseModelName) {
-      const respModel = plan.responseModelName;
+      const respModel = resolveModelName(plan.responseModelName);
       const fixturePath = `testdata/${fixtureFileName(respModel)}.json`;
       const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
 
@@ -282,8 +283,8 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
             if (inner) resolved = inner;
           }
         }
-        itemTypeName = className(resolved.name);
-        fixtureName = fixtureFileName(resolved.name);
+        itemTypeName = className(resolveModelName(resolved.name));
+        fixtureName = fixtureFileName(resolveModelName(resolved.name));
       }
     }
 
@@ -363,7 +364,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push('        {');
 
       if (responseType) {
-        const fixturePath = `testdata/${fixtureFileName(responseType)}.json`;
+        const fixturePath = `testdata/${fixtureFileName(resolveModelName(responseType))}.json`;
         lines.push(`            var fixture = System.IO.File.ReadAllText("${fixturePath}");`);
         lines.push(
           `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, fixture);`,

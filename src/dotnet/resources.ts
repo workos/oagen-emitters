@@ -8,7 +8,7 @@ import type {
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
-import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
+import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes, resolveModelName } from './type-map.js';
 import {
   className,
   fieldName,
@@ -488,7 +488,7 @@ function generateMethod(
   } else if (isDelete) {
     returnType = 'Task';
   } else if (plan.responseModelName) {
-    const respType = className(plan.responseModelName);
+    const respType = className(resolveModelName(plan.responseModelName));
     if (!isPaginated && op.response?.kind === 'array') {
       returnType = `Task<List<${respType}>>`;
     } else {
@@ -520,7 +520,7 @@ function generateMethod(
     const itemType = resolveListItemType(op.pagination.itemType, ctx);
     lines.push(`        /// <returns>A page of <see cref="${itemType}"/> results.</returns>`);
   } else if (plan.responseModelName) {
-    const respType = className(plan.responseModelName);
+    const respType = className(resolveModelName(plan.responseModelName));
     lines.push(`        /// <returns>The <see cref="${respType}"/> result.</returns>`);
   }
   if (op.deprecated) {
@@ -724,10 +724,10 @@ function resolveListItemType(itemType: import('@workos/oagen').TypeRef, ctx: Emi
     if (model && isListWrapperModel(model)) {
       const dataField = model.fields.find((f) => f.name === 'data');
       if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
-        return className(dataField.type.items.name);
+        return className(resolveModelName(dataField.type.items.name));
       }
     }
-    return className(itemType.name);
+    return className(resolveModelName(itemType.name));
   }
   return mapTypeRef(itemType);
 }
