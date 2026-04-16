@@ -123,21 +123,25 @@ export function isEnumRef(ref: TypeRef): boolean {
 }
 
 /**
- * Emit JSON attributes for a request-side property. When `isRequiredEnum` is
- * true, configure both serializers to skip the field when its value equals the
- * enum default (0 = Unknown sentinel). This converts "unset required enum"
- * from a silent `"unknown"` wire value into a clean omission so the API
- * returns a clear `missing required field` error instead of a confusing 422.
+ * Emit JSON attributes for a request-side property. Property name mapping is
+ * handled by a global SnakeCaseLower / SnakeCaseNamingStrategy configuration
+ * on both serializers, so per-property name attributes are not emitted.
+ *
+ * When `isRequiredEnum` is true, configure both serializers to skip the field
+ * when its value equals the enum default (0 = Unknown sentinel). This converts
+ * "unset required enum" from a silent `"unknown"` wire value into a clean
+ * omission so the API returns a clear `missing required field` error instead
+ * of a confusing 422.
  */
-export function emitJsonPropertyAttributes(wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
+export function emitJsonPropertyAttributes(_wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
   if (options.isRequiredEnum) {
     return [
-      `        [JsonProperty("${wireName}", DefaultValueHandling = DefaultValueHandling.Ignore)]`,
-      `        [STJS.JsonPropertyName("${wireName}")]`,
+      `        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]`,
       `        [STJS.JsonIgnore(Condition = STJS.JsonIgnoreCondition.WhenWritingDefault)]`,
     ];
   }
-  return [`        [JsonProperty("${wireName}")]`, `        [STJS.JsonPropertyName("${wireName}")]`];
+  // Convention-based: SnakeCaseLower naming policy handles the name mapping.
+  return [];
 }
 
 function mapPrimitive(ref: PrimitiveType): string {
@@ -188,13 +192,13 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
     return 'object';
   }
 
-  if (unique.length >= 2 && unique.length <= 3) return `AnyOf<${unique.join(', ')}>`;
-  // AnyOf only supports arity 2 and 3. Higher-arity unions collapse to
-  // `object`, losing type information. Warn so the author knows the spec
-  // outgrew the runtime support instead of silently degrading.
-  if (unique.length >= 4) {
+  if (unique.length >= 2 && unique.length <= 9) return `OneOf.OneOf<${unique.join(', ')}>`;
+  // OneOf supports arity 2-9. Higher-arity unions collapse to `object`,
+  // losing type information. Warn so the author knows the spec outgrew the
+  // runtime support instead of silently degrading.
+  if (unique.length >= 10) {
     console.warn(
-      `[oagen:dotnet] Union with ${unique.length} variants exceeds AnyOf<T1,T2,T3> arity; falling back to object. Variants: ${unique.join(', ')}`,
+      `[oagen:dotnet] Union with ${unique.length} variants exceeds OneOf<T0..T8> arity; falling back to object. Variants: ${unique.join(', ')}`,
     );
   }
   return 'object';

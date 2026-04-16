@@ -2047,4 +2047,307 @@ describe('partial service coverage', () => {
     const createMethods = methodNames.filter((n) => n.toLowerCase().startsWith('create'));
     expect(new Set(createMethods).size).toBe(createMethods.length); // all unique
   });
+
+  it('generates discriminated union types and serializer for parameter groups on paginated GET', () => {
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'listResourceUsers',
+            httpMethod: 'get',
+            path: '/fga/resources/{resourceType}/{resourceId}/users',
+            pathParams: [
+              {
+                name: 'resourceType',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+              {
+                name: 'resourceId',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [
+              {
+                name: 'parent_resource_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'parent_resource_type_slug',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'parent_resource_external_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'ResourceUser' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'ResourceUser' },
+            },
+            parameterGroups: [
+              {
+                name: 'parent_resource',
+                optional: false,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      {
+                        name: 'parent_resource_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'by_external_id',
+                    parameters: [
+                      {
+                        name: 'parent_resource_type_slug',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                      {
+                        name: 'parent_resource_external_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const resourceContent = files[0].content;
+
+    // The options interface file should contain the discriminated union types
+    const optionsFile = files.find((f) => f.path.endsWith('list-resource-users-options.interface.ts'));
+    expect(optionsFile).toBeDefined();
+    const optionsContent = optionsFile!.content;
+
+    // Variant interfaces with discriminator
+    expect(optionsContent).toContain('export interface ParentResourceById {');
+    expect(optionsContent).toContain("  type: 'by_id';");
+    expect(optionsContent).toContain('  parentResourceId: string;');
+    expect(optionsContent).toContain('}');
+
+    expect(optionsContent).toContain('export interface ParentResourceByExternalId {');
+    expect(optionsContent).toContain("  type: 'by_external_id';");
+    expect(optionsContent).toContain('  parentResourceTypeSlug: string;');
+    expect(optionsContent).toContain('  parentResourceExternalId: string;');
+
+    // Union type alias
+    expect(optionsContent).toContain('export type ParentResource = ParentResourceById | ParentResourceByExternalId;');
+
+    // Options interface should have group field, not individual grouped params
+    expect(optionsContent).toContain('parentResource: ParentResource;');
+    expect(optionsContent).not.toContain('parentResourceId?:');
+    expect(optionsContent).not.toContain('parentResourceTypeSlug?:');
+    expect(optionsContent).not.toContain('parentResourceExternalId?:');
+
+    // Wire serializer should exist and dispatch on discriminator
+    expect(resourceContent).toContain('serializeListResourceUsersOptions');
+    expect(resourceContent).toContain('switch (options.parentResource.type)');
+    expect(resourceContent).toContain("case 'by_id':");
+    expect(resourceContent).toContain('wire.parent_resource_id = options.parentResource.parentResourceId');
+    expect(resourceContent).toContain("case 'by_external_id':");
+    expect(resourceContent).toContain('wire.parent_resource_type_slug = options.parentResource.parentResourceTypeSlug');
+    expect(resourceContent).toContain(
+      'wire.parent_resource_external_id = options.parentResource.parentResourceExternalId',
+    );
+
+    // createPaginatedList should use the serializer
+    expect(resourceContent).toMatch(/createPaginatedList<[^>]+>\([^)]+options,\s*serializeListResourceUsersOptions\)/);
+  });
+
+  it('generates optional parameter group field when group.optional is true', () => {
+    const services: Service[] = [
+      {
+        name: 'Resources',
+        operations: [
+          {
+            name: 'listResources',
+            httpMethod: 'get',
+            path: '/resources',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'filter_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'filter_slug',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Resource' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Resource' },
+            },
+            parameterGroups: [
+              {
+                name: 'filter',
+                optional: true,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      {
+                        name: 'filter_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'by_slug',
+                    parameters: [
+                      {
+                        name: 'filter_slug',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const optionsFile = files.find((f) => f.path.endsWith('list-resources-options.interface.ts'));
+    expect(optionsFile).toBeDefined();
+    const optionsContent = optionsFile!.content;
+
+    // Optional group field should have ? suffix
+    expect(optionsContent).toContain('filter?: Filter;');
+
+    // Wire serializer should guard with if-check for optional group
+    const resourceContent = files[0].content;
+    expect(resourceContent).toContain('if (options.filter !== undefined)');
+  });
+
+  it('generates parameter group types for non-paginated GET', () => {
+    const services: Service[] = [
+      {
+        name: 'Items',
+        operations: [
+          {
+            name: 'getItem',
+            httpMethod: 'get',
+            path: '/items/{id}',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [
+              {
+                name: 'scope_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'scope_name',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Item' },
+            errors: [],
+            parameterGroups: [
+              {
+                name: 'scope',
+                optional: false,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      {
+                        name: 'scope_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'by_name',
+                    parameters: [
+                      {
+                        name: 'scope_name',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Should generate inline discriminated union types
+    expect(content).toContain('export interface ScopeById {');
+    expect(content).toContain("  type: 'by_id';");
+    expect(content).toContain('  scopeId: string;');
+    expect(content).toContain('export interface ScopeByName {');
+    expect(content).toContain("  type: 'by_name';");
+    expect(content).toContain('  scopeName: string;');
+    expect(content).toContain('export type Scope = ScopeById | ScopeByName;');
+
+    // Options interface should have group field
+    expect(content).toContain('export interface GetItemOptions {');
+    expect(content).toContain('  scope: Scope;');
+
+    // Should NOT have individual grouped params in the options interface
+    expect(content).not.toContain('scopeId?:');
+    expect(content).not.toContain('scopeName?:');
+
+    // Method should accept options
+    expect(content).toContain('async getItem(id: string, options?: GetItemOptions)');
+
+    // Should serialize group params with switch on discriminator
+    expect(content).toContain('switch (options.scope.type)');
+    expect(content).toContain("case 'by_id':");
+    expect(content).toContain('query.scope_id = options.scope.scopeId');
+    expect(content).toContain("case 'by_name':");
+    expect(content).toContain('query.scope_name = options.scope.scopeName');
+  });
 });

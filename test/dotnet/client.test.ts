@@ -76,8 +76,8 @@ describe('dotnet/client', () => {
     expect(content).not.toContain('SendAsync');
     expect(content).not.toContain('RequestAsync');
     expect(content).not.toContain('ApiBaseURL');
-    expect(content).not.toContain('AuthenticationError');
-    expect(content).not.toContain('RateLimitExceededError');
+    expect(content).not.toContain('AuthenticationException');
+    expect(content).not.toContain('RateLimitExceededException');
   });
 
   it('deduplicates services by mount target', () => {

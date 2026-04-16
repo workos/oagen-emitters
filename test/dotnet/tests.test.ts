@@ -105,15 +105,15 @@ describe('dotnet/tests', () => {
     const content = testFile.content;
 
     expect(content).toContain('TestError401');
-    expect(content).toContain('AuthenticationError');
+    expect(content).toContain('AuthenticationException');
     expect(content).toContain('TestError404');
-    expect(content).toContain('NotFoundError');
+    expect(content).toContain('NotFoundException');
     expect(content).toContain('TestError422');
-    expect(content).toContain('UnprocessableEntityError');
+    expect(content).toContain('UnprocessableEntityException');
     expect(content).toContain('TestError429');
-    expect(content).toContain('RateLimitExceededError');
+    expect(content).toContain('RateLimitExceededException');
     expect(content).toContain('TestError500');
-    expect(content).toContain('ServerError');
+    expect(content).toContain('ServerException');
   });
 
   it('generates fixture JSON files', () => {

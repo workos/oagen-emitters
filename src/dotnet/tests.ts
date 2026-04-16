@@ -411,11 +411,11 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     );
     if (plan.isPaginated || plan.isDelete || !plan.responseModelName) {
       lines.push(
-        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+        `            await Assert.ThrowsAsync<AuthenticationException>(() => this.service.${method}(${callArgs}));`,
       );
     } else {
       lines.push(
-        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+        `            await Assert.ThrowsAsync<AuthenticationException>(() => this.service.${method}(${callArgs}));`,
       );
     }
     lines.push('        }');
@@ -428,7 +428,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push(
       `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.NotFound, "{\\"code\\":\\"not_found\\",\\"message\\":\\"Not Found\\"}");`,
     );
-    lines.push(`            await Assert.ThrowsAsync<NotFoundError>(() => this.service.${method}(${callArgs}));`);
+    lines.push(`            await Assert.ThrowsAsync<NotFoundException>(() => this.service.${method}(${callArgs}));`);
     lines.push('        }');
 
     // 422
@@ -440,7 +440,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)422, "{\\"code\\":\\"unprocessable_entity\\",\\"message\\":\\"Unprocessable\\"}");`,
     );
     lines.push(
-      `            await Assert.ThrowsAsync<UnprocessableEntityError>(() => this.service.${method}(${callArgs}));`,
+      `            await Assert.ThrowsAsync<UnprocessableEntityException>(() => this.service.${method}(${callArgs}));`,
     );
     lines.push('        }');
 
@@ -453,7 +453,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)429, "{\\"code\\":\\"too_many_requests\\",\\"message\\":\\"Too Many Requests\\"}");`,
     );
     lines.push(
-      `            await Assert.ThrowsAsync<RateLimitExceededError>(() => this.service.${method}(${callArgs}));`,
+      `            await Assert.ThrowsAsync<RateLimitExceededException>(() => this.service.${method}(${callArgs}));`,
     );
     lines.push('        }');
 
@@ -465,7 +465,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push(
       `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.InternalServerError, "{\\"code\\":\\"server_error\\",\\"message\\":\\"Server Error\\"}");`,
     );
-    lines.push(`            await Assert.ThrowsAsync<ServerError>(() => this.service.${method}(${callArgs}));`);
+    lines.push(`            await Assert.ThrowsAsync<ServerException>(() => this.service.${method}(${callArgs}));`);
     lines.push('        }');
   }
 

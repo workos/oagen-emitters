@@ -158,8 +158,6 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
     // Hidden fields (defaults + inferred)
     for (const key of Object.keys(wrapper.defaults)) {
       const csField = csFieldName(key);
-      lines.push(`        [JsonProperty("${key}")]`);
-      lines.push(`        [STJS.JsonPropertyName("${key}")]`);
       lines.push(`        internal string ${csField} { get; set; } = default!;`);
       lines.push('');
     }
@@ -167,8 +165,6 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
       const csField = csFieldName(key);
       // Skip if already added as a default
       if (Object.keys(wrapper.defaults).includes(key)) continue;
-      lines.push(`        [JsonProperty("${key}")]`);
-      lines.push(`        [STJS.JsonPropertyName("${key}")]`);
       lines.push(`        internal string ${csField} { get; set; } = default!;`);
       lines.push('');
     }

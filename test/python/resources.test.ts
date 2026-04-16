@@ -614,4 +614,231 @@ describe('generateResources', () => {
     // Deprecated query param without description
     expect(content).toContain('legacy_param: (deprecated)');
   });
+
+  it('generates parameter group dataclasses, union kwargs, and isinstance dispatch', () => {
+    const models: Model[] = [
+      {
+        name: 'Widget',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Widgets',
+        operations: [
+          {
+            name: 'listWidgets',
+            httpMethod: 'get',
+            path: '/widgets',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+              },
+              {
+                name: 'after',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'parent_resource_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'parent_resource_type_slug',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'parent_resource_external_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'WidgetList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Widget' },
+            },
+            parameterGroups: [
+              {
+                name: 'parent_resource',
+                optional: false,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      {
+                        name: 'parent_resource_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'by_external_id',
+                    parameters: [
+                      {
+                        name: 'parent_resource_type_slug',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                      {
+                        name: 'parent_resource_external_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    expect(files.length).toBe(1);
+    const content = files[0].content;
+
+    // dataclass import should be present
+    expect(content).toContain('from dataclasses import dataclass');
+
+    // Variant dataclass definitions
+    expect(content).toContain('@dataclass');
+    expect(content).toContain('class ParentResourceById:');
+    expect(content).toContain('    parent_resource_id: str');
+    expect(content).toContain('class ParentResourceByExternalId:');
+    expect(content).toContain('    parent_resource_type_slug: str');
+    expect(content).toContain('    parent_resource_external_id: str');
+
+    // Method signature should have the union kwarg, not individual grouped params
+    expect(content).toContain('parent_resource: Union[ParentResourceById, ParentResourceByExternalId],');
+    // Grouped params should NOT appear as individual kwargs
+    expect(content).not.toMatch(/^\s+parent_resource_id: str,$/m);
+    expect(content).not.toMatch(/^\s+parent_resource_type_slug: str,$/m);
+    expect(content).not.toMatch(/^\s+parent_resource_external_id: str,$/m);
+
+    // isinstance dispatch in method body
+    expect(content).toContain('if isinstance(parent_resource, ParentResourceById):');
+    expect(content).toContain('params["parent_resource_id"] = parent_resource.parent_resource_id');
+    expect(content).toContain('elif isinstance(parent_resource, ParentResourceByExternalId):');
+    expect(content).toContain('params["parent_resource_type_slug"] = parent_resource.parent_resource_type_slug');
+    expect(content).toContain('params["parent_resource_external_id"] = parent_resource.parent_resource_external_id');
+
+    // Docstring should document the group parameter
+    expect(content).toContain(
+      'parent_resource: Identifies the parent resource. One of: ParentResourceById, ParentResourceByExternalId.',
+    );
+  });
+
+  it('generates optional parameter group with Optional[Union[...]] = None', () => {
+    const models: Model[] = [
+      {
+        name: 'Thing',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Things',
+        operations: [
+          {
+            name: 'getThing',
+            httpMethod: 'get',
+            path: '/things/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [
+              {
+                name: 'scope_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+              {
+                name: 'scope_name',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Thing' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'scope',
+                optional: true,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      {
+                        name: 'scope_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'by_name',
+                    parameters: [
+                      {
+                        name: 'scope_name',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Optional group should use Optional[Union[...]] = None
+    expect(content).toContain('scope: Optional[Union[ScopeById, ScopeByName]] = None,');
+
+    // Dataclass definitions
+    expect(content).toContain('class ScopeById:');
+    expect(content).toContain('    scope_id: str');
+    expect(content).toContain('class ScopeByName:');
+    expect(content).toContain('    scope_name: str');
+
+    // isinstance dispatch in the non-paginated GET body
+    expect(content).toContain('if isinstance(scope, ScopeById):');
+    expect(content).toContain('params["scope_id"] = scope.scope_id');
+    expect(content).toContain('elif isinstance(scope, ScopeByName):');
+    expect(content).toContain('params["scope_name"] = scope.scope_name');
+  });
 });

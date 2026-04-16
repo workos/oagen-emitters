@@ -111,14 +111,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     const lines: string[] = [];
-    const needsCollections = model.fields.some((f) => {
-      const csType = mapTypeRef(f.type);
-      return csType.startsWith('List<') || csType.startsWith('Dictionary<');
-    });
-    const needsSystem = model.fields.some((f) => {
-      const csType = mapTypeRef(f.type);
-      return csType.includes('DateTimeOffset');
-    });
+    const fieldTypes = model.fields.map((f) => mapTypeRef(f.type));
+    const needsCollections = fieldTypes.some((t) => t.startsWith('List<') || t.startsWith('Dictionary<'));
+    const needsSystem = fieldTypes.some((t) => t.includes('DateTimeOffset'));
+    const needsJsonAttrs = model.fields.some((f) => f.required && isEnumRef(f.type));
 
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -128,8 +124,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (needsCollections) {
       lines.push('    using System.Collections.Generic;');
     }
-    lines.push('    using Newtonsoft.Json;');
-    lines.push('    using STJS = System.Text.Json.Serialization;');
+    if (needsJsonAttrs) {
+      lines.push('    using Newtonsoft.Json;');
+      lines.push('    using STJS = System.Text.Json.Serialization;');
+    }
     lines.push('');
 
     // XML doc comment

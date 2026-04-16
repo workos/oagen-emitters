@@ -30,6 +30,7 @@ import {
   buildHiddenParams,
   getOpDefaults,
   getOpInferFromClient,
+  collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -132,6 +133,13 @@ function generateApiClass(
   lines.push('');
   for (const imp of filteredImports.sort()) lines.push(`import ${imp}`);
   lines.push('');
+  // Emit sealed classes for parameter groups before the API class.
+  for (const op of operations) {
+    if ((op.parameterGroups?.length ?? 0) > 0) {
+      for (const line of generateSealedClasses(op)) lines.push(line);
+    }
+  }
+
   const serviceDescription = resolveServiceDescription(ctx, mountName, operations);
   if (serviceDescription) {
     const docLines = serviceDescription.trim().split('\n');
@@ -197,7 +205,9 @@ function renderMethod(
 
   const httpMethod = op.httpMethod.toUpperCase();
   const pathParams = sortPathParamsByTemplateOrder(op);
-  const queryParams = op.queryParams.filter((p) => !hidden.has(p.name));
+  const groupedParamNames = collectGroupedParamNames(op);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  const queryParams = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const bodyModel = resolveBodyModel(op, ctx);
   const bodyFields = bodyModel ? bodyModel.fields.filter((f) => !hidden.has(f.name)) : [];
 
@@ -243,6 +253,17 @@ function renderMethod(
   const sortedQuery = [...uniqueQuery].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const qp of sortedQuery) {
     params.push(renderParam(qp.name, qp.type, qp.required));
+  }
+
+  // Parameter group params (sealed class types)
+  for (const group of op.parameterGroups ?? []) {
+    const sealedName = className(group.name);
+    const prop = propertyName(group.name);
+    if (group.optional) {
+      params.push(`    ${prop}: ${sealedName}? = null`);
+    } else {
+      params.push(`    ${prop}: ${sealedName}`);
+    }
   }
 
   // PATCH operations use PatchField<T> for optional body fields so callers
@@ -311,6 +332,9 @@ function renderMethod(
     lines.push(`    fun configFor(afterCursor: String? = null): RequestConfig {`);
     lines.push(`      val params = mutableListOf<Pair<String, String>>()`);
     for (const qp of queryForConfig) for (const ln of emitQueryParam(qp, '      ')) lines.push(ln);
+    for (const group of op.parameterGroups ?? []) {
+      for (const ln of emitGroupQueryDispatch(group, '      ')) lines.push(ln);
+    }
     lines.push(`      val effectiveAfter = afterCursor ?: ${pickNamedQueryParam(sortedQuery, 'after')}`);
     lines.push(`      if (effectiveAfter != null) params += "after" to effectiveAfter`);
     lines.push(`      return RequestConfig(`);
@@ -330,10 +354,13 @@ function renderMethod(
     // query parameters (spec-declared query, or defaults/inferFromClient
     // for GET/DELETE without a body). `RequestConfig.queryParams` defaults
     // to `emptyList()` when omitted, so we avoid dead local declarations.
-    const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery;
+    const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery || hasGroups;
     if (emitsQueryParams) {
       lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
       for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
+      for (const group of op.parameterGroups ?? []) {
+        for (const ln of emitGroupQueryDispatch(group, '    ')) lines.push(ln);
+      }
       if (appendDefaultsAsQuery) {
         for (const [k, v] of Object.entries(defaults)) lines.push(`    params += ${ktLiteral(k)} to ${ktLiteral(v)}`);
         // Client-inferred fields may be nullable (e.g. clientId). Skip when
@@ -664,4 +691,79 @@ export function sortPathParamsByTemplateOrder(op: Operation): Parameter[] {
 
 function escapeKdoc(s: string): string {
   return s.replace(/\*\//g, '*\u200b/');
+}
+
+// ---------------------------------------------------------------------------
+// Mutually-exclusive parameter group support
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a short Kotlin property name for a parameter within a variant,
+ * stripping the group name prefix to avoid stuttering.
+ */
+function deriveShortPropertyName(paramName: string, groupName: string): string {
+  const prefix = groupName + '_';
+  const stripped = paramName.startsWith(prefix) ? paramName.slice(prefix.length) : paramName;
+  return propertyName(stripped);
+}
+
+/** Generate sealed class definitions for all parameter groups in an operation. */
+function generateSealedClasses(op: Operation): string[] {
+  const lines: string[] = [];
+  for (const group of op.parameterGroups ?? []) {
+    const sealedName = className(group.name);
+    lines.push(`sealed class ${sealedName} {`);
+    for (const variant of group.variants) {
+      const variantName = className(variant.name);
+      const fields = variant.parameters.map((p) => {
+        const prop = deriveShortPropertyName(p.name, group.name);
+        return `val ${prop}: ${mapTypeRef(p.type)}`;
+      });
+      lines.push(`  data class ${variantName}(${fields.join(', ')}) : ${sealedName}()`);
+    }
+    lines.push('}');
+    lines.push('');
+  }
+  return lines;
+}
+
+/** Emit `when` dispatch that serializes a parameter group into query params. */
+function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, indent: string): string[] {
+  const sealedName = className(group.name);
+  const prop = propertyName(group.name);
+  const lines: string[] = [];
+
+  if (group.optional) {
+    lines.push(`${indent}if (${prop} != null) {`);
+    emitWhenBlock(lines, group, sealedName, prop, `${indent}  `);
+    lines.push(`${indent}}`);
+  } else {
+    emitWhenBlock(lines, group, sealedName, prop, indent);
+  }
+  return lines;
+}
+
+function emitWhenBlock(
+  lines: string[],
+  group: import('@workos/oagen').ParameterGroup,
+  sealedName: string,
+  prop: string,
+  indent: string,
+): void {
+  lines.push(`${indent}when (${prop}) {`);
+  for (const variant of group.variants) {
+    const variantName = className(variant.name);
+    const entries = variant.parameters.map((p) => {
+      const fieldProp = deriveShortPropertyName(p.name, group.name);
+      return `params += ${ktLiteral(p.name)} to ${prop}.${fieldProp}`;
+    });
+    if (entries.length === 1) {
+      lines.push(`${indent}  is ${sealedName}.${variantName} -> ${entries[0]}`);
+    } else {
+      lines.push(`${indent}  is ${sealedName}.${variantName} -> {`);
+      for (const e of entries) lines.push(`${indent}    ${e}`);
+      lines.push(`${indent}  }`);
+    }
+  }
+  lines.push(`${indent}}`);
 }

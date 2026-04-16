@@ -35,6 +35,7 @@ import {
   getOpInferFromClient,
   buildHiddenParams,
   hasHiddenParams,
+  collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 
@@ -80,6 +81,84 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   }
 
   return files;
+}
+
+// ---------------------------------------------------------------------------
+// Mutually-exclusive parameter group support
+// ---------------------------------------------------------------------------
+
+/** Abstract base class name for a parameter group (e.g. ParentResource). */
+function groupBaseClassName(groupName: string): string {
+  return className(groupName);
+}
+
+/** Concrete variant class name (e.g. ParentResourceById). */
+function groupVariantClassName(groupName: string, variantName: string): string {
+  return `${className(groupName)}${className(variantName)}`;
+}
+
+/**
+ * Generate C# abstract base class + concrete subtypes for all parameter groups
+ * on an operation. Each group becomes an abstract class with concrete subclasses
+ * for each variant containing the variant's parameters as properties.
+ */
+function generateParameterGroupTypes(op: Operation): string[] {
+  const lines: string[] = [];
+
+  for (const group of op.parameterGroups ?? []) {
+    const baseName = groupBaseClassName(group.name);
+
+    lines.push('');
+    lines.push(`    public abstract class ${baseName} { }`);
+
+    for (const variant of group.variants) {
+      const variantName = groupVariantClassName(group.name, variant.name);
+      lines.push('');
+      lines.push(`    public class ${variantName} : ${baseName}`);
+      lines.push('    {');
+      for (const param of variant.parameters) {
+        const csField = fieldName(param.name);
+        const csType = mapTypeRef(param.type);
+        lines.push(`        public ${csType} ${csField} { get; set; } = default!;`);
+        lines.push('');
+      }
+      lines.push('    }');
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Emit manual query serialization for parameter group variants in the service
+ * method body. Each group field on the options class is pattern-matched via
+ * `is` checks and its variant parameters are added to the query string.
+ */
+function emitGroupQuerySerialization(op: Operation, indent: string): string[] {
+  const lines: string[] = [];
+
+  for (const group of op.parameterGroups ?? []) {
+    const groupField = fieldName(group.name);
+    let first = true;
+
+    for (const variant of group.variants) {
+      const variantName = groupVariantClassName(group.name, variant.name);
+      // Use a short local variable derived from the variant name
+      const localVar = localName(variant.name);
+      const keyword = first ? 'if' : 'else if';
+      first = false;
+
+      lines.push(`${indent}${keyword} (options?.${groupField} is ${variantName} ${localVar})`);
+      lines.push(`${indent}{`);
+      for (const param of variant.parameters) {
+        const csField = fieldName(param.name);
+        lines.push(`${indent}    request.AddQueryParam("${param.name}", ${localVar}.${csField});`);
+      }
+      lines.push(`${indent}}`);
+    }
+  }
+
+  return lines;
 }
 
 function generateServiceFile(mountName: string, operations: Operation[], ctx: EmitterContext): GeneratedFile | null {
@@ -190,7 +269,10 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const optionsClass = optionsClassName(mountName, method);
     if (emittedOptions.has(optionsClass)) continue;
 
-    const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+    const groupedParams = collectGroupedParamNames(op);
+    const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+    const hasVisibleQueryParams =
+      op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
     const hasBody = plan.hasBody && op.requestBody;
     let hasVisibleBodyFields = false;
     if (hasBody && op.requestBody?.kind === 'model') {
@@ -200,7 +282,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       hasVisibleBodyFields = true;
     }
 
-    if (!hasVisibleQueryParams && !hasVisibleBodyFields) continue;
+    if (!hasVisibleQueryParams && !hasVisibleBodyFields && !hasGroups) continue;
 
     emittedOptions.add(optionsClass);
     hasOptions = true;
@@ -263,10 +345,12 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       }
     }
 
-    // Query params (skip pagination fields for list options — they're in ListOptions base)
+    // Query params (skip pagination fields for list options — they're in ListOptions base,
+    // and skip grouped params which get their own abstract class hierarchy)
     const PAGINATION_FIELDS = new Set(['before', 'after', 'limit', 'order']);
     for (const param of op.queryParams) {
       if (hidden.has(param.name)) continue;
+      if (groupedParams.has(param.name)) continue;
       if (isPaginated && PAGINATION_FIELDS.has(param.name)) continue;
       const csField = fieldName(param.name);
       if (emittedFields.has(csField)) continue;
@@ -311,8 +395,6 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       const csField = fieldName(key);
       if (emittedFields.has(csField)) continue;
       emittedFields.add(csField);
-      optionsLines.push(`        [JsonProperty("${key}")]`);
-      optionsLines.push(`        [STJS.JsonPropertyName("${key}")]`);
       optionsLines.push(`        internal string ${csField} { get; set; } = default!;`);
       optionsLines.push('');
     }
@@ -320,13 +402,28 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       const csField = fieldName(key);
       if (emittedFields.has(csField)) continue;
       emittedFields.add(csField);
-      optionsLines.push(`        [JsonProperty("${key}")]`);
-      optionsLines.push(`        [STJS.JsonPropertyName("${key}")]`);
       optionsLines.push(`        internal string ${csField} { get; set; } = default!;`);
       optionsLines.push('');
     }
 
+    // Parameter group properties (serialized manually in the service method, not by JSON)
+    for (const group of op.parameterGroups ?? []) {
+      const baseName = groupBaseClassName(group.name);
+      const csField = fieldName(group.name);
+      optionsLines.push('        [JsonIgnore]');
+      optionsLines.push('        [STJS.JsonIgnore]');
+      const initializer = group.optional ? '' : ' = default!;';
+      const csType = group.optional ? `${baseName}?` : baseName;
+      optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
+      optionsLines.push('');
+    }
+
     optionsLines.push('    }');
+
+    // Emit parameter group abstract base + concrete variant classes
+    if (hasGroups) {
+      optionsLines.push(...generateParameterGroupTypes(op));
+    }
   }
 
   optionsLines.push('}');
@@ -354,7 +451,10 @@ function generateMethod(
   const isDelete = plan.isDelete;
   const hasBody = plan.hasBody && op.requestBody;
   const hidden = buildHiddenParams(resolvedOp);
-  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const groupedParams = collectGroupedParamNames(op);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
 
   let hasVisibleBodyFields = false;
   if (hasBody && op.requestBody?.kind === 'model') {
@@ -364,7 +464,7 @@ function generateMethod(
     hasVisibleBodyFields = true;
   }
 
-  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams;
+  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
   const optionsClass = hasParams ? optionsClassName(mountName, method) : null;
   const hasHidden = hasHiddenParams(resolvedOp);
 
@@ -474,10 +574,11 @@ function generateMethod(
   // Build path
   const pathExpr = buildPathExpr(op);
 
-  // URL-builders and bearer-override operations keep the inlined WorkOSRequest
-  // form because the Service helpers don't expose BuildRequestUri or
-  // AccessToken configuration. Everything else uses the helper one-liners.
-  const needsInlineRequest = isUrlBuilder || (hasBearerOverride && !!bearerParamName);
+  // URL-builders, bearer-override operations, and operations with parameter
+  // groups keep the inlined WorkOSRequest form because the Service helpers
+  // don't expose BuildRequestUri, AccessToken configuration, or manual
+  // query param injection. Everything else uses the helper one-liners.
+  const needsInlineRequest = isUrlBuilder || (hasBearerOverride && !!bearerParamName) || hasGroups;
   const optionsArg = optionsClass ? 'options' : 'null';
 
   if (needsInlineRequest) {
@@ -495,6 +596,13 @@ function generateMethod(
       lines.push(`                RequestOptions = requestOptions,`);
     }
     lines.push('            };');
+
+    // Serialize parameter group variants into query params
+    if (hasGroups) {
+      lines.push('');
+      lines.push(...emitGroupQuerySerialization(op, '            '));
+      lines.push('');
+    }
 
     if (isUrlBuilder) {
       lines.push('            return this.Client.BuildRequestUri(request).ToString();');
@@ -533,7 +641,10 @@ function generateAutoPagingMethod(
 ): string {
   const lines: string[] = [];
   const hidden = buildHiddenParams(resolvedOp);
-  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const groupedParams = collectGroupedParamNames(op);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
 
   let hasVisibleBodyFields = false;
   if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -541,7 +652,7 @@ function generateAutoPagingMethod(
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   }
 
-  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams;
+  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
   const optionsClass = hasParams ? optionsClassName(mountName, method) : null;
 
   const itemType = resolveListItemType(op.pagination!.itemType, ctx);

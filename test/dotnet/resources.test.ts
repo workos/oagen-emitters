@@ -139,8 +139,9 @@ describe('dotnet/resources', () => {
 
     const content = optionsFile.content;
     expect(content).toContain('Options');
-    expect(content).toContain('[JsonProperty("name")]');
     expect(content).toContain('public string Name');
+    // Convention-based naming — no per-property JSON attributes
+    expect(content).not.toContain('[JsonProperty("name")]');
   });
 
   it('generates paginated list method with auto-pagination', () => {
@@ -251,5 +252,136 @@ describe('dotnet/resources', () => {
     const serviceFile = files.find((f) => f.path.includes('OrganizationsService.cs'))!;
 
     expect(serviceFile.content).toContain('[System.Obsolete');
+  });
+
+  it('generates parameter group abstract base + variant classes and query serialization', () => {
+    const models: Model[] = [
+      {
+        name: 'Authorization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'AuthorizationList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Authorization' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ListMetadata' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Fga',
+        operations: [
+          {
+            name: 'listAuthorizations',
+            httpMethod: 'get',
+            path: '/fga/authorizations',
+            pathParams: [],
+            queryParams: [
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'parent_resource_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'parent_resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'parent_resource_external_id', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuthorizationList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Authorization' },
+            },
+            parameterGroups: [
+              {
+                name: 'parent_resource',
+                optional: false,
+                variants: [
+                  {
+                    name: 'by_id',
+                    parameters: [
+                      { name: 'parent_resource_id', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                  {
+                    name: 'by_external_id',
+                    parameters: [
+                      {
+                        name: 'parent_resource_type_slug',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                      {
+                        name: 'parent_resource_external_id',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+
+    // Options file should exist and contain group types
+    const optionsFile = files.find((f) => f.path.includes('Options.cs'))!;
+    expect(optionsFile).toBeDefined();
+    const optContent = optionsFile.content;
+
+    // Abstract base class
+    expect(optContent).toContain('public abstract class ParentResource { }');
+
+    // Concrete variant: ById
+    expect(optContent).toContain('public class ParentResourceById : ParentResource');
+    expect(optContent).toContain('public string ParentResourceId { get; set; } = default!;');
+
+    // Concrete variant: ByExternalId
+    expect(optContent).toContain('public class ParentResourceByExternalId : ParentResource');
+    expect(optContent).toContain('public string ParentResourceTypeSlug { get; set; } = default!;');
+    expect(optContent).toContain('public string ParentResourceExternalId { get; set; } = default!;');
+
+    // Group property on options class with JsonIgnore
+    expect(optContent).toContain('[JsonIgnore]');
+    expect(optContent).toContain('[STJS.JsonIgnore]');
+    expect(optContent).toContain('public ParentResource ParentResource { get; set; } = default!;');
+
+    // Grouped params should NOT appear as individual properties
+    expect(optContent).not.toMatch(/\[JsonProperty\("parent_resource_id"\)\]/);
+    expect(optContent).not.toMatch(/\[JsonProperty\("parent_resource_type_slug"\)\]/);
+    expect(optContent).not.toMatch(/\[JsonProperty\("parent_resource_external_id"\)\]/);
+
+    // Service file should contain group query serialization
+    const serviceFile = files.find((f) => f.path.endsWith('Service.cs'))!;
+    expect(serviceFile).toBeDefined();
+    const svcContent = serviceFile.content;
+
+    // Pattern matching for group variants
+    expect(svcContent).toContain('ParentResourceById');
+    expect(svcContent).toContain('ParentResourceByExternalId');
+    expect(svcContent).toContain('AddQueryParam("parent_resource_id"');
+    expect(svcContent).toContain('AddQueryParam("parent_resource_type_slug"');
+    expect(svcContent).toContain('AddQueryParam("parent_resource_external_id"');
   });
 });

@@ -226,11 +226,11 @@ public class WorkOSList<T>
 
 The runtime translates HTTP status codes to SDK-native exceptions:
 
-- `AuthenticationError` (401)
-- `NotFoundError` (404)
-- `UnprocessableEntityError` (422)
-- `RateLimitExceededError` (429)
-- `ServerError` (500+)
+- `AuthenticationException` (401)
+- `NotFoundException` (404)
+- `UnprocessableEntityException` (422)
+- `RateLimitExceededException` (429)
+- `ServerException` (500+)
 
 These are hand-maintained in the runtime. The emitter generates error-handling _tests_, not the error classes themselves.
 
