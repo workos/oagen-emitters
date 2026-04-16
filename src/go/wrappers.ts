@@ -32,10 +32,61 @@ export function generateWrapperMethods(
     lines.push('');
     emitWrapperParamsStruct(lines, wrapper, wrapperParams);
     lines.push('');
+    emitWrapperBodyStruct(lines, wrapper, wrapperParams);
+    lines.push('');
     emitWrapperMethod(lines, serviceType, resolvedOp, wrapper, wrapperParams);
   }
 
   return lines;
+}
+
+/** Unexported struct name used as the typed JSON body for a wrapper method. */
+function wrapperBodyStructName(wrapper: ResolvedWrapper): string {
+  return `${unexportedName(goMethodName(wrapper.name))}Body`;
+}
+
+/**
+ * Emit the private body struct used to serialize the JSON request for a
+ * wrapper method. Fields come from: constant defaults, required exposed
+ * params, client-inferred fields, and optional exposed params (in that
+ * order to match how bodies are constructed at call sites).
+ */
+function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrapperParams: ResolvedWrapperParam[]): void {
+  const structName = wrapperBodyStructName(wrapper);
+  lines.push(`// ${structName} is the JSON request body for ${goMethodName(wrapper.name)}.`);
+  lines.push(`type ${structName} struct {`);
+
+  // Constant defaults (always sent — no omitempty so the wire format is deterministic)
+  for (const [key, value] of Object.entries(wrapper.defaults)) {
+    const goField = goFieldName(key);
+    const goType = typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'int' : 'string';
+    lines.push(`\t${goField} ${goType} \`json:"${key}"\``);
+  }
+
+  // Required exposed params
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    if (isOptional) continue;
+    const goField = goFieldName(paramName);
+    const goType = field ? resolveSimpleGoType(field.type) : 'string';
+    lines.push(`\t${goField} ${goType} \`json:"${paramName}"\``);
+  }
+
+  // Inferred fields (from client config) — omit when empty
+  for (const inferred of wrapper.inferFromClient) {
+    const goField = goFieldName(inferred);
+    lines.push(`\t${goField} string \`json:"${inferred},omitempty"\``);
+  }
+
+  // Optional exposed params
+  for (const { paramName, field, isOptional } of wrapperParams) {
+    if (!isOptional) continue;
+    const goField = goFieldName(paramName);
+    const baseType = field ? resolveSimpleGoType(field.type) : 'string';
+    const optType = baseType.startsWith('*') || baseType.startsWith('[]') ? baseType : `*${baseType}`;
+    lines.push(`\t${goField} ${optType} \`json:"${paramName},omitempty"\``);
+  }
+
+  lines.push('}');
 }
 
 function emitWrapperParamsStruct(
@@ -104,38 +155,37 @@ function emitWrapperMethod(
     lines.push(`func (s *${serviceType}) ${method}(${sigParams.join(', ')}) error {`);
   }
 
-  // Build body map with defaults + exposed params
-  lines.push('\tbody := map[string]interface{}{');
+  // Build typed body struct — defaults + required params set at literal,
+  // inferred + optional fields assigned after (conditional on presence).
+  const bodyType = wrapperBodyStructName(wrapper);
+  lines.push(`\tbody := ${bodyType}{`);
 
   // Constant defaults (e.g., grant_type)
   for (const [key, value] of Object.entries(wrapper.defaults)) {
-    lines.push(`\t\t"${key}": ${goLiteral(value)},`);
+    lines.push(`\t\t${goFieldName(key)}: ${goLiteral(value)},`);
   }
 
   // Required exposed params
   for (const { paramName, isOptional } of wrapperParams) {
     if (isOptional) continue;
     const goField = goFieldName(paramName);
-    lines.push(`\t\t"${paramName}": params.${goField},`);
+    lines.push(`\t\t${goField}: params.${goField},`);
   }
 
   lines.push('\t}');
 
-  // Inferred fields from client config
-  for (const field of wrapper.inferFromClient) {
-    const expr = clientFieldExpression(field);
-    lines.push(`\tif ${expr} != "" {`);
-    lines.push(`\t\tbody["${field}"] = ${expr}`);
-    lines.push('\t}');
+  // Inferred fields from client config — omitempty handles the unset case
+  for (const inferred of wrapper.inferFromClient) {
+    const goField = goFieldName(inferred);
+    lines.push(`\tbody.${goField} = ${clientFieldExpression(inferred)}`);
   }
 
-  // Optional exposed params
+  // Optional exposed params copy through as pointers — encoding/json +
+  // omitempty will drop nil fields on the wire.
   for (const { paramName, isOptional } of wrapperParams) {
     if (!isOptional) continue;
     const goField = goFieldName(paramName);
-    lines.push(`\tif params.${goField} != nil {`);
-    lines.push(`\t\tbody["${paramName}"] = *params.${goField}`);
-    lines.push('\t}');
+    lines.push(`\tbody.${goField} = params.${goField}`);
   }
 
   // Build path expression
@@ -207,7 +257,12 @@ function resolveSimpleGoType(ref: any): string {
         return 'interface{}';
     }
   }
-  if (ref.kind === 'nullable') return `*${resolveSimpleGoType(ref.inner)}`;
+  if (ref.kind === 'nullable') {
+    const inner = resolveSimpleGoType(ref.inner);
+    // Slices, maps, and pointer types don't get pointer-wrapped (mirrors type-map.ts).
+    if (inner.startsWith('*') || inner.startsWith('[]') || inner.startsWith('map[')) return inner;
+    return `*${inner}`;
+  }
   if (ref.kind === 'array') return `[]${resolveSimpleGoType(ref.items)}`;
   if (ref.kind === 'model') return `*${goClassName(ref.name)}`;
   if (ref.kind === 'enum') return goClassName(ref.name);

@@ -152,6 +152,7 @@ function generateServiceTest(
 
   // Deduplicate test functions by method name
   const emittedTestMethods = new Set<string>();
+  const resolvedLookupMain = buildResolvedLookup(ctx);
   for (const op of service.operations) {
     const plan = planOperation(op);
     const method = resolveGoMethodName(op, resolvedName, ctx);
@@ -162,7 +163,38 @@ function generateServiceTest(
     if (emittedTestMethods.has(method)) continue;
     emittedTestMethods.add(method);
 
+    // Skip operations with wrapper splits — the parent method isn't emitted
+    // (see src/go/resources.ts), only the typed wrappers are tested below.
+    const resolvedMain = lookupResolved(op, resolvedLookupMain);
+    if ((resolvedMain?.wrappers?.length ?? 0) > 0) continue;
+
     const testName = `Test${accessorName}_${method}`;
+    const isUrlBuilder = resolvedMain?.urlBuilder ?? false;
+
+    if (isUrlBuilder) {
+      // URL-builder methods return a string synchronously without making
+      // an HTTP request. Assert the URL contains the expected path.
+      const expectedPath = buildExpectedPath(op);
+      // Call args: no ctx, path params (if any), then params struct.
+      const callArgs: string[] = [];
+      for (const p of sortPathParamsByTemplateOrder(op)) {
+        callArgs.push(`"test_${p.name}"`);
+      }
+      const hidden = buildHiddenParams(resolvedMain);
+      const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+      if (hasVisibleQueryParams) {
+        const pName = paramsStructName(resolvedName, method);
+        callArgs.push(`&${ctx.namespace}.${pName}{}`);
+      }
+      lines.push(`func ${testName}(t *testing.T) {`);
+      lines.push(`\tclient := ${ctx.namespace}.NewClient("sk_test", ${ctx.namespace}.WithClientID("client_test"))`);
+      lines.push(`\turl := client.${accessorName}().${method}(${callArgs.join(', ')})`);
+      lines.push('\trequire.NotEmpty(t, url)');
+      lines.push(`\trequire.Contains(t, url, "${expectedPath}")`);
+      lines.push('}');
+      lines.push('');
+      continue;
+    }
 
     if (isPaginated && op.pagination) {
       // Pagination test
@@ -398,8 +430,12 @@ function generateServiceTest(
     }
   }
 
-  // Error test (one per file: 401)
-  const sampleOp = service.operations[0];
+  // Error test (one per file: 401). Skip wrapper-split ops (parent method
+  // isn't emitted) and URL-builder ops (no HTTP call to error-test against).
+  const sampleOp = service.operations.find((o) => {
+    const r = lookupResolved(o, resolvedLookupMain);
+    return (r?.wrappers?.length ?? 0) === 0 && !(r?.urlBuilder ?? false);
+  });
   if (sampleOp) {
     const plan = planOperation(sampleOp);
     const method = resolveGoMethodName(sampleOp, resolvedName, ctx);

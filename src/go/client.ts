@@ -2,7 +2,7 @@ import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oa
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 // naming utilities used indirectly via resolveResourceClassName
 import { resolveResourceClassName } from './resources.js';
-import { unexportedName } from './naming.js';
+import { className, unexportedName } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
@@ -14,6 +14,17 @@ import { getMountTarget } from '../shared/resolved-ops.js';
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   return [generateWorkOSFile(spec, ctx)];
 }
+
+/**
+ * Hand-written services that aren't in the OpenAPI spec but should be
+ * registered on Client like spec-derived services. The corresponding
+ * `<file>.go` must define the type and methods (under @oagen-ignore-file)
+ * but must NOT define its own `(c *Client) Accessor()` — that's emitted here.
+ */
+const STATIC_SERVICES: Array<{ accessor: string; field: string; type: string }> = [
+  { accessor: 'Passwordless', field: 'passwordless', type: 'PasswordlessService' },
+  { accessor: 'Vault', field: 'vault', type: 'VaultService' },
+];
 
 /**
  * Deduplicate services by mount target.
@@ -80,6 +91,10 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\t${fieldNameStr} *${serviceTypeName}`);
   }
+  // Static (hand-written) service fields
+  for (const s of STATIC_SERVICES) {
+    lines.push(`\t${s.field} *${s.type}`);
+  }
   lines.push('}');
   lines.push('');
 
@@ -102,6 +117,10 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\tc.${fieldNameStr} = &${serviceTypeName}{client: c}`);
   }
+  // Initialize static (hand-written) services
+  for (const s of STATIC_SERVICES) {
+    lines.push(`\tc.${s.field} = &${s.type}{client: c}`);
+  }
   lines.push('\treturn c');
   lines.push('}');
   lines.push('');
@@ -115,6 +134,14 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push(`// ${accessorName} returns the ${resolvedName} service.`);
     lines.push(`func (c *Client) ${accessorName}() *${serviceTypeName} {`);
     lines.push(`\treturn c.${fieldNameStr}`);
+    lines.push('}');
+    lines.push('');
+  }
+  // Static (hand-written) service accessors
+  for (const s of STATIC_SERVICES) {
+    lines.push(`// ${s.accessor} returns the ${s.accessor} service.`);
+    lines.push(`func (c *Client) ${s.accessor}() *${s.type} {`);
+    lines.push(`\treturn c.${s.field}`);
     lines.push('}');
     lines.push('');
   }
@@ -137,5 +164,5 @@ function singularizePascal(name: string): string {
 }
 
 function serviceType(name: string): string {
-  return `${unexportedName(singularizePascal(name))}Service`;
+  return `${className(singularizePascal(name))}Service`;
 }

@@ -55,9 +55,9 @@ describe('go/client', () => {
     const content = workosFile.content;
 
     expect(content).toContain('package workos');
-    expect(content).toContain('organizations *organizationService');
+    expect(content).toContain('organizations *OrganizationService');
     expect(content).toContain('func NewClient(apiKey string, opts ...ClientOption) *Client {');
-    expect(content).toContain('func (c *Client) Organizations() *organizationService {');
+    expect(content).toContain('func (c *Client) Organizations() *OrganizationService {');
   });
 
   it('does not emit static options or HTTP infrastructure', () => {
@@ -84,9 +84,9 @@ describe('go/client', () => {
     const workosFile = files.find((f) => f.path === 'workos.go')!;
     const content = workosFile.content;
 
-    expect(content).toContain('apiKeys *apiKeyService');
-    expect(content).toContain('sso *ssoService');
-    expect(content).toContain('func (c *Client) APIKeys() *apiKeyService {');
-    expect(content).toContain('func (c *Client) SSO() *ssoService {');
+    expect(content).toContain('apiKeys *APIKeyService');
+    expect(content).toContain('sso *SSOService');
+    expect(content).toContain('func (c *Client) APIKeys() *APIKeyService {');
+    expect(content).toContain('func (c *Client) SSO() *SSOService {');
   });
 });

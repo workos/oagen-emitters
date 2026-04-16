@@ -114,12 +114,12 @@ describe('go/resources', () => {
     expect(files.length).toBeGreaterThanOrEqual(1);
     const content = files[0].content;
     expect(content).toContain('package workos');
-    expect(content).toContain('type organizationService struct {');
+    expect(content).toContain('type OrganizationService struct {');
     expect(content).toContain('Limit *int `url:"limit,omitempty" json:"-"`');
-    expect(content).toContain('func (s *organizationService) List(');
-    expect(content).toContain('func (s *organizationService) Get(');
-    expect(content).toContain('func (s *organizationService) Create(');
-    expect(content).toContain('func (s *organizationService) Delete(');
+    expect(content).toContain('func (s *OrganizationService) List(');
+    expect(content).toContain('func (s *OrganizationService) Get(');
+    expect(content).toContain('func (s *OrganizationService) Create(');
+    expect(content).toContain('func (s *OrganizationService) Delete(');
   });
 
   it('generates path interpolation with fmt.Sprintf', () => {
@@ -404,5 +404,154 @@ describe('go/resources', () => {
     expect(content).toContain('type ConnectCreateApplicationsParams struct {');
     expect(content).toContain('Body interface{} `json:"-"`');
     expect(content).toContain('request(ctx, "POST", "/connect/applications", nil, params.Body, &result, opts)');
+  });
+
+  describe('mutually-exclusive parameter groups', () => {
+    const groupedOp = makeOp({
+      name: 'listResources',
+      httpMethod: 'get',
+      path: '/authorization/organization_memberships/{organization_membership_id}/resources',
+      pathParams: [{ name: 'organization_membership_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      queryParams: [
+        { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+        { name: 'order', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'permission_slug', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'parent_resource_id', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'parent_resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'parent_resource_external_id', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+      parameterGroups: [
+        {
+          name: 'parent_resource',
+          optional: false,
+          variants: [
+            {
+              name: 'by_id',
+              parameters: [
+                { name: 'parent_resource_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+            },
+            {
+              name: 'by_external_id',
+              parameters: [
+                { name: 'parent_resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'parent_resource_external_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+            },
+          ],
+        },
+      ],
+      pagination: {
+        strategy: 'cursor' as const,
+        param: 'after',
+        dataPath: 'data',
+        itemType: { kind: 'model' as const, name: 'AuthorizationResource' },
+      },
+    });
+
+    function makeGroupedServices(): Service[] {
+      return [{ name: 'Authorization', operations: [groupedOp] }];
+    }
+
+    it('generates a sealed interface for the parameter group', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      // Interface declaration with unexported marker + applyToQuery
+      expect(content).toContain('type AuthorizationParentResource interface {');
+      expect(content).toContain('isAuthorizationParentResource()');
+      expect(content).toContain('applyToQuery(url.Values)');
+    });
+
+    it('generates variant structs with shortened field names', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      // ByID variant
+      expect(content).toContain('type AuthorizationParentResourceByID struct {');
+      expect(content).toContain('\tID string');
+
+      // ByExternalID variant
+      expect(content).toContain('type AuthorizationParentResourceByExternalID struct {');
+      expect(content).toContain('\tTypeSlug string');
+      expect(content).toContain('\tExternalID string');
+    });
+
+    it('generates marker methods on each variant', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      expect(content).toContain('func (p AuthorizationParentResourceByID) isAuthorizationParentResource()');
+      expect(content).toContain('func (p AuthorizationParentResourceByExternalID) isAuthorizationParentResource()');
+    });
+
+    it('generates applyToQuery methods using original wire names', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      // ByID variant sets parent_resource_id
+      expect(content).toContain('func (p AuthorizationParentResourceByID) applyToQuery(v url.Values)');
+      expect(content).toContain('v.Set("parent_resource_id", p.ID)');
+
+      // ByExternalID variant sets both wire-name params
+      expect(content).toContain('func (p AuthorizationParentResourceByExternalID) applyToQuery(v url.Values)');
+      expect(content).toContain('v.Set("parent_resource_type_slug", p.TypeSlug)');
+      expect(content).toContain('v.Set("parent_resource_external_id", p.ExternalID)');
+    });
+
+    it('params struct uses group interface instead of flat pointers', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      // Should have the group field
+      expect(content).toContain('ParentResource AuthorizationParentResource `url:"-" json:"-"`');
+
+      // Should NOT have the flat pointer fields
+      expect(content).not.toMatch(/ParentResourceID\s+\*string/);
+      expect(content).not.toMatch(/ParentResourceTypeSlug\s+\*string/);
+      expect(content).not.toMatch(/ParentResourceExternalID\s+\*string/);
+
+      // Should still have non-grouped params
+      expect(content).toContain('PermissionSlug string');
+      expect(content).toContain('PaginationParams');
+    });
+
+    it('method body builds url.Values and calls applyToQuery', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      // Should build url.Values manually
+      expect(content).toContain('query := url.Values{}');
+      // Should encode the non-grouped required param
+      expect(content).toContain('query.Set("permission_slug", params.PermissionSlug)');
+      // Should call applyToQuery on the group
+      expect(content).toContain('params.ParentResource.applyToQuery(query)');
+      // Should pass query to the iterator (not params)
+      expect(content).toContain('newIterator[AuthorizationResource](ctx, s.client, "GET"');
+      expect(content).toContain(', query, "after", "data", opts)');
+    });
+
+    it('imports net/url when parameter groups are present', () => {
+      const services = makeGroupedServices();
+      const spec = makeSpec(services);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      expect(content).toContain('"net/url"');
+    });
   });
 });
