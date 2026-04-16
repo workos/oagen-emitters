@@ -16,15 +16,11 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 }
 
 /**
- * Hand-written services that aren't in the OpenAPI spec but should be
- * registered on Client like spec-derived services. The corresponding
- * `<file>.go` must define the type and methods (under @oagen-ignore-file)
- * but must NOT define its own `(c *Client) Accessor()` — that's emitted here.
+ * Non-spec services (passwordless, vault, etc.) are fully self-contained in
+ * hand-written @oagen-ignore-file files that define their own types and
+ * Client accessor methods. The generated client does not need to reference
+ * them — no fields, no constructors, no accessors.
  */
-const STATIC_SERVICES: Array<{ accessor: string; field: string; type: string }> = [
-  { accessor: 'Passwordless', field: 'passwordless', type: 'PasswordlessService' },
-  { accessor: 'Vault', field: 'vault', type: 'VaultService' },
-];
 
 /**
  * Deduplicate services by mount target.
@@ -91,10 +87,6 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\t${fieldNameStr} *${serviceTypeName}`);
   }
-  // Static (hand-written) service fields
-  for (const s of STATIC_SERVICES) {
-    lines.push(`\t${s.field} *${s.type}`);
-  }
   lines.push('}');
   lines.push('');
 
@@ -117,10 +109,6 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\tc.${fieldNameStr} = &${serviceTypeName}{client: c}`);
   }
-  // Initialize static (hand-written) services
-  for (const s of STATIC_SERVICES) {
-    lines.push(`\tc.${s.field} = &${s.type}{client: c}`);
-  }
   lines.push('\treturn c');
   lines.push('}');
   lines.push('');
@@ -137,15 +125,6 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push('}');
     lines.push('');
   }
-  // Static (hand-written) service accessors
-  for (const s of STATIC_SERVICES) {
-    lines.push(`// ${s.accessor} returns the ${s.accessor} service.`);
-    lines.push(`func (c *Client) ${s.accessor}() *${s.type} {`);
-    lines.push(`\treturn c.${s.field}`);
-    lines.push('}');
-    lines.push('');
-  }
-
   return {
     path: `${ctx.namespace}.go`,
     content: lines.join('\n'),

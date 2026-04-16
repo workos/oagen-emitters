@@ -15,7 +15,13 @@ import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import { assignEnumsToServices } from './enums.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
 
@@ -185,6 +191,20 @@ function generateServiceTest(
   lines.push(
     `from ${ctx.namespace}._errors import AuthenticationError, BadRequestError, NotFoundError, RateLimitExceededError, ServerError, UnprocessableEntityError`,
   );
+
+  // Import parameter group variant classes
+  const groupVariantImports = new Set<string>();
+  for (const op of service.operations) {
+    for (const group of op.parameterGroups ?? []) {
+      for (const variant of group.variants) {
+        groupVariantImports.add(className(`${group.name}_${variant.name}`));
+      }
+    }
+  }
+  if (groupVariantImports.size > 0) {
+    const mountDir = dirToModule(buildMountDirMap(ctx).get(service.name) ?? service.name);
+    lines.push(`from ${ctx.namespace}.${mountDir}._resource import ${[...groupVariantImports].join(', ')}`);
+  }
 
   lines.push('');
   lines.push('');
@@ -884,11 +904,22 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
     args.push(`${tokenParamName}="test_${tokenParamName}"`);
   }
 
+  // Parameter group args — emit first variant constructor
+  const groupedParamNames = collectGroupedParamNames(op);
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const variantClass = className(`${group.name}_${variant.name}`);
+    const variantArgs = variant.parameters.map((p) => `${fieldName(p.name)}="test_value"`).join(', ');
+    args.push(`${fieldName(group.name)}=${variantClass}(${variantArgs})`);
+  }
+
   // Required query params (for all methods, including paginated)
   if (plan.hasQueryParams) {
     for (const param of op.queryParams) {
       // Skip hidden/injected params
       if (hiddenParams?.has(param.name)) continue;
+      // Skip params that belong to parameter groups
+      if (groupedParamNames.has(param.name)) continue;
       // Skip pagination params (they're optional)
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
@@ -908,6 +939,7 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
 
 function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   const args: string[] = [];
+  const groupedParamNames = collectGroupedParamNames(op);
 
   for (const param of op.pathParams) {
     args.push(`"test_${param.name}"`);
@@ -927,6 +959,16 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
     args.push(firstModelVariant ? `body=load_fixture("${fileName(firstModelVariant.name)}.json")` : 'body={}');
   }
 
+  // Parameter group args — emit first variant constructor
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const variantClass = className(`${group.name}_${variant.name}`);
+    const variantArgs = variant.parameters
+      .map((p) => `${fieldName(p.name)}=${generateQueryEncodingValue(p.type, p.name)}`)
+      .join(', ');
+    args.push(`${fieldName(group.name)}=${variantClass}(${variantArgs})`);
+  }
+
   if (plan.isPaginated) {
     args.push('limit=10');
     args.push('before="cursor before"');
@@ -939,6 +981,7 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
@@ -980,6 +1023,17 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
   const assertions: string[] = [];
   const plan = planOperation(op);
   const pathParamNames = new Set(op.pathParams.map((param) => fieldName(param.name)));
+  const groupedParamNames = collectGroupedParamNames(op);
+
+  // Assert first variant's params from parameter groups
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    for (const param of variant.parameters) {
+      assertions.push(
+        `assert request.url.params["${param.name}"] == ${toPythonLiteral(expectedQueryEncodingValue(param.type, param.name))}`,
+      );
+    }
+  }
 
   if (plan.isPaginated) {
     assertions.push('assert request.url.params["limit"] == "10"');
@@ -995,6 +1049,7 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);

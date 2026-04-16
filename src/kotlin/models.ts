@@ -86,12 +86,10 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
 
     const canonical = aliasOf.get(model.name);
     if (canonical) {
-      const aliasContent = [
-        `package ${MODELS_PACKAGE}`,
-        '',
-        `typealias ${typeName} = ${className(canonical)}`,
-        '',
-      ].join('\n');
+      const canonicalType = className(canonical);
+      // Skip when different IR names collapse to the same output name
+      if (typeName === canonicalType) continue;
+      const aliasContent = [`package ${MODELS_PACKAGE}`, '', `typealias ${typeName} = ${canonicalType}`, ''].join('\n');
       files.push({
         path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${typeName}.kt`,
         content: aliasContent,

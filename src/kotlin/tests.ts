@@ -12,7 +12,13 @@ import type {
 import { planOperation } from '@workos/oagen';
 import { apiClassName, packageSegment, resolveMethodName, ktStringLiteral, className, propertyName } from './naming.js';
 import { mapTypeRef } from './type-map.js';
-import { groupByMount, lookupResolved, buildResolvedLookup, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  lookupResolved,
+  buildResolvedLookup,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
@@ -229,7 +235,9 @@ function buildOperationTest(
 
   for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
 
-  const queryFields = op.queryParams.filter((p) => !hidden.has(p.name));
+  const groupedParamNames = collectGroupedParamNames(op);
+
+  const queryFields = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const qp of sortedQuery) {
     if (!qp.required) break;
@@ -240,6 +248,16 @@ function buildOperationTest(
     // value so we can assert equality; otherwise just assert presence.
     const regex = queryValueRegexFor(qp.type);
     if (regex !== null) requiredQueryAssertions.push({ name: qp.name, valueRegex: regex });
+  }
+
+  // Parameter group args — emit as named args (they appear after optionals in the signature)
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const sealedName = className(group.name);
+    const variantName = className(variant.name);
+    const variantArgs = variant.parameters.map((_p) => ktStringLiteral('sample-arg')).join(', ');
+    imports.add(`com.workos.authorization.${sealedName}`);
+    argParts.push(`${propertyName(group.name)} = ${sealedName}.${variantName}(${variantArgs})`);
   }
 
   const bodyModel = resolveBodyModel(op, ctx);
@@ -874,9 +892,13 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   // models, arrays, maps, and literals — much broader than the old
   // primitives-only filter.
   const targets: { model: Model; json: string }[] = [];
+  const seenModelClassNames = new Set<string>();
   for (const m of spec.models) {
     if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
     if (m.fields.length === 0) continue;
+    const cls = className(m.name);
+    if (seenModelClassNames.has(cls)) continue;
+    seenModelClassNames.add(cls);
     // Only include models where ALL fields are required AND all types are
     // round-trip safe (primitives, nullable, literals, simple arrays/maps).
     // Nested model/enum references break round-trip because Jackson

@@ -13,30 +13,6 @@ export { isListMetadataModel, isListWrapperModel };
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  // Build structural hash for deduplication
-  const modelHashMap = new Map<string, string>();
-  const hashGroups = new Map<string, string[]>();
-  for (const model of models) {
-    if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
-    const hash = structuralHash(model);
-    modelHashMap.set(model.name, hash);
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(model.name);
-  }
-
-  // Pick canonical for each duplicate group (shortest class name wins)
-  const aliasOf = new Map<string, string>();
-  for (const [hash, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    if (hash === '') continue;
-    const sorted = [...names].sort((a, b) => className(a).length - className(b).length);
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
-
   const files: GeneratedFile[] = [];
 
   // Emit shared JsonSerializableTrait once
@@ -59,8 +35,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
-    if (aliasOf.has(model.name)) continue; // skip structural duplicates
-
     const name = className(model.name);
     const lines: string[] = [];
 
@@ -300,11 +274,4 @@ function needsVarAnnotation(ref: TypeRef): boolean {
     default:
       return false;
   }
-}
-
-function structuralHash(model: Model): string {
-  return model.fields
-    .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
-    .sort()
-    .join('|');
 }

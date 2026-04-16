@@ -65,6 +65,8 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     const canonicalName = aliasOf.get(enumDef.name);
     if (canonicalName) {
       const canonicalType = className(canonicalName);
+      // Skip when different IR names collapse to the same output name
+      if (typeName === canonicalType) continue;
       const aliasLine = `typealias ${typeName} = ${canonicalType}`;
       // ktlint enforces a 140-char max line length. When the typealias
       // exceeds that, add a @file:Suppress to avoid an unfixable violation.

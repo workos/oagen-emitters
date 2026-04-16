@@ -713,13 +713,22 @@ function generateSealedClasses(op: Operation): string[] {
   for (const group of op.parameterGroups ?? []) {
     const sealedName = className(group.name);
     lines.push(`sealed class ${sealedName} {`);
-    for (const variant of group.variants) {
+    for (let vi = 0; vi < group.variants.length; vi++) {
+      const variant = group.variants[vi];
       const variantName = className(variant.name);
       const fields = variant.parameters.map((p) => {
         const prop = deriveShortPropertyName(p.name, group.name);
         return `val ${prop}: ${mapTypeRef(p.type)}`;
       });
-      lines.push(`  data class ${variantName}(${fields.join(', ')}) : ${sealedName}()`);
+      // ktlint requires blank line before each declaration inside a sealed class
+      if (vi > 0) lines.push('');
+      // ktlint class-signature rule requires multi-line constructors
+      lines.push(`  data class ${variantName}(`);
+      for (let i = 0; i < fields.length; i++) {
+        const comma = i < fields.length - 1 ? ',' : '';
+        lines.push(`    ${fields[i]}${comma}`);
+      }
+      lines.push(`  ) : ${sealedName}()`);
     }
     lines.push('}');
     lines.push('');

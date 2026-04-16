@@ -12,7 +12,13 @@ import { resolveModelName } from './type-map.js';
 import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 
 /**
  * Generate C# test files and JSON fixtures.
@@ -503,7 +509,10 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   const resolvedLookup = buildResolvedLookup(ctx);
   const resolvedOp = lookupResolved(op, resolvedLookup);
   const hidden = buildHiddenParams(resolvedOp);
-  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const groupedParams = collectGroupedParamNames(op);
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0 ||
+    (op.parameterGroups?.length ?? 0) > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
   if (hasBody && op.requestBody?.kind === 'model') {
@@ -567,8 +576,10 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   // call sends it via the body — so skip the query assertion to avoid a
   // false-failing `AssertQueryParam`.
   const bodyWireNames = new Set(bodySeeds.map((s) => s.wire));
+  const groupedParamNames = collectGroupedParamNames(op);
   for (const param of op.queryParams) {
     if (hidden.has(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     if (!param.required) continue;
     if (!isSeedableStringRef(param.type)) continue;
     // Skip pagination fields — they're set by the caller or the autopaging loop

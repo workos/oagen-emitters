@@ -17,6 +17,7 @@ import {
   buildHiddenParams,
   getOpDefaults,
   getOpInferFromClient,
+  collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isRedirectEndpoint } from './resources.js';
@@ -347,9 +348,21 @@ function buildTestArgs(
     }
   }
 
-  // Query params
+  // Parameter group args (union-typed) — emit first variant constructor
+  const groupedParamNames = collectGroupedParamNames(op);
+  for (const group of op.parameterGroups ?? []) {
+    if (!group.optional || includeOptional) {
+      const variant = group.variants[0];
+      const variantClass = `${className(group.name)}${className(variant.name)}`;
+      const variantArgs = variant.parameters.map((_p) => `'test_value'`).join(', ');
+      args.push(`new \\${ctx.namespacePascal}\\Service\\${variantClass}(${variantArgs})`);
+    }
+  }
+
+  // Query params (skip grouped params — they're handled above)
   for (const q of op.queryParams) {
     if (hidden.has(q.name)) continue;
+    if (groupedParamNames.has(q.name)) continue;
     if (!q.required && !includeOptional) continue;
     const phpName = toCamelCase(q.name);
     if (usedNames.has(phpName)) continue;
@@ -493,9 +506,18 @@ function emitFieldHydrationAssertions(
  */
 function emitQueryAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
   if (op.queryParams.length === 0) return;
+  const groupedParams = collectGroupedParamNames(op);
   lines.push('        parse_str($request->getUri()->getQuery(), $query);');
+  // Assert first variant's params from parameter groups
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    for (const param of variant.parameters) {
+      lines.push(`        $this->assertSame('test_value', $query['${param.name}']);`);
+    }
+  }
   for (const q of op.queryParams) {
     if (hidden?.has(q.name)) continue;
+    if (groupedParams.has(q.name)) continue;
     const innerType =
       q.type.kind === 'nullable' ? (q.type as { inner: { kind: string; type?: string; name?: string } }).inner : q.type;
     if (innerType.kind === 'enum' && innerType.name) {
