@@ -2,10 +2,41 @@ import type { Operation, EmitterContext, Service, ResolvedOperation } from '@wor
 import { toPascalCase } from '@workos/oagen';
 
 /**
+ * Fail fast when two distinct paths in the same mount resolve to the same SDK
+ * method name. Emitters can sometimes paper over this with per-language
+ * deduplication, but manifests and cross-language parity become inconsistent.
+ */
+export function assertUniqueResolvedMethods(ctx: EmitterContext): void {
+  const seen = new Map<string, { path: string; httpMethod: string }>();
+
+  for (const resolved of ctx.resolvedOperations ?? []) {
+    const key = `${resolved.mountOn}.${resolved.methodName}`;
+    const current = {
+      path: resolved.operation.path,
+      httpMethod: resolved.operation.httpMethod.toUpperCase(),
+    };
+    const existing = seen.get(key);
+
+    if (existing && existing.path !== current.path) {
+      throw new Error(
+        `Resolved operation name collision for ${key}: ` +
+          `${existing.httpMethod} ${existing.path} conflicts with ${current.httpMethod} ${current.path}`,
+      );
+    }
+
+    if (!existing) {
+      seen.set(key, current);
+    }
+  }
+}
+
+/**
  * Build a lookup map from "METHOD /path" to ResolvedOperation.
  * Used by emitters to find the resolved method name for any IR operation.
  */
 export function buildResolvedLookup(ctx: EmitterContext): Map<string, ResolvedOperation> {
+  assertUniqueResolvedMethods(ctx);
+
   const map = new Map<string, ResolvedOperation>();
   for (const r of ctx.resolvedOperations ?? []) {
     const key = `${r.operation.httpMethod.toUpperCase()} ${r.operation.path}`;
@@ -106,4 +137,25 @@ export function buildHiddenParams(resolvedOp?: ResolvedOperation): Set<string> {
 /** Check whether a resolved operation has any hidden params. */
 export function hasHiddenParams(resolvedOp?: ResolvedOperation): boolean {
   return Object.keys(getOpDefaults(resolvedOp)).length > 0 || getOpInferFromClient(resolvedOp).length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Parameter group helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all parameter names that belong to any mutually-exclusive parameter group.
+ * These params are serialized via group-level dispatch (e.g. applyToQuery, isinstance,
+ * sealed-class when, etc.) instead of individual struct/class fields.
+ */
+export function collectGroupedParamNames(op: Operation): Set<string> {
+  const names = new Set<string>();
+  for (const group of op.parameterGroups ?? []) {
+    for (const variant of group.variants) {
+      for (const param of variant.parameters) {
+        names.add(param.name);
+      }
+    }
+  }
+  return names;
 }
