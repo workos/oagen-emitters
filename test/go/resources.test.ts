@@ -139,7 +139,7 @@ describe('go/resources', () => {
     const spec = makeSpec(services);
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
-    expect(content).toContain('fmt.Sprintf("/users/%s", id)');
+    expect(content).toContain('fmt.Sprintf("/users/%s", url.PathEscape(string(id)))');
   });
 
   it('generates paginated methods returning Iterator', () => {

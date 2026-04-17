@@ -346,8 +346,8 @@ describe('ruby/resources', () => {
     expect(content).toContain('slug:');
     expect(content).toContain('body_slug:');
 
-    // Path interpolation uses slug (the path param)
-    expect(content).toContain('#{slug}');
+    // Path interpolation uses slug (the path param) with CGI.escape
+    expect(content).toContain('CGI.escape(slug.to_s)');
 
     // Body hash uses body_slug for the wire name "slug"
     expect(content).toContain("'slug' => body_slug");
