@@ -79,6 +79,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   // Determine which imports are needed
   const needsFmt = operations.some((op) => op.pathParams.length > 0);
   const needsNetUrl = operations.some((op) => {
+    if (op.pathParams.length > 0) return true;
     const resolved = lookupResolved(op, resolvedLookup);
     if (resolved?.urlBuilder) return true;
     if (resolved && hasHiddenParams(resolved) && op.httpMethod.toLowerCase() === 'get') return true;
@@ -1116,7 +1117,7 @@ function buildPathExpr(op: Operation): string {
   const args: string[] = [];
   for (const p of sortPathParamsByTemplateOrder(op)) {
     fmtStr = fmtStr.replace(`{${p.name}}`, '%s');
-    args.push(lowerFirst(fieldName(p.name)));
+    args.push(`url.PathEscape(string(${lowerFirst(fieldName(p.name))}))`);
   }
   return `fmt.Sprintf("${fmtStr}", ${args.join(', ')})`;
 }

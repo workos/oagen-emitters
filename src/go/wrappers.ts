@@ -195,7 +195,7 @@ function emitWrapperMethod(
     const fmtArgs: string[] = [];
     for (const p of sortPathParamsByTemplateOrder(op)) {
       fmtStr = fmtStr.replace(`{${p.name}}`, '%s');
-      fmtArgs.push(lowerFirstSafe(goFieldName(p.name)));
+      fmtArgs.push(`url.PathEscape(string(${lowerFirstSafe(goFieldName(p.name))}))`);
     }
     pathExpr = `fmt.Sprintf("${fmtStr}", ${fmtArgs.join(', ')})`;
   } else {
