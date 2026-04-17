@@ -190,7 +190,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_code',
-        targetVariant: 'CodeSessionAuthenticateRequest',
+        targetVariant: 'AuthorizationCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'authorization_code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'code_verifier', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
@@ -206,7 +206,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_magic_auth',
-        targetVariant: 'MagicAuthSessionAuthenticateRequest',
+        targetVariant: 'MagicAuthCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:magic-auth:code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'email', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
@@ -214,7 +214,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_email_verification',
-        targetVariant: 'EmailVerificationSessionAuthenticateRequest',
+        targetVariant: 'EmailVerificationCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:email-verification:code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
@@ -222,7 +222,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_totp',
-        targetVariant: 'TotpSessionAuthenticateRequest',
+        targetVariant: 'MFATotpSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:mfa-totp' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: [
