@@ -86,6 +86,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     return false;
   });
   const needsStrings = needsStringsImport(operations, resolvedLookup);
+  const needsJson = operations.some((op) => hasBodyGroups(op));
   // context is needed only for methods that make HTTP calls. URL-builder ops
   // don't take ctx, so a file that contains *only* URL builders would have
   // an unused import.
@@ -99,6 +100,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('import (');
   if (needsContext) {
     lines.push('\t"context"');
+  }
+  if (needsJson) {
+    lines.push('\t"encoding/json"');
   }
   if (needsFmt) {
     lines.push('\t"fmt"');
@@ -119,6 +123,15 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('}');
   lines.push('');
 
+  // Pre-collect all parameter groups across operations and emit deduplicated
+  // type definitions. A group with the same name may appear in both query-param
+  // and body-param contexts; the interface then carries both applyToQuery and
+  // applyToBody methods.
+  const groupTypes = collectFileGroups(mountName, operations);
+  if (groupTypes.length > 0) {
+    lines.push(emitCollectedGroupTypes(mountName, groupTypes));
+  }
+
   // Generate params structs and methods for each operation.
   // Deduplicate by method name -- multiple IR operations can resolve to the same
   // Go method name when mounted from different IR services.
@@ -137,11 +150,6 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     // the typed per-variant wrapper methods are emitted. The parent method
     // would otherwise carry `Body interface{}` and defeat type safety.
     if (!hasWrappers) {
-      // Emit parameter group sum types (interface + variant structs)
-      if ((op.parameterGroups?.length ?? 0) > 0) {
-        lines.push(generateParameterGroupTypes(mountName, op));
-      }
-
       const paramsStruct = generateParamsStruct(mountName, method, op, plan, ctx, resolvedOp);
       if (paramsStruct) {
         lines.push(paramsStruct);
@@ -195,14 +203,30 @@ function hiddenParamsBodyStructName(method: string): string {
 // Mutually-exclusive parameter group support
 // ---------------------------------------------------------------------------
 
+/** Check whether an operation has any body-level parameter groups. */
+function hasBodyGroups(op: Operation): boolean {
+  return (op.parameterGroups ?? []).some((g) => isBodyGroup(g, op));
+}
+
+/**
+ * Check whether a parameter group targets the request body (rather than query params).
+ * Body groups' parameter names don't appear in op.queryParams — they come from
+ * the body model's oneOf variants.
+ */
+function isBodyGroup(group: import('@workos/oagen').ParameterGroup, op: Operation): boolean {
+  const queryNames = new Set(op.queryParams.map((qp) => qp.name));
+  // If none of the group's variant params appear in queryParams, it's a body group
+  return group.variants.every((v) => v.parameters.every((p) => !queryNames.has(p.name)));
+}
+
 /** Interface type name for a parameter group (e.g. AuthorizationParentResource). */
 function groupInterfaceName(mountName: string, groupName: string): string {
   return `${className(mountName)}${fieldName(groupName)}`;
 }
 
-/** Variant struct type name (e.g. AuthorizationParentResourceByID). */
+/** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */
 function groupVariantTypeName(mountName: string, groupName: string, variantName: string): string {
-  return `${className(mountName)}${fieldName(groupName)}${fieldName(variantName)}`;
+  return `${groupInterfaceName(mountName, groupName)}${fieldName(variantName)}`;
 }
 
 /**
@@ -216,19 +240,55 @@ function deriveVariantFieldName(paramName: string, groupName: string): string {
   return fieldName(stripped);
 }
 
+/** Collected group metadata, merged across all operations in a file. */
+interface CollectedGroup {
+  name: string;
+  needsQuery: boolean;
+  needsBody: boolean;
+  /** Use the first variant set encountered (they should be identical). */
+  variants: import('@workos/oagen').ParameterGroupVariant[];
+}
+
 /**
- * Generate Go interface and variant struct definitions for all parameter groups
- * on an operation. Each group becomes a sealed interface (unexported marker
- * method) with concrete variant structs that implement applyToQuery.
+ * Pre-collect all parameter groups across operations in a mount group,
+ * deduplicating by group name and merging query/body usage flags.
  */
-function generateParameterGroupTypes(mountName: string, op: Operation): string {
+function collectFileGroups(mountName: string, operations: Operation[]): CollectedGroup[] {
+  const byName = new Map<string, CollectedGroup>();
+
+  for (const op of operations) {
+    for (const group of op.parameterGroups ?? []) {
+      const existing = byName.get(group.name);
+      const isBody = isBodyGroup(group, op);
+      if (existing) {
+        if (isBody) existing.needsBody = true;
+        else existing.needsQuery = true;
+      } else {
+        byName.set(group.name, {
+          name: group.name,
+          needsQuery: !isBody,
+          needsBody: isBody,
+          variants: group.variants,
+        });
+      }
+    }
+  }
+
+  return [...byName.values()];
+}
+
+/**
+ * Emit deduplicated Go interface and variant struct definitions for all
+ * collected parameter groups in a file. Groups used in query contexts get
+ * applyToQuery; body contexts get applyToBody; groups used in both get both.
+ */
+function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): string {
   const lines: string[] = [];
 
-  for (const group of op.parameterGroups ?? []) {
+  for (const group of groups) {
     const ifaceName = groupInterfaceName(mountName, group.name);
     const markerMethod = `is${ifaceName}`;
 
-    // Godoc for interface listing variant types
     const variantNames = group.variants.map((v) => groupVariantTypeName(mountName, group.name, v.name));
     lines.push(`// ${ifaceName} is one of:`);
     for (const vn of variantNames) {
@@ -236,11 +296,15 @@ function generateParameterGroupTypes(mountName: string, op: Operation): string {
     }
     lines.push(`type ${ifaceName} interface {`);
     lines.push(`\t${markerMethod}()`);
-    lines.push('\tapplyToQuery(url.Values)');
+    if (group.needsQuery) {
+      lines.push('\tapplyToQuery(url.Values)');
+    }
+    if (group.needsBody) {
+      lines.push('\tapplyToBody(map[string]any)');
+    }
     lines.push('}');
     lines.push('');
 
-    // Emit each variant: struct + marker method + applyToQuery
     for (const variant of group.variants) {
       const typeName = groupVariantTypeName(mountName, group.name, variant.name);
 
@@ -255,12 +319,24 @@ function generateParameterGroupTypes(mountName: string, op: Operation): string {
 
       lines.push(`func (p ${typeName}) ${markerMethod}() {}`);
 
-      lines.push(`func (p ${typeName}) applyToQuery(v url.Values) {`);
-      for (const param of variant.parameters) {
-        const goField = deriveVariantFieldName(param.name, group.name);
-        lines.push(`\tv.Set("${param.name}", ${formatQueryValue(`p.${goField}`, param.type)})`);
+      if (group.needsQuery) {
+        lines.push(`func (p ${typeName}) applyToQuery(v url.Values) {`);
+        for (const param of variant.parameters) {
+          const goField = deriveVariantFieldName(param.name, group.name);
+          lines.push(`\tv.Set("${param.name}", ${formatQueryValue(`p.${goField}`, param.type)})`);
+        }
+        lines.push('}');
       }
-      lines.push('}');
+
+      if (group.needsBody) {
+        lines.push(`func (p ${typeName}) applyToBody(m map[string]any) {`);
+        for (const param of variant.parameters) {
+          const goField = deriveVariantFieldName(param.name, group.name);
+          lines.push(`\tm["${param.name}"] = p.${goField}`);
+        }
+        lines.push('}');
+      }
+
       lines.push('');
     }
   }
@@ -284,12 +360,12 @@ function generateParamsStruct(
   const hasQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
 
-  // Check if body has any visible fields after filtering
+  // Check if body has any visible fields after filtering (excluding grouped fields)
   let hasVisibleBodyFields = false;
   if (hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
-      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name) && !groupedParams.has(f.name));
     }
   } else if (hasBody) {
     hasVisibleBodyFields = true; // non-model body always visible
@@ -312,6 +388,7 @@ function generateParamsStruct(
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
+        if (groupedParams.has(field.name)) continue;
         const goField = fieldName(field.name);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
@@ -396,6 +473,39 @@ function generateParamsStruct(
   }
 
   lines.push('}');
+
+  // Generate MarshalJSON for params structs that have body-level groups.
+  // The method uses a type alias to marshal non-group fields, then merges
+  // the active group variant's fields into the JSON map.
+  const bodyGroupList = (op.parameterGroups ?? []).filter((g) => isBodyGroup(g, op));
+  if (bodyGroupList.length > 0) {
+    lines.push('');
+    lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
+    lines.push(`func (p ${structName}) MarshalJSON() ([]byte, error) {`);
+    lines.push(`\ttype Alias ${structName}`);
+    lines.push('\tdata, err := json.Marshal(Alias(p))');
+    lines.push('\tif err != nil {');
+    lines.push('\t\treturn nil, err');
+    lines.push('\t}');
+    // Check if any group is non-nil; if not, return early
+    const allNilCheck = bodyGroupList.map((g) => `p.${fieldName(g.name)} == nil`).join(' && ');
+    lines.push(`\tif ${allNilCheck} {`);
+    lines.push('\t\treturn data, nil');
+    lines.push('\t}');
+    lines.push('\tvar m map[string]any');
+    lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
+    lines.push('\t\treturn nil, err');
+    lines.push('\t}');
+    for (const group of bodyGroupList) {
+      const goField = fieldName(group.name);
+      lines.push(`\tif p.${goField} != nil {`);
+      lines.push(`\t\tp.${goField}.applyToBody(m)`);
+      lines.push('\t}');
+    }
+    lines.push('\treturn json.Marshal(m)');
+    lines.push('}');
+  }
+
   return lines.join('\n');
 }
 
@@ -416,12 +526,13 @@ function generateMethod(
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
   const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
 
-  // Check if body has visible fields after filtering hidden params
+  // Check if body has visible fields after filtering hidden params and grouped params
+  const groupedParams = collectGroupedParamNames(op);
   let hasVisibleBodyFields = false;
   if (hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = _ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
-      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+      hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name) && !groupedParams.has(f.name));
     }
   } else if (hasBody) {
     hasVisibleBodyFields = true;
@@ -808,9 +919,11 @@ function emitHiddenParamsBodyStruct(
   }
 
   // Required exposed body fields
+  const groupedParamNames = collectGroupedParamNames(op);
   if (bodyModel) {
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
+      if (groupedParamNames.has(field.name)) continue;
       if (!field.required) continue;
       const goField = fieldName(field.name);
       const goType = mapTypeRef(field.type);
@@ -828,6 +941,7 @@ function emitHiddenParamsBodyStruct(
   if (bodyModel) {
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
+      if (groupedParamNames.has(field.name)) continue;
       if (field.required) continue;
       const goField = fieldName(field.name);
       const goType = makeOptional(mapTypeRef(field.type));
