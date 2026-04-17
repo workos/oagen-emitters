@@ -1,11 +1,13 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import {
-  className,
   fixtureFileName,
   fieldName as csFieldName,
   methodName as csMethodName,
+  appendAsyncSuffix,
+  modelClassName,
   resolveMethodName,
+  resolveMethodStem,
   serviceTypeName,
 } from './naming.js';
 import { resolveModelName } from './type-map.js';
@@ -268,8 +270,9 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     const plan = planOperation(op);
     if (!plan.isPaginated || !op.pagination) continue;
 
-    const method = resolveCsMethodName(op, resolvedName, ctx);
-    const autoPagingTestName = `Test${method}AutoPagingAsync`;
+    const methodStem = resolveCsMethodStem(op, resolvedName, ctx);
+    const autoPagingMethod = `${methodStem}AutoPagingAsync`;
+    const autoPagingTestName = `Test${autoPagingMethod}`;
     if (emittedTestMethods.has(autoPagingTestName)) continue;
     emittedTestMethods.add(autoPagingTestName);
 
@@ -289,7 +292,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
             if (inner) resolved = inner;
           }
         }
-        itemTypeName = className(resolveModelName(resolved.name));
+        itemTypeName = modelClassName(resolveModelName(resolved.name));
         fixtureName = fixtureFileName(resolveModelName(resolved.name));
       }
     }
@@ -317,7 +320,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     );
     lines.push('');
     lines.push(`            var items = new List<${itemTypeName}>();`);
-    lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+    lines.push(`            await foreach (var item in this.service.${autoPagingMethod}(${autoPagingArgs}))`);
     lines.push('            {');
     lines.push('                items.Add(item);');
     lines.push('            }');
@@ -326,7 +329,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push('        }');
 
     // Test with empty first page
-    const emptyTestName = `Test${method}AutoPagingAsyncEmpty`;
+    const emptyTestName = `Test${autoPagingMethod}Empty`;
     if (!emittedTestMethods.has(emptyTestName)) {
       emittedTestMethods.add(emptyTestName);
       lines.push('');
@@ -339,7 +342,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       );
       lines.push('');
       lines.push(`            var items = new List<${itemTypeName}>();`);
-      lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+      lines.push(`            await foreach (var item in this.service.${autoPagingMethod}(${autoPagingArgs}))`);
       lines.push('            {');
       lines.push('                items.Add(item);');
       lines.push('            }');
@@ -355,7 +358,8 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     if (!resolvedOp?.wrappers || resolvedOp.wrappers.length === 0) continue;
 
     for (const wrapper of resolvedOp.wrappers) {
-      const wrapperMethod = csMethodName(wrapper.name);
+      const wrapperMethodStem = csMethodName(wrapper.name);
+      const wrapperMethod = appendAsyncSuffix(wrapperMethodStem);
       const wrapperTestName = `Test${wrapperMethod}`;
       if (emittedTestMethods.has(wrapperTestName)) continue;
       emittedTestMethods.add(wrapperTestName);
@@ -386,7 +390,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       for (const p of sortPathParamsByTemplateOrder(op)) {
         wrapperArgs.push(`"test_${p.name}"`);
       }
-      wrapperArgs.push(`new ${wrapperMethod}Options()`);
+      wrapperArgs.push(`new ${wrapperMethodStem}Options()`);
 
       if (responseType) {
         lines.push(`            var result = await this.service.${wrapperMethod}(${wrapperArgs.join(', ')});`);
@@ -490,6 +494,10 @@ function resolveCsMethodName(op: Operation, mountName: string, ctx: EmitterConte
   return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
 }
 
+function resolveCsMethodStem(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodStem(op, { name: mountName, operations: [op] }, ctx);
+}
+
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
   const args: string[] = [];
 
@@ -523,8 +531,8 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   }
 
   if (hasVisibleBodyFields || hasVisibleQueryParams) {
-    const method = resolveCsMethodName(op, mountName, ctx);
-    const optName = optionsClassName(mountName, method);
+    const methodStem = resolveCsMethodStem(op, mountName, ctx);
+    const optName = optionsClassName(mountName, methodStem);
     args.push(`new ${optName}()`);
   }
 
@@ -597,8 +605,8 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
     return { setupLines: [], seededCallArgs: null, assertLines: [] };
   }
 
-  const method = resolveCsMethodName(op, mountName, ctx);
-  const optName = optionsClassName(mountName, method);
+  const methodStem = resolveCsMethodStem(op, mountName, ctx);
+  const optName = optionsClassName(mountName, methodStem);
 
   // Rebuild call args with a seeded options variable named `options`.
   const args: string[] = [];

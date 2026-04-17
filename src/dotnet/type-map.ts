@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, modelClassName } from './naming.js';
 
 /** Known C# value types that need `?` for nullable. */
 const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal', 'byte', 'short', 'DateTimeOffset']);
@@ -68,7 +68,7 @@ export function mapTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
-    model: (r) => className(modelAliases.get(r.name) ?? r.name),
+    model: (r) => modelClassName(modelAliases.get(r.name) ?? r.name),
     enum: (r) => {
       // Single-value enums (discriminator consts in disguise) map to `string`
       // so the caller can't misuse a public one-member enum type. The

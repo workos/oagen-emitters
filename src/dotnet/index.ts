@@ -241,8 +241,8 @@ function findDotnetWorkspace(targetDir: string): string | null {
   if (!fs.existsSync(targetDir)) return null;
   const entries = fs.readdirSync(targetDir);
   const sln = entries.find((e) => e.endsWith('.sln') || e.endsWith('.slnx'));
-  if (sln) return path.join(targetDir, sln);
+  if (sln) return path.resolve(targetDir, sln);
   const csproj = entries.find((e) => e.endsWith('.csproj'));
-  if (csproj) return path.join(targetDir, csproj);
+  if (csproj) return path.resolve(targetDir, csproj);
   return null;
 }

@@ -9,12 +9,12 @@ import {
 } from './type-map.js';
 import {
   articleFor,
-  className,
   fieldName,
   humanize,
   emitXmlDoc,
   deprecationMessage,
   escapeCsAttributeString,
+  modelClassName,
 } from './naming.js';
 
 // Import and re-export shared model detection utilities
@@ -47,7 +47,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
 
-    const csClassName = className(model.name);
+    const csClassName = modelClassName(model.name);
 
     // Skip alias models — all references are already rewritten to the
     // canonical type by mapTypeRef, so the alias class would be dead code.

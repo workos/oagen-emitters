@@ -205,9 +205,9 @@ describe('dotnet/resources', () => {
     const serviceFile = files.find((f) => f.path.includes('OrganizationsService.cs'))!;
     const content = serviceFile.content;
 
-    // List method (public method name omits Async suffix; return type is async Task)
+    // List method (return type is async Task)
     expect(content).toContain('async Task<WorkOSList<Organization>>');
-    expect(content).toContain('List(');
+    expect(content).toContain('ListAsync(');
 
     // Auto-pagination method
     expect(content).toContain('ListAutoPagingAsync');
@@ -350,22 +350,22 @@ describe('dotnet/resources', () => {
     expect(optionsFile).toBeDefined();
     const optContent = optionsFile.content;
 
-    // Abstract base class
-    expect(optContent).toContain('public abstract class ParentResource { }');
+    // Abstract base class (prefixed with service name)
+    expect(optContent).toContain('public abstract class FGAParentResource { }');
 
     // Concrete variant: ById
-    expect(optContent).toContain('public class ParentResourceById : ParentResource');
+    expect(optContent).toContain('public class FGAParentResourceById : FGAParentResource');
     expect(optContent).toContain('public string ParentResourceId { get; set; } = default!;');
 
     // Concrete variant: ByExternalId
-    expect(optContent).toContain('public class ParentResourceByExternalId : ParentResource');
+    expect(optContent).toContain('public class FGAParentResourceByExternalId : FGAParentResource');
     expect(optContent).toContain('public string ParentResourceTypeSlug { get; set; } = default!;');
     expect(optContent).toContain('public string ParentResourceExternalId { get; set; } = default!;');
 
     // Group property on options class with JsonIgnore
     expect(optContent).toContain('[JsonIgnore]');
     expect(optContent).toContain('[STJS.JsonIgnore]');
-    expect(optContent).toContain('public ParentResource ParentResource { get; set; } = default!;');
+    expect(optContent).toContain('public FGAParentResource ParentResource { get; set; } = default!;');
 
     // Grouped params should NOT appear as individual properties
     expect(optContent).not.toMatch(/\[JsonProperty\("parent_resource_id"\)\]/);

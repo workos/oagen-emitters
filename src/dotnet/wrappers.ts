@@ -1,6 +1,5 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import {
-  className as csClassName,
   fieldName as csFieldName,
   methodName as csMethodName,
   localName,
@@ -10,6 +9,8 @@ import {
   escapeXml,
   emitXmlDoc,
   humanize,
+  appendAsyncSuffix,
+  modelClassName,
 } from './naming.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
 import { resolveWrapperParams, formatWrapperDescription, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
@@ -44,9 +45,10 @@ function emitWrapperMethod(
   _ctx: EmitterContext,
 ): void {
   const op = resolvedOp.operation;
-  const method = csMethodName(wrapper.name);
-  const optionsClass = `${method}Options`;
-  const responseType = wrapper.responseModelName ? csClassName(wrapper.responseModelName) : null;
+  const methodStem = csMethodName(wrapper.name);
+  const method = appendAsyncSuffix(methodStem);
+  const optionsClass = `${methodStem}Options`;
+  const responseType = wrapper.responseModelName ? modelClassName(wrapper.responseModelName) : null;
 
   // XML doc
   lines.push(`        /// <summary>${formatWrapperDescription(wrapper.name)}.</summary>`);
@@ -63,12 +65,18 @@ function emitWrapperMethod(
 
   // Signature
   const sigParams: string[] = [];
+  const argNames: string[] = [];
   for (const p of sortPathParamsByTemplateOrder(op)) {
-    sigParams.push(`string ${localName(p.name)}`);
+    const name = localName(p.name);
+    sigParams.push(`string ${name}`);
+    argNames.push(name);
   }
   sigParams.push(`${optionsClass} options`);
+  argNames.push('options');
   sigParams.push('RequestOptions? requestOptions = null');
+  argNames.push('requestOptions');
   sigParams.push('CancellationToken cancellationToken = default');
+  argNames.push('cancellationToken');
 
   const returnType = responseType ? `Task<${responseType}>` : 'Task';
   lines.push(`        public async ${returnType} ${method}(${sigParams.join(', ')})`);
@@ -96,7 +104,7 @@ function emitWrapperMethod(
   if (op.pathParams.length > 0) {
     let interpolated = op.path;
     for (const p of sortPathParamsByTemplateOrder(op)) {
-      interpolated = interpolated.replace(`{${p.name}}`, `{${localName(p.name)}}`);
+      interpolated = interpolated.replace(`{${p.name}}`, `{Uri.EscapeDataString(${localName(p.name)})}`);
     }
     pathExpr = `$"${interpolated}"`;
   } else {
@@ -115,6 +123,13 @@ function emitWrapperMethod(
     lines.push(`            await this.${helper}<object>(${pathExpr}, options, requestOptions, cancellationToken);`);
   }
 
+  lines.push('        }');
+
+  lines.push('');
+  lines.push(`        /// <summary>Compatibility wrapper for <see cref="${method}"/>.</summary>`);
+  lines.push(`        public Task${responseType ? `<${responseType}>` : ''} ${methodStem}(${sigParams.join(', ')})`);
+  lines.push('        {');
+  lines.push(`            return this.${method}(${argNames.join(', ')});`);
   lines.push('        }');
 }
 

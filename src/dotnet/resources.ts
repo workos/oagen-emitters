@@ -10,11 +10,13 @@ import { planOperation } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
 import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes, resolveModelName } from './type-map.js';
 import {
+  appendAsyncSuffix,
   className,
   fieldName,
   methodName,
   resolveClassName,
   resolveMethodName,
+  resolveMethodStem,
   serviceTypeName,
   localName,
   csLiteral,
@@ -26,6 +28,7 @@ import {
   deprecationMessage,
   escapeCsAttributeString,
   humanize,
+  modelClassName,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -87,14 +90,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 // Mutually-exclusive parameter group support
 // ---------------------------------------------------------------------------
 
-/** Abstract base class name for a parameter group (e.g. ParentResource). */
-function groupBaseClassName(groupName: string): string {
-  return className(groupName);
+/** Abstract base class name for a parameter group (e.g. UserManagementRole). */
+function groupBaseClassName(mountName: string, groupName: string): string {
+  return `${className(mountName)}${className(groupName)}`;
 }
 
-/** Concrete variant class name (e.g. ParentResourceById). */
-function groupVariantClassName(groupName: string, variantName: string): string {
-  return `${className(groupName)}${className(variantName)}`;
+/** Concrete variant class name (e.g. UserManagementRoleSingle). */
+function groupVariantClassName(mountName: string, groupName: string, variantName: string): string {
+  return `${className(mountName)}${className(groupName)}${className(variantName)}`;
 }
 
 /**
@@ -102,17 +105,19 @@ function groupVariantClassName(groupName: string, variantName: string): string {
  * on an operation. Each group becomes an abstract class with concrete subclasses
  * for each variant containing the variant's parameters as properties.
  */
-function generateParameterGroupTypes(op: Operation): string[] {
+function generateParameterGroupTypes(mountName: string, op: Operation, emitted?: Set<string>): string[] {
   const lines: string[] = [];
 
   for (const group of op.parameterGroups ?? []) {
-    const baseName = groupBaseClassName(group.name);
+    const baseName = groupBaseClassName(mountName, group.name);
+    if (emitted?.has(baseName)) continue;
+    emitted?.add(baseName);
 
     lines.push('');
     lines.push(`    public abstract class ${baseName} { }`);
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(group.name, variant.name);
+      const variantName = groupVariantClassName(mountName, group.name, variant.name);
       lines.push('');
       lines.push(`    public class ${variantName} : ${baseName}`);
       lines.push('    {');
@@ -134,7 +139,7 @@ function generateParameterGroupTypes(op: Operation): string[] {
  * method body. Each group field on the options class is pattern-matched via
  * `is` checks and its variant parameters are added to the query string.
  */
-function emitGroupQuerySerialization(op: Operation, indent: string): string[] {
+function emitGroupQuerySerialization(mountName: string, op: Operation, indent: string): string[] {
   const lines: string[] = [];
 
   for (const group of op.parameterGroups ?? []) {
@@ -142,7 +147,7 @@ function emitGroupQuerySerialization(op: Operation, indent: string): string[] {
     let first = true;
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(group.name, variant.name);
+      const variantName = groupVariantClassName(mountName, group.name, variant.name);
       // Use a short local variable derived from the variant name
       const localVar = localName(variant.name);
       const keyword = first ? 'if' : 'else if';
@@ -170,6 +175,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
 
   lines.push(`namespace ${ctx.namespacePascal}`);
   lines.push('{');
+  lines.push('    using System;');
   lines.push('    using System.Collections.Generic;');
   lines.push('    using System.Net.Http;');
   lines.push('    using System.Threading;');
@@ -198,6 +204,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const emittedMethods = new Set<string>();
   for (const op of operations) {
     const plan = planOperation(op);
+    const methodStem = resolveCsMethodStem(op, mountName, ctx);
     const method = resolveCsMethodName(op, mountName, ctx);
 
     if (emittedMethods.has(method)) continue;
@@ -211,13 +218,18 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     // get a 422 from the API. Only emit the typed AuthenticateWith* wrappers.
     if (!isUnionSplit) {
       lines.push('');
-      const methodCode = generateMethod(svcTypeName, mountName, method, op, plan, ctx, resolvedOp);
+      const methodCode = generateMethod(svcTypeName, mountName, method, methodStem, op, plan, ctx, resolvedOp);
       lines.push(methodCode);
+
+      if (!(resolvedOp?.urlBuilder ?? false) && method !== methodStem) {
+        lines.push('');
+        lines.push(generateCompatibilityMethod(mountName, method, methodStem, op, plan, ctx, resolvedOp));
+      }
 
       // Generate auto-pagination method for paginated list operations
       if (plan.isPaginated && op.pagination) {
         lines.push('');
-        const autoPagingCode = generateAutoPagingMethod(mountName, method, op, plan, ctx, resolvedOp);
+        const autoPagingCode = generateAutoPagingMethod(mountName, method, methodStem, op, plan, ctx, resolvedOp);
         lines.push(autoPagingCode);
       }
     }
@@ -227,7 +239,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
       const wrapperLines = generateWrapperMethods(svcTypeName, resolvedOp!, ctx);
       lines.push(...wrapperLines);
       for (const w of resolvedOp!.wrappers!) {
-        emittedMethods.add(methodName(w.name));
+        emittedMethods.add(appendAsyncSuffix(methodName(w.name)));
       }
     }
   }
@@ -255,6 +267,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
   optionsLines.push('    using STJS = System.Text.Json.Serialization;');
 
   const emittedOptions = new Set<string>();
+  const emittedGroupTypes = new Set<string>();
   for (const op of operations) {
     const plan = planOperation(op);
     const method = resolveCsMethodName(op, mountName, ctx);
@@ -307,6 +320,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       if (bodyModel) {
         for (const field of bodyModel.fields) {
           if (hidden.has(field.name)) continue;
+          if (groupedParams.has(field.name)) continue;
           const csField = fieldName(field.name);
           if (emittedFields.has(csField)) continue;
           emittedFields.add(csField);
@@ -408,7 +422,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Parameter group properties (serialized manually in the service method, not by JSON)
     for (const group of op.parameterGroups ?? []) {
-      const baseName = groupBaseClassName(group.name);
+      const baseName = groupBaseClassName(mountName, group.name);
       const csField = fieldName(group.name);
       optionsLines.push('        [JsonIgnore]');
       optionsLines.push('        [STJS.JsonIgnore]');
@@ -422,7 +436,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Emit parameter group abstract base + concrete variant classes
     if (hasGroups) {
-      optionsLines.push(...generateParameterGroupTypes(op));
+      optionsLines.push(...generateParameterGroupTypes(mountName, op, emittedGroupTypes));
     }
   }
 
@@ -441,6 +455,7 @@ function generateMethod(
   _serviceType: string,
   mountName: string,
   method: string,
+  methodStem: string,
   op: Operation,
   plan: OperationPlan,
   ctx: EmitterContext,
@@ -465,7 +480,7 @@ function generateMethod(
   }
 
   const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
-  const optionsClass = hasParams ? optionsClassName(mountName, method) : null;
+  const optionsClass = hasParams ? optionsClassName(mountName, methodStem) : null;
   const hasHidden = hasHiddenParams(resolvedOp);
 
   // Per-operation Bearer token auth (e.g., SSO GetProfile uses access_token instead of API key)
@@ -488,7 +503,7 @@ function generateMethod(
   } else if (isDelete) {
     returnType = 'Task';
   } else if (plan.responseModelName) {
-    const respType = className(resolveModelName(plan.responseModelName));
+    const respType = modelClassName(resolveModelName(plan.responseModelName));
     if (!isPaginated && op.response?.kind === 'array') {
       returnType = `Task<List<${respType}>>`;
     } else {
@@ -520,7 +535,7 @@ function generateMethod(
     const itemType = resolveListItemType(op.pagination.itemType, ctx);
     lines.push(`        /// <returns>A page of <see cref="${itemType}"/> results.</returns>`);
   } else if (plan.responseModelName) {
-    const respType = className(resolveModelName(plan.responseModelName));
+    const respType = modelClassName(resolveModelName(plan.responseModelName));
     lines.push(`        /// <returns>The <see cref="${respType}"/> result.</returns>`);
   }
   if (op.deprecated) {
@@ -600,7 +615,7 @@ function generateMethod(
     // Serialize parameter group variants into query params
     if (hasGroups) {
       lines.push('');
-      lines.push(...emitGroupQuerySerialization(op, '            '));
+      lines.push(...emitGroupQuerySerialization(mountName, op, '            '));
       lines.push('');
     }
 
@@ -634,6 +649,7 @@ function generateMethod(
 function generateAutoPagingMethod(
   mountName: string,
   method: string,
+  methodStem: string,
   op: Operation,
   plan: OperationPlan,
   ctx: EmitterContext,
@@ -653,7 +669,7 @@ function generateAutoPagingMethod(
   }
 
   const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
-  const optionsClass = hasParams ? optionsClassName(mountName, method) : null;
+  const optionsClass = hasParams ? optionsClassName(mountName, methodStem) : null;
 
   const itemType = resolveListItemType(op.pagination!.itemType, ctx);
 
@@ -683,7 +699,7 @@ function generateAutoPagingMethod(
   params.push('RequestOptions? requestOptions = null');
   params.push('CancellationToken cancellationToken = default');
 
-  lines.push(`        public virtual IAsyncEnumerable<${itemType}> ${method}AutoPagingAsync(${params.join(', ')})`);
+  lines.push(`        public virtual IAsyncEnumerable<${itemType}> ${methodStem}AutoPagingAsync(${params.join(', ')})`);
   lines.push('        {');
 
   const pathExpr = buildPathExpr(op);
@@ -700,10 +716,15 @@ function resolveCsMethodName(op: Operation, mountName: string, ctx: EmitterConte
   return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
 }
 
+export function resolveCsMethodStem(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodStem(op, { name: mountName, operations: [op] }, ctx);
+}
+
 export function optionsClassName(mountName: string, method: string): string {
+  const methodStem = method.endsWith('Async') ? method.slice(0, -5) : method;
   const prefix = className(mountName);
-  if (method.startsWith(prefix)) return `${method}Options`;
-  return `${prefix}${method}Options`;
+  if (methodStem.startsWith(prefix)) return `${methodStem}Options`;
+  return `${prefix}${methodStem}Options`;
 }
 
 function buildPathExpr(op: Operation): string {
@@ -713,7 +734,7 @@ function buildPathExpr(op: Operation): string {
   // Build C# string interpolation
   let interpolated = op.path;
   for (const p of sortPathParamsByTemplateOrder(op)) {
-    interpolated = interpolated.replace(`{${p.name}}`, `{${localName(p.name)}}`);
+    interpolated = interpolated.replace(`{${p.name}}`, `{Uri.EscapeDataString(${localName(p.name)})}`);
   }
   return `$"${interpolated}"`;
 }
@@ -724,10 +745,82 @@ function resolveListItemType(itemType: import('@workos/oagen').TypeRef, ctx: Emi
     if (model && isListWrapperModel(model)) {
       const dataField = model.fields.find((f) => f.name === 'data');
       if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
-        return className(resolveModelName(dataField.type.items.name));
+        return modelClassName(resolveModelName(dataField.type.items.name));
       }
     }
-    return className(resolveModelName(itemType.name));
+    return modelClassName(resolveModelName(itemType.name));
   }
   return mapTypeRef(itemType);
+}
+
+function generateCompatibilityMethod(
+  mountName: string,
+  asyncMethod: string,
+  methodStem: string,
+  op: Operation,
+  plan: OperationPlan,
+  ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
+): string {
+  const lines: string[] = [];
+  const hidden = buildHiddenParams(resolvedOp);
+  const groupedParams = collectGroupedParamNames(op);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
+
+  let hasVisibleBodyFields = false;
+  if (plan.hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+  } else if (plan.hasBody && op.requestBody) {
+    hasVisibleBodyFields = true;
+  }
+
+  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
+  const optionsClass = hasParams ? optionsClassName(mountName, methodStem) : null;
+
+  let returnType = 'Task';
+  if (plan.isPaginated && op.pagination) {
+    const itemType = resolveListItemType(op.pagination.itemType, ctx);
+    returnType = `Task<WorkOSList<${itemType}>>`;
+  } else if (plan.responseModelName) {
+    const respType = modelClassName(resolveModelName(plan.responseModelName));
+    returnType = !plan.isPaginated && op.response?.kind === 'array' ? `Task<List<${respType}>>` : `Task<${respType}>`;
+  }
+
+  const params: string[] = [];
+  const args: string[] = [];
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    const name = localName(p.name);
+    params.push(`string ${name}`);
+    args.push(name);
+  }
+
+  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+    const bearerLocal = localName(bearerParamName);
+    params.push(`string ${bearerLocal}`);
+    args.push(bearerLocal);
+  }
+
+  if (optionsClass) {
+    const isRequired = hasVisibleBodyFields && !plan.isPaginated;
+    params.push(isRequired ? `${optionsClass} options` : `${optionsClass}? options = null`);
+    args.push('options');
+  }
+
+  params.push('RequestOptions? requestOptions = null');
+  params.push('CancellationToken cancellationToken = default');
+  args.push('requestOptions');
+  args.push('cancellationToken');
+
+  lines.push(`        /// <summary>Compatibility wrapper for <see cref="${asyncMethod}"/>.</summary>`);
+  lines.push(`        public virtual ${returnType} ${methodStem}(${params.join(', ')})`);
+  lines.push('        {');
+  lines.push(`            return this.${asyncMethod}(${args.join(', ')});`);
+  lines.push('        }');
+
+  return lines.join('\n');
 }
