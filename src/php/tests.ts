@@ -357,7 +357,7 @@ function buildTestArgs(
       const variantArgs = variant.parameters
         .map((p) => `${deriveVariantFieldName(p.name, group.name)}: 'test_value'`)
         .join(', ');
-      args.push(`new \\${ctx.namespacePascal}\\Service\\${variantClass}(${variantArgs})`);
+      args.push(`${toCamelCase(group.name)}: new \\${ctx.namespacePascal}\\Service\\${variantClass}(${variantArgs})`);
     }
   }
 
