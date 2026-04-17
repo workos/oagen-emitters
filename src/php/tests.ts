@@ -20,7 +20,7 @@ import {
   collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { isRedirectEndpoint } from './resources.js';
+import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
 /**
  * Generate PHPUnit test files and fixture JSON files.
@@ -354,7 +354,9 @@ function buildTestArgs(
     if (!group.optional || includeOptional) {
       const variant = group.variants[0];
       const variantClass = `${className(group.name)}${className(variant.name)}`;
-      const variantArgs = variant.parameters.map((_p) => `'test_value'`).join(', ');
+      const variantArgs = variant.parameters
+        .map((p) => `${deriveVariantFieldName(p.name, group.name)}: 'test_value'`)
+        .join(', ');
       args.push(`new \\${ctx.namespacePascal}\\Service\\${variantClass}(${variantArgs})`);
     }
   }

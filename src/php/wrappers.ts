@@ -31,7 +31,7 @@ function emitWrapperMethod(
   // PHPDoc block
   const docParts: string[] = [];
   for (const { paramName, field, isOptional } of wrapperParams) {
-    const docType = field ? mapTypeRefForPHPDoc(field.type) : 'mixed';
+    const docType = field ? mapTypeRefForPHPDoc(field.type) : 'string';
     const nullSuffix = isOptional && !docType.endsWith('|null') ? '|null' : '';
     docParts.push(`@param ${docType}${nullSuffix} $${fieldName(paramName)}`);
   }
@@ -57,7 +57,11 @@ function emitWrapperMethod(
         requiredParams.push(`        ${phpType} $${phpName},`);
       }
     } else {
-      optionalParamLines.push(`        mixed $${phpName} = null,`);
+      if (isOptional) {
+        optionalParamLines.push(`        ?string $${phpName} = null,`);
+      } else {
+        requiredParams.push(`        string $${phpName},`);
+      }
     }
   }
   optionalParamLines.push(`        ?\\${ns}\\RequestOptions $options = null,`);

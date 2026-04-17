@@ -505,7 +505,7 @@ describe('generateResources', () => {
     const content = result[0].content;
 
     expect(content).toContain('): string {');
-    expect(content).toContain("return $this->client->buildUrl('sso/logout', $query, $options);");
+    expect(content).toContain("return $this->client->buildUrl(path: 'sso/logout', query: $query, options: $options);");
     expect(content).not.toContain('$this->client->request(');
     expect(content).toContain('@return string');
   });

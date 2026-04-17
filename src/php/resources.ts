@@ -141,7 +141,7 @@ function groupVariantClassName(groupName: string, variantName: string): string {
  * Strips the group name prefix when present to avoid stuttering
  * (e.g. parent_resource_id in group parent_resource -> id -> camelCase).
  */
-function deriveVariantFieldName(paramName: string, groupName: string): string {
+export function deriveVariantFieldName(paramName: string, groupName: string): string {
   const prefix = groupName + '_';
   const stripped = paramName.startsWith(prefix) ? paramName.slice(prefix.length) : paramName;
   return fieldName(stripped);
@@ -381,9 +381,9 @@ function generateMethod(
       }
       // Inject parameter group dispatch (instanceof checks)
       lines.push(...generateGroupDispatch(op, '        '));
-      lines.push(`        return $this->client->buildUrl(${path}, $query, $options);`);
+      lines.push(`        return $this->client->buildUrl(path: ${path}, query: $query, options: $options);`);
     } else {
-      lines.push(`        return $this->client->buildUrl(${path}, [], $options);`);
+      lines.push(`        return $this->client->buildUrl(path: ${path}, query: [], options: $options);`);
     }
   } else if (plan.isPaginated) {
     const queryLines = buildQueryArray(op);
