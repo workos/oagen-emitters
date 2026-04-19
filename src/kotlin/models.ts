@@ -232,9 +232,9 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
 
     const isOverride = overrideFields.has(kotlinName);
     const annotations: string[] = [];
-    // @JvmField cannot be applied to override properties in Kotlin.
-    // Java callers can still reach the field through the generated getter.
-    if (!isOverride) annotations.push('@JvmField');
+    // Omit @JvmField so Kotlin generates proper getter methods (getId(),
+    // isEmailVerified(), etc.) for Java callers — matching the accessor
+    // convention used by Stripe, AWS SDK v2, and Twilio.
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
     if (field.deprecated) annotations.push('@Deprecated("Deprecated field")');
 

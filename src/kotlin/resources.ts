@@ -134,9 +134,14 @@ function generateApiClass(
   for (const imp of filteredImports.sort()) lines.push(`import ${imp}`);
   lines.push('');
   // Emit sealed classes for parameter groups before the API class.
+  const emittedSealedClasses = new Set<string>();
   for (const op of operations) {
     if ((op.parameterGroups?.length ?? 0) > 0) {
-      for (const line of generateSealedClasses(op)) lines.push(line);
+      for (const group of op.parameterGroups ?? []) {
+        if (emittedSealedClasses.has(group.name)) continue;
+        emittedSealedClasses.add(group.name);
+        for (const line of generateSealedClass(group)) lines.push(line);
+      }
     }
   }
 
@@ -209,7 +214,9 @@ function renderMethod(
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
   const queryParams = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const bodyModel = resolveBodyModel(op, ctx);
-  const bodyFields = bodyModel ? bodyModel.fields.filter((f) => !hidden.has(f.name)) : [];
+  const bodyFields = bodyModel
+    ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name))
+    : [];
 
   // Track imports we need
   for (const p of [...pathParams, ...queryParams]) registerTypeImports(p.type, imports, ctx);
@@ -247,6 +254,8 @@ function renderMethod(
     }
   }
 
+  const groupParamNames = assignGroupParameterNames(op, paramNames);
+
   const params: string[] = [];
   for (const pp of pathParams) params.push(`    ${propertyName(pp.name)}: String`);
 
@@ -258,7 +267,7 @@ function renderMethod(
   // Parameter group params (sealed class types)
   for (const group of op.parameterGroups ?? []) {
     const sealedName = className(group.name);
-    const prop = propertyName(group.name);
+    const prop = groupParamNames.get(group.name)!;
     if (group.optional) {
       params.push(`    ${prop}: ${sealedName}? = null`);
     } else {
@@ -328,14 +337,24 @@ function renderMethod(
   if (isPaginated) {
     // Nested helper function + requestPage call; 'after' is owned by the
     // cursor logic so we skip it in the generic query loop.
-    const queryForConfig = sortedQuery.filter((p) => p.name !== 'after');
+    // 'after' and 'before' are owned by the cursor logic. 'before' is only
+    // included on the first page — re-sending it on follow-up pages (where
+    // afterCursor is set by the pagination engine) is nonsensical and can
+    // cause empty or looping results from the server.
+    const queryForConfig = sortedQuery.filter((p) => p.name !== 'after' && p.name !== 'before');
+    const hasBefore = sortedQuery.some((p) => p.name === 'before');
     lines.push(`    fun configFor(afterCursor: String? = null): RequestConfig {`);
     lines.push(`      val params = mutableListOf<Pair<String, String>>()`);
     for (const qp of queryForConfig) for (const ln of emitQueryParam(qp, '      ')) lines.push(ln);
     for (const group of op.parameterGroups ?? []) {
-      for (const ln of emitGroupQueryDispatch(group, '      ')) lines.push(ln);
+      for (const ln of emitGroupQueryDispatch(group, groupParamNames.get(group.name)!, '      ')) lines.push(ln);
     }
     lines.push(`      val effectiveAfter = afterCursor ?: ${pickNamedQueryParam(sortedQuery, 'after')}`);
+    if (hasBefore) {
+      // Only send 'before' on the initial request, not on cursor-driven follow-up pages.
+      const beforeProp = pickNamedQueryParam(sortedQuery, 'before');
+      lines.push(`      if (effectiveAfter == null && ${beforeProp} != null) params += "before" to ${beforeProp}`);
+    }
     lines.push(`      if (effectiveAfter != null) params += "after" to effectiveAfter`);
     lines.push(`      return RequestConfig(`);
     lines.push(`        method = ${ktLiteral(httpMethod)},`);
@@ -354,12 +373,16 @@ function renderMethod(
     // query parameters (spec-declared query, or defaults/inferFromClient
     // for GET/DELETE without a body). `RequestConfig.queryParams` defaults
     // to `emptyList()` when omitted, so we avoid dead local declarations.
-    const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery || hasGroups;
+    // Groups go to the body for POST/PUT/PATCH (hasBody), query otherwise.
+    const groupsGoToQuery = hasGroups && !hasBody;
+    const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery || groupsGoToQuery;
     if (emitsQueryParams) {
       lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
       for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
-      for (const group of op.parameterGroups ?? []) {
-        for (const ln of emitGroupQueryDispatch(group, '    ')) lines.push(ln);
+      if (groupsGoToQuery) {
+        for (const group of op.parameterGroups ?? []) {
+          for (const ln of emitGroupQueryDispatch(group, groupParamNames.get(group.name)!, '    ')) lines.push(ln);
+        }
       }
       if (appendDefaultsAsQuery) {
         for (const [k, v] of Object.entries(defaults)) lines.push(`    params += ${ktLiteral(k)} to ${ktLiteral(v)}`);
@@ -400,6 +423,15 @@ function renderMethod(
       } else {
         // Empty body (POST/PUT/PATCH still require one for OkHttp).
         lines.push(`    val body = linkedMapOf<String, Any?>()`);
+      }
+      // Parameter group values go into the body for POST/PUT/PATCH so
+      // sensitive fields (passwords, role slugs) never leak into the URL.
+      if (hasGroups) {
+        for (const group of op.parameterGroups ?? []) {
+          for (const ln of emitGroupBodyDispatch(group, groupParamNames.get(group.name)!, '    ')) {
+            lines.push(ln);
+          }
+        }
       }
       lines.push(`    val config =`);
       lines.push(`      RequestConfig(`);
@@ -708,38 +740,35 @@ function deriveShortPropertyName(paramName: string, groupName: string): string {
 }
 
 /** Generate sealed class definitions for all parameter groups in an operation. */
-function generateSealedClasses(op: Operation): string[] {
+function generateSealedClass(group: import('@workos/oagen').ParameterGroup): string[] {
   const lines: string[] = [];
-  for (const group of op.parameterGroups ?? []) {
-    const sealedName = className(group.name);
-    lines.push(`sealed class ${sealedName} {`);
-    for (let vi = 0; vi < group.variants.length; vi++) {
-      const variant = group.variants[vi];
-      const variantName = className(variant.name);
-      const fields = variant.parameters.map((p) => {
-        const prop = deriveShortPropertyName(p.name, group.name);
-        return `val ${prop}: ${mapTypeRef(p.type)}`;
-      });
-      // ktlint requires blank line before each declaration inside a sealed class
-      if (vi > 0) lines.push('');
-      // ktlint class-signature rule requires multi-line constructors
-      lines.push(`  data class ${variantName}(`);
-      for (let i = 0; i < fields.length; i++) {
-        const comma = i < fields.length - 1 ? ',' : '';
-        lines.push(`    ${fields[i]}${comma}`);
-      }
-      lines.push(`  ) : ${sealedName}()`);
+  const sealedName = className(group.name);
+  lines.push(`sealed class ${sealedName} {`);
+  for (let vi = 0; vi < group.variants.length; vi++) {
+    const variant = group.variants[vi];
+    const variantName = className(variant.name);
+    const fields = variant.parameters.map((p) => {
+      const prop = deriveShortPropertyName(p.name, group.name);
+      return `val ${prop}: ${mapTypeRef(p.type)}`;
+    });
+    // ktlint requires blank line before each declaration inside a sealed class
+    if (vi > 0) lines.push('');
+    // ktlint class-signature rule requires multi-line constructors
+    lines.push(`  data class ${variantName}(`);
+    for (let i = 0; i < fields.length; i++) {
+      const comma = i < fields.length - 1 ? ',' : '';
+      lines.push(`    ${fields[i]}${comma}`);
     }
-    lines.push('}');
-    lines.push('');
+    lines.push(`  ) : ${sealedName}()`);
   }
+  lines.push('}');
+  lines.push('');
   return lines;
 }
 
 /** Emit `when` dispatch that serializes a parameter group into query params. */
-function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, indent: string): string[] {
+function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
   const sealedName = className(group.name);
-  const prop = propertyName(group.name);
   const lines: string[] = [];
 
   if (group.optional) {
@@ -750,6 +779,36 @@ function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, i
     emitWhenBlock(lines, group, sealedName, prop, indent);
   }
   return lines;
+}
+
+function assignGroupParameterNames(op: Operation, occupiedNames: Set<string>): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const group of op.parameterGroups ?? []) {
+    const natural = propertyName(group.name);
+    const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
+    names.set(group.name, assigned);
+  }
+  return names;
+}
+
+function reserveUniqueGroupParameterName(base: string, occupiedNames: Set<string>): string {
+  if (!occupiedNames.has(base)) {
+    occupiedNames.add(base);
+    return base;
+  }
+
+  const capitalized = `${base.charAt(0).toUpperCase()}${base.slice(1)}`;
+  const prefixed = `group${capitalized}`;
+  if (!occupiedNames.has(prefixed)) {
+    occupiedNames.add(prefixed);
+    return prefixed;
+  }
+
+  let index = 2;
+  while (occupiedNames.has(`${prefixed}${index}`)) index += 1;
+  const fallback = `${prefixed}${index}`;
+  occupiedNames.add(fallback);
+  return fallback;
 }
 
 function emitWhenBlock(
@@ -765,6 +824,46 @@ function emitWhenBlock(
     const entries = variant.parameters.map((p) => {
       const fieldProp = deriveShortPropertyName(p.name, group.name);
       return `params += ${ktLiteral(p.name)} to ${prop}.${fieldProp}`;
+    });
+    if (entries.length === 1) {
+      lines.push(`${indent}  is ${sealedName}.${variantName} -> ${entries[0]}`);
+    } else {
+      lines.push(`${indent}  is ${sealedName}.${variantName} -> {`);
+      for (const e of entries) lines.push(`${indent}    ${e}`);
+      lines.push(`${indent}  }`);
+    }
+  }
+  lines.push(`${indent}}`);
+}
+
+/** Emit `when` dispatch that serializes a parameter group into the request body map. */
+function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
+  const sealedName = className(group.name);
+  const lines: string[] = [];
+
+  if (group.optional) {
+    lines.push(`${indent}if (${prop} != null) {`);
+    emitBodyWhenBlock(lines, group, sealedName, prop, `${indent}  `);
+    lines.push(`${indent}}`);
+  } else {
+    emitBodyWhenBlock(lines, group, sealedName, prop, indent);
+  }
+  return lines;
+}
+
+function emitBodyWhenBlock(
+  lines: string[],
+  group: import('@workos/oagen').ParameterGroup,
+  sealedName: string,
+  prop: string,
+  indent: string,
+): void {
+  lines.push(`${indent}when (${prop}) {`);
+  for (const variant of group.variants) {
+    const variantName = className(variant.name);
+    const entries = variant.parameters.map((p) => {
+      const fieldProp = deriveShortPropertyName(p.name, group.name);
+      return `body[${ktLiteral(p.name)}] = ${prop}.${fieldProp}`;
     });
     if (entries.length === 1) {
       lines.push(`${indent}  is ${sealedName}.${variantName} -> ${entries[0]}`);

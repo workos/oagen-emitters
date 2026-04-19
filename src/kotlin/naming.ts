@@ -25,7 +25,12 @@ export function methodName(name: string): string {
 
 /** camelCase Kotlin property / local variable name. */
 export function propertyName(name: string): string {
-  return escapeReserved(toCamelCase(name));
+  const camel = toCamelCase(name);
+  // `object` is a Kotlin reserved word. Instead of backtick-escaping it
+  // (forcing callers to write `event.\`object\``), rename to `objectType`
+  // and rely on @JsonProperty("object") for wire mapping.
+  if (camel === 'object') return 'objectType';
+  return escapeReserved(camel);
 }
 
 /** camelCase alias (kept for parity with other emitters). */
