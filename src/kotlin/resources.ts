@@ -165,7 +165,7 @@ function generateApiClass(
   const filteredImports = [...imports].filter((imp) => {
     const simple = imp.slice(imp.lastIndexOf('.') + 1);
     // Skip the import if the class body never references the simple name.
-    if (simple === 'WorkOS' || simple === 'RequestConfig' || simple === 'RequestOptions') return true;
+    if (simple === 'WorkOS' || simple === 'RequestOptions') return true;
     return new RegExp(`\\b${simple}\\b`).test(allText);
   });
 

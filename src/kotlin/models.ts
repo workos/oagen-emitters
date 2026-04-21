@@ -275,8 +275,10 @@ function emitWorkOSEvent(eventMapping: Array<{ wireValue: string; modelName: str
   lines.push('sealed interface WorkOSEvent {');
   lines.push('  /** Unique identifier for this event. */');
   lines.push('  val id: String');
+  lines.push('');
   lines.push('  /** The event type identifier. */');
   lines.push('  val event: String');
+  lines.push('');
   lines.push('  /** Timestamp when the event was created. */');
   lines.push('  val createdAt: OffsetDateTime');
   lines.push('}');
