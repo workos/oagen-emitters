@@ -403,7 +403,7 @@ function generateServiceTest(
       if (emittedTestMethods.has(wrapperMethod)) continue;
       emittedTestMethods.add(wrapperMethod);
 
-      const wrapperParamsStruct = `${wrapperMethod}Params`;
+      const wrapperParamsStruct = paramsStructName(resolvedName, wrapperMethod);
       const responseType = wrapper.responseModelName;
       const testName = `Test${accessorName}_${wrapperMethod}`;
       const fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;

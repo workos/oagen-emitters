@@ -5,7 +5,7 @@ import {
   methodName as goMethodName,
   unexportedName,
 } from './naming.js';
-import { sortPathParamsByTemplateOrder } from './resources.js';
+import { sortPathParamsByTemplateOrder, paramsStructName } from './resources.js';
 import { resolveWrapperParams, formatWrapperDescription, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 
@@ -20,6 +20,7 @@ import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
  */
 export function generateWrapperMethods(
   serviceType: string,
+  mountName: string,
   resolvedOp: ResolvedOperation,
   ctx: EmitterContext,
 ): string[] {
@@ -30,11 +31,11 @@ export function generateWrapperMethods(
   for (const wrapper of resolvedOp.wrappers) {
     const wrapperParams = resolveWrapperParams(wrapper, ctx);
     lines.push('');
-    emitWrapperParamsStruct(lines, wrapper, wrapperParams);
+    emitWrapperParamsStruct(lines, mountName, wrapper, wrapperParams);
     lines.push('');
     emitWrapperBodyStruct(lines, wrapper, wrapperParams);
     lines.push('');
-    emitWrapperMethod(lines, serviceType, resolvedOp, wrapper, wrapperParams);
+    emitWrapperMethod(lines, serviceType, mountName, resolvedOp, wrapper, wrapperParams);
   }
 
   return lines;
@@ -91,10 +92,11 @@ function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrappe
 
 function emitWrapperParamsStruct(
   lines: string[],
+  mountName: string,
   wrapper: ResolvedWrapper,
   wrapperParams: ResolvedWrapperParam[],
 ): void {
-  const structName = `${goMethodName(wrapper.name)}Params`;
+  const structName = paramsStructName(mountName, goMethodName(wrapper.name));
 
   lines.push(`// ${structName} contains the parameters for ${goMethodName(wrapper.name)}.`);
   lines.push(`type ${structName} struct {`);
@@ -124,13 +126,14 @@ function emitWrapperParamsStruct(
 function emitWrapperMethod(
   lines: string[],
   serviceType: string,
+  mountName: string,
   resolvedOp: ResolvedOperation,
   wrapper: ResolvedWrapper,
   wrapperParams: ResolvedWrapperParam[],
 ): void {
   const op = resolvedOp.operation;
   const method = goMethodName(wrapper.name);
-  const paramsStruct = `${method}Params`;
+  const paramsStruct = paramsStructName(mountName, method);
 
   // Return type
   const responseType = wrapper.responseModelName ? goClassName(wrapper.responseModelName) : null;

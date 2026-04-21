@@ -139,7 +139,7 @@ describe('go/resources', () => {
     const spec = makeSpec(services);
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
-    expect(content).toContain('fmt.Sprintf("/users/%s", url.PathEscape(string(id)))');
+    expect(content).toContain('fmt.Sprintf("/users/%s", url.PathEscape(id))');
   });
 
   it('generates paginated methods returning Iterator', () => {
@@ -165,7 +165,7 @@ describe('go/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
     expect(content).toContain('*Iterator[User]');
-    expect(content).toContain('newIterator[User](ctx, s.client, "GET", "/users", nil, "after", "data", opts)');
+    expect(content).toContain('newIterator[User](ctx, s.client, "GET", "/users", nil, "after", "data", opts,');
   });
 
   it('generates delete methods returning error', () => {
@@ -542,7 +542,7 @@ describe('go/resources', () => {
       expect(content).toContain('params.ParentResource.applyToQuery(query)');
       // Should pass query to the iterator (not params)
       expect(content).toContain('newIterator[AuthorizationResource](ctx, s.client, "GET"');
-      expect(content).toContain(', query, "after", "data", opts)');
+      expect(content).toContain(', query, "after", "data", opts, nil)');
     });
 
     it('imports net/url when parameter groups are present', () => {

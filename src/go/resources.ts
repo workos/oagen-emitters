@@ -19,6 +19,7 @@ import {
   buildHiddenParams,
   hasHiddenParams,
   collectGroupedParamNames,
+  collectBodyFieldTypes,
 } from '../shared/resolved-ops.js';
 import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
@@ -130,7 +131,15 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   // applyToBody methods.
   const groupTypes = collectFileGroups(mountName, operations);
   if (groupTypes.length > 0) {
-    lines.push(emitCollectedGroupTypes(mountName, groupTypes));
+    // Collect body field types from all operations so variant structs use the
+    // correct IR types (the parser's group-level types can fall back to string).
+    const mergedBodyFieldTypes = new Map<string, import('@workos/oagen').TypeRef>();
+    for (const op of operations) {
+      for (const [k, v] of collectBodyFieldTypes(op, ctx.spec.models)) {
+        mergedBodyFieldTypes.set(k, v);
+      }
+    }
+    lines.push(emitCollectedGroupTypes(mountName, groupTypes, mergedBodyFieldTypes));
   }
 
   // Generate params structs and methods for each operation.
@@ -164,7 +173,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
 
     // Generate union split wrapper methods (e.g., AuthenticateWithPassword)
     if (hasWrappers && resolvedOp) {
-      const wrapperLines = generateWrapperMethods(serviceType, resolvedOp, ctx);
+      const wrapperLines = generateWrapperMethods(serviceType, mountName, resolvedOp, ctx);
       lines.push(...wrapperLines);
       for (const w of resolvedOp.wrappers!) {
         emittedMethods.add(methodName(w.name));
@@ -283,7 +292,11 @@ function collectFileGroups(mountName: string, operations: Operation[]): Collecte
  * collected parameter groups in a file. Groups used in query contexts get
  * applyToQuery; body contexts get applyToBody; groups used in both get both.
  */
-function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): string {
+function emitCollectedGroupTypes(
+  mountName: string,
+  groups: CollectedGroup[],
+  bodyFieldTypes: Map<string, import('@workos/oagen').TypeRef>,
+): string {
   const lines: string[] = [];
 
   for (const group of groups) {
@@ -312,7 +325,8 @@ function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): s
       lines.push(`type ${typeName} struct {`);
       for (const param of variant.parameters) {
         const goField = deriveVariantFieldName(param.name, group.name);
-        const goType = mapTypeRefValue(param.type);
+        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+        const goType = mapTypeRefValue(effectiveType);
         lines.push(`\t${goField} ${goType}`);
       }
       lines.push('}');
@@ -580,7 +594,7 @@ function generateMethod(
   // Build godoc -- wrap multi-line descriptions in // comments
   if (op.description) {
     const descLines = op.description.split('\n').filter((l) => l.trim());
-    lines.push(`// ${method} ${lowerFirstDesc(descLines[0])}`);
+    lines.push(`// ${godocSummary(method, descLines[0])}`);
     for (let i = 1; i < descLines.length; i++) {
       lines.push(`// ${descLines[i].trim()}`);
     }
@@ -656,7 +670,7 @@ function generateMethod(
     const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
     const cursorParam = '"after"';
     lines.push(
-      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts)`,
+      `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts, ${paginationDefaultsLiteral(op)})`,
     );
   } else if (isDelete) {
     lines.push(
@@ -798,7 +812,7 @@ function emitGetWithHiddenParams(
     const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
     const cursorParam = '"after"';
     lines.push(
-      `\treturn newIterator[${itemType}](ctx, s.client, "GET", ${pathExpr}, query, ${cursorParam}, ${dataPath}, opts)`,
+      `\treturn newIterator[${itemType}](ctx, s.client, "GET", ${pathExpr}, query, ${cursorParam}, ${dataPath}, opts, ${paginationDefaultsLiteral(op)})`,
     );
   } else if (isDelete) {
     lines.push(`\t_, err := s.client.request(ctx, "GET", ${pathExpr}, query, nil, nil, opts)`);
@@ -1117,7 +1131,9 @@ function buildPathExpr(op: Operation): string {
   const args: string[] = [];
   for (const p of sortPathParamsByTemplateOrder(op)) {
     fmtStr = fmtStr.replace(`{${p.name}}`, '%s');
-    args.push(`url.PathEscape(string(${lowerFirst(fieldName(p.name))}))`);
+    const varName = lowerFirst(fieldName(p.name));
+    const needsCast = p.type.kind !== 'primitive' || p.type.type !== 'string';
+    args.push(needsCast ? `url.PathEscape(string(${varName}))` : `url.PathEscape(${varName})`);
   }
   return `fmt.Sprintf("${fmtStr}", ${args.join(', ')})`;
 }
@@ -1202,6 +1218,59 @@ function lowerFirst(s: string): string {
 /** Simple lowercase-first for human-readable descriptions (not identifiers). */
 function lowerFirstDesc(s: string): string {
   return lowerFirstForDoc(s);
+}
+
+/**
+ * Build the Go literal for the pagination defaults map passed as the last
+ * argument to newIterator.  Collects `default` values from pagination-related
+ * query params (limit, order) and returns either `nil` or
+ * `map[string]string{"limit": "10", "order": "desc"}`.
+ */
+function paginationDefaultsLiteral(op: Operation): string {
+  const PAGINATION_DEFAULTS = ['limit', 'order'];
+  const entries: string[] = [];
+  for (const name of PAGINATION_DEFAULTS) {
+    const param = op.queryParams.find((qp) => qp.name === name);
+    if (param?.default != null) {
+      entries.push(`"${name}": "${param.default}"`);
+    }
+  }
+  if (entries.length === 0) return 'nil';
+  return `map[string]string{${entries.join(', ')}}`;
+}
+
+/**
+ * Build the godoc summary line for a method.  When every PascalCase word
+ * in the method name matches the leading words of the summary
+ * (case-insensitive), those words are stripped to avoid stutter:
+ *
+ *   godocSummary("Check", "Check authorization")     → "Check authorization"
+ *   godocSummary("Delete", "Delete an API key")       → "Delete an API key"
+ *   godocSummary("VerifyEmail", "Verify email")       → "VerifyEmail"
+ *   godocSummary("GetJWKS", "Get JWKS")               → "GetJWKS"
+ *
+ * When the summary words diverge from the method name, nothing is stripped:
+ *
+ *   godocSummary("AssignRole", "Assign a role")
+ *     → "AssignRole assign a role"
+ *   godocSummary("ListOrganizationMembershipResources", "List resources for organization membership")
+ *     → "ListOrganizationMembershipResources list resources for organization membership"
+ */
+function godocSummary(method: string, summary: string): string {
+  const methodWords = method.match(/[A-Z]+(?:[a-z]+|(?=[A-Z]|$))|[A-Z]?[a-z]+|[0-9]+/g) ?? [method];
+  const summaryWords = summary.split(/\s+/);
+
+  // Check whether all method words match the leading summary words.
+  if (methodWords.length <= summaryWords.length) {
+    const allMatch = methodWords.every((mw, i) => mw.toLowerCase() === summaryWords[i].toLowerCase());
+    if (allMatch) {
+      const rest = summaryWords.slice(methodWords.length).join(' ');
+      if (rest) return `${method} ${lowerFirstDesc(rest)}`;
+      return method;
+    }
+  }
+
+  return `${method} ${lowerFirstDesc(summary)}`;
 }
 
 function singularizePascal(name: string): string {
