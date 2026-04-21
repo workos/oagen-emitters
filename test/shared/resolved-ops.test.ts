@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { EmitterContext, ResolvedOperation } from '@workos/oagen';
-import { assertUniqueResolvedMethods, buildResolvedLookup } from '../../src/shared/resolved-ops.js';
+import type { EmitterContext, ResolvedOperation, Model, Operation } from '@workos/oagen';
+import {
+  assertUniqueResolvedMethods,
+  buildResolvedLookup,
+  collectBodyFieldTypes,
+} from '../../src/shared/resolved-ops.js';
 
 function makeResolvedOperation(
   httpMethod: string,
@@ -77,5 +81,42 @@ describe('shared/resolved-ops', () => {
     expect(() => assertUniqueResolvedMethods(ctx)).toThrow(
       /Resolved operation name collision for Authorization\.list_resource_permissions/,
     );
+  });
+
+  it('collects body field types for grouped body params', () => {
+    const op: Operation = {
+      name: 'createOrganizationMembership',
+      httpMethod: 'post',
+      path: '/user_management/organization_memberships',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      requestBody: { kind: 'model', name: 'CreateOrganizationMembershipRequest' },
+      response: { kind: 'primitive', type: 'string' },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+
+    const models: Model[] = [
+      {
+        name: 'CreateOrganizationMembershipRequest',
+        fields: [
+          { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'role_slugs',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const fieldTypes = collectBodyFieldTypes(op, models);
+
+    expect(fieldTypes.get('role_slug')).toEqual({ kind: 'primitive', type: 'string' });
+    expect(fieldTypes.get('role_slugs')).toEqual({
+      kind: 'array',
+      items: { kind: 'primitive', type: 'string' },
+    });
   });
 });

@@ -5,6 +5,7 @@ import type {
   EmitterContext,
   GeneratedFile,
   ResolvedOperation,
+  Model,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
@@ -39,6 +40,7 @@ import {
   buildHiddenParams,
   hasHiddenParams,
   collectGroupedParamNames,
+  collectBodyFieldTypes,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 
@@ -105,8 +107,14 @@ function groupVariantClassName(mountName: string, groupName: string, variantName
  * on an operation. Each group becomes an abstract class with concrete subclasses
  * for each variant containing the variant's parameters as properties.
  */
-function generateParameterGroupTypes(mountName: string, op: Operation, emitted?: Set<string>): string[] {
+function generateParameterGroupTypes(
+  mountName: string,
+  op: Operation,
+  models: Model[],
+  emitted?: Set<string>,
+): string[] {
   const lines: string[] = [];
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
 
   for (const group of op.parameterGroups ?? []) {
     const baseName = groupBaseClassName(mountName, group.name);
@@ -123,7 +131,8 @@ function generateParameterGroupTypes(mountName: string, op: Operation, emitted?:
       lines.push('    {');
       for (const param of variant.parameters) {
         const csField = fieldName(param.name);
-        const csType = mapTypeRef(param.type);
+        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+        const csType = mapTypeRef(effectiveType);
         lines.push(`        public ${csType} ${csField} { get; set; } = default!;`);
         lines.push('');
       }
@@ -436,7 +445,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Emit parameter group abstract base + concrete variant classes
     if (hasGroups) {
-      optionsLines.push(...generateParameterGroupTypes(mountName, op, emittedGroupTypes));
+      optionsLines.push(...generateParameterGroupTypes(mountName, op, ctx.spec.models, emittedGroupTypes));
     }
   }
 

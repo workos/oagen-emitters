@@ -127,19 +127,26 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       return true;
     });
 
-    // Zeitwerk handles autoloading all WorkOS::* constants; we only need the
-    // stdlib `json` require.
     const lines: string[] = [];
-    lines.push(`require 'json'`);
-    lines.push('');
     lines.push('module WorkOS');
-    lines.push(`  class ${cls}`);
-    lines.push('    include HashProvider');
+    lines.push(`  class ${cls} < WorkOS::Types::BaseModel`);
     lines.push('');
 
     // Split fields into non-deprecated (attr_accessor) and deprecated (explicit accessors with warn).
     const accessorFields = fields.filter((f) => !f.deprecated);
     const deprecatedFields = fields.filter((f) => f.deprecated);
+
+    // HASH_ATTRS maps wire names (symbols) to Ruby attribute names (symbols).
+    // HashProvider uses this for to_h, to_json, and inspect.
+    lines.push('    HASH_ATTRS = {');
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i];
+      const fname = fieldName(field.name);
+      const sep = i === fields.length - 1 ? '' : ',';
+      lines.push(`      ${rubyHashLiteralKey(field.name)} :${fname}${sep}`);
+    }
+    lines.push('    }.freeze');
+    lines.push('');
 
     // Emit @deprecated YARD tags for any deprecated fields before the accessor block.
     if (deprecatedFields.length > 0) {
@@ -168,9 +175,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Emit deprecated field accessors with runtime warnings.
     for (const f of deprecatedFields) {
       const fname = fieldName(f.name);
-      const desc = f.description ? f.description.split('\n')[0].trim() : 'This field is deprecated.';
       lines.push(`    def ${fname}`);
-      lines.push(`      warn "[DEPRECATION] \\\`${fname}\\\` is deprecated. ${desc}", uplevel: 1`);
+      lines.push(
+        `      warn "[DEPRECATION] \\\`${fname}\\\` is deprecated and will be removed in a future version.", uplevel: 1`,
+      );
       lines.push(`      @${fname}`);
       lines.push('    end');
       lines.push('');
@@ -182,32 +190,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     // initialize(json)
     lines.push('    def initialize(json)');
-    lines.push('      hash = json.is_a?(Hash) ? json : JSON.parse(json, symbolize_names: true)');
-    lines.push('      hash = hash.transform_keys(&:to_sym) if hash.keys.first.is_a?(String)');
+    lines.push('      hash = self.class.normalize(json)');
     for (const field of fields) {
       const fname = fieldName(field.name);
       const rawKey = field.name;
       lines.push(`      ${deserializeAssignment(fname, rawKey, field.type, field.required, enumNames, modelNames)}`);
     }
-    lines.push('    end');
-    lines.push('');
-
-    // to_h
-    lines.push('    def to_h');
-    lines.push('      {');
-    for (let i = 0; i < fields.length; i++) {
-      const field = fields[i];
-      const fname = fieldName(field.name);
-      const rawKey = field.name;
-      const value = serializeExpression(fname, field.type, enumNames, modelNames);
-      const sep = i === fields.length - 1 ? '' : ',';
-      lines.push(`        ${rubyHashLiteralKey(rawKey)} ${value}${sep}`);
-    }
-    lines.push('      }');
-    lines.push('    end');
-    lines.push('');
-    lines.push('    def to_json(*args)');
-    lines.push('      to_h.to_json(*args)');
     lines.push('    end');
 
     lines.push('  end');
@@ -298,33 +286,6 @@ function deserializeExpression(
   return accessor;
 }
 
-/** Build an expression that serializes an instance variable (accessor) to a JSON-compatible value. */
-function serializeExpression(
-  rubyFieldName: string,
-  ref: TypeRef,
-  enumNames: Set<string>,
-  modelNames: Set<string>,
-): string {
-  void enumNames;
-  if (ref.kind === 'nullable') {
-    return serializeExpression(rubyFieldName, ref.inner, enumNames, modelNames);
-  }
-  if (ref.kind === 'array') {
-    const inner = ref.items;
-    if (inner.kind === 'model' && modelNames.has(inner.name)) {
-      return `(${rubyFieldName} || []).map(&:to_h)`;
-    }
-    if (inner.kind === 'nullable' && inner.inner.kind === 'model' && modelNames.has(inner.inner.name)) {
-      return `(${rubyFieldName} || []).map { |v| v&.to_h }`;
-    }
-    return rubyFieldName;
-  }
-  if (ref.kind === 'model' && modelNames.has(ref.name)) {
-    return `${rubyFieldName}&.to_h`;
-  }
-  return rubyFieldName;
-}
-
 /** Produce a Ruby accessor expression `hash[:foo]` or `hash[:"weird#name"]` for a raw field name. */
 function rubyHashAccessor(accessor: string, name: string): string {
   if (/^[a-z_][a-zA-Z0-9_]*$/.test(name)) {
@@ -334,9 +295,11 @@ function rubyHashAccessor(accessor: string, name: string): string {
   return `${accessor}[:"${name.replace(/"/g, '\\"')}"]`;
 }
 
-/** Produce a Ruby hash key literal (e.g., `foo:` shorthand or `"foo#bar" =>`). */
+/** Produce a Ruby hash key literal (e.g., `foo:` shorthand or `"foo#bar" =>`).
+ *  Simple identifiers (including camelCase) use symbol shorthand; names with
+ *  special characters fall back to string-key `=>` syntax. */
 function rubyHashLiteralKey(name: string): string {
-  if (/^[a-z_][a-zA-Z0-9_]*$/.test(name)) {
+  if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     return `${name}:`;
   }
   return `"${name.replace(/"/g, '\\"')}" =>`;

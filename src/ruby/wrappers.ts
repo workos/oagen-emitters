@@ -124,13 +124,14 @@ function emitWrapperMethod(
   }
   lines.push('      }.compact');
 
-  // Path string
+  // Path string — use the unified @client.request helper.
   const rubyPath = interpolateRubyPath(op.path, op.pathParams ?? []);
-  const verb = httpVerbRubyMethod(op.httpMethod.toLowerCase());
-  lines.push('      response = @client.execute_request(');
-  lines.push(
-    `        request: @client.${verb}(path: ${rubyPath}, auth: true, body: body, request_options: request_options),`,
-  );
+  const verbSym = op.httpMethod.toLowerCase();
+  lines.push('      response = @client.request(');
+  lines.push(`        method: :${verbSym},`);
+  lines.push(`        path: ${rubyPath},`);
+  lines.push('        auth: true,');
+  lines.push('        body: body,');
   lines.push('        request_options: request_options');
   lines.push('      )');
 
@@ -150,26 +151,9 @@ function interpolateRubyPath(path: string, pathParams: Operation['pathParams']):
   if (!pathParams || pathParams.length === 0) return `'${path}'`;
   let result = path;
   for (const p of pathParams) {
-    result = result.split(`{${p.name}}`).join(`#{${safeParamName(p.name)}}`);
+    result = result.split(`{${p.name}}`).join(`#{WorkOS::Util.encode_path(${safeParamName(p.name)})}`);
   }
   return `"${result}"`;
-}
-
-function httpVerbRubyMethod(method: string): string {
-  switch (method) {
-    case 'get':
-      return 'get_request';
-    case 'post':
-      return 'post_request';
-    case 'put':
-      return 'put_request';
-    case 'patch':
-      return 'patch_request';
-    case 'delete':
-      return 'delete_request';
-    default:
-      return 'get_request';
-  }
 }
 
 function rubyStringLit(s: string): string {

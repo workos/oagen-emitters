@@ -81,6 +81,7 @@ export const goEmitter: Emitter = {
       args: [
         '-c',
         'GO_FILES=$(printf "%s\\n" "$@" | grep "\\.go$"); [ -n "$GO_FILES" ] && echo "$GO_FILES" | xargs gofmt -w',
+        '--',
       ],
       batchSize: 999999,
     };

@@ -252,7 +252,8 @@ function emitMethod(args: {
     const n = safeParamName(q.name);
     if (seenParamNames.has(n)) continue;
     seenParamNames.add(n);
-    sigParts.push(`${n}: nil`);
+    const defaultVal = q.name === 'order' ? rubyStringLit('desc') : 'nil';
+    sigParts.push(`${n}: ${defaultVal}`);
   }
 
   // Optional parameter group kwargs.
@@ -293,8 +294,15 @@ function emitMethod(args: {
   // Body: construct params / body / path
   const rubyPath = interpolateRubyPath(op.path, pathParams);
 
-  // Query params hash
-  const qEntries = queryParams.filter((q) => !hiddenParams.has(q.name));
+  // Query params hash.
+  // For methods with a request body (POST/PUT/PATCH), exclude query params
+  // that also appear as body fields — they belong in the body only.
+  const method_http = op.httpMethod.toLowerCase();
+  const hasBodyMethod = !['get', 'head', 'delete'].includes(method_http);
+  const bodyFieldNameSet = new Set(bodyFields.map((f) => f.name));
+  const qEntries = queryParams.filter(
+    (q) => !hiddenParams.has(q.name) && !(hasBodyMethod && bodyFieldNameSet.has(q.name)),
+  );
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
   const hasQuery = qEntries.length > 0 || hasGroups;
   if (hasQuery) {
@@ -329,7 +337,6 @@ function emitMethod(args: {
   }
 
   // Request body
-  const method_http = op.httpMethod.toLowerCase();
   const hasBody = bodyFields.length > 0 && !['get', 'head'].includes(method_http);
 
   if (hasBody) {
@@ -340,7 +347,8 @@ function emitMethod(args: {
     }
     for (const fc of inferFromClient) {
       const clientProp = fc === 'client_secret' ? 'api_key' : fc;
-      bodyEntries.push(`${rubyStringLit(fc)} => @client.${clientProp}`);
+      const optKey = fc === 'client_secret' ? 'api_key' : fc;
+      bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || @client.${clientProp})`);
     }
     for (const f of bodyFields) {
       if (hiddenParams.has(f.name)) continue;
@@ -354,17 +362,20 @@ function emitMethod(args: {
     lines.push('      }.compact');
   }
 
-  // Make the request
-  const verb = httpVerbRubyMethod(method_http);
-  const extras: string[] = [];
-  extras.push(`path: ${rubyPath}`);
-  extras.push('auth: true');
-  if (hasQuery) extras.push('params: params');
-  if (hasBody) extras.push('body: body');
+  // Make the request via the unified @client.request helper.
+  const requestArgs: string[] = [];
+  requestArgs.push(`method: :${method_http}`);
+  requestArgs.push(`path: ${rubyPath}`);
+  requestArgs.push('auth: true');
+  if (hasQuery) requestArgs.push('params: params');
+  if (hasBody) requestArgs.push('body: body');
+  requestArgs.push('request_options: request_options');
 
-  lines.push('      response = @client.execute_request(');
-  lines.push(`        request: @client.${verb}(${extras.join(', ')}, request_options: request_options),`);
-  lines.push('        request_options: request_options');
+  lines.push('      response = @client.request(');
+  for (let i = 0; i < requestArgs.length; i++) {
+    const sep = i === requestArgs.length - 1 ? '' : ',';
+    lines.push(`        ${requestArgs[i]}${sep}`);
+  }
   lines.push('      )');
 
   // Response handling
@@ -422,9 +433,9 @@ function emitResponseHandling(
     .filter((p) => p !== 'after' && p !== 'request_options')
     .map((p) => `${p}: ${p}`)
     .join(', ');
-  const filtersArg = filterEntries ? `, filters: { ${filterEntries} }` : '';
+  const _filtersArg = filterEntries ? `, filters: { ${filterEntries} }` : '';
 
-  // Pagination / list wrapper: unwrap and return ListStruct with auto-paging wired.
+  // Pagination / list wrapper: use ListStruct.from_response with auto-paging wired.
   if (ref.kind === 'model' && listWrapperModels.has(ref.name)) {
     const wrapper = listWrapperModels.get(ref.name)!;
     const dataField = wrapper.fields.find((f) => f.name === 'data');
@@ -433,25 +444,15 @@ function emitResponseHandling(
         ? `WorkOS::${className(dataField.type.items.name)}`
         : null;
 
-    // fetch_next always uses "after" for forward pagination regardless of
-    // op.pagination.param (which may be "before" in some IR representations).
     const cursorLocal = safeParamName('after');
     const hasCursorInSignature = forwardableParams.includes(cursorLocal);
 
     const out: string[] = [];
-    out.push(`parsed = JSON.parse(response.body)`);
-    if (itemCls) {
-      out.push(`items = (parsed['data'] || []).map { |item| ${itemCls}.new(item) }`);
-    } else {
-      out.push(`items = parsed['data'] || []`);
-    }
 
     if (hasCursorInSignature) {
-      // Capture current kwargs into a lambda that overrides the cursor param and
-      // forwards everything else (including request_options).
-      out.push(`fetch_next = lambda do |metadata|`);
-      out.push(`  cursor = metadata.is_a?(Hash) ? (metadata['after'] || metadata[:after]) : nil`);
-      out.push(`  return nil if cursor.nil? || cursor.to_s.empty?`);
+      // Build a fetch_next lambda that accepts a cursor string and replays
+      // the current call with the new cursor.
+      out.push(`fetch_next = ->(cursor) {`);
       out.push(`  ${currentMethod}(`);
       const allForwards = [...forwardableParams, 'request_options'];
       for (let i = 0; i < allForwards.length; i++) {
@@ -461,18 +462,35 @@ function emitResponseHandling(
         out.push(`    ${param}: ${value}${sep}`);
       }
       out.push(`  )`);
-      out.push(`end`);
-      out.push(
-        `WorkOS::Types::ListStruct.new(data: items, list_metadata: parsed['list_metadata'], fetch_next: fetch_next${filtersArg})`,
-      );
+      out.push(`}`);
+    }
+
+    const fromArgs: string[] = [];
+    fromArgs.push('response');
+    if (itemCls) fromArgs.push(`model: ${itemCls}`);
+    if (filterEntries) fromArgs.push(`filters: { ${filterEntries} }`);
+    if (hasCursorInSignature) fromArgs.push('fetch_next: fetch_next');
+
+    if (fromArgs.length <= 2) {
+      out.push(`WorkOS::Types::ListStruct.from_response(${fromArgs.join(', ')})`);
     } else {
-      out.push(`WorkOS::Types::ListStruct.new(data: items, list_metadata: parsed['list_metadata']${filtersArg})`);
+      out.push(`WorkOS::Types::ListStruct.from_response(`);
+      for (let i = 0; i < fromArgs.length; i++) {
+        const sep = i === fromArgs.length - 1 ? '' : ',';
+        out.push(`  ${fromArgs[i]}${sep}`);
+      }
+      out.push(`)`);
     }
     return out;
   }
 
   if (ref.kind === 'model' && modelNames.has(ref.name)) {
-    return [`WorkOS::${className(ref.name)}.new(response.body)`];
+    const cls = `WorkOS::${className(ref.name)}`;
+    return [
+      `result = ${cls}.new(response.body)`,
+      `result.last_response = WorkOS::Types::ApiResponse.new(http_status: response.code.to_i, http_headers: response.each_header.to_h, request_id: response["x-request-id"])`,
+      `result`,
+    ];
   }
 
   // Paginated endpoint whose IR response is typed as array (the IR lost the
@@ -486,17 +504,9 @@ function emitResponseHandling(
     const hasCursorInSignature = forwardableParams.includes(cursorLocal);
 
     const out: string[] = [];
-    out.push(`parsed = JSON.parse(response.body)`);
-    if (itemCls) {
-      out.push(`items = (parsed['data'] || []).map { |item| ${itemCls}.new(item) }`);
-    } else {
-      out.push(`items = parsed['data'] || []`);
-    }
 
     if (hasCursorInSignature) {
-      out.push(`fetch_next = lambda do |metadata|`);
-      out.push(`  cursor = metadata.is_a?(Hash) ? (metadata['after'] || metadata[:after]) : nil`);
-      out.push(`  return nil if cursor.nil? || cursor.to_s.empty?`);
+      out.push(`fetch_next = ->(cursor) {`);
       out.push(`  ${currentMethod}(`);
       const allForwards = [...forwardableParams, 'request_options'];
       for (let i = 0; i < allForwards.length; i++) {
@@ -506,12 +516,24 @@ function emitResponseHandling(
         out.push(`    ${param}: ${value}${sep}`);
       }
       out.push(`  )`);
-      out.push(`end`);
-      out.push(
-        `WorkOS::Types::ListStruct.new(data: items, list_metadata: parsed['list_metadata'], fetch_next: fetch_next${filtersArg})`,
-      );
+      out.push(`}`);
+    }
+
+    const fromArgs: string[] = [];
+    fromArgs.push('response');
+    if (itemCls) fromArgs.push(`model: ${itemCls}`);
+    if (filterEntries) fromArgs.push(`filters: { ${filterEntries} }`);
+    if (hasCursorInSignature) fromArgs.push('fetch_next: fetch_next');
+
+    if (fromArgs.length <= 2) {
+      out.push(`WorkOS::Types::ListStruct.from_response(${fromArgs.join(', ')})`);
     } else {
-      out.push(`WorkOS::Types::ListStruct.new(data: items, list_metadata: parsed['list_metadata']${filtersArg})`);
+      out.push(`WorkOS::Types::ListStruct.from_response(`);
+      for (let i = 0; i < fromArgs.length; i++) {
+        const sep = i === fromArgs.length - 1 ? '' : ',';
+        out.push(`  ${fromArgs[i]}${sep}`);
+      }
+      out.push(`)`);
     }
     return out;
   }
@@ -650,28 +672,9 @@ function interpolateRubyPath(path: string, pathParams: Parameter[]): string {
   let result = path;
   for (const p of pathParams) {
     const placeholder = `{${p.name}}`;
-    result = result.split(placeholder).join(`#{${safeParamName(p.name)}}`);
+    result = result.split(placeholder).join(`#{WorkOS::Util.encode_path(${safeParamName(p.name)})}`);
   }
   return `"${result}"`;
-}
-
-/** Map HTTP verb to the client method name (get_request, post_request, ...). */
-function httpVerbRubyMethod(method: string): string {
-  const m = method.toLowerCase();
-  switch (m) {
-    case 'get':
-      return 'get_request';
-    case 'post':
-      return 'post_request';
-    case 'put':
-      return 'put_request';
-    case 'patch':
-      return 'patch_request';
-    case 'delete':
-      return 'delete_request';
-    default:
-      return 'get_request';
-  }
 }
 
 /** Collapse multi-line description text into a single YARD-safe line. */
@@ -731,19 +734,26 @@ function buildYardDoc(
     const deprecatedPrefix = q.deprecated ? '(deprecated) ' : '';
     lines.push(`# @param ${n} [${type}${suffix}] ${deprecatedPrefix}${oneLine(q.description)}`.trim());
   }
-  lines.push(
-    `# @param request_options [Hash] Per-request overrides: :api_key, :timeout, :base_url, :max_retries, :idempotency_key, :extra_headers.`,
-  );
+  lines.push(`# @param request_options [Hash] (see WorkOS::Types::RequestOptions)`);
 
   // Return type: void for unknown-primitive, ListStruct for list wrappers and
-  // paginated array endpoints.
+  // paginated array endpoints (with element type annotation).
   const ref = op.response;
   if (ref.kind === 'primitive' && ref.type === 'unknown') {
     lines.push(`# @return [void]`);
   } else if (ref.kind === 'model' && listWrapperModels?.has(ref.name)) {
-    lines.push(`# @return [WorkOS::Types::ListStruct]`);
+    const wrapper = listWrapperModels.get(ref.name)!;
+    const dataField = wrapper.fields.find((f: { name: string; type: TypeRef }) => f.name === 'data');
+    const elementType =
+      dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model'
+        ? `WorkOS::${className(dataField.type.items.name)}`
+        : null;
+    const suffix = elementType ? `<${elementType}>` : '';
+    lines.push(`# @return [WorkOS::Types::ListStruct${suffix}]`);
   } else if (ref.kind === 'array' && op.pagination) {
-    lines.push(`# @return [WorkOS::Types::ListStruct]`);
+    const elementType = ref.items.kind === 'model' ? `WorkOS::${className(ref.items.name)}` : null;
+    const suffix = elementType ? `<${elementType}>` : '';
+    lines.push(`# @return [WorkOS::Types::ListStruct${suffix}]`);
   } else {
     const retType = mapTypeRefForYard(ref);
     lines.push(`# @return [${retType}]`);

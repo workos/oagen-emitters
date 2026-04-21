@@ -1,6 +1,6 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
-import { className, propertyName, ktStringLiteral } from './naming.js';
+import { className, propertyName, ktStringLiteral, humanize } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 
@@ -89,7 +89,13 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
       const canonicalType = className(canonical);
       // Skip when different IR names collapse to the same output name
       if (typeName === canonicalType) continue;
-      const aliasContent = [`package ${MODELS_PACKAGE}`, '', `typealias ${typeName} = ${canonicalType}`, ''].join('\n');
+      const aliasContent = [
+        `package ${MODELS_PACKAGE}`,
+        '',
+        `/** Alias for [${canonicalType}]. */`,
+        `typealias ${typeName} = ${canonicalType}`,
+        '',
+      ].join('\n');
       files.push({
         path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${typeName}.kt`,
         content: aliasContent,
@@ -99,6 +105,23 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
     }
 
     files.push(emitDataClass(model));
+  }
+
+  // Generate the sealed WorkOSEvent interface. Collect all event envelope
+  // models that have a literal `event` field and build the @JsonSubTypes
+  // mapping so Jackson can deserialize directly to the correct concrete type.
+  const eventMapping: Array<{ wireValue: string; modelName: string }> = [];
+  for (const model of models) {
+    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (aliasOf.has(model.name)) continue;
+    if (!isEventEnvelopeModel(model)) continue;
+    const eventField = model.fields.find((f) => f.name === 'event');
+    if (eventField && eventField.type.kind === 'literal' && typeof eventField.type.value === 'string') {
+      eventMapping.push({ wireValue: eventField.type.value, modelName: model.name });
+    }
+  }
+  if (eventMapping.length > 0) {
+    files.push(emitWorkOSEvent(eventMapping));
   }
 
   return files;
@@ -117,7 +140,7 @@ function emitDataClass(model: Model): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
   const implementsEvent = isEventEnvelopeModel(model);
-  if (implementsEvent) imports.add('com.workos.common.http.WorkOSEvent');
+  // WorkOSEvent sealed interface is generated in the same package — no import needed.
   const lines: string[] = [];
   lines.push(`package ${MODELS_PACKAGE}`);
   lines.push('');
@@ -200,6 +223,72 @@ function emitSealedUnion(
   };
 }
 
+/**
+ * Emit the sealed `WorkOSEvent` interface with Jackson discriminated
+ * deserialization. Each concrete event model (UserCreated, DsyncUserUpdated,
+ * etc.) already extends this interface. The `@JsonSubTypes` annotation lets
+ * Jackson pick the right subclass when deserializing JSON with an `event`
+ * discriminator field. `EventSchema` is the fallback for unknown event types.
+ */
+function emitWorkOSEvent(eventMapping: Array<{ wireValue: string; modelName: string }>): GeneratedFile {
+  const lines: string[] = [];
+  lines.push(`package ${MODELS_PACKAGE}`);
+  lines.push('');
+  lines.push('import com.fasterxml.jackson.annotation.JsonSubTypes');
+  lines.push('import com.fasterxml.jackson.annotation.JsonTypeInfo');
+  lines.push('import java.time.OffsetDateTime');
+  lines.push('');
+
+  lines.push('/**');
+  lines.push(' * Sealed interface for all webhook/event envelope models.');
+  lines.push(' *');
+  lines.push(' * Jackson deserializes incoming event JSON to the correct concrete type');
+  lines.push(' * based on the `event` discriminator field. Unknown event types fall back');
+  lines.push(' * to [EventSchema] with untyped `data: Map<String, Any>`.');
+  lines.push(' *');
+  lines.push(' * ```kotlin');
+  lines.push(' * val event: WorkOSEvent = objectMapper.readValue(json, WorkOSEvent::class.java)');
+  lines.push(' * when (event) {');
+  lines.push(' *   is UserCreated -> println("User created: ${event.data.id}")');
+  lines.push(' *   is EventSchema -> println("Unknown event: ${event.event}")');
+  lines.push(' * }');
+  lines.push(' * ```');
+  lines.push(' */');
+
+  lines.push('@JsonTypeInfo(');
+  lines.push('  use = JsonTypeInfo.Id.NAME,');
+  lines.push('  include = JsonTypeInfo.As.EXISTING_PROPERTY,');
+  lines.push('  property = "event",');
+  lines.push('  visible = true,');
+  lines.push('  defaultImpl = EventSchema::class');
+  lines.push(')');
+  lines.push('@JsonSubTypes(');
+  // Sort entries for stable output
+  const sorted = [...eventMapping].sort((a, b) => a.wireValue.localeCompare(b.wireValue));
+  for (let i = 0; i < sorted.length; i++) {
+    const { wireValue, modelName } = sorted[i];
+    const typeName = className(modelName);
+    const suffix = i === sorted.length - 1 ? '' : ',';
+    lines.push(`  JsonSubTypes.Type(value = ${typeName}::class, name = ${ktStringLiteral(wireValue)})${suffix}`);
+  }
+  lines.push(')');
+  lines.push('sealed interface WorkOSEvent {');
+  lines.push('  /** Unique identifier for this event. */');
+  lines.push('  val id: String');
+  lines.push('  /** The event type identifier. */');
+  lines.push('  val event: String');
+  lines.push('  /** Timestamp when the event was created. */');
+  lines.push('  val createdAt: OffsetDateTime');
+  lines.push('}');
+  lines.push('');
+
+  return {
+    path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/WorkOSEvent.kt`,
+    content: lines.join('\n'),
+    overwriteExisting: true,
+  };
+}
+
 function renderFields(fields: Field[], overrideFields: Set<string> = new Set()): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
@@ -244,6 +333,8 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
       lines.push(`  /** ${escapeKdoc(line.trim())} */`);
     } else if (literalDefault !== null) {
       lines.push(`  /** Always \`${literalDefault}\`. */`);
+    } else {
+      lines.push(`  /** The ${humanize(field.name)}. */`);
     }
     for (const anno of annotations) lines.push(`  ${anno}`);
 

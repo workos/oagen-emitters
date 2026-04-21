@@ -38,6 +38,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push('  end');
 
     const emittedTestMethods = new Set<string>();
+    const authMethodManifest: { method: string; httpMethodSym: string; stubUrl: string; callArgs: string }[] = [];
 
     for (const op of group.operations) {
       const ownerService = group.resolvedOps.find((r) => r.operation === op)?.service;
@@ -52,8 +53,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       emittedTestMethods.add(method);
       lines.push('');
 
-      // Derive a simple path regex fragment (first segment).
-      const pathFragment = op.path.replace(/^\/+/, '').split(/[/{]/)[0] || op.path;
+      // Build the exact stub URL with path params substituted.
+      const stubUrl = buildStubUrl(op);
 
       const isList =
         (op.response.kind === 'model' &&
@@ -62,40 +63,34 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         // Also detect paginated endpoints whose IR response is typed as array
         (op.response.kind === 'array' && !!op.pagination);
 
-      const isDelete = op.httpMethod.toLowerCase() === 'delete';
+      const _isDelete = op.httpMethod.toLowerCase() === 'delete';
       const httpMethodSym = `:${op.httpMethod.toLowerCase()}`;
 
       const resolved = lookupResolved(op, lookup);
       const hiddenParams = buildHiddenParams(resolved);
       const callArgs = buildCallArgsStub(op, modelByName, hiddenParams);
 
+      // Collect method info for the parameterized 401 test (T20).
+      authMethodManifest.push({ method, httpMethodSym, stubUrl, callArgs });
+
+      const stubRegex = stubUrlRegex(stubUrl);
       lines.push(`  def test_${method}_returns_expected_result`);
       if (isList) {
-        lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
+        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: '{"data": [], "list_metadata": {}}', status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
         lines.push('    assert_kind_of WorkOS::Types::ListStruct, result');
-      } else if (isDelete || op.response.kind === 'primitive') {
-        lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
+      } else if (op.response.kind === 'primitive') {
+        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: "{}", status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
-        lines.push('    assert_nil result if result.nil?');
+        lines.push('    assert_nil result');
       } else {
-        lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
+        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: "{}", status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
         lines.push('    refute_nil result');
       }
-      lines.push('  end');
-
-      // Error-path test for 401
-      lines.push('');
-      lines.push(`  def test_${method}_raises_authentication_error_on_401`);
-      lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
-      lines.push(`      .to_return(body: '{"message": "Unauthorized"}', status: 401)`);
-      lines.push(`    assert_raises(WorkOS::AuthenticationError) do`);
-      lines.push(`      @client.${prop}.${method}(${callArgs})`);
-      lines.push('    end');
       lines.push('  end');
 
       // Wrapper tests (union split variants).
@@ -106,12 +101,34 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
             wrapper,
             op,
             prop,
-            pathFragment,
+            stubUrl,
             httpMethodSym,
             ctx,
           });
         }
       }
+    }
+
+    // T20: parameterized 401 test — one define_method per endpoint.
+    if (authMethodManifest.length > 0) {
+      lines.push('');
+      lines.push('  # Parameterized authentication error tests (one per endpoint).');
+      lines.push('  [');
+      for (const entry of authMethodManifest) {
+        const argsLit = entry.callArgs ? `, args: { ${entry.callArgs} }` : '';
+        lines.push(
+          `    { name: :${entry.method}, verb: ${entry.httpMethodSym}, url: ${stubUrlRegex(entry.stubUrl)}${argsLit} },`,
+        );
+      }
+      lines.push('  ].each do |spec|');
+      lines.push(`    define_method("test_#{spec[:name]}_raises_authentication_error_on_401") do`);
+      lines.push(`      stub_request(spec[:verb], spec[:url])`);
+      lines.push(`        .to_return(body: '{"message": "Unauthorized"}', status: 401)`);
+      lines.push(`      assert_raises(WorkOS::AuthenticationError) do`);
+      lines.push(`        @client.${prop}.send(spec[:name], **(spec[:args] || {}))`);
+      lines.push('      end');
+      lines.push('    end');
+      lines.push('  end');
     }
 
     lines.push('end');
@@ -195,6 +212,10 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile {
       lines.push('    json = model.to_h');
       lines.push('    assert_kind_of Hash, json');
       for (const a of assertions) lines.push(a);
+      // T23: Assert every fixture key round-trips into to_h (handles both symbol and string keys).
+      lines.push(
+        '    fixture.each_key { |k| assert json.key?(k.to_sym) || json.key?(k), "Expected to_h to include key #{k}" }',
+      );
     }
     lines.push('  end');
   }
@@ -336,11 +357,11 @@ function emitWrapperTests(args: {
   wrapper: ResolvedWrapper;
   op: Operation;
   prop: string;
-  pathFragment: string;
+  stubUrl: string;
   httpMethodSym: string;
   ctx: EmitterContext;
 }): void {
-  const { lines, wrapper, op, prop, pathFragment, httpMethodSym, ctx } = args;
+  const { lines, wrapper, op, prop, stubUrl, httpMethodSym, ctx } = args;
   const wrapperParams = resolveWrapperParams(wrapper, ctx);
 
   // Build call args: path params + required exposed params only.
@@ -361,9 +382,10 @@ function emitWrapperTests(args: {
   }
   const callArgs = parts.join(', ');
 
+  const wrapperRegex = stubUrlRegex(stubUrl);
   lines.push('');
   lines.push(`  def test_${wrapper.name}_returns_expected_result`);
-  lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
+  lines.push(`    stub_request(${httpMethodSym}, ${wrapperRegex})`);
   lines.push(`      .to_return(body: "{}", status: 200)`);
   lines.push(`    result = @client.${prop}.${wrapper.name}(${callArgs})`);
   lines.push('    refute_nil result');
@@ -371,7 +393,7 @@ function emitWrapperTests(args: {
 
   lines.push('');
   lines.push(`  def test_${wrapper.name}_raises_authentication_error_on_401`);
-  lines.push(`    stub_request(${httpMethodSym}, /#{Regexp.escape("${pathFragment}")}/)`);
+  lines.push(`    stub_request(${httpMethodSym}, ${wrapperRegex})`);
   lines.push(`      .to_return(body: '{"message": "Unauthorized"}', status: 401)`);
   lines.push(`    assert_raises(WorkOS::AuthenticationError) do`);
   lines.push(`      @client.${prop}.${wrapper.name}(${callArgs})`);
@@ -413,4 +435,25 @@ function stubValueFor(ref: TypeRef): string {
     default:
       return `nil`;
   }
+}
+
+/**
+ * Build a WebMock-compatible regex string that matches the exact API path
+ * (with stub path params) plus an optional query string.
+ *
+ * Returns a Ruby Regexp literal like: %r{\Ahttps://api\.workos\.com/organizations(\?|\z)}
+ */
+function buildStubUrl(op: Operation): string {
+  let path = op.path;
+  for (const p of op.pathParams ?? []) {
+    path = path.replace(`{${p.name}}`, 'stub');
+  }
+  // Escape regex special chars in the URL path (dots, slashes, etc.)
+  const escaped = `https://api.workos.com${path}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escaped;
+}
+
+/** Format the stub URL as a Ruby regex literal for WebMock. */
+function stubUrlRegex(escaped: string): string {
+  return `%r{\\A${escaped}(\\?|\\z)}`;
 }

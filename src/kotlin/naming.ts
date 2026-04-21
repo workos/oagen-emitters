@@ -50,6 +50,7 @@ export function packageSegment(name: string): string {
 
 /** Kotlin service class name for a mount group (e.g., `Organizations`). */
 export function apiClassName(name: string): string {
+  if (className(name) === 'SSO') return 'Sso';
   return className(name);
 }
 

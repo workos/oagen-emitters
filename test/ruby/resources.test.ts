@@ -68,7 +68,7 @@ describe('ruby/resources', () => {
 
   // ── P0-1: request_options forwarding ────────────────────────────────────
 
-  it('forwards request_options to request builder and execute_request', () => {
+  it('forwards request_options to the unified request helper', () => {
     const services: Service[] = [
       {
         name: 'Organizations',
@@ -86,12 +86,13 @@ describe('ruby/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
 
-    // request_options passed to the request builder
-    expect(content).toContain('request_options: request_options)');
-    // request_options passed to execute_request
+    // Uses the unified @client.request helper
+    expect(content).toContain('@client.request(');
+    expect(content).toContain('method: :get');
     expect(content).toContain('request_options: request_options');
-    // The execute_request call should have request_options as a separate arg
-    expect(content).toMatch(/execute_request\(\s*request:.*,\s*request_options: request_options/s);
+    // Should NOT use the two-layer execute_request(X_request(...)) pattern
+    expect(content).not.toContain('execute_request(');
+    expect(content).not.toContain('get_request(');
   });
 
   it('forwards request_options in POST methods', () => {
@@ -117,9 +118,10 @@ describe('ruby/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
 
-    expect(content).toContain('post_request(');
-    expect(content).toContain('request_options: request_options)');
-    expect(content).toMatch(/execute_request\(\s*request:.*,\s*request_options: request_options/s);
+    expect(content).toContain('@client.request(');
+    expect(content).toContain('method: :post');
+    expect(content).toContain('body: body');
+    expect(content).toContain('request_options: request_options');
   });
 
   // ── P0-2: pagination cursor direction ──────────────────────────────────
@@ -177,13 +179,12 @@ describe('ruby/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
 
-    // fetch_next must read "after" from metadata, not "before"
-    expect(content).toContain("metadata['after']");
-    expect(content).not.toMatch(/metadata\['before'\]/);
-    // The recursive call must pass after: cursor
+    // fetch_next lambda receives cursor string; the recursive call passes after: cursor
     expect(content).toContain('after: cursor');
     // Must NOT pass before: cursor in the recursive call
     expect(content).not.toMatch(/before: cursor/);
+    // Should use ListStruct.from_response
+    expect(content).toContain('ListStruct.from_response(');
   });
 
   // ── P0-3: paginated response shape detection ──────────────────────────
@@ -219,10 +220,8 @@ describe('ruby/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
 
-    // Should generate ListStruct, not bare array mapping
-    expect(content).toContain('WorkOS::Types::ListStruct.new(');
-    expect(content).toContain("parsed['data']");
-    expect(content).toContain("parsed['list_metadata']");
+    // Should generate ListStruct.from_response, not bare array mapping
+    expect(content).toContain('ListStruct.from_response(');
     // Should NOT be treating response as bare array
     expect(content).not.toContain('(parsed || []).map');
   });
@@ -287,8 +286,8 @@ describe('ruby/resources', () => {
     // Should construct a body hash
     expect(content).toContain('body = {');
     expect(content).toContain("'role_slug' => role_slug");
-    // Should pass body to delete_request
-    expect(content).toContain('delete_request(');
+    // Should pass body to the request helper
+    expect(content).toContain('@client.request(');
     expect(content).toContain('body: body');
   });
 
@@ -313,7 +312,7 @@ describe('ruby/resources', () => {
 
     // No body construction
     expect(content).not.toContain('body = {');
-    expect(content).toContain('delete_request(');
+    expect(content).toContain('method: :delete');
   });
 
   // ── P0-5: path/body parameter name collision ───────────────────────────
@@ -346,8 +345,8 @@ describe('ruby/resources', () => {
     expect(content).toContain('slug:');
     expect(content).toContain('body_slug:');
 
-    // Path interpolation uses slug (the path param) with CGI.escape
-    expect(content).toContain('CGI.escape(slug.to_s)');
+    // Path interpolation uses slug (the path param) with Util.encode_path
+    expect(content).toContain('WorkOS::Util.encode_path(slug)');
 
     // Body hash uses body_slug for the wire name "slug"
     expect(content).toContain("'slug' => body_slug");

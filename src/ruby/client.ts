@@ -48,6 +48,7 @@ const NON_SPEC_INFLECTIONS: ReadonlyArray<readonly [string, string]> = [['pkce',
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
+  files.push(generateInflectionsFile(spec, ctx));
   files.push(generateMainEntryFile(spec, ctx));
   files.push(generateClientClass(spec, ctx));
   return files;
@@ -82,19 +83,12 @@ function rubyCamelize(basename: string): string {
     .join('');
 }
 
-/** Generate lib/workos.rb — Zeitwerk bootstrap for the gem. */
-function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
-  // Collect every (file basename -> class name) pair the loader must resolve.
-  // We include:
-  //   - the top-level module ("workos" -> "WorkOS")
-  //   - every model / enum / service emitted below lib/workos/
-  //   - hand-maintained runtime constants whose filenames also need casing help
+/** Build the inflection map: file basename -> class name for all generated constants. */
+function buildInflectionMap(spec: ApiSpec, ctx: EmitterContext): Map<string, string> {
   const inflections = new Map<string, string>();
 
-  // Top-level module
   inflections.set('workos', 'WorkOS');
 
-  // Services
   for (const service of buildTopLevelServices(spec, ctx)) {
     const target = getMountTarget(service, ctx) || resolveClassName(service, ctx);
     const cls = className(target);
@@ -102,7 +96,6 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
     if (rubyCamelize(file) !== cls) inflections.set(file, cls);
   }
 
-  // Models
   const seenClasses = new Set<string>();
   for (const model of spec.models as Model[]) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
@@ -113,8 +106,6 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
     if (rubyCamelize(file) !== cls) inflections.set(file, cls);
   }
 
-  // Enums (live under Types; still use flat basename since Zeitwerk inflects
-  // by basename regardless of directory).
   const seenEnums = new Set<string>();
   for (const enumDef of spec.enums as Enum[]) {
     const cls = className(enumDef.name);
@@ -124,23 +115,39 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
     if (rubyCamelize(file) !== cls) inflections.set(file, cls);
   }
 
-  // Hand-maintained class names that need a Zeitwerk inflection override.
   for (const [file, cls] of NON_SPEC_INFLECTIONS) inflections.set(file, cls);
 
+  return inflections;
+}
+
+/** Generate lib/workos/inflections.rb — Zeitwerk inflection overrides (T40/C5). */
+function generateInflectionsFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
+  const inflections = buildInflectionMap(spec, ctx);
   const inflectEntries = [...inflections.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([fileBase, cls]) => `  "${fileBase}" => "${cls}"`)
     .join(',\n');
 
-  // Collect model subfolders so Zeitwerk can `collapse` them. Models are grouped
-  // under lib/workos/{mount_target}/ for readability, but the namespace stays
-  // flat (WorkOS::Organization, not WorkOS::Organizations::Organization).
+  const lines: string[] = [];
+  lines.push('# Zeitwerk inflection overrides for the WorkOS gem.');
+  lines.push('# Maps file basenames to class/module names where the default');
+  lines.push('# CamelCase inference disagrees with the canonical class name.');
+  lines.push('WORKOS_INFLECTIONS = {');
+  lines.push(inflectEntries);
+  lines.push('}.freeze');
+
+  return {
+    path: 'lib/workos/inflections.rb',
+    content: lines.join('\n'),
+    integrateTarget: true,
+    overwriteExisting: true,
+  };
+}
+
+/** Generate lib/workos.rb — Zeitwerk bootstrap for the gem. */
+function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const modelSubdirs = collectModelSubdirs(spec, ctx);
 
-  // lib/workos/errors.rb defines several classes in one file (Error, APIError,
-  // AuthenticationError, ...). Zeitwerk's strict one-constant-per-file rule
-  // would reject that, so we tell the loader to ignore the path and eager-
-  // require it ourselves right after setup.
   const lines: string[] = [];
   lines.push(`require 'zeitwerk'`);
   lines.push('');
@@ -148,9 +155,8 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   lines.push('end');
   lines.push('');
   lines.push('loader = Zeitwerk::Loader.for_gem');
-  lines.push('loader.inflector.inflect(');
-  lines.push(inflectEntries);
-  lines.push(')');
+  lines.push(`require_relative 'workos/inflections'`);
+  lines.push('loader.inflector.inflect(WORKOS_INFLECTIONS)');
   for (const dir of modelSubdirs) {
     lines.push(`loader.collapse("#{__dir__}/workos/${dir}")`);
   }

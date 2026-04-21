@@ -7,6 +7,7 @@ import type {
   TypeRef,
   ResolvedOperation,
   Parameter,
+  Model,
 } from '@workos/oagen';
 
 /** Extend Parameter with `explode` until @workos/oagen publishes the field. */
@@ -39,6 +40,7 @@ import {
   getOpInferFromClient,
   buildHiddenParams as buildHiddenParamsShared,
   collectGroupedParamNames,
+  collectBodyFieldTypes,
 } from '../shared/resolved-ops.js';
 import {
   generateSyncWrapperMethods,
@@ -81,11 +83,16 @@ function groupVariantClassName(groupName: string, variantName: string): string {
  * across a set of operations. Returns lines to insert near the top of the
  * resource file (after imports, before class definitions).
  */
-function generateParameterGroupDataclasses(operations: Operation[], specEnumNames: Set<string>): string[] {
+function generateParameterGroupDataclasses(
+  operations: Operation[],
+  specEnumNames: Set<string>,
+  models: Model[],
+): string[] {
   const lines: string[] = [];
   const emitted = new Set<string>();
 
   for (const op of operations) {
+    const bodyFieldTypes = collectBodyFieldTypes(op, models);
     for (const group of op.parameterGroups ?? []) {
       for (const variant of group.variants) {
         const variantClass = groupVariantClassName(group.name, variant.name);
@@ -100,7 +107,8 @@ function generateParameterGroupDataclasses(operations: Operation[], specEnumName
         lines.push(`    """Identify ${readableGroup} ${readableVariant}."""`);
         for (const param of variant.parameters) {
           const pyField = fieldName(param.name);
-          const pyType = mapTypeRefUnquoted(param.type, specEnumNames, true);
+          const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+          const pyType = mapTypeRefUnquoted(effectiveType, specEnumNames, true);
           lines.push(`    ${pyField}: ${pyType}`);
         }
       }
@@ -185,11 +193,16 @@ function emitMethodSignature(
   const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
 
   // Request body fields as keyword args (rename fields that clash with path params)
+  const groupedBodyParamNames = collectGroupedParamNames(op);
   if (plan.hasBody && op.requestBody) {
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
-      const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams.has(f.name));
-      const optFields = bodyModel.fields.filter((f) => !f.required && !hiddenParams.has(f.name));
+      const reqFields = bodyModel.fields.filter(
+        (f) => f.required && !hiddenParams.has(f.name) && !groupedBodyParamNames.has(f.name),
+      );
+      const optFields = bodyModel.fields.filter(
+        (f) => !f.required && !hiddenParams.has(f.name) && !groupedBodyParamNames.has(f.name),
+      );
       for (const f of reqFields) {
         const fieldType = mapTypeRefUnquoted(f.type, specEnumNames, true);
         if (usesClientCredentialDefaults && (f.name === 'client_id' || f.name === 'client_secret')) {
@@ -261,7 +274,7 @@ function emitMethodSignature(
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     const orderType =
       orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames, true) : 'str';
-    lines.push(`        order: Optional[${orderType}] = None,`);
+    lines.push(`        order: Optional[${orderType}] = "desc",`);
     // Additional non-pagination query params
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
@@ -366,6 +379,7 @@ function emitMethodDocstring(
   }));
 
   // Add body model fields to docs
+  const groupedDocBodyParams = collectGroupedParamNames(op);
   if (plan.hasBody && op.requestBody) {
     if (op.requestBody.kind === 'model') {
       const requestBodyName = op.requestBody.name;
@@ -373,6 +387,7 @@ function emitMethodDocstring(
       if (bodyModel) {
         for (const f of bodyModel.fields) {
           if (hiddenParams.has(f.name)) continue;
+          if (groupedDocBodyParams.has(f.name)) continue;
           allParams.push({
             name: bodyParamName(f, pathParamNames),
             desc: f.deprecated ? (f.description ? `(deprecated) ${f.description}` : '(deprecated)') : f.description,
@@ -643,11 +658,14 @@ function emitMethodBody(
     lines.push('        )');
   } else if (plan.isDelete) {
     // Build body dict if the DELETE has a request body
+    const deleteGroupedParams = collectGroupedParamNames(op);
     const deleteBodyFieldNames = new Set<string>();
     if (plan.hasBody && op.requestBody) {
       const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
       if (bodyModel) {
-        const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name));
+        const bodyFields = bodyModel.fields.filter(
+          (f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name),
+        );
         for (const f of bodyFields) deleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
         const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
         if (bodyFields.length > 0 && hasOptionalBodyFields) {
@@ -681,6 +699,8 @@ function emitMethodBody(
             lines.push(`            body["${field}"] = ${expr}`);
           }
         }
+        // isinstance dispatch for parameter groups into body
+        emitGroupDispatch(lines, op, 'body', collectBodyFieldTypes(op, ctx.spec.models));
       }
     }
     // Build query params dict if any exist alongside the body/path
@@ -700,10 +720,11 @@ function emitMethodBody(
   } else if (plan.hasBody && op.requestBody) {
     const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
     // Build body dict
+    const bodyGroupedParams = collectGroupedParamNames(op);
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     const bodyFieldNamesSet = new Set<string>();
     if (bodyModel) {
-      const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name));
+      const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name));
       for (const f of bodyFields) bodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
       const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
       if (bodyFields.length > 0 && hasOptionalBodyFields) {
@@ -739,6 +760,8 @@ function emitMethodBody(
           lines.push(`            body["${field}"] = ${expr}`);
         }
       }
+      // isinstance dispatch for parameter groups into body
+      emitGroupDispatch(lines, op, 'body', collectBodyFieldTypes(op, ctx.spec.models));
     } else {
       // Union or non-model body — convert model instances to dicts
       lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
@@ -882,20 +905,35 @@ function emitMethodBody(
  * Emit isinstance dispatch blocks for all parameter groups on an operation.
  * Each group produces a chain of if/elif branches that test the group kwarg
  * against each variant dataclass and serializes the variant's parameters
- * into the `params` dict using their wire names.
+ * into the target dict using their wire names.
+ *
+ * @param target - The Python dict variable to write into (e.g., "params" or "body").
  */
-function emitGroupDispatch(lines: string[], op: Operation): void {
+function emitGroupDispatch(
+  lines: string[],
+  op: Operation,
+  target = 'params',
+  bodyFieldTypes?: Map<string, TypeRef>,
+): void {
   for (const group of op.parameterGroups ?? []) {
     const groupParam = fieldName(group.name);
+    if (group.optional) {
+      lines.push(`        if ${groupParam} is not None:`);
+    }
+    const indent = group.optional ? '    ' : '';
     let first = true;
     for (const variant of group.variants) {
       const variantClass = groupVariantClassName(group.name, variant.name);
       const keyword = first ? 'if' : 'elif';
       first = false;
-      lines.push(`        ${keyword} isinstance(${groupParam}, ${variantClass}):`);
+      lines.push(`        ${indent}${keyword} isinstance(${groupParam}, ${variantClass}):`);
       for (const param of variant.parameters) {
         const pyField = fieldName(param.name);
-        lines.push(`            params["${param.name}"] = ${groupParam}.${pyField}`);
+        const resolvedType = bodyFieldTypes?.get(param.name) ?? param.type;
+        const effectiveType = resolvedType.kind === 'nullable' ? resolvedType.inner : resolvedType;
+        const isEnum = effectiveType.kind === 'enum';
+        const value = isEnum ? `enum_value(${groupParam}.${pyField})` : `${groupParam}.${pyField}`;
+        lines.push(`            ${indent}${target}["${param.name}"] = ${value}`);
       }
     }
   }
@@ -969,7 +1007,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         // Also collect types from body model fields (expanded as keyword params)
         const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyRef.name);
         if (bodyModel) {
+          const importGroupedParams = collectGroupedParamNames(op);
           for (const f of bodyModel.fields) {
+            if (importGroupedParams.has(f.name)) continue;
             for (const ref of collectModelRefs(f.type)) modelImports.add(ref);
             for (const ref of collectEnumRefs(f.type)) enumImports.add(ref);
           }
@@ -1111,7 +1151,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const hasGroups = hasParameterGroups(allOperations);
     if (hasGroups) {
       lines.push('from dataclasses import dataclass');
-      const dataclassLines = generateParameterGroupDataclasses(allOperations, specEnumNames);
+      const dataclassLines = generateParameterGroupDataclasses(allOperations, specEnumNames, ctx.spec.models);
       lines.push(...dataclassLines);
     }
     // --- Generate sync class ---

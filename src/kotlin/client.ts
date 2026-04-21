@@ -25,9 +25,14 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
     const fqn = `com.workos.${packageSegment(mount)}.${apiCls}`;
     const prop = servicePropertyName(mount);
     accessorLines.push('');
-    accessorLines.push(`  /** Lazily-constructed [${apiCls}] accessor for this [WorkOS] client. */`);
+    accessorLines.push(`  /** Lazily-constructed [${fqn}] accessor for this [WorkOS] client. */`);
     accessorLines.push(`  val ${prop}: ${fqn}`);
-    accessorLines.push(`    get() = service(${fqn}::class) { ${fqn}(this) }`);
+    accessorLines.push('    get() =');
+    accessorLines.push('      service(');
+    accessorLines.push(`        ${fqn}::class`);
+    accessorLines.push('      ) {');
+    accessorLines.push(`        ${fqn}(this)`);
+    accessorLines.push('      }');
   }
 
   const lines: string[] = [];

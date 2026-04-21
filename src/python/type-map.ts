@@ -21,7 +21,11 @@ export function mapTypeRef(ref: TypeRef): string {
       return `Optional[${inner}]`;
     },
     literal: (r) =>
-      typeof r.value === 'string' ? `Literal["${r.value}"]` : r.value === null ? 'None' : `Literal[${String(r.value)}]`,
+      typeof r.value === 'string'
+        ? `Literal["${r.value}"]`
+        : r.value === null
+          ? 'None'
+          : `Literal[${toPythonLiteral(r.value)}]`,
     map: (ref, value) => {
       void ref;
       return `Dict[str, ${value}]`;
@@ -52,12 +56,22 @@ export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allow
       return `Optional[${inner}]`;
     },
     literal: (r) =>
-      typeof r.value === 'string' ? `Literal["${r.value}"]` : r.value === null ? 'None' : `Literal[${String(r.value)}]`,
+      typeof r.value === 'string'
+        ? `Literal["${r.value}"]`
+        : r.value === null
+          ? 'None'
+          : `Literal[${toPythonLiteral(r.value)}]`,
     map: (ref, value) => {
       void ref;
       return `Dict[str, ${value}]`;
     },
   });
+}
+
+/** Convert a JS value to a Python literal string (capitalizes booleans). */
+function toPythonLiteral(value: unknown): string {
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  return String(value);
 }
 
 function mapPrimitive(ref: PrimitiveType): string {

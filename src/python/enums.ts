@@ -137,7 +137,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('from typing import Union');
         lines.push('from typing import Literal, TypeAlias');
         lines.push('');
-        const literals = uniqueValues.map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)));
+        const literals = uniqueValues.map((v) =>
+          typeof v.value === 'string'
+            ? `"${v.value}"`
+            : typeof v.value === 'boolean'
+              ? v.value
+                ? 'True'
+                : 'False'
+              : String(v.value),
+        );
         lines.push(`${cls}: TypeAlias = Union[Literal[${literals.join(', ')}], str]`);
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
@@ -157,7 +165,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
           memberName = `${memberName}_${suffix}`;
         }
         usedNames.add(memberName);
-        const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
+        const valueStr =
+          typeof v.value === 'string'
+            ? `"${v.value}"`
+            : typeof v.value === 'boolean'
+              ? v.value
+                ? 'True'
+                : 'False'
+              : String(v.value);
         lines.push(`    ${memberName} = ${valueStr}`);
         if (v.description || v.deprecated) {
           const parts: string[] = [];
@@ -180,7 +195,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       lines.push('');
       lines.push(
         `${cls}Literal: TypeAlias = Literal[${uniqueValues
-          .map((v) => (typeof v.value === 'string' ? `"${v.value}"` : String(v.value)))
+          .map((v) =>
+            typeof v.value === 'string'
+              ? `"${v.value}"`
+              : typeof v.value === 'boolean'
+                ? v.value
+                  ? 'True'
+                  : 'False'
+                : String(v.value),
+          )
           .join(', ')}]`,
       );
     }

@@ -841,4 +841,71 @@ describe('generateResources', () => {
     expect(content).toContain('elif isinstance(scope, ScopeByName):');
     expect(content).toContain('params["scope_name"] = scope.scope_name');
   });
+
+  it('uses body model field types for parameter group dataclasses', () => {
+    const models: Model[] = [
+      {
+        name: 'OrganizationMembership',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateOrganizationMembershipRequest',
+        fields: [
+          { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'role_slugs',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createOrganizationMembership',
+            httpMethod: 'post',
+            path: '/user_management/organization_memberships',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrganizationMembershipRequest' },
+            response: { kind: 'model', name: 'OrganizationMembership' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'role',
+                optional: true,
+                variants: [
+                  {
+                    name: 'single',
+                    parameters: [{ name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'multiple',
+                    parameters: [{ name: 'role_slugs', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    expect(files[0].content).toContain('class RoleMultiple:');
+    expect(files[0].content).toContain('    role_slugs: List[str]');
+  });
 });

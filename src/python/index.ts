@@ -85,9 +85,10 @@ export const pythonEmitter: Emitter = {
         cmd: 'bash',
         args: [
           '-c',
-          'PY_FILES=$(printf "%s\\n" "$@" | grep "\\.py$"); [ -n "$PY_FILES" ] && echo "$PY_FILES" | xargs ruff check --fix --quiet 2>/dev/null; [ -n "$PY_FILES" ] && echo "$PY_FILES" | xargs ruff format --quiet',
+          'PY_FILES=$(printf "%s\\n" "$@" | grep "\\.py$" || true); if [ -n "$PY_FILES" ]; then echo "$PY_FILES" | xargs ruff check --fix --quiet 2>/dev/null; echo "$PY_FILES" | xargs ruff format --quiet; fi',
           '--',
         ],
+        batchSize: 1000,
       };
     }
     return null;

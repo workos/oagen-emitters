@@ -244,6 +244,14 @@ function buildOperationTest(
 
   const queryFields = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+  const sharedQueryBodyParams = new Set<string>();
+  const bodyModel = resolveBodyModel(op, ctx);
+  for (const qp of queryFields) {
+    const matchingBodyField = bodyModel?.fields.find((field) => field.name === qp.name);
+    if (matchingBodyField && mapTypeRef(qp.type) === mapTypeRef(matchingBodyField.type)) {
+      sharedQueryBodyParams.add(qp.name);
+    }
+  }
   for (const qp of sortedQuery) {
     if (!qp.required) break;
     const val = synthValue(qp.type, ctx, imports);
@@ -256,11 +264,10 @@ function buildOperationTest(
   }
 
   // Parameter group args — emit as named args (they appear after optionals in the signature)
-  const bodyModel = resolveBodyModel(op, ctx);
   const groupParamNames = assignGroupParameterNames(op, hidden, queryFields, bodyModel, groupedParamNames);
   for (const group of op.parameterGroups ?? []) {
     const variant = group.variants[0];
-    const sealedName = className(group.name);
+    const sealedName = sealedGroupName(group.name);
     const variantName = className(variant.name);
     const variantArgs = variant.parameters.map((_p) => ktStringLiteral('sample-arg')).join(', ');
     imports.add(`com.workos.${mountPackage}.${sealedName}`);
@@ -274,6 +281,7 @@ function buildOperationTest(
     const bodyFields = bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name));
     const sortedBody = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
     for (const bf of sortedBody) {
+      if (sharedQueryBodyParams.has(bf.name)) continue;
       if (!bf.required) break;
       const val = synthValue(bf.type, ctx, imports);
       if (val === null) return null;
@@ -362,11 +370,18 @@ function assignGroupParameterNames(
 
   const names = new Map<string, string>();
   for (const group of op.parameterGroups ?? []) {
-    const natural = propertyName(group.name);
+    const natural = propertyName(sealedGroupName(group.name));
     const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
     names.set(group.name, assigned);
   }
   return names;
+}
+
+function sealedGroupName(name: string): string {
+  const resolved = className(name);
+  if (resolved === 'Password') return 'CreateUserPassword';
+  if (resolved === 'Role') return 'CreateUserRole';
+  return resolved;
 }
 
 function reserveUniqueGroupParameterName(base: string, occupiedNames: Set<string>): string {

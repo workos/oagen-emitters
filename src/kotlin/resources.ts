@@ -22,6 +22,7 @@ import {
   ktLiteral,
   clientFieldExpression,
   escapeReserved,
+  humanize,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -31,6 +32,7 @@ import {
   getOpDefaults,
   getOpInferFromClient,
   collectGroupedParamNames,
+  collectBodyFieldTypes,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -84,6 +86,15 @@ function generateApiClass(
 
   const body: string[] = [];
   const seenMethods = new Set<string>();
+  const hasAuthenticateHelper = operations.some(
+    (op) => op.path === '/user_management/authenticate' && op.httpMethod.toUpperCase() === 'POST',
+  );
+
+  if (hasAuthenticateHelper) {
+    imports.add('com.workos.common.http.bodyOf');
+    imports.add('com.workos.models.AuthenticateResponse');
+    body.push(...generateAuthenticateHelper());
+  }
 
   for (const op of operations) {
     if (isHandwrittenOverride(op)) continue;
@@ -119,13 +130,43 @@ function generateApiClass(
 
   if (body.length === 0) return null;
 
-  // Drop unused imports by peeking at the body text.
-  const bodyText = body.join('\n');
+  // Emit sealed classes for parameter groups before the API class.
+  // Parameter-group IR can lose body field type fidelity; prefer the request
+  // body model's field type when available.
+  const bodyFieldTypes = new Map<string, TypeRef>();
+  for (const op of operations) {
+    for (const [name, type] of collectBodyFieldTypes(op, ctx.spec.models)) {
+      bodyFieldTypes.set(name, type);
+    }
+  }
+  const sealedLines: string[] = [];
+  const emittedSealedClasses = new Set<string>();
+  for (const op of operations) {
+    if ((op.parameterGroups?.length ?? 0) > 0) {
+      for (const group of op.parameterGroups ?? []) {
+        // Register imports for types used in parameter group sealed classes.
+        // The body field type override may introduce enum/model types that
+        // the original IR parameter didn't reference.
+        for (const variant of group.variants) {
+          for (const p of variant.parameters) {
+            const effectiveType = bodyFieldTypes.get(p.name) ?? p.type;
+            registerTypeImports(effectiveType, imports, ctx);
+          }
+        }
+        if (emittedSealedClasses.has(group.name)) continue;
+        emittedSealedClasses.add(group.name);
+        for (const line of generateSealedClass(group, bodyFieldTypes)) sealedLines.push(line);
+      }
+    }
+  }
+
+  // Drop unused imports by peeking at the body text and sealed class text.
+  const allText = body.join('\n') + '\n' + sealedLines.join('\n');
   const filteredImports = [...imports].filter((imp) => {
     const simple = imp.slice(imp.lastIndexOf('.') + 1);
     // Skip the import if the class body never references the simple name.
     if (simple === 'WorkOS' || simple === 'RequestConfig' || simple === 'RequestOptions') return true;
-    return new RegExp(`\\b${simple}\\b`).test(bodyText);
+    return new RegExp(`\\b${simple}\\b`).test(allText);
   });
 
   const lines: string[] = [];
@@ -133,17 +174,7 @@ function generateApiClass(
   lines.push('');
   for (const imp of filteredImports.sort()) lines.push(`import ${imp}`);
   lines.push('');
-  // Emit sealed classes for parameter groups before the API class.
-  const emittedSealedClasses = new Set<string>();
-  for (const op of operations) {
-    if ((op.parameterGroups?.length ?? 0) > 0) {
-      for (const group of op.parameterGroups ?? []) {
-        if (emittedSealedClasses.has(group.name)) continue;
-        emittedSealedClasses.add(group.name);
-        for (const line of generateSealedClass(group)) lines.push(line);
-      }
-    }
-  }
+  for (const line of sealedLines) lines.push(line);
 
   const serviceDescription = resolveServiceDescription(ctx, mountName, operations);
   if (serviceDescription) {
@@ -239,11 +270,21 @@ function renderMethod(
   const uniqueQuery = queryParams.filter((qp) => !paramNames.has(propertyName(qp.name)));
   for (const qp of uniqueQuery) paramNames.add(propertyName(qp.name));
 
+  const sharedQueryBodyParams = new Set(
+    uniqueQuery
+      .filter((qp) => bodyFields.some((bf) => bf.name === qp.name && mapTypeRef(qp.type) === mapTypeRef(bf.type)))
+      .map((qp) => qp.name),
+  );
+
   // Map body field wire name → Kotlin parameter name. When the natural name
   // collides with a path/query, prefix with `body` (e.g. slug → bodySlug).
   const bodyParamNames = new Map<string, string>();
   for (const bf of bodyFields) {
     const natural = propertyName(bf.name);
+    if (sharedQueryBodyParams.has(bf.name)) {
+      bodyParamNames.set(bf.name, natural);
+      continue;
+    }
     if (paramNames.has(natural)) {
       const renamed = `body${natural.charAt(0).toUpperCase()}${natural.slice(1)}`;
       bodyParamNames.set(bf.name, renamed);
@@ -261,12 +302,12 @@ function renderMethod(
 
   const sortedQuery = [...uniqueQuery].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const qp of sortedQuery) {
-    params.push(renderParam(qp.name, qp.type, qp.required));
+    params.push(renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'));
   }
 
   // Parameter group params (sealed class types)
   for (const group of op.parameterGroups ?? []) {
-    const sealedName = className(group.name);
+    const sealedName = sealedGroupName(group.name);
     const prop = groupParamNames.get(group.name)!;
     if (group.optional) {
       params.push(`    ${prop}: ${sealedName}? = null`);
@@ -281,6 +322,7 @@ function renderMethod(
 
   const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const bf of sortedBodyFields) {
+    if (sharedQueryBodyParams.has(bf.name)) continue;
     if (isPatch && !bf.required) {
       const baseType = mapTypeRef(bf.type);
       imports.add('com.workos.common.http.PatchField');
@@ -334,6 +376,28 @@ function renderMethod(
   const appendDefaultsAsQuery = !hasBody && (Object.keys(defaults).length > 0 || inferFromClient.length > 0);
   const pathExpr = buildPathExpression(op.path, pathParams);
 
+  if (
+    op.path === '/user_management/authenticate' &&
+    httpMethod === 'POST' &&
+    plan.responseModelName === 'AuthenticateResponse'
+  ) {
+    imports.add('com.workos.models.AuthenticateResponse');
+    const grantType = defaults.grant_type ?? 'authorization_code';
+    const entryLines = sortedBodyFields
+      .filter((bf) => bf.name !== 'grant_type' && bf.name !== 'client_id' && bf.name !== 'client_secret')
+      .map((bf) => `      ${ktLiteral(bf.name)} to ${bodyParamNames.get(bf.name)!}`);
+    lines.push(`    return authenticate(`);
+    lines.push(`      grantType = ${ktLiteral(grantType)},`);
+    lines.push(`      requestOptions = requestOptions,`);
+    for (let i = 0; i < entryLines.length; i++) {
+      const suffix = i === entryLines.length - 1 ? '' : ',';
+      lines.push(`${entryLines[i]}${suffix}`);
+    }
+    lines.push(`    )`);
+    lines.push('  }');
+    return lines.join('\n');
+  }
+
   if (isPaginated) {
     // Nested helper function + requestPage call; 'after' is owned by the
     // cursor logic so we skip it in the generic query loop.
@@ -341,33 +405,27 @@ function renderMethod(
     // included on the first page — re-sending it on follow-up pages (where
     // afterCursor is set by the pagination engine) is nonsensical and can
     // cause empty or looping results from the server.
-    const queryForConfig = sortedQuery.filter((p) => p.name !== 'after' && p.name !== 'before');
-    const hasBefore = sortedQuery.some((p) => p.name === 'before');
-    lines.push(`    fun configFor(afterCursor: String? = null): RequestConfig {`);
-    lines.push(`      val params = mutableListOf<Pair<String, String>>()`);
-    for (const qp of queryForConfig) for (const ln of emitQueryParam(qp, '      ')) lines.push(ln);
+    imports.add('com.workos.common.http.addIfNotNull');
+    imports.add('com.workos.common.http.addJoinedIfNotNull');
+    imports.add('com.workos.common.http.addEach');
+    const itemClass = className(paginatedItemName!);
+    lines.push(`    val itemType = object : TypeReference<${itemClass}>() {}`);
+    lines.push(`    return workos.baseClient.requestPage(`);
+    lines.push(`      method = ${ktLiteral(httpMethod)},`);
+    lines.push(`      path = ${pathExpr},`);
+    lines.push(`      itemType = itemType,`);
+    lines.push(`      requestOptions = requestOptions,`);
+    lines.push(`      before = ${pickNamedQueryParam(sortedQuery, 'before')},`);
+    lines.push(`      after = ${pickNamedQueryParam(sortedQuery, 'after')}`);
+    lines.push(`    ) {`);
+    lines.push(`      val params = this`);
+    for (const qp of sortedQuery.filter((p) => p.name !== 'after' && p.name !== 'before')) {
+      for (const ln of emitQueryParam(qp, '      ')) lines.push(ln);
+    }
     for (const group of op.parameterGroups ?? []) {
       for (const ln of emitGroupQueryDispatch(group, groupParamNames.get(group.name)!, '      ')) lines.push(ln);
     }
-    lines.push(`      val effectiveAfter = afterCursor ?: ${pickNamedQueryParam(sortedQuery, 'after')}`);
-    if (hasBefore) {
-      // Only send 'before' on the initial request, not on cursor-driven follow-up pages.
-      const beforeProp = pickNamedQueryParam(sortedQuery, 'before');
-      lines.push(`      if (effectiveAfter == null && ${beforeProp} != null) params += "before" to ${beforeProp}`);
-    }
-    lines.push(`      if (effectiveAfter != null) params += "after" to effectiveAfter`);
-    lines.push(`      return RequestConfig(`);
-    lines.push(`        method = ${ktLiteral(httpMethod)},`);
-    lines.push(`        path = ${pathExpr},`);
-    lines.push(`        queryParams = params,`);
-    lines.push(`        requestOptions = requestOptions`);
-    lines.push(`      )`);
     lines.push(`    }`);
-    const itemClass = className(paginatedItemName!);
-    lines.push(`    val itemType = object : TypeReference<${itemClass}>() {}`);
-    lines.push(
-      `    return workos.baseClient.requestPage(configFor(), itemType) { afterCursor -> configFor(afterCursor) }`,
-    );
   } else {
     // Only emit the `params` local when the method actually contributes
     // query parameters (spec-declared query, or defaults/inferFromClient
@@ -377,6 +435,9 @@ function renderMethod(
     const groupsGoToQuery = hasGroups && !hasBody;
     const emitsQueryParams = sortedQuery.length > 0 || appendDefaultsAsQuery || groupsGoToQuery;
     if (emitsQueryParams) {
+      imports.add('com.workos.common.http.addIfNotNull');
+      imports.add('com.workos.common.http.addJoinedIfNotNull');
+      imports.add('com.workos.common.http.addEach');
       lines.push(`    val params = mutableListOf<Pair<String, String>>()`);
       for (const qp of sortedQuery) for (const ln of emitQueryParam(qp, '    ')) lines.push(ln);
       if (groupsGoToQuery) {
@@ -508,12 +569,12 @@ function resolvePaginatedItemName(name: string | null, ctx?: EmitterContext): st
   return name;
 }
 
-function renderParam(name: string, type: TypeRef, required: boolean): string {
-  return renderParamNamed(propertyName(name), type, required);
+function renderParam(name: string, type: TypeRef, required: boolean, forceInt = false): string {
+  return renderParamNamed(propertyName(name), type, required, forceInt);
 }
 
-function renderParamNamed(kotlinName: string, type: TypeRef, required: boolean): string {
-  const mapped = required ? mapTypeRef(type) : mapTypeRefOptional(type);
+function renderParamNamed(kotlinName: string, type: TypeRef, required: boolean, forceInt = false): string {
+  const mapped = forceInt ? (required ? 'Int' : 'Int?') : required ? mapTypeRef(type) : mapTypeRefOptional(type);
   return required ? `    ${kotlinName}: ${mapped}` : `    ${kotlinName}: ${mapped} = null`;
 }
 
@@ -544,19 +605,25 @@ function buildMethodKdoc(
   // @param entry even without a description so the deprecation note is
   // surfaced in the docs.
   const paramDocs: string[] = [];
+  const seenParamDocs = new Set<string>();
+  const pushParamDoc = (name: string, description: string | undefined, deprecated?: boolean) => {
+    if (seenParamDocs.has(name)) return;
+    seenParamDocs.add(name);
+    paramDocs.push(formatParamDoc(name, description, deprecated));
+  };
   for (const pp of pathParams) {
     if (pp.description?.trim() || pp.deprecated) {
-      paramDocs.push(formatParamDoc(propertyName(pp.name), pp.description, pp.deprecated));
+      pushParamDoc(propertyName(pp.name), pp.description, pp.deprecated);
     }
   }
   for (const qp of queryParams) {
     if (qp.description?.trim() || qp.deprecated) {
-      paramDocs.push(formatParamDoc(propertyName(qp.name), qp.description, qp.deprecated));
+      pushParamDoc(propertyName(qp.name), qp.description, qp.deprecated);
     }
   }
   for (const bf of bodyFields) {
     if (bf.description?.trim() || bf.deprecated) {
-      paramDocs.push(formatParamDoc(bodyParamNames.get(bf.name)!, bf.description, bf.deprecated));
+      pushParamDoc(bodyParamNames.get(bf.name)!, bf.description, bf.deprecated);
     }
   }
 
@@ -603,17 +670,20 @@ function unwrapArray(t: TypeRef): TypeRef | null {
 
 /**
  * Serialize a single value expression for a query parameter.  For enums we
- * use `.value` so the wire name is used; for everything else `.toString()`.
+ * use `.value` so the wire name is used; for strings the value is already
+ * the right type; for everything else `.toString()`.
  */
 function valueExprForQuery(type: TypeRef): string {
   const inner = type.kind === 'nullable' ? type.inner : type;
   if (inner.kind === 'enum') return 'it.value';
+  if (inner.kind === 'primitive' && inner.type === 'string') return 'it';
   return 'it.toString()';
 }
 
 function emitQueryParam(p: Parameter, indent: string): string[] {
   const prop = propertyName(p.name);
   const rendered = queryParamToString(p.type, prop);
+  const inner = p.type.kind === 'nullable' ? p.type.inner : p.type;
   const arrayItem = unwrapArray(p.type);
   if (arrayItem) {
     // Honor `style: form, explode: false` → comma-joined. Default (explode:true
@@ -623,24 +693,26 @@ function emitQueryParam(p: Parameter, indent: string): string[] {
     const itemExpr = valueExprForQuery(arrayItem);
     if (!explode) {
       if (p.required) {
-        return [`${indent}params += ${ktLiteral(p.name)} to ${prop}.joinToString(",") { ${itemExpr} }`];
+        return [`${indent}params.addJoinedIfNotNull(${ktLiteral(p.name)}, ${prop}.map { ${itemExpr} })`];
       }
-      return [
-        `${indent}if (${prop} != null) params += ${ktLiteral(p.name)} to ${prop}.joinToString(",") { ${itemExpr} }`,
-      ];
+      return [`${indent}params.addJoinedIfNotNull(${ktLiteral(p.name)}, ${prop}?.map { ${itemExpr} })`];
     }
     if (p.required) {
-      return [`${indent}${prop}.forEach { params += ${ktLiteral(p.name)} to ${itemExpr} }`];
+      return [`${indent}params.addEach(${ktLiteral(p.name)}, ${prop}.map { ${itemExpr} })`];
     }
-    return [`${indent}if (${prop} != null) ${prop}.forEach { params += ${ktLiteral(p.name)} to ${itemExpr} }`];
+    return [`${indent}${prop}?.let { params.addEach(${ktLiteral(p.name)}, it.map { ${itemExpr} }) }`];
   }
   if (p.required) return [`${indent}params += ${ktLiteral(p.name)} to ${rendered}`];
-  return [`${indent}if (${prop} != null) params += ${ktLiteral(p.name)} to ${rendered}`];
+  if (inner.kind === 'primitive' && inner.type === 'string') {
+    return [`${indent}params.addIfNotNull(${ktLiteral(p.name)}, ${prop})`];
+  }
+  return [`${indent}${prop}?.let { params += ${ktLiteral(p.name)} to ${queryParamToString(inner, 'it')} }`];
 }
 
 function queryParamToString(type: TypeRef, varName: string): string {
   if (type.kind === 'enum') return `${varName}.value`;
   if (type.kind === 'nullable') return queryParamToString(type.inner, varName);
+  if (type.kind === 'primitive' && type.type === 'string') return varName;
   return `${varName}.toString()`;
 }
 
@@ -677,6 +749,32 @@ function isBareIdentifier(name: string): boolean {
 function pickNamedQueryParam(sorted: Parameter[], name: string): string {
   const match = sorted.find((p) => p.name === name);
   return match ? propertyName(match.name) : 'null';
+}
+
+function generateAuthenticateHelper(): string[] {
+  return [
+    '  private fun authenticate(',
+    '    grantType: String,',
+    '    requestOptions: RequestOptions?,',
+    '    vararg entries: Pair<String, Any?>',
+    '  ): AuthenticateResponse {',
+    '    val body =',
+    '      bodyOf(',
+    '        *entries,',
+    '        "grant_type" to grantType,',
+    '        "client_id" to workos.clientId,',
+    '        "client_secret" to workos.apiKey',
+    '      )',
+    '    val config =',
+    '      RequestConfig(',
+    '        method = "POST",',
+    '        path = "/user_management/authenticate",',
+    '        body = body,',
+    '        requestOptions = requestOptions',
+    '      )',
+    '    return workos.baseClient.request(config, AuthenticateResponse::class.java)',
+    '  }',
+  ];
 }
 
 function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
@@ -739,25 +837,41 @@ function deriveShortPropertyName(paramName: string, groupName: string): string {
   return propertyName(stripped);
 }
 
-/** Generate sealed class definitions for all parameter groups in an operation. */
-function generateSealedClass(group: import('@workos/oagen').ParameterGroup): string[] {
+/**
+ * Generate sealed class definitions for all parameter groups in an operation.
+ *
+ * [bodyFieldTypes] is a fallback map from wire field name → TypeRef built from
+ * the body model. When the oagen core resolves parameter group variants it
+ * sometimes loses array/object types, falling back to a primitive string.
+ * Cross-referencing the body model corrects that.
+ */
+function generateSealedClass(
+  group: import('@workos/oagen').ParameterGroup,
+  bodyFieldTypes?: Map<string, TypeRef>,
+): string[] {
   const lines: string[] = [];
-  const sealedName = className(group.name);
+  const sealedName = sealedGroupName(group.name);
+  lines.push(`/** Mutually exclusive ${humanize(group.name)} parameter variants. */`);
   lines.push(`sealed class ${sealedName} {`);
   for (let vi = 0; vi < group.variants.length; vi++) {
     const variant = group.variants[vi];
     const variantName = className(variant.name);
     const fields = variant.parameters.map((p) => {
       const prop = deriveShortPropertyName(p.name, group.name);
-      return `val ${prop}: ${mapTypeRef(p.type)}`;
+      // Prefer the body model's field type when available — the IR parameter
+      // group may have lost array/object type info for body fields.
+      const effectiveType = bodyFieldTypes?.get(p.name) ?? p.type;
+      return { decl: `val ${prop}: ${mapTypeRef(effectiveType)}`, name: p.name };
     });
     // ktlint requires blank line before each declaration inside a sealed class
     if (vi > 0) lines.push('');
     // ktlint class-signature rule requires multi-line constructors
+    lines.push(`  /** Variant: ${humanize(variant.name)}. */`);
     lines.push(`  data class ${variantName}(`);
     for (let i = 0; i < fields.length; i++) {
       const comma = i < fields.length - 1 ? ',' : '';
-      lines.push(`    ${fields[i]}${comma}`);
+      lines.push(`    /** The ${humanize(fields[i].name)}. */`);
+      lines.push(`    ${fields[i].decl}${comma}`);
     }
     lines.push(`  ) : ${sealedName}()`);
   }
@@ -768,7 +882,7 @@ function generateSealedClass(group: import('@workos/oagen').ParameterGroup): str
 
 /** Emit `when` dispatch that serializes a parameter group into query params. */
 function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
-  const sealedName = className(group.name);
+  const sealedName = sealedGroupName(group.name);
   const lines: string[] = [];
 
   if (group.optional) {
@@ -784,7 +898,7 @@ function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, p
 function assignGroupParameterNames(op: Operation, occupiedNames: Set<string>): Map<string, string> {
   const names = new Map<string, string>();
   for (const group of op.parameterGroups ?? []) {
-    const natural = propertyName(group.name);
+    const natural = propertyName(sealedGroupName(group.name));
     const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
     names.set(group.name, assigned);
   }
@@ -838,7 +952,7 @@ function emitWhenBlock(
 
 /** Emit `when` dispatch that serializes a parameter group into the request body map. */
 function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
-  const sealedName = className(group.name);
+  const sealedName = sealedGroupName(group.name);
   const lines: string[] = [];
 
   if (group.optional) {
@@ -849,6 +963,13 @@ function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, pr
     emitBodyWhenBlock(lines, group, sealedName, prop, indent);
   }
   return lines;
+}
+
+function sealedGroupName(name: string): string {
+  const resolved = className(name);
+  if (resolved === 'Password') return 'CreateUserPassword';
+  if (resolved === 'Role') return 'CreateUserRole';
+  return resolved;
 }
 
 function emitBodyWhenBlock(

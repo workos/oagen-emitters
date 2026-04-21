@@ -1,4 +1,4 @@
-import type { Operation, EmitterContext, Service, ResolvedOperation } from '@workos/oagen';
+import type { Operation, EmitterContext, Service, ResolvedOperation, Model, TypeRef } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 
 /**
@@ -158,4 +158,26 @@ export function collectGroupedParamNames(op: Operation): Set<string> {
     }
   }
   return names;
+}
+
+/**
+ * Build a fallback map from request-body wire field name to TypeRef.
+ *
+ * Some parameter-group variants lose array/object fidelity in the IR and fall
+ * back to primitive strings. Cross-referencing the request body model restores
+ * the actual field type when the grouped params belong to the body.
+ */
+export function collectBodyFieldTypes(op: Operation, models: Model[]): Map<string, TypeRef> {
+  const fieldTypes = new Map<string, TypeRef>();
+  const reqBody = op.requestBody;
+  if (reqBody?.kind !== 'model') return fieldTypes;
+
+  const bodyModel = models.find((model) => model.name === reqBody.name);
+  if (!bodyModel) return fieldTypes;
+
+  for (const field of bodyModel.fields) {
+    fieldTypes.set(field.name, field.type);
+  }
+
+  return fieldTypes;
 }

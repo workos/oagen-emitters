@@ -9,7 +9,15 @@ import type {
   ResolvedOperation,
 } from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
-import { className, fileName, fieldName, resolveMethodName, buildMountDirMap, dirToModule } from './naming.js';
+import {
+  className,
+  fileName,
+  fieldName,
+  moduleName,
+  resolveMethodName,
+  buildMountDirMap,
+  dirToModule,
+} from './naming.js';
 import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
@@ -43,6 +51,14 @@ function isRedirectEndpoint(op: Operation): boolean {
 function pushAsyncTestDef(lines: string[], def: string): void {
   lines.push('    @pytest.mark.asyncio');
   lines.push(def);
+}
+
+function buildDeleteSuccessResponseSetup(op: Operation): string {
+  const statusCode = op.successResponses?.[0]?.statusCode ?? 204;
+  if (statusCode === 204) {
+    return 'httpx_mock.add_response(status_code=204)';
+  }
+  return `httpx_mock.add_response(status_code=${statusCode}, content=b"\\n")`;
 }
 
 /**
@@ -128,7 +144,9 @@ function generateServiceTest(
     if (plan.hasBody && op.requestBody?.kind === 'model') {
       const bodyModel = spec.models.find((m) => m.name === (op.requestBody as any).name);
       if (bodyModel) {
+        const testGroupedParams = collectGroupedParamNames(op);
         for (const f of bodyModel.fields) {
+          if (testGroupedParams.has(f.name)) continue;
           if (f.type.kind === 'model') modelImports.add(f.type.name);
           if (f.type.kind === 'nullable' && f.type.inner.kind === 'model') modelImports.add(f.type.inner.name);
           if (f.type.kind === 'array' && f.type.items.kind === 'model') modelImports.add(f.type.items.name);
@@ -202,7 +220,7 @@ function generateServiceTest(
     }
   }
   if (groupVariantImports.size > 0) {
-    const mountDir = dirToModule(buildMountDirMap(ctx).get(service.name) ?? service.name);
+    const mountDir = dirToModule(buildMountDirMap(ctx).get(service.name) ?? moduleName(service.name));
     lines.push(`from ${ctx.namespace}.${mountDir}._resource import ${[...groupVariantImports].join(', ')}`);
   }
 
@@ -278,7 +296,7 @@ function generateServiceTest(
       }
     } else if (isDelete) {
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
-      lines.push('        httpx_mock.add_response(status_code=204)');
+      lines.push(`        ${buildDeleteSuccessResponseSetup(op)}`);
       const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
       lines.push('        assert result is None');
@@ -551,7 +569,7 @@ function generateServiceTest(
     } else if (isDelete) {
       const deletePath = buildExpectedPath(op);
       pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
-      lines.push('        httpx_mock.add_response(status_code=204)');
+      lines.push(`        ${buildDeleteSuccessResponseSetup(op)}`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert result is None');
       lines.push('        request = httpx_mock.get_request()');
@@ -950,7 +968,8 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   if (plan.hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
-    for (const field of bodyModel?.fields.filter((f) => f.required) ?? []) {
+    const bodyArgGrouped = collectGroupedParamNames(op);
+    for (const field of bodyModel?.fields.filter((f) => f.required && !bodyArgGrouped.has(f.name)) ?? []) {
       args.push(`${bodyParamName(field, pathParamNames)}=${generateTestValue(field.type, field.name)}`);
     }
   } else if (plan.hasBody && op.requestBody?.kind === 'union') {
@@ -1005,7 +1024,7 @@ function buildQueryEncodingResponseSetup(op: Operation, plan: ReturnType<typeof 
     return ['httpx_mock.add_response(json={"data": [], "list_metadata": {}})'];
   }
   if (plan.isDelete) {
-    return ['httpx_mock.add_response(status_code=204)'];
+    return [buildDeleteSuccessResponseSetup(op)];
   }
   if (op.response.kind === 'array') {
     if (op.response.items.kind === 'model') {

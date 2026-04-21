@@ -83,6 +83,8 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   lines.push('\tbaseURL      string');
   lines.push('\thttpClient   *http.Client');
   lines.push('\tmaxRetries   int');
+  lines.push('\tlogger       Logger');
+  lines.push('\tappInfo      appInfo');
   lines.push('');
   // Service fields
   for (const service of topLevel) {

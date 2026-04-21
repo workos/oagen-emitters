@@ -1,5 +1,5 @@
 import type { Service, Operation, Model, EmitterContext, GeneratedFile, ResolvedOperation } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
+import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName, resolveMethodName } from './naming.js';
 import { isListWrapperModel } from './models.js';
@@ -10,6 +10,7 @@ import {
   getOpDefaults,
   getOpInferFromClient,
   collectGroupedParamNames,
+  collectBodyFieldTypes,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
@@ -96,7 +97,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // Generate variant class files for operations with parameter groups
     for (const op of operations) {
       if ((op.parameterGroups?.length ?? 0) > 0) {
-        files.push(...generateParameterGroupFiles(op, ctx));
+        files.push(...generateParameterGroupFiles(op, ctx, modelMap));
       }
     }
   }
@@ -151,8 +152,13 @@ export function deriveVariantFieldName(paramName: string, groupName: string): st
  * Generate PHP variant class files for all parameter groups on an operation.
  * Each variant becomes a simple PHP class with readonly constructor properties.
  */
-function generateParameterGroupFiles(op: Operation, ctx: EmitterContext): GeneratedFile[] {
+function generateParameterGroupFiles(
+  op: Operation,
+  ctx: EmitterContext,
+  modelMap: Map<string, Model>,
+): GeneratedFile[] {
   const files: GeneratedFile[] = [];
+  const bodyFieldTypes = collectBodyFieldTypes(op, [...modelMap.values()]);
 
   for (const group of op.parameterGroups ?? []) {
     for (const variant of group.variants) {
@@ -166,7 +172,8 @@ function generateParameterGroupFiles(op: Operation, ctx: EmitterContext): Genera
       lines.push('    public function __construct(');
       for (let i = 0; i < variant.parameters.length; i++) {
         const param = variant.parameters[i];
-        const phpType = mapTypeRef(param.type, { qualified: true });
+        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+        const phpType = mapTypeRef(effectiveType, { qualified: true });
         const phpName = deriveVariantFieldName(param.name, group.name);
         const comma = ',';
         lines.push(`        public readonly ${phpType} $${phpName}${comma}`);
@@ -292,7 +299,9 @@ function generateMethod(
     const phpName = fieldName(q.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
-    const nullSuffix = !q.required && !docType.endsWith('|null') ? '|null' : '';
+    // order params with enum defaults are non-nullable (they default to Desc, not null)
+    const isNonNullableOrder = q.name === 'order' && q.type.kind === 'enum';
+    const nullSuffix = !q.required && !isNonNullableOrder && !docType.endsWith('|null') ? '|null' : '';
     const prefix = q.deprecated ? '(deprecated) ' : '';
     let desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
     if (q.default != null) desc += ` Defaults to ${JSON.stringify(q.default)}.`;
@@ -658,6 +667,16 @@ function buildMethodParams(
     usedNames.add(phpName);
     if (q.required) {
       required.push(`${phpType} $${phpName}`);
+    } else if (q.name === 'order') {
+      // Hardcode order default to desc for pagination consistency
+      if (q.type.kind === 'enum') {
+        const enumType = mapTypeRef(q.type, { qualified: true });
+        const caseName = toPascalCase('desc');
+        optional.push(`${enumType} $${phpName} = ${enumType}::${caseName}`);
+      } else {
+        const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
+        optional.push(`${nullableType} $${phpName} = 'desc'`);
+      }
     } else {
       const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
       optional.push(`${nullableType} $${phpName} = null`);
@@ -730,7 +749,9 @@ function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
     .map((q) => {
       const phpName = fieldName(q.name);
       if (isEnumType(q.type)) {
-        const nullsafe = q.required ? '' : '?';
+        // order params with enum defaults are non-nullable (default to Desc, not null)
+        const isNonNullableOrder = q.name === 'order' && q.type.kind === 'enum';
+        const nullsafe = q.required || isNonNullableOrder ? '' : '?';
         return `'${q.name}' => $${phpName}${nullsafe}->value,`;
       }
       return `'${q.name}' => $${phpName},`;
