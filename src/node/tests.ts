@@ -29,7 +29,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec, ctx);
   for (const f of fixtures) {
-    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', integrateTarget: false });
+    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', skipIfExists: true });
   }
 
   // Build model lookup for response field assertions
@@ -155,7 +155,7 @@ function generateServiceTest(
         // List fixtures are always generated in the current service's directory
         // (the service owning the list operation), not in the model's home service.
         // Always use a local import path.
-        const fixturePath = `./fixtures/list-${fileName(itemModelName)}.fixture.json`;
+        const fixturePath = `./fixtures/list-${fileName(itemModelName)}.json`;
         fixtureImports.add(`import list${itemModelName}Fixture from '${fixturePath}';`);
       }
     } else if (plan.responseModelName) {
@@ -163,8 +163,8 @@ function generateServiceTest(
       const respDir = resolveDir(respService);
       const fixturePath =
         respDir === serviceDir
-          ? `./fixtures/${fileName(plan.responseModelName)}.fixture.json`
-          : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.fixture.json`;
+          ? `./fixtures/${fileName(plan.responseModelName)}.json`
+          : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.json`;
       fixtureImports.add(`import ${toCamelCase(plan.responseModelName)}Fixture from '${fixturePath}';`);
     }
     // NOTE: Request body fixtures are not imported for body tests because
@@ -216,7 +216,7 @@ function generateServiceTest(
 
   lines.push('});');
 
-  return { path: testPath, content: lines.join('\n'), skipIfExists: true };
+  return { path: testPath, content: lines.join('\n'), overwriteExisting: true };
 }
 
 /** Compute the test value for a single path parameter.
@@ -872,14 +872,14 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const modelDir = resolveDir(service);
       const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
       const interfacePath = `src/${modelDir}/interfaces/${fileName(model.name)}.interface.ts`;
-      const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.fixture.json`;
+      const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.json`;
 
       serializerImports.push(
         `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
       );
       const wireName = wireInterfaceName(domainName);
       interfaceImports.push(`import type { ${wireName} } from '${relativeImport(testPath, interfacePath)}';`);
-      const camelName = domainName.charAt(0).toLowerCase() + domainName.slice(1);
+      const camelName = toCamelCase(domainName);
       fixtureImports.push(`import ${camelName}Fixture from '${relativeImport(testPath, fixturePath)}';`);
     }
 
@@ -918,7 +918,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     files.push({
       path: testPath,
       content: lines.join('\n'),
-      skipIfExists: true,
+      overwriteExisting: true,
     });
   }
 

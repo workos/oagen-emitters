@@ -7,7 +7,6 @@ import {
   buildGenericModelDefaults,
   pruneUnusedImports,
   TS_BUILTINS,
-  detectStringDateConvention,
   buildKnownTypeNames,
   isBaselineGeneric,
   createServiceDirResolver,
@@ -23,6 +22,7 @@ import {
   buildSkipFormatFields,
   shouldSkipSerializeForModel,
   emitSerializerBody,
+  hasDateTimeConversion,
 } from './field-plan.js';
 
 /**
@@ -52,10 +52,9 @@ function enrichGenericDefaultsFromBaseline(
     const baseline = ctx.apiSurface.interfaces[domainName];
     if (!baseline?.fields) continue;
 
-    // Only enrich generic defaults for models whose baseline file will be
-    // preserved via skipIfExists (paths match).  If the file is generated
-    // fresh in a new directory, it won't have generics, so references
-    // to it don't need type args.
+    // Only enrich generic defaults for models whose baseline file path matches
+    // the generated path.  If the file is generated in a new directory, it
+    // won't have generics, so references to it don't need type args.
     const generatedPath = `src/${resolveDir(modelToService.get(model.name))}/interfaces/${fileName(model.name)}.interface.ts`;
     const baselineSourceFile = (baseline as any).sourceFile as string | undefined;
     if (baselineSourceFile && baselineSourceFile !== generatedPath) continue;
@@ -72,17 +71,58 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   const {
     modelToService,
     resolveDir,
-    useStringDates,
     dedup: sharedDedup,
     genericDefaults: sharedDefaults,
   } = shared ?? buildSharedContext(models, ctx);
   const genericDefaults = sharedDefaults;
-  const typeRefOpts = useStringDates ? { stringDates: true, genericDefaults } : { genericDefaults };
+  const typeRefOpts = { genericDefaults };
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
   const dedup = sharedDedup;
 
+  // Only generate files for models reachable from non-event service operations.
+  // Event operations (listEvents) pull in hundreds of webhook payload models
+  // that the existing SDK handles via hand-written event types. Skip those.
+  const seeds = new Set<string>();
+  for (const svc of ctx.spec.services) {
+    if (svc.name.toLowerCase() === 'events') continue; // skip events service
+    for (const op of svc.operations) {
+      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
+        if (!t) return;
+        if (t.kind === 'model') seeds.add(t.name);
+        if (t.kind === 'array') collectFromRef(t.items);
+        if (t.kind === 'nullable') collectFromRef(t.inner);
+        if (t.kind === 'union') t.variants.forEach(collectFromRef);
+      };
+      collectFromRef(op.response);
+      collectFromRef(op.requestBody);
+      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
+    }
+  }
+  // Transitive closure: expand seeds to include all models referenced by seed models
+  const modelMap = new Map(models.map((m) => [m.name, m]));
+  const reachableModels = new Set<string>();
+  const queue = [...seeds];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (reachableModels.has(name)) continue;
+    reachableModels.add(name);
+    const m = modelMap.get(name);
+    if (!m) continue;
+    for (const field of m.fields) {
+      const walk = (t: import('@workos/oagen').TypeRef): void => {
+        if (t.kind === 'model' && !reachableModels.has(t.name)) queue.push(t.name);
+        if (t.kind === 'array') walk(t.items);
+        if (t.kind === 'nullable') walk(t.inner);
+        if (t.kind === 'union') t.variants.forEach(walk);
+      };
+      walk(field.type);
+    }
+  }
+
   for (const model of models) {
+    if (!reachableModels.has(model.name)) continue;
+
     // Fix #4: Skip per-domain ListMetadata interfaces — the shared ListMetadata type covers these
     if (isListMetadataModel(model)) continue;
 
@@ -97,8 +137,8 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const dirName = resolveDir(service);
 
       // Skip typeAlias resolution for dedup models.  The canonical file may
-      // be preserved (skipIfExists) and still export its raw name, so the
-      // import names must match the raw exports, not resolved aliases.
+      // still export its raw name, so the import names must match the raw
+      // exports, not resolved aliases.
       const skipTA = { skipTypeAlias: true };
       const domainName = resolveInterfaceName(model.name, ctx, skipTA);
       const responseName = wireInterfaceName(domainName);
@@ -128,7 +168,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       files.push({
         path: aliasPath,
         content: aliasLines.join('\n'),
-        skipIfExists: true,
+        overwriteExisting: true,
       });
       continue;
     }
@@ -303,6 +343,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
         if (
           baselineField &&
           !domainResponseOptionalMismatch &&
+          !hasDateTimeConversion(field.type) &&
           baselineTypeResolvable(baselineField.type, importableNames) &&
           baselineFieldCompatible(baselineField, field)
         ) {
@@ -369,7 +410,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     files.push({
       path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
       content: pruneUnusedImports(lines).join('\n'),
-      skipIfExists: true,
+      overwriteExisting: true,
     });
   }
 
@@ -477,18 +518,16 @@ function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): 
 interface SharedModelContext {
   modelToService: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
-  useStringDates: boolean;
   dedup: Map<string, string>;
   genericDefaults: Map<string, string>;
 }
 
 function buildSharedContext(models: Model[], ctx: EmitterContext): SharedModelContext {
   const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
-  const useStringDates = detectStringDateConvention(models, ctx);
   const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
   enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
   const dedup = buildDeduplicationMap(models, ctx);
-  return { modelToService, resolveDir, useStringDates, dedup, genericDefaults };
+  return { modelToService, resolveDir, dedup, genericDefaults };
 }
 
 // ---------------------------------------------------------------------------
@@ -507,11 +546,50 @@ export function generateSerializers(
 ): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const { modelToService, resolveDir, useStringDates, dedup } = shared ?? buildSharedContext(models, ctx);
+  const { modelToService, resolveDir, dedup } = shared ?? buildSharedContext(models, ctx);
   const files: GeneratedFile[] = [];
   const skippedSerializeModels = new Set<string>();
 
+  // Reuse the same reachability set from generateModels (via shared context)
+  // to skip serializers for unreachable models.
+  const serializerSeeds = new Set<string>();
+  for (const svc of ctx.spec.services) {
+    if (svc.name.toLowerCase() === 'events') continue;
+    for (const op of svc.operations) {
+      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
+        if (!t) return;
+        if (t.kind === 'model') serializerSeeds.add(t.name);
+        if (t.kind === 'array') collectFromRef(t.items);
+        if (t.kind === 'nullable') collectFromRef(t.inner);
+        if (t.kind === 'union') t.variants.forEach(collectFromRef);
+      };
+      collectFromRef(op.response);
+      collectFromRef(op.requestBody);
+      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
+    }
+  }
+  const serializerModelMap = new Map(models.map((m) => [m.name, m]));
+  const serializerReachable = new Set<string>();
+  const serializerQueue = [...serializerSeeds];
+  while (serializerQueue.length > 0) {
+    const name = serializerQueue.pop()!;
+    if (serializerReachable.has(name)) continue;
+    serializerReachable.add(name);
+    const m = serializerModelMap.get(name);
+    if (!m) continue;
+    for (const field of m.fields) {
+      const walk = (t: import('@workos/oagen').TypeRef): void => {
+        if (t.kind === 'model' && !serializerReachable.has(t.name)) serializerQueue.push(t.name);
+        if (t.kind === 'array') walk(t.items);
+        if (t.kind === 'nullable') walk(t.inner);
+        if (t.kind === 'union') t.variants.forEach(walk);
+      };
+      walk(field.type);
+    }
+  }
+
   for (const model of models) {
+    if (!serializerReachable.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
 
@@ -554,7 +632,7 @@ export function generateSerializers(
     const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
 
-    const skipFormatFields = buildSkipFormatFields(model, useStringDates, baselineDomain);
+    const skipFormatFields = buildSkipFormatFields(model, baselineDomain);
     const shouldSkipSerialize = shouldSkipSerializeForModel(
       model,
       baselineResponse,
@@ -567,7 +645,7 @@ export function generateSerializers(
       skippedSerializeModels.add(model.name);
     }
 
-    const sctx = { modelToService, resolveDir, useStringDates, dedup, skippedSerializeModels, ctx };
+    const sctx = { modelToService, resolveDir, dedup, skippedSerializeModels, ctx };
     const lines = [
       ...buildSerializerImports(model, serializerPath, dirName, domainName, responseName, sctx),
       ...emitSerializerBody(
@@ -586,6 +664,7 @@ export function generateSerializers(
     files.push({
       path: serializerPath,
       content: pruneUnusedImports(lines).join('\n'),
+      overwriteExisting: true,
     });
   }
 

@@ -2047,4 +2047,117 @@ describe('partial service coverage', () => {
     const createMethods = methodNames.filter((n) => n.toLowerCase().startsWith('create'));
     expect(new Set(createMethods).size).toBe(createMethods.length); // all unique
   });
+
+  it('omits @param payload when overlay method has no payload param', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createEvent',
+            httpMethod: 'post',
+            path: '/audit_logs/events',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateAuditLogEvent' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /audit_logs/events',
+            {
+              className: 'AuditLogs',
+              methodName: 'createEvent',
+              params: [
+                { name: 'organization', type: 'string', optional: false },
+                { name: 'event', type: 'CreateAuditLogEventOptions', optional: false },
+                { name: 'options', type: 'CreateAuditLogEventRequestOptions', optional: true },
+              ],
+              returnType: 'Promise<void>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+    // Overlay has (organization, event, options) — no payload param
+    expect(content).not.toContain('@param payload');
+  });
+
+  it('documents @param options when overlay folds path params into options', () => {
+    const services: Service[] = [
+      {
+        name: 'FeatureFlags',
+        operations: [
+          {
+            name: 'addFeatureFlagTarget',
+            httpMethod: 'post',
+            path: '/feature-flags/{slug}/targets/{target_id}',
+            pathParams: [
+              { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'target_id', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /feature-flags/{slug}/targets/{target_id}',
+            {
+              className: 'FeatureFlags',
+              methodName: 'addFlagTarget',
+              params: [{ name: 'options', type: 'AddFlagTargetOptions', optional: false }],
+              returnType: 'Promise<void>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+    // Path params (slug, targetId) are folded into options — should not appear as top-level @param
+    expect(content).not.toContain('@param slug');
+    expect(content).not.toContain('@param targetId');
+    // Should have @param options since it's in the overlay signature
+    expect(content).toContain('@param options');
+  });
 });

@@ -582,7 +582,6 @@ function emitAssignment(lhs: string, expr: string, accessExpr: string, guard: Gu
 interface SerializerContext {
   modelToService: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
-  useStringDates: boolean;
   dedup: Map<string, string>;
   skippedSerializeModels: Set<string>;
   ctx: EmitterContext;
@@ -621,24 +620,15 @@ export function buildSerializerImports(
 }
 
 /** Build the set of field names where format conversion should be skipped. */
-export function buildSkipFormatFields(
-  model: Model,
-  useStringDates: boolean,
-  baselineDomain: BaselineInterface | undefined,
-): Set<string> {
+export function buildSkipFormatFields(model: Model, baselineDomain: BaselineInterface | undefined): Set<string> {
   const skipFormatFields = new Set<string>();
-  if (useStringDates) {
-    for (const field of model.fields) {
-      if (hasDateTimeConversion(field.type)) {
-        skipFormatFields.add(field.name);
-      }
-    }
-  }
   if (baselineDomain) {
     for (const field of model.fields) {
       if (skipFormatFields.has(field.name)) continue;
       const baselineField = baselineDomain.fields?.[fieldName(field.name)];
       if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
+        // Always convert date-time fields to Date regardless of baseline
+        if (hasDateTimeConversion(field.type)) continue;
         skipFormatFields.add(field.name);
       }
     }

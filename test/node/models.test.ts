@@ -182,6 +182,23 @@ describe('generateModels', () => {
   });
 
   it('handles generic type params', () => {
+    const service: Service = {
+      name: 'DirectorySync',
+      operations: [
+        {
+          name: 'getDirectoryUser',
+          httpMethod: 'get',
+          path: '/directory_users/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'DirectoryUser' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
     const models: Model[] = [
       {
         name: 'DirectoryUser',
@@ -204,7 +221,12 @@ describe('generateModels', () => {
       },
     ];
 
-    const files = generateModels(models, ctx);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
     expect(files[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>> {');
     expect(files[0].content).toContain('export interface DirectoryUserResponse<TCustom = Record<string, any>> {');
   });
@@ -733,6 +755,23 @@ describe('model deduplication', () => {
           errors: [],
           injectIdempotencyKey: false,
         },
+        {
+          name: 'getOrganizationRole',
+          httpMethod: 'get',
+          path: '/organization_roles/{id}',
+          pathParams: [
+            {
+              name: 'id',
+              type: { kind: 'primitive', type: 'string' },
+              required: true,
+            },
+          ],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'OrganizationRole' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
       ],
     };
 
@@ -793,5 +832,92 @@ describe('model deduplication', () => {
     // Second model: type alias referencing canonical
     expect(files[1].content).toContain('export type OrganizationRole = EnvironmentRole');
     expect(files[1].content).toContain('export type OrganizationRoleResponse = EnvironmentRoleResponse');
+  });
+
+  it('generates Date type for date-time fields even when baseline says string', () => {
+    const service: Service = {
+      name: 'Authorization',
+      operations: [
+        {
+          name: 'getRoleAssignment',
+          httpMethod: 'get',
+          path: '/role_assignments/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'RoleAssignment' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'RoleAssignment',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'created_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
+            required: true,
+          },
+          {
+            name: 'updated_at',
+            type: { kind: 'primitive', type: 'string', format: 'date-time' },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: 'test',
+        extractedAt: '2024-01-01',
+        classes: {},
+        typeAliases: {},
+        enums: {},
+        exports: {},
+        interfaces: {
+          RoleAssignment: {
+            name: 'RoleAssignment',
+            fields: {
+              id: { name: 'id', type: 'string', optional: false },
+              createdAt: { name: 'createdAt', type: 'string', optional: false },
+              updatedAt: { name: 'updatedAt', type: 'string', optional: false },
+            },
+            extends: [],
+          },
+          RoleAssignmentResponse: {
+            name: 'RoleAssignmentResponse',
+            fields: {
+              id: { name: 'id', type: 'string', optional: false },
+              created_at: { name: 'created_at', type: 'string', optional: false },
+              updated_at: { name: 'updated_at', type: 'string', optional: false },
+            },
+            extends: [],
+          },
+        },
+      },
+    };
+
+    const files = generateModels(models, ctxWithBaseline);
+    const content = files[0].content;
+
+    // Domain interface should use Date, not string from baseline
+    expect(content).toContain('  createdAt: Date;');
+    expect(content).toContain('  updatedAt: Date;');
+
+    // Wire interface should stay as string (JSON native)
+    expect(content).toContain('  created_at: string;');
+    expect(content).toContain('  updated_at: string;');
   });
 });

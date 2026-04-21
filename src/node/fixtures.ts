@@ -48,15 +48,51 @@ export function generateFixtures(
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
+  // Only generate fixtures for models reachable from non-event operations
+  const fixtureSeeds = new Set<string>();
+  for (const svc of spec.services) {
+    if (svc.name.toLowerCase() === 'events') continue;
+    for (const op of svc.operations) {
+      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
+        if (!t) return;
+        if (t.kind === 'model') fixtureSeeds.add(t.name);
+        if (t.kind === 'array') collectFromRef(t.items);
+        if (t.kind === 'nullable') collectFromRef(t.inner);
+        if (t.kind === 'union') t.variants.forEach(collectFromRef);
+      };
+      collectFromRef(op.response);
+      collectFromRef(op.requestBody);
+      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
+    }
+  }
+  const fixtureModelMap = new Map(spec.models.map((m: Model) => [m.name, m]));
+  const fixtureReachable = new Set<string>();
+  const fixtureQueue = [...fixtureSeeds];
+  while (fixtureQueue.length > 0) {
+    const name = fixtureQueue.pop()!;
+    if (fixtureReachable.has(name)) continue;
+    fixtureReachable.add(name);
+    const m = fixtureModelMap.get(name);
+    if (!m) continue;
+    for (const field of m.fields) {
+      const walk = (t: import('@workos/oagen').TypeRef): void => {
+        if (t.kind === 'model' && !fixtureReachable.has(t.name)) fixtureQueue.push(t.name);
+        if (t.kind === 'array') walk(t.items);
+        if (t.kind === 'nullable') walk(t.inner);
+        if (t.kind === 'union') t.variants.forEach(walk);
+      };
+      walk(field.type);
+    }
+  }
   const seenFixturePaths = new Set<string>();
   for (const model of spec.models) {
-    // Skip redundant list-metadata and list-wrapper models (handled by shared types)
+    if (!fixtureReachable.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
-    const fixturePath = `src/${dirName}/fixtures/${fileName(model.name)}.fixture.json`;
+    const fixturePath = `src/${dirName}/fixtures/${fileName(model.name)}.json`;
 
     // After noise suffix stripping, multiple models may resolve to the same
     // fixture path (e.g., OrganizationDto and Organization).  Skip duplicates.
@@ -94,7 +130,7 @@ export function generateFixtures(
             },
           };
           files.push({
-            path: `src/${serviceDir}/fixtures/list-${fileName(itemModel.name)}.fixture.json`,
+            path: `src/${serviceDir}/fixtures/list-${fileName(itemModel.name)}.json`,
             content: JSON.stringify(listFixture, null, 2),
           });
         }
