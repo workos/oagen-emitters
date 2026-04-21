@@ -88,7 +88,6 @@ export const nodeEmitter: Emitter = {
           'npx eslint --fix --no-error-on-unmatched-pattern "$@" 2>/dev/null; npx prettier --write --log-level silent "$@"',
           '--',
         ],
-        batchSize: 500,
       };
     }
     if (hasPrettier) {

@@ -6,6 +6,7 @@ import type {
   GeneratedFile,
   ResolvedOperation,
   Model,
+  TypeRef,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
@@ -148,8 +149,9 @@ function generateParameterGroupTypes(
  * method body. Each group field on the options class is pattern-matched via
  * `is` checks and its variant parameters are added to the query string.
  */
-function emitGroupQuerySerialization(mountName: string, op: Operation, indent: string): string[] {
+function emitGroupQuerySerialization(mountName: string, op: Operation, indent: string, models: Model[]): string[] {
   const lines: string[] = [];
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
 
   for (const group of op.parameterGroups ?? []) {
     const groupField = fieldName(group.name);
@@ -164,15 +166,96 @@ function emitGroupQuerySerialization(mountName: string, op: Operation, indent: s
 
       lines.push(`${indent}${keyword} (options?.${groupField} is ${variantName} ${localVar})`);
       lines.push(`${indent}{`);
+      let prevWasBlock = false;
       for (const param of variant.parameters) {
         const csField = fieldName(param.name);
-        lines.push(`${indent}    request.AddQueryParam("${param.name}", ${localVar}.${csField});`);
+        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+        const accessor = `${localVar}.${csField}`;
+        const paramLines = emitQueryParamValue(param.name, accessor, effectiveType, indent + '    ');
+        // SA1513: closing brace must be followed by a blank line before the next statement
+        if (prevWasBlock) lines.push('');
+        lines.push(...paramLines);
+        prevWasBlock = paramLines.length > 1;
       }
       lines.push(`${indent}}`);
     }
   }
 
   return lines;
+}
+
+/**
+ * Emit one or more lines to add a query param, adapting to the parameter's
+ * IR type: enums use JsonConvert for wire-value serialization, arrays are
+ * comma-joined, and reference types (string, List) get a null guard.
+ *
+ * Reference types always get a null guard because variant classes are shared
+ * across operations whose body models may disagree on nullability.
+ */
+function emitQueryParamValue(wireName: string, accessor: string, typeRef: TypeRef, indent: string): string[] {
+  const isNullable = typeRef.kind === 'nullable';
+  const inner: TypeRef = isNullable ? (typeRef as { kind: 'nullable'; inner: TypeRef }).inner : typeRef;
+
+  // Reference types (arrays, strings, models) are always guarded for null
+  // because the variant class property may be nullable even when the current
+  // operation's body model says "required".
+  const needsNullGuard = isNullable || !isValueTypeRef(inner);
+
+  if (inner.kind === 'array') {
+    if (needsNullGuard) {
+      return [
+        `${indent}if (${accessor} != null)`,
+        `${indent}{`,
+        `${indent}    request.AddQueryParam("${wireName}", string.Join(",", ${accessor}));`,
+        `${indent}}`,
+      ];
+    }
+    return [`${indent}request.AddQueryParam("${wireName}", string.Join(",", ${accessor}));`];
+  }
+
+  if (inner.kind === 'enum') {
+    const serExpr = `JsonConvert.SerializeObject(${accessor}).Trim('"')`;
+    if (isNullable) {
+      return [
+        `${indent}if (${accessor} != null)`,
+        `${indent}{`,
+        `${indent}    request.AddQueryParam("${wireName}", ${serExpr});`,
+        `${indent}}`,
+      ];
+    }
+    return [`${indent}request.AddQueryParam("${wireName}", ${serExpr});`];
+  }
+
+  if (needsNullGuard) {
+    return [
+      `${indent}if (${accessor} != null)`,
+      `${indent}{`,
+      `${indent}    request.AddQueryParam("${wireName}", ${accessor});`,
+      `${indent}}`,
+    ];
+  }
+
+  return [`${indent}request.AddQueryParam("${wireName}", ${accessor});`];
+}
+
+/** Check whether any parameter group variant contains an enum-typed parameter. */
+function groupsNeedJsonConvert(operations: Operation[], models: Model[]): boolean {
+  for (const op of operations) {
+    const bodyFieldTypes = collectBodyFieldTypes(op, models);
+    for (const group of op.parameterGroups ?? []) {
+      for (const variant of group.variants) {
+        for (const param of variant.parameters) {
+          const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+          const inner: TypeRef =
+            effectiveType.kind === 'nullable'
+              ? (effectiveType as { kind: 'nullable'; inner: TypeRef }).inner
+              : effectiveType;
+          if (inner.kind === 'enum') return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 function generateServiceFile(mountName: string, operations: Operation[], ctx: EmitterContext): GeneratedFile | null {
@@ -189,6 +272,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push('    using System.Net.Http;');
   lines.push('    using System.Threading;');
   lines.push('    using System.Threading.Tasks;');
+  if (groupsNeedJsonConvert(operations, ctx.spec.models)) {
+    lines.push('    using Newtonsoft.Json;');
+  }
   lines.push('');
   lines.push(
     `    /// <summary>Service that exposes the ${humanize(mountName)} API operations on <see cref="WorkOSClient"/>.</summary>`,
@@ -624,7 +710,7 @@ function generateMethod(
     // Serialize parameter group variants into query params
     if (hasGroups) {
       lines.push('');
-      lines.push(...emitGroupQuerySerialization(mountName, op, '            '));
+      lines.push(...emitGroupQuerySerialization(mountName, op, '            ', ctx.spec.models));
       lines.push('');
     }
 

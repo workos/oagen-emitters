@@ -231,7 +231,7 @@ export const dotnetEmitter: Emitter = {
       args: ['format', workspace, '--no-restore', '--include'],
       // Keep batches small enough to stay under argv length limits while
       // still amortizing MSBuild startup across many files.
-      batchSize: 50,
+      batchSize: 500,
     };
   },
 };

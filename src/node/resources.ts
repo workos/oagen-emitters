@@ -38,7 +38,6 @@ import {
   groupByMount,
   getOpDefaults,
   getOpInferFromClient,
-  collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -194,120 +193,6 @@ function deduplicateMethodNames(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Mutually-exclusive parameter group support
-// ---------------------------------------------------------------------------
-
-/** PascalCase union type name for a parameter group (e.g. ParentResource). */
-function groupTypeName(groupName: string): string {
-  return toPascalCase(groupName);
-}
-
-/** PascalCase variant interface name (e.g. ParentResourceById). */
-function groupVariantInterfaceName(groupName: string, variantName: string): string {
-  return `${toPascalCase(groupName)}${toPascalCase(variantName)}`;
-}
-
-/**
- * Derive a short camelCase field name for a parameter within a variant,
- * stripping the group name prefix to avoid stuttering
- * (e.g. parent_resource_id in group parent_resource -> id -> NOT used,
- *  we keep the full camelCase name for TypeScript since there's no stuttering concern).
- */
-function deriveVariantFieldName(paramName: string): string {
-  return fieldName(paramName);
-}
-
-/**
- * Generate TypeScript discriminated union types for all parameter groups on an
- * operation. Each group emits variant interfaces with a `type` discriminator
- * field, plus a union type alias.
- *
- * Example output:
- * ```
- * export interface ParentResourceById {
- *   type: 'by_id';
- *   parentResourceId: string;
- * }
- * export interface ParentResourceByExternalId {
- *   type: 'by_external_id';
- *   parentResourceTypeSlug: string;
- *   parentResourceExternalId: string;
- * }
- * export type ParentResource = ParentResourceById | ParentResourceByExternalId;
- * ```
- */
-function generateParameterGroupTypes(op: Operation, specEnumNames: Set<string>): string[] {
-  const lines: string[] = [];
-
-  for (const group of op.parameterGroups ?? []) {
-    const unionName = groupTypeName(group.name);
-    const variantNames: string[] = [];
-
-    for (const variant of group.variants) {
-      const ifaceName = groupVariantInterfaceName(group.name, variant.name);
-      variantNames.push(ifaceName);
-
-      lines.push(`export interface ${ifaceName} {`);
-      lines.push(`  type: '${variant.name}';`);
-      for (const param of variant.parameters) {
-        const tsField = deriveVariantFieldName(param.name);
-        const tsType = mapParamType(param.type, specEnumNames);
-        lines.push(`  ${tsField}: ${tsType};`);
-      }
-      lines.push('}');
-    }
-
-    lines.push(`export type ${unionName} = ${variantNames.join(' | ')};`);
-    lines.push('');
-  }
-
-  return lines;
-}
-
-/**
- * Render a serialization expression that switches on the group discriminator
- * and emits the correct wire-name query params for each variant. Returns an
- * array of lines to splice into a query-building block.
- *
- * Handles both required and optional groups. For optional groups, wraps in
- * an `if (options.<field> !== undefined)` guard.
- */
-function renderGroupQuerySerialization(
-  group: {
-    name: string;
-    optional: boolean;
-    variants: Array<{ name: string; parameters: Array<{ name: string; type: TypeRef }> }>;
-  },
-  optionsVar: string,
-): string[] {
-  const lines: string[] = [];
-  const prop = fieldName(group.name);
-  const indent = group.optional ? '    ' : '  ';
-
-  if (group.optional) {
-    lines.push(`  if (${optionsVar}.${prop} !== undefined) {`);
-  }
-
-  lines.push(`${indent}switch (${optionsVar}.${prop}.type) {`);
-  for (const variant of group.variants) {
-    lines.push(`${indent}  case '${variant.name}':`);
-    for (const param of variant.parameters) {
-      const camel = deriveVariantFieldName(param.name);
-      const snake = wireFieldName(param.name);
-      lines.push(`${indent}    wire.${snake} = ${optionsVar}.${prop}.${camel};`);
-    }
-    lines.push(`${indent}    break;`);
-  }
-  lines.push(`${indent}}`);
-
-  if (group.optional) {
-    lines.push('  }');
-  }
-
-  return lines;
-}
-
 /**
  * Emit one interface file per paginated list operation that has extension
  * query params.  Placing the options interface under `interfaces/` lets the
@@ -333,12 +218,8 @@ function generatePaginatedOptionsInterfaces(
 
   for (const { op, plan, method } of plans) {
     if (!plan.isPaginated) continue;
-    const groupedParamNames = collectGroupedParamNames(op);
-    const extraParams = op.queryParams.filter(
-      (p) => !PAGINATION_PARAM_NAMES.has(p.name) && !groupedParamNames.has(p.name),
-    );
-    const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-    if (extraParams.length === 0 && !hasGroups) continue;
+    const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+    if (extraParams.length === 0) continue;
 
     const optionsName = paginatedOptionsName(method, resolvedName);
     const filePath = `src/${serviceDir}/interfaces/${fileName(optionsName)}.interface.ts`;
@@ -346,12 +227,6 @@ function generatePaginatedOptionsInterfaces(
     const lines: string[] = [];
     lines.push("import type { PaginationOptions } from '../../common/interfaces/pagination-options.interface';");
     lines.push('');
-
-    // Emit discriminated union types for parameter groups
-    if (hasGroups) {
-      lines.push(...generateParameterGroupTypes(op, specEnumNames));
-    }
-
     lines.push(`export interface ${optionsName} extends PaginationOptions {`);
     for (const param of extraParams) {
       const opt = !param.required ? '?' : '';
@@ -363,14 +238,6 @@ function generatePaginatedOptionsInterfaces(
       }
       lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
     }
-
-    // Add parameter group fields to the options interface
-    for (const group of op.parameterGroups ?? []) {
-      const groupType = groupTypeName(group.name);
-      const opt = group.optional ? '?' : '';
-      lines.push(`  ${fieldName(group.name)}${opt}: ${groupType};`);
-    }
-
     lines.push('}');
 
     files.push({
@@ -724,20 +591,16 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // re-export them; see the earlier import block at the top of the file.
   for (const { op, plan, method } of plans) {
     if (plan.isPaginated) {
-      const groupedParamNames = collectGroupedParamNames(op);
-      const extraParams = op.queryParams.filter(
-        (p) => !PAGINATION_PARAM_NAMES.has(p.name) && !groupedParamNames.has(p.name),
-      );
-      const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-      if (extraParams.length > 0 || hasGroups) {
+      const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+      if (extraParams.length > 0) {
         const optionsName = paginatedOptionsName(method, resolvedName);
 
         // When any extension param has a camelCase domain name that differs
-        // from its snake_case wire name, or the operation has parameter groups,
-        // emit a serializer that translates the user-facing options into the
-        // wire query shape.  Without this, the query string uses camelCase
-        // keys (e.g. `organizationId=...`) that the API silently ignores.
-        const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name)) || hasGroups;
+        // from its snake_case wire name, emit a serializer that translates
+        // the user-facing options into the wire query shape.  Without this,
+        // the query string uses camelCase keys (e.g. `organizationId=...`)
+        // that the API silently ignores — the filter becomes a no-op.
+        const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
         if (needsWireSerializer) {
           const serializerName = `serialize${optionsName}`;
           lines.push(`const ${serializerName} = (options: ${optionsName}): PaginationOptions => {`);
@@ -755,10 +618,6 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
             const snake = wireFieldName(param.name);
             lines.push(`  if (options.${camel} !== undefined) wire.${snake} = options.${camel};`);
           }
-          // Serialize parameter groups by switching on the discriminator
-          for (const group of op.parameterGroups ?? []) {
-            lines.push(...renderGroupQuerySerialization(group, 'options'));
-          }
           lines.push('  return wire as PaginationOptions;');
           lines.push('};');
           lines.push('');
@@ -773,15 +632,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         ...Object.keys(getOpDefaults(resolved)),
         ...getOpInferFromClient(resolved),
       ]);
-      const opGroupedParams = collectGroupedParamNames(op);
-      const visibleParams = op.queryParams.filter((p) => !opHiddenParams.has(p.name) && !opGroupedParams.has(p.name));
-      const opHasGroups = (op.parameterGroups?.length ?? 0) > 0;
-      if (visibleParams.length > 0 || opHasGroups) {
-        // Emit discriminated union types for parameter groups
-        if (opHasGroups) {
-          lines.push(...generateParameterGroupTypes(op, specEnumNames ?? new Set()));
-        }
-
+      const visibleParams = op.queryParams.filter((p) => !opHiddenParams.has(p.name));
+      if (visibleParams.length > 0) {
         const optionsName = toPascalCase(method) + 'Options';
         lines.push(`export interface ${optionsName} {`);
         for (const param of visibleParams) {
@@ -793,12 +645,6 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
             lines.push(...docComment(parts.join('\n'), 2));
           }
           lines.push(`  ${fieldName(param.name)}${opt}: ${mapParamType(param.type, specEnumNames)};`);
-        }
-        // Add parameter group fields to the options interface
-        for (const group of op.parameterGroups ?? []) {
-          const groupType = groupTypeName(group.name);
-          const opt = group.optional ? '?' : '';
-          lines.push(`  ${fieldName(group.name)}${opt}: ${groupType};`);
         }
         lines.push('}');
         lines.push('');
@@ -1067,18 +913,12 @@ function renderPaginatedMethod(
   resolvedServiceName: string,
   specEnumNames?: Set<string>,
 ): void {
-  const groupedParamNames = collectGroupedParamNames(op);
-  const extraParams = op.queryParams.filter(
-    (p) => !PAGINATION_PARAM_NAMES.has(p.name) && !groupedParamNames.has(p.name),
-  );
-  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  const optionsType =
-    extraParams.length > 0 || hasGroups ? paginatedOptionsName(method, resolvedServiceName) : 'PaginationOptions';
-  // When any extension param has a camelCase/snake_case divergence or the
-  // operation has parameter groups, the resource file emits a
-  // `serialize<OptionsName>` helper — pass it to createPaginatedList so the
-  // wire query uses snake_case keys.
-  const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name)) || hasGroups;
+  const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+  const optionsType = extraParams.length > 0 ? paginatedOptionsName(method, resolvedServiceName) : 'PaginationOptions';
+  // When any extension param has a camelCase/snake_case divergence, the
+  // resource file emits a `serialize<OptionsName>` helper — pass it to
+  // createPaginatedList so the wire query uses snake_case keys.
+  const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
   const serializerArg = needsWireSerializer ? `, serialize${optionsType}` : '';
 
   const pathParams = buildPathParams(op, specEnumNames);
@@ -1248,16 +1088,14 @@ function renderGetMethod(
     ...Object.keys(getOpDefaults(resolvedOp)),
     ...getOpInferFromClient(resolvedOp),
   ]);
-  const groupedParamNames = collectGroupedParamNames(op);
-  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
 
   const params = buildPathParams(op, specEnumNames);
-  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name) && !groupedParamNames.has(p.name));
-  const hasVisibleQuery = (visibleQueryParams.length > 0 || hasGroups) && !plan.isPaginated;
+  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name));
+  const hasVisibleQuery = visibleQueryParams.length > 0 && !plan.isPaginated;
   const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
   const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
   const hasInjected = hasDefaults || hasInferred;
-  const hasQuery = (op.queryParams.length > 0 && !plan.isPaginated) || hasInjected || hasGroups;
+  const hasQuery = (op.queryParams.length > 0 && !plan.isPaginated) || hasInjected;
   const optionsType = hasVisibleQuery ? toPascalCase(method) + 'Options' : null;
 
   const allParams = optionsType
@@ -1274,13 +1112,12 @@ function renderGetMethod(
 
   lines.push(`  async ${method}(${allParams}): Promise<${returnType}> {`);
   if (hasQuery) {
-    if (hasInjected || hasGroups) {
-      // Build the query object with visible params, defaults, inferred fields,
-      // and parameter group dispatch
+    if (hasInjected) {
+      // Build the query object with visible params, defaults, and inferred fields
       const queryParts: string[] = [];
 
       // Regular visible query params (from options)
-      if (visibleQueryParams.length > 0) {
+      if (hasVisibleQuery) {
         for (const param of visibleQueryParams) {
           const camel = fieldName(param.name);
           const snake = wireFieldName(param.name);
@@ -1310,54 +1147,9 @@ function renderGetMethod(
         queryParts.push(`${field}: ${clientFieldExpression(field)}`);
       }
 
-      if (hasGroups) {
-        // When groups are present, build the query object imperatively so
-        // we can splice in the group dispatch logic.
-        lines.push('    const query: Record<string, unknown> = {');
-        for (const part of queryParts) {
-          lines.push(`      ${part},`);
-        }
-        lines.push('    };');
-        for (const group of op.parameterGroups ?? []) {
-          const prop = fieldName(group.name);
-          if (group.optional) {
-            lines.push(`    if (options?.${prop} !== undefined) {`);
-            lines.push(`      switch (options.${prop}.type) {`);
-            for (const variant of group.variants) {
-              lines.push(`        case '${variant.name}':`);
-              for (const param of variant.parameters) {
-                const camel = deriveVariantFieldName(param.name);
-                const snake = wireFieldName(param.name);
-                lines.push(`          query.${snake} = options.${prop}.${camel};`);
-              }
-              lines.push('          break;');
-            }
-            lines.push('      }');
-            lines.push('    }');
-          } else {
-            lines.push(`    if (options?.${prop} !== undefined) {`);
-            lines.push(`      switch (options.${prop}.type) {`);
-            for (const variant of group.variants) {
-              lines.push(`        case '${variant.name}':`);
-              for (const param of variant.parameters) {
-                const camel = deriveVariantFieldName(param.name);
-                const snake = wireFieldName(param.name);
-                lines.push(`          query.${snake} = options.${prop}.${camel};`);
-              }
-              lines.push('          break;');
-            }
-            lines.push('      }');
-            lines.push('    }');
-          }
-        }
-        lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
-        lines.push('      query,');
-        lines.push('    });');
-      } else {
-        lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
-        lines.push(`      query: { ${queryParts.join(', ')} },`);
-        lines.push('    });');
-      }
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
+      lines.push(`      query: { ${queryParts.join(', ')} },`);
+      lines.push('    });');
     } else {
       const queryExpr = renderQueryExpr(visibleQueryParams);
       lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}, {`);
@@ -1407,12 +1199,10 @@ function renderVoidMethod(
     ...Object.keys(getOpDefaults(resolvedOp)),
     ...getOpInferFromClient(resolvedOp),
   ]);
-  const groupedParamNames = collectGroupedParamNames(op);
-  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
 
   const params = buildPathParams(op, specEnumNames);
-  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name) && !groupedParamNames.has(p.name));
-  const hasVisibleQuery = (visibleQueryParams.length > 0 || hasGroups) && !plan.hasBody;
+  const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name));
+  const hasVisibleQuery = visibleQueryParams.length > 0 && !plan.hasBody;
   const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
   const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
   const hasInjected = hasDefaults || hasInferred;
@@ -1450,12 +1240,11 @@ function renderVoidMethod(
   if (plan.hasBody) {
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
   } else if (hasQuery) {
-    if (hasInjected || hasGroups) {
-      // Build query object with visible params, defaults, inferred fields,
-      // and parameter group dispatch
+    if (hasInjected) {
+      // Build query object with visible params, defaults, and inferred fields
       const queryParts: string[] = [];
 
-      if (visibleQueryParams.length > 0) {
+      if (hasVisibleQuery) {
         for (const param of visibleQueryParams) {
           const camel = fieldName(param.name);
           const snake = wireFieldName(param.name);
@@ -1483,40 +1272,9 @@ function renderVoidMethod(
         queryParts.push(`${field}: ${clientFieldExpression(field)}`);
       }
 
-      if (hasGroups) {
-        lines.push('    const query: Record<string, unknown> = {');
-        for (const part of queryParts) {
-          lines.push(`      ${part},`);
-        }
-        lines.push('    };');
-        for (const group of op.parameterGroups ?? []) {
-          const prop = fieldName(group.name);
-          if (group.optional) {
-            lines.push(`    if (options?.${prop} !== undefined) {`);
-          } else {
-            lines.push(`    if (options?.${prop} !== undefined) {`);
-          }
-          lines.push(`      switch (options.${prop}.type) {`);
-          for (const variant of group.variants) {
-            lines.push(`        case '${variant.name}':`);
-            for (const param of variant.parameters) {
-              const camel = deriveVariantFieldName(param.name);
-              const snake = wireFieldName(param.name);
-              lines.push(`          query.${snake} = options.${prop}.${camel};`);
-            }
-            lines.push('          break;');
-          }
-          lines.push('      }');
-          lines.push('    }');
-        }
-        lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
-        lines.push('      query,');
-        lines.push('    });');
-      } else {
-        lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
-        lines.push(`      query: { ${queryParts.join(', ')} },`);
-        lines.push('    });');
-      }
+      lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
+      lines.push(`      query: { ${queryParts.join(', ')} },`);
+      lines.push('    });');
     } else {
       const queryExpr = renderQueryExpr(visibleQueryParams);
       lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, {`);
