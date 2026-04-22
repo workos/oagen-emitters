@@ -48,6 +48,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
+  // Track emitted file paths to prevent duplicates when synthetic models from
+  // oneOf enrichment collide with existing IR models in snake_case.
+  const emittedFilePaths = new Set<string>();
+
   for (const model of models) {
     // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
     if (isListWrapperModel(model)) continue;
@@ -57,6 +61,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const modelClassName = className(model.name);
+
+    // Skip models whose file path was already emitted (name collision after snake_case)
+    const modelFilePath = `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`;
+    if (emittedFilePaths.has(modelFilePath)) continue;
+    emittedFilePaths.add(modelFilePath);
 
     // If this model is a discriminated union dispatcher, generate a factory class
     // instead of a regular dataclass (e.g. EventSchema where each variant has
@@ -70,6 +79,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const dispLines: string[] = [];
       dispLines.push('from __future__ import annotations');
       dispLines.push('');
+      dispLines.push('from dataclasses import dataclass');
       dispLines.push('from typing import Any, ClassVar, Dict, Union, cast');
       dispLines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
       dispLines.push('');
@@ -88,14 +98,35 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         }
       }
 
+      // Unknown variant for forward-compatible unknown discriminator values
+      const unknownClassName = `${modelClassName}Unknown`;
+      dispLines.push('');
+      dispLines.push('');
+      dispLines.push('@dataclass(slots=True)');
+      dispLines.push(`class ${unknownClassName}:`);
+      dispLines.push(`    """Unknown variant of ${modelClassName} not yet recognized by this SDK version."""`);
+      dispLines.push('');
+      dispLines.push('    raw_data: Dict[str, Any]');
+      dispLines.push('    """The raw payload, preserved so callers can still inspect the data."""');
+      dispLines.push('');
+      dispLines.push('    @classmethod');
+      dispLines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${unknownClassName}":`);
+      dispLines.push('        """Wrap raw data in an unknown variant."""');
+      dispLines.push('        return cls(raw_data=data)');
+      dispLines.push('');
+      dispLines.push('    def to_dict(self) -> Dict[str, Any]:');
+      dispLines.push('        """Return the original raw data."""');
+      dispLines.push('        return dict(self.raw_data)');
+
       dispLines.push('');
       dispLines.push('');
 
-      // Union type alias
+      // Union type alias — includes unknown variant for forward compatibility
       dispLines.push(`${variantTypeName} = Union[`);
       for (const variantModelName of sortedVariants) {
         dispLines.push(`    ${className(variantModelName)},`);
       }
+      dispLines.push(`    ${unknownClassName},`);
       dispLines.push(']');
 
       dispLines.push('');
@@ -110,7 +141,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         dispLines.push(`    """Discriminated union dispatcher (discriminated by '${disc.property}')."""`);
       }
       dispLines.push('');
-      dispLines.push(`    _DISPATCH: ClassVar[Dict[str, Any]] = {`);
+      dispLines.push(`    _DISPATCH: ClassVar[Dict[str, type]] = {`);
       for (const [value, variantModelName] of Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b))) {
         dispLines.push(`        "${value}": ${className(variantModelName)},`);
       }
@@ -123,14 +154,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       dispLines.push(
         `            _raise_deserialize_error("${modelClassName}", ValueError("Missing required field '${disc.property}'"))`,
       );
-      dispLines.push(`        event_type = data["${disc.property}"]`);
-      dispLines.push('        if event_type is not None:');
-      dispLines.push('            dispatch_cls = cls._DISPATCH.get(str(event_type))');
-      dispLines.push('            if dispatch_cls is not None:');
-      dispLines.push(`                return cast("${variantTypeName}", dispatch_cls.from_dict(data))`);
+      dispLines.push(`        disc_value = data["${disc.property}"]`);
+      dispLines.push('        if disc_value is None:');
       dispLines.push(
-        `        _raise_deserialize_error("${modelClassName}", ValueError(f"Unknown ${disc.property}: {event_type!r}"))`,
+        `            _raise_deserialize_error("${modelClassName}", ValueError("${disc.property} must not be None"))`,
       );
+      dispLines.push('        dispatch_cls = cls._DISPATCH.get(disc_value)');
+      dispLines.push('        if dispatch_cls is not None:');
+      dispLines.push(`            return cast("${variantTypeName}", dispatch_cls.from_dict(data))`);
+      dispLines.push(`        return ${unknownClassName}.from_dict(data)`);
 
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
@@ -141,15 +173,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
       if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
       emittedModelSymbolsByDir.get(dirName)!.push(model.name);
-      // Also register the variant type alias in the barrel, pointing to the same file
+      // Also register the variant type alias and unknown variant in the barrel,
+      // pointing to the same file as the dispatcher.
       emittedModelSymbolsByDir.get(dirName)!.push(variantTypeName);
       symbolToFile.set(variantTypeName, fileName(model.name));
+      emittedModelSymbolsByDir.get(dirName)!.push(unknownClassName);
+      symbolToFile.set(unknownClassName, fileName(model.name));
       continue;
     }
 
     // If this model is an alias for a canonical model, generate a type alias file
     const canonicalName = aliasOf.get(model.name);
     if (canonicalName) {
+      // Skip when alias and canonical produce the same file name (self-import).
+      // This happens when synthetic models from oneOf enrichment collide with
+      // existing IR models in snake_case (e.g., Foo_bar vs FooBar).
+      if (fileName(model.name) === fileName(canonicalName)) {
+        continue;
+      }
       const canonicalService = modelToService.get(canonicalName);
       const canonicalDir = resolveDir(canonicalService);
       const canonicalClassName = className(canonicalName);
@@ -566,6 +607,9 @@ function compareAliasPriority(left: string, right: string, usage: ReturnType<typ
 }
 
 function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
+  // Don't alias when both models produce the same file name — the TypeAlias
+  // file would import from itself (e.g., FooBar aliased to Foo_bar).
+  if (fileName(canonical) === fileName(alias)) return false;
   // Don't alias across request/response boundaries — a request-only model
   // and a response-only model may look identical today but evolve independently.
   if (

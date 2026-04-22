@@ -37,6 +37,8 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // If this enum is an alias for a canonical enum, generate a type alias file
     const canonicalName = aliasOf.get(enumDef.name);
     if (canonicalName) {
+      // Skip when alias and canonical produce the same file name (self-import)
+      if (fileName(enumDef.name) === fileName(canonicalName)) continue;
       const canonicalService = enumToService.get(canonicalName);
       const canonicalDir = resolveDir(canonicalService);
       const canonicalCls = className(canonicalName);

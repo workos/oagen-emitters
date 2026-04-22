@@ -610,6 +610,105 @@ describe('generateModels', () => {
     expect(modelFile.content).toContain('""".. deprecated:: This field is deprecated."""');
   });
 
+  it('generates discriminator dispatcher with unknown fallback variant', () => {
+    const service: Service = {
+      name: 'Events',
+      operations: [
+        {
+          name: 'listEvents',
+          httpMethod: 'get',
+          path: '/events',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'EventSchema' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            dataPath: 'data',
+            itemType: { kind: 'model', name: 'EventSchema' },
+          },
+        },
+      ],
+    };
+
+    const discriminatorModel: any = {
+      name: 'EventSchema',
+      fields: [],
+      discriminator: {
+        property: 'event',
+        mapping: {
+          'user.created': 'UserCreated',
+          'dsync.user.created': 'DsyncUserCreated',
+        },
+      },
+    };
+
+    const models: Model[] = [
+      discriminatorModel,
+      {
+        name: 'UserCreated',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'user.created' }, required: true },
+          { name: 'data', type: { kind: 'primitive', type: 'unknown' }, required: true },
+        ],
+      },
+      {
+        name: 'DsyncUserCreated',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'dsync.user.created' }, required: true },
+          { name: 'data', type: { kind: 'primitive', type: 'unknown' }, required: true },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const dispatcherFile = files.find((f) => f.path.includes('event_schema.py'))!;
+    expect(dispatcherFile).toBeDefined();
+
+    // Has Unknown variant dataclass
+    expect(dispatcherFile.content).toContain('@dataclass(slots=True)');
+    expect(dispatcherFile.content).toContain('class EventSchemaUnknown:');
+    expect(dispatcherFile.content).toContain('raw_data: Dict[str, Any]');
+    expect(dispatcherFile.content).toContain('def from_dict(cls, data: Dict[str, Any]) -> "EventSchemaUnknown"');
+    expect(dispatcherFile.content).toContain('def to_dict(self) -> Dict[str, Any]:');
+
+    // Union includes Unknown variant
+    expect(dispatcherFile.content).toContain('EventSchemaVariant = Union[');
+    expect(dispatcherFile.content).toContain('    EventSchemaUnknown,');
+
+    // Dispatcher class
+    expect(dispatcherFile.content).toContain('class EventSchema:');
+    expect(dispatcherFile.content).toContain('_DISPATCH: ClassVar[Dict[str, type]]');
+
+    // from_dict falls back to Unknown instead of raising
+    expect(dispatcherFile.content).toContain('return EventSchemaUnknown.from_dict(data)');
+    expect(dispatcherFile.content).not.toContain('Unknown event');
+
+    // No str() coercion on discriminator value
+    expect(dispatcherFile.content).toContain('cls._DISPATCH.get(disc_value)');
+    expect(dispatcherFile.content).not.toContain('str(');
+
+    // Still raises on missing key and None value
+    expect(dispatcherFile.content).toContain("Missing required field 'event'");
+    expect(dispatcherFile.content).toContain('event must not be None');
+
+    // Barrel exports include Unknown variant
+    const barrel = files.find((f) => f.path.endsWith('__init__.py') && f.path.includes('models/'));
+    expect(barrel).toBeDefined();
+    expect(barrel!.content).toContain('EventSchemaUnknown');
+    expect(barrel!.content).toContain('EventSchemaVariant');
+  });
+
   it('deduplicates models with recursively identical sub-model references', () => {
     const service: Service = {
       name: 'Events',
