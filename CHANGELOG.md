@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/workos/oagen-emitters/compare/v0.3.0...v0.4.0) (2026-04-14)
+
+
+### Features
+
+* add dotnet and kotlin emitters with shared generator fixes ([#35](https://github.com/workos/oagen-emitters/issues/35)) ([d84896f](https://github.com/workos/oagen-emitters/commit/d84896f8277f24e7a7800640fca8317e3d5479de))
+
 ## [0.3.0](https://github.com/workos/oagen-emitters/compare/v0.2.1...v0.3.0) (2026-04-09)
 
 
