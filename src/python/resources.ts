@@ -329,7 +329,11 @@ function emitMethodSignature(
     returnType = 'str';
   } else if (isPaginated) {
     const resolvedItem = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
-    returnType = `${pageType}[${className(resolvedItem)}]`;
+    const resolvedItemModel = ctx.spec.models.find((m) => m.name === resolvedItem);
+    const itemTypeName = (resolvedItemModel as any)?.discriminator
+      ? className(resolvedItem) + 'Variant'
+      : className(resolvedItem);
+    returnType = `${pageType}[${itemTypeName}]`;
   } else if (isArrayResponse) {
     returnType = `List[${className(plan.responseModelName!)}]`;
   } else if (plan.responseModelName) {
@@ -614,6 +618,10 @@ function emitMethodBody(
   } else if (isPaginated) {
     const resolvedItemName = resolvePageItemName(op.pagination!.itemType, listWrapperNames, ctx);
     const itemTypeClass = className(resolvedItemName);
+    const resolvedItemModel = ctx.spec.models.find((m) => m.name === resolvedItemName);
+    const isDiscriminatorModel = !!(resolvedItemModel as any)?.discriminator;
+    const variantTypeName = isDiscriminatorModel ? itemTypeClass + 'Variant' : null;
+    const pageType = isAsync ? 'AsyncPage' : 'SyncPage';
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     // Build query params dict
     lines.push('        params = {k: v for k, v in {');
@@ -649,13 +657,28 @@ function emitMethodBody(
     }
     // isinstance dispatch for parameter groups
     emitGroupDispatch(lines, op);
-    lines.push(`        return ${awaitPrefix}self._client.request_page(`);
-    lines.push(`            method="${httpMethod}",`);
-    lines.push(`            path=${pathStr},`);
-    lines.push(`            model=${itemTypeClass},`);
-    lines.push('            params=params,');
-    lines.push('            request_options=request_options,');
-    lines.push('        )');
+    if (isDiscriminatorModel && variantTypeName) {
+      // Dispatcher model: cast the page to the variant union type so callers get
+      // rich type information when iterating events.
+      lines.push(`        return cast(`);
+      lines.push(`            ${pageType}[${variantTypeName}],`);
+      lines.push(`            ${awaitPrefix}self._client.request_page(`);
+      lines.push(`                method="${httpMethod}",`);
+      lines.push(`                path=${pathStr},`);
+      lines.push(`                model=${itemTypeClass},  # type: ignore[arg-type]`);
+      lines.push('                params=params,');
+      lines.push('                request_options=request_options,');
+      lines.push('            )');
+      lines.push('        )');
+    } else {
+      lines.push(`        return ${awaitPrefix}self._client.request_page(`);
+      lines.push(`            method="${httpMethod}",`);
+      lines.push(`            path=${pathStr},`);
+      lines.push(`            model=${itemTypeClass},`);
+      lines.push('            params=params,');
+      lines.push('            request_options=request_options,');
+      lines.push('        )');
+    }
   } else if (plan.isDelete) {
     // Build body dict if the DELETE has a request body
     const deleteGroupedParams = collectGroupedParamNames(op);
@@ -1040,6 +1063,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
         }
         modelImports.add(paginationItemName);
+        // For discriminator (dispatcher) models also import the variant union type alias
+        const paginationItemModel = ctx.spec.models.find((m) => m.name === paginationItemName);
+        if ((paginationItemModel as any)?.discriminator) {
+          modelImports.add(paginationItemName + 'Variant');
+        }
       }
       // Collect model imports for union split wrapper response types
       const resolved = lookupResolved(op, resolvedLookup);
@@ -1065,6 +1093,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
     // Split imports into same-service and cross-service (using mount-based dirs)
     const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+    // Discriminator variant type aliases (e.g. EventSchemaVariant) live in the same
+    // service as their dispatcher model, so ensure they resolve to the same directory.
+    for (const model of ctx.spec.models) {
+      if ((model as any).discriminator) {
+        const svc = modelToServiceMap.get(model.name);
+        if (svc) modelToServiceMap.set(model.name + 'Variant', svc);
+      }
+    }
     const resolveModelDir = (modelName: string) => {
       const svc = modelToServiceMap.get(modelName);
       return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';

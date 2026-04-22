@@ -1321,9 +1321,10 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('class TestModelRoundTrip:');
 
   for (const model of models) {
-    // Skip models with no fields — these are typically discriminated unions
-    // with hand-maintained @oagen-ignore overrides whose fixtures would not match.
+    // Skip models with no fields or discriminated union dispatchers — these
+    // don't have a to_dict() and their round-trip semantics differ.
     if (model.fields.length === 0) continue;
+    if ((model as any).discriminator) continue;
     // Deduplicate fields that map to the same snake_case name (mirrors models.ts)
     const seenFieldNames = new Set<string>();
     const dedupFields = model.fields.filter((f) => {
