@@ -2,8 +2,9 @@ import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oa
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 // naming utilities used indirectly via resolveResourceClassName
 import { resolveResourceClassName } from './resources.js';
-import { unexportedName } from './naming.js';
+import { className, unexportedName } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
+import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
 /**
  * Generate the Go client file with service accessors.
@@ -14,6 +15,16 @@ import { getMountTarget } from '../shared/resolved-ops.js';
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   return [generateWorkOSFile(spec, ctx)];
 }
+
+/**
+ * Non-spec services marked with `hasClientAccessor: true` (passwordless, vault)
+ * are included in the generated Client struct, constructor, and accessor methods
+ * — identical to spec-driven services. Their service type (e.g. PasswordlessService)
+ * is defined in a hand-written @oagen-ignore-file, but the Client wiring is generated.
+ *
+ * Other non-spec modules (webhook_verification, actions, etc.) remain fully
+ * self-contained in their @oagen-ignore-file files.
+ */
 
 /**
  * Deduplicate services by mount target.
@@ -72,6 +83,8 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   lines.push('\tbaseURL      string');
   lines.push('\thttpClient   *http.Client');
   lines.push('\tmaxRetries   int');
+  lines.push('\tlogger       Logger');
+  lines.push('\tappInfo      appInfo');
   lines.push('');
   // Service fields
   for (const service of topLevel) {
@@ -79,6 +92,11 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const fieldNameStr = unexportedName(resolvedName);
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\t${fieldNameStr} *${serviceTypeName}`);
+  }
+  // Non-spec service fields (hand-written types, generated wiring)
+  for (const ns of NON_SPEC_SERVICES.filter((s) => s.hasClientAccessor)) {
+    const name = className(toPascalCase(ns.id));
+    lines.push(`\t${unexportedName(name)} *${serviceType(name)}`);
   }
   lines.push('}');
   lines.push('');
@@ -102,6 +120,11 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     const serviceTypeName = serviceType(resolvedName);
     lines.push(`\tc.${fieldNameStr} = &${serviceTypeName}{client: c}`);
   }
+  // Initialize non-spec services
+  for (const ns of NON_SPEC_SERVICES.filter((s) => s.hasClientAccessor)) {
+    const name = className(toPascalCase(ns.id));
+    lines.push(`\tc.${unexportedName(name)} = &${serviceType(name)}{client: c}`);
+  }
   lines.push('\treturn c');
   lines.push('}');
   lines.push('');
@@ -118,7 +141,16 @@ function generateWorkOSFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     lines.push('}');
     lines.push('');
   }
-
+  // Non-spec service accessor methods
+  for (const ns of NON_SPEC_SERVICES.filter((s) => s.hasClientAccessor)) {
+    const name = className(toPascalCase(ns.id));
+    const typeName = serviceType(name);
+    lines.push(`// ${name} returns the ${name} service.`);
+    lines.push(`func (c *Client) ${name}() *${typeName} {`);
+    lines.push(`\treturn c.${unexportedName(name)}`);
+    lines.push('}');
+    lines.push('');
+  }
   return {
     path: `${ctx.namespace}.go`,
     content: lines.join('\n'),
@@ -137,5 +169,5 @@ function singularizePascal(name: string): string {
 }
 
 function serviceType(name: string): string {
-  return `${unexportedName(singularizePascal(name))}Service`;
+  return `${className(singularizePascal(name))}Service`;
 }

@@ -379,6 +379,71 @@ describe('generateResources', () => {
     expect(result[0].content).toContain('(deprecated) The organization ID');
   });
 
+  it('uses body model field types for parameter group variant classes', () => {
+    const membershipModels: Model[] = [
+      {
+        name: 'OrganizationMembership',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateOrganizationMembershipRequest',
+        fields: [
+          { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'role_slugs',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const membershipServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createOrganizationMembership',
+            httpMethod: 'post',
+            path: '/user_management/organization_memberships',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateOrganizationMembershipRequest' },
+            response: { kind: 'model', name: 'OrganizationMembership' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'role',
+                optional: true,
+                variants: [
+                  {
+                    name: 'single',
+                    parameters: [{ name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+                  },
+                  {
+                    name: 'multiple',
+                    parameters: [{ name: 'role_slugs', type: { kind: 'primitive', type: 'string' }, required: true }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const spec = { ...emptySpec, services: membershipServices, models: membershipModels };
+    const result = generateResources(membershipServices, { ...ctx, spec });
+    const roleMultiple = result.find((file) => file.path === 'lib/Service/RoleMultiple.php');
+
+    expect(roleMultiple).toBeDefined();
+    expect(roleMultiple!.content).toContain('public readonly array $slugs');
+  });
+
   it('requires inferred client credentials in wrapper methods', () => {
     const lines = generateWrapperMethods(
       {
@@ -505,7 +570,7 @@ describe('generateResources', () => {
     const content = result[0].content;
 
     expect(content).toContain('): string {');
-    expect(content).toContain("return $this->client->buildUrl('sso/logout', $query, $options);");
+    expect(content).toContain("return $this->client->buildUrl(path: 'sso/logout', query: $query, options: $options);");
     expect(content).not.toContain('$this->client->request(');
     expect(content).toContain('@return string');
   });

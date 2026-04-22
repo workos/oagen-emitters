@@ -9,13 +9,27 @@ import type {
   ResolvedOperation,
 } from '@workos/oagen';
 import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
-import { className, fileName, fieldName, resolveMethodName, buildMountDirMap, dirToModule } from './naming.js';
+import {
+  className,
+  fileName,
+  fieldName,
+  moduleName,
+  resolveMethodName,
+  buildMountDirMap,
+  dirToModule,
+} from './naming.js';
 import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import { assignEnumsToServices } from './enums.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
 
@@ -37,6 +51,14 @@ function isRedirectEndpoint(op: Operation): boolean {
 function pushAsyncTestDef(lines: string[], def: string): void {
   lines.push('    @pytest.mark.asyncio');
   lines.push(def);
+}
+
+function buildDeleteSuccessResponseSetup(op: Operation): string {
+  const statusCode = op.successResponses?.[0]?.statusCode ?? 204;
+  if (statusCode === 204) {
+    return 'httpx_mock.add_response(status_code=204)';
+  }
+  return `httpx_mock.add_response(status_code=${statusCode}, content=b"\\n")`;
 }
 
 /**
@@ -122,7 +144,9 @@ function generateServiceTest(
     if (plan.hasBody && op.requestBody?.kind === 'model') {
       const bodyModel = spec.models.find((m) => m.name === (op.requestBody as any).name);
       if (bodyModel) {
+        const testGroupedParams = collectGroupedParamNames(op);
         for (const f of bodyModel.fields) {
+          if (testGroupedParams.has(f.name)) continue;
           if (f.type.kind === 'model') modelImports.add(f.type.name);
           if (f.type.kind === 'nullable' && f.type.inner.kind === 'model') modelImports.add(f.type.inner.name);
           if (f.type.kind === 'array' && f.type.items.kind === 'model') modelImports.add(f.type.items.name);
@@ -185,6 +209,20 @@ function generateServiceTest(
   lines.push(
     `from ${ctx.namespace}._errors import AuthenticationError, BadRequestError, NotFoundError, RateLimitExceededError, ServerError, UnprocessableEntityError`,
   );
+
+  // Import parameter group variant classes
+  const groupVariantImports = new Set<string>();
+  for (const op of service.operations) {
+    for (const group of op.parameterGroups ?? []) {
+      for (const variant of group.variants) {
+        groupVariantImports.add(className(`${group.name}_${variant.name}`));
+      }
+    }
+  }
+  if (groupVariantImports.size > 0) {
+    const mountDir = dirToModule(buildMountDirMap(ctx).get(service.name) ?? moduleName(service.name));
+    lines.push(`from ${ctx.namespace}.${mountDir}._resource import ${[...groupVariantImports].join(', ')}`);
+  }
 
   lines.push('');
   lines.push('');
@@ -258,7 +296,7 @@ function generateServiceTest(
       }
     } else if (isDelete) {
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
-      lines.push('        httpx_mock.add_response(status_code=204)');
+      lines.push(`        ${buildDeleteSuccessResponseSetup(op)}`);
       const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
       lines.push('        assert result is None');
@@ -531,7 +569,7 @@ function generateServiceTest(
     } else if (isDelete) {
       const deletePath = buildExpectedPath(op);
       pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
-      lines.push('        httpx_mock.add_response(status_code=204)');
+      lines.push(`        ${buildDeleteSuccessResponseSetup(op)}`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
       lines.push('        assert result is None');
       lines.push('        request = httpx_mock.get_request()');
@@ -884,11 +922,22 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
     args.push(`${tokenParamName}="test_${tokenParamName}"`);
   }
 
+  // Parameter group args — emit first variant constructor
+  const groupedParamNames = collectGroupedParamNames(op);
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const variantClass = className(`${group.name}_${variant.name}`);
+    const variantArgs = variant.parameters.map((p) => `${fieldName(p.name)}="test_value"`).join(', ');
+    args.push(`${fieldName(group.name)}=${variantClass}(${variantArgs})`);
+  }
+
   // Required query params (for all methods, including paginated)
   if (plan.hasQueryParams) {
     for (const param of op.queryParams) {
       // Skip hidden/injected params
       if (hiddenParams?.has(param.name)) continue;
+      // Skip params that belong to parameter groups
+      if (groupedParamNames.has(param.name)) continue;
       // Skip pagination params (they're optional)
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
@@ -908,6 +957,7 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
 
 function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   const args: string[] = [];
+  const groupedParamNames = collectGroupedParamNames(op);
 
   for (const param of op.pathParams) {
     args.push(`"test_${param.name}"`);
@@ -918,13 +968,24 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   if (plan.hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
-    for (const field of bodyModel?.fields.filter((f) => f.required) ?? []) {
+    const bodyArgGrouped = collectGroupedParamNames(op);
+    for (const field of bodyModel?.fields.filter((f) => f.required && !bodyArgGrouped.has(f.name)) ?? []) {
       args.push(`${bodyParamName(field, pathParamNames)}=${generateTestValue(field.type, field.name)}`);
     }
   } else if (plan.hasBody && op.requestBody?.kind === 'union') {
     const variants = (op.requestBody as any).variants ?? [];
     const firstModelVariant = variants.find((v: any) => v.kind === 'model');
     args.push(firstModelVariant ? `body=load_fixture("${fileName(firstModelVariant.name)}.json")` : 'body={}');
+  }
+
+  // Parameter group args — emit first variant constructor
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const variantClass = className(`${group.name}_${variant.name}`);
+    const variantArgs = variant.parameters
+      .map((p) => `${fieldName(p.name)}=${generateQueryEncodingValue(p.type, p.name)}`)
+      .join(', ');
+    args.push(`${fieldName(group.name)}=${variantClass}(${variantArgs})`);
   }
 
   if (plan.isPaginated) {
@@ -939,6 +1000,7 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
@@ -962,7 +1024,7 @@ function buildQueryEncodingResponseSetup(op: Operation, plan: ReturnType<typeof 
     return ['httpx_mock.add_response(json={"data": [], "list_metadata": {}})'];
   }
   if (plan.isDelete) {
-    return ['httpx_mock.add_response(status_code=204)'];
+    return [buildDeleteSuccessResponseSetup(op)];
   }
   if (op.response.kind === 'array') {
     if (op.response.items.kind === 'model') {
@@ -980,6 +1042,17 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
   const assertions: string[] = [];
   const plan = planOperation(op);
   const pathParamNames = new Set(op.pathParams.map((param) => fieldName(param.name)));
+  const groupedParamNames = collectGroupedParamNames(op);
+
+  // Assert first variant's params from parameter groups
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    for (const param of variant.parameters) {
+      assertions.push(
+        `assert request.url.params["${param.name}"] == ${toPythonLiteral(expectedQueryEncodingValue(param.type, param.name))}`,
+      );
+    }
+  }
 
   if (plan.isPaginated) {
     assertions.push('assert request.url.params["limit"] == "10"');
@@ -995,6 +1068,7 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
 
   for (const param of op.queryParams) {
     if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     // Include explode=false array params; skip other array params (complex serialization)
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
@@ -1247,9 +1321,10 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   lines.push('class TestModelRoundTrip:');
 
   for (const model of models) {
-    // Skip models with no fields — these are typically discriminated unions
-    // with hand-maintained @oagen-ignore overrides whose fixtures would not match.
+    // Skip models with no fields or discriminated union dispatchers — these
+    // don't have a to_dict() and their round-trip semantics differ.
     if (model.fields.length === 0) continue;
+    if ((model as any).discriminator) continue;
     // Deduplicate fields that map to the same snake_case name (mirrors models.ts)
     const seenFieldNames = new Set<string>();
     const dedupFields = model.fields.filter((f) => {

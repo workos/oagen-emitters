@@ -99,9 +99,9 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should have AutoPaginatable type import and createPaginatedList import
-    expect(content).toContain("import type { AutoPaginatable } from '../common/utils/pagination'");
-    expect(content).toContain("import { createPaginatedList } from '../common/utils/fetch-and-deserialize'");
+    // Should have AutoPaginatable value import and fetchAndDeserialize import
+    expect(content).toContain("import { AutoPaginatable } from '../common/utils/pagination'");
+    expect(content).toContain("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize'");
     // Options interface lives in its own file under interfaces/ so the
     // per-service barrel picks it up.
     expect(content).toContain(
@@ -120,10 +120,11 @@ describe('generateResources', () => {
     expect(content).toContain('Promise<AutoPaginatable<Organization, ListOrganizationsOptions>>');
 
     // `domains` has the same camelCase and snake_case spelling, so no wire
-    // serializer should be emitted and createPaginatedList should be called
-    // with just options (no 5th arg).
+    // serializer should be emitted; options are passed directly.
     expect(content).not.toContain('serializeListOrganizationsOptions');
-    expect(content).toMatch(/createPaginatedList<[^>]+>\([^)]+options\);/);
+    expect(content).toContain('new AutoPaginatable(');
+    expect(content).toContain('fetchAndDeserialize<OrganizationResponse, Organization>');
+    expect(content).toContain('options,');
   });
 
   it('emits wire-options serializer for paginated list with camelCase filter fields', () => {
@@ -187,8 +188,9 @@ describe('generateResources', () => {
     expect(content).toContain('wire.organization_id = options.organizationId');
     expect(content).not.toContain('wire.organizationId');
 
-    // createPaginatedList is invoked with the serializer as the 5th arg.
-    expect(content).toMatch(/createPaginatedList<[^>]+>\([^)]+options,\s*serializeListApplicationsOptions\);/);
+    // fetchAndDeserialize is invoked with the serialized options.
+    expect(content).toContain('serializeListApplicationsOptions(options)');
+    expect(content).toContain('new AutoPaginatable(');
   });
 
   it('uses item type not list wrapper type for paginated methods', () => {
@@ -230,7 +232,7 @@ describe('generateResources', () => {
     const content = files[0].content;
 
     // Should use item type (Connection) not list wrapper (ConnectionList)
-    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
+    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
     expect(content).toContain('deserializeConnection');
     expect(content).toContain('Promise<AutoPaginatable<Connection,');
 
@@ -1085,7 +1087,7 @@ describe('generateResources', () => {
     expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload)");
   });
 
-  it('uses createPaginatedList helper in paginated methods', () => {
+  it('uses AutoPaginatable pattern in paginated methods', () => {
     const services: Service[] = [
       {
         name: 'Connections',
@@ -1114,9 +1116,9 @@ describe('generateResources', () => {
     const files = generateResources(services, ctx);
     const content = files[0].content;
 
-    // Should use createPaginatedList helper for concise paginated methods
-    expect(content).toContain('createPaginatedList<ConnectionResponse, Connection,');
-    expect(content).toContain('this.workos,');
+    // Should use AutoPaginatable + fetchAndDeserialize pattern for paginated methods
+    expect(content).toContain('new AutoPaginatable(');
+    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
     expect(content).toContain('deserializeConnection');
   });
 
@@ -1407,10 +1409,8 @@ describe('generateResources', () => {
     };
 
     const files = generateResources(services, overlayCtx);
-    expect(files.length).toBe(1);
-
-    // skipIfExists should stay true because all methods exist in baseline
-    expect(files[0].skipIfExists).toBe(true);
+    // Fully covered services with no new methods are skipped entirely
+    expect(files.length).toBe(0);
   });
 
   it('removes skipIfExists for purely oagen-managed services (no baseline)', () => {
@@ -1848,7 +1848,7 @@ describe('partial service coverage', () => {
     expect(content).toContain('async createEvent');
   });
 
-  it('generates resource class for fully covered services to provide JSDoc', () => {
+  it('skips fully covered services with no new methods', () => {
     const services: Service[] = [
       {
         name: 'Permissions',
@@ -1920,14 +1920,9 @@ describe('partial service coverage', () => {
     };
 
     const files = generateResources(services, ctxCovered);
-    expect(files.length).toBe(1);
-    const content = files[0].content;
-    // All methods should have generated JSDoc — the merger matches by name
-    // and handles @deprecated preservation, so the emitter always provides
-    // docstrings for the merger to work with.
-    expect(content).toContain('List all permissions.');
-    // skipIfExists should remain true for covered services
-    expect(files[0].skipIfExists).toBe(true);
+    // Fully covered services with no new methods are skipped entirely
+    // (JSDoc-only updates are deferred until a structural change touches the file)
+    expect(files.length).toBe(0);
   });
 
   it('uses resolved operation method names when provided', () => {
@@ -2046,5 +2041,118 @@ describe('partial service coverage', () => {
     const methodNames = [...content.matchAll(/async (\w+)\(/g)].map((m) => m[1]);
     const createMethods = methodNames.filter((n) => n.toLowerCase().startsWith('create'));
     expect(new Set(createMethods).size).toBe(createMethods.length); // all unique
+  });
+
+  it('omits @param payload when overlay method has no payload param', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createEvent',
+            httpMethod: 'post',
+            path: '/audit_logs/events',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateAuditLogEvent' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /audit_logs/events',
+            {
+              className: 'AuditLogs',
+              methodName: 'createEvent',
+              params: [
+                { name: 'organization', type: 'string', optional: false },
+                { name: 'event', type: 'CreateAuditLogEventOptions', optional: false },
+                { name: 'options', type: 'CreateAuditLogEventRequestOptions', optional: true },
+              ],
+              returnType: 'Promise<void>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+    // Overlay has (organization, event, options) — no payload param
+    expect(content).not.toContain('@param payload');
+  });
+
+  it('documents @param options when overlay folds path params into options', () => {
+    const services: Service[] = [
+      {
+        name: 'FeatureFlags',
+        operations: [
+          {
+            name: 'addFeatureFlagTarget',
+            httpMethod: 'post',
+            path: '/feature-flags/{slug}/targets/{target_id}',
+            pathParams: [
+              { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'target_id', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const overlayCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...emptySpec, services, models: [] },
+      overlayLookup: {
+        methodByOperation: new Map([
+          [
+            'POST /feature-flags/{slug}/targets/{target_id}',
+            {
+              className: 'FeatureFlags',
+              methodName: 'addFlagTarget',
+              params: [{ name: 'options', type: 'AddFlagTargetOptions', optional: false }],
+              returnType: 'Promise<void>',
+            },
+          ],
+        ]),
+        httpKeyByMethod: new Map(),
+        interfaceByName: new Map(),
+        typeAliasByName: new Map(),
+        requiredExports: new Map(),
+        modelNameByIR: new Map(),
+        fileBySymbol: new Map(),
+      },
+    };
+
+    const files = generateResources(services, overlayCtx);
+    const content = files[0].content;
+    // Path params (slug, targetId) are folded into options — should not appear as top-level @param
+    expect(content).not.toContain('@param slug');
+    expect(content).not.toContain('@param targetId');
+    // Should have @param options since it's in the overlay signature
+    expect(content).toContain('@param options');
   });
 });

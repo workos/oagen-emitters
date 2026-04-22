@@ -43,6 +43,12 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
   const aliasOf = new Map<string, string>(); // enum name → canonical enum name
   for (const [, group] of hashGroups) {
     if (group.length <= 1) continue;
+    if (group.every(isSharedSortOrderEnum)) {
+      const [canonical, ...rest] = [...group].sort((a, b) => a.name.localeCompare(b.name));
+      enumCanonicalMap.set(canonical.name, canonical.name);
+      for (const enumDef of rest) enumCanonicalMap.set(enumDef.name, 'SortOrder');
+      continue;
+    }
     const sorted = [...group].sort(
       (a, b) =>
         className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
@@ -59,17 +65,28 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
   for (const enumDef of enums) {
     if (enumDef.values.length === 0) continue;
 
-    const typeName = className(enumDef.name);
+    const typeName = canonicalEnumTypeName(enumDef);
 
     // Non-canonical enum: emit a typealias instead of a full enum class.
-    const canonicalName = aliasOf.get(enumDef.name);
+    const sharedSortEmitter = isSharedSortOrderEnum(enumDef) && enumCanonicalMap.get(enumDef.name) === enumDef.name;
+    const canonicalName = sharedSortEmitter
+      ? undefined
+      : (aliasOf.get(enumDef.name) ?? enumCanonicalMap.get(enumDef.name));
     if (canonicalName) {
       const canonicalType = className(canonicalName);
+      // Skip when different IR names collapse to the same output name
+      if (typeName === canonicalType) continue;
       const aliasLine = `typealias ${typeName} = ${canonicalType}`;
       // ktlint enforces a 140-char max line length. When the typealias
       // exceeds that, add a @file:Suppress to avoid an unfixable violation.
       const suppressLine = aliasLine.length > 140 ? `@file:Suppress("ktlint:standard:max-line-length")\n\n` : '';
-      const aliasContent = [`${suppressLine}package ${ENUMS_PACKAGE}`, '', aliasLine, ''].join('\n');
+      const aliasContent = [
+        `${suppressLine}package ${ENUMS_PACKAGE}`,
+        '',
+        `/** Alias for [${canonicalType}]. */`,
+        aliasLine,
+        '',
+      ].join('\n');
       files.push({
         path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
         content: aliasContent,
@@ -89,6 +106,7 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     // sentinel for values the server introduces after this SDK was built.
     lines.push(`/** Enumeration of valid ${typeName} values returned or accepted by the API. */`);
     lines.push(`enum class ${typeName}(`);
+    lines.push('  /** The wire value sent to and received from the API. */');
     lines.push('  @JsonValue val value: String');
     lines.push(') {');
     // `@JsonEnumDefaultValue` makes Jackson's
@@ -147,6 +165,15 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
   }
 
   return files;
+}
+
+function canonicalEnumTypeName(enumDef: Enum): string {
+  return isSharedSortOrderEnum(enumDef) ? 'SortOrder' : className(enumDef.name);
+}
+
+function isSharedSortOrderEnum(enumDef: Enum): boolean {
+  const wireValues = [...new Set(enumDef.values.map((value) => String(value.value).toLowerCase()))].sort();
+  return wireValues.length === 2 && wireValues[0] === 'asc' && wireValues[1] === 'desc';
 }
 
 /** Hash an enum by its sorted wire values so identical enums collide. */

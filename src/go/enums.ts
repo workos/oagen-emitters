@@ -29,6 +29,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     if (canonicalName) {
       const aliasType = className(enumDef.name);
       const canonicalType = className(canonicalName);
+      // Skip when different IR names map to the same Go type (e.g. synthetic
+      // enums from enrichModelsFromSpec whose underscore names collapse to the
+      // same PascalCase as the original enum).
+      if (aliasType === canonicalType) continue;
       lines.push(`// ${aliasType} is an alias for ${canonicalType}.`);
       lines.push(`type ${aliasType} = ${canonicalType}`);
       lines.push('');

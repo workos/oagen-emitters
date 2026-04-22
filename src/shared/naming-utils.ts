@@ -126,9 +126,45 @@ function startsWithVerb(desc: string): boolean {
 }
 
 /**
+ * Words beginning with a vowel letter but a consonant /j/ or /w/ sound —
+ * take "a", not "an".
+ */
+const CONSONANT_SOUND_INITIAL_VOWEL = new Set([
+  'user',
+  'unit',
+  'unique',
+  'united',
+  'universal',
+  'university',
+  'european',
+  'one',
+  'once',
+  'useful',
+  'used',
+  'usable',
+  'ubiquitous',
+]);
+
+/**
+ * Words beginning with a consonant letter but a vowel sound (silent h) —
+ * take "an", not "a".
+ */
+const VOWEL_SOUND_INITIAL_CONSONANT = new Set(['hour', 'honest', 'honor', 'honorable', 'heir']);
+
+/**
  * Select the correct indefinite article ("a" or "an") for a word.
+ *
+ * Matches English phonetics, not orthography: "a user" (consonant /j/ sound
+ * despite leading 'u'), "an hour" (vowel sound despite leading 'h'). Falls
+ * back to a vowel-letter regex for words not in either exception set.
  */
 export function articleFor(word: string): string {
+  const firstWord = word
+    .split(/\s+/)[0]
+    .toLowerCase()
+    .replace(/[^a-z]/g, '');
+  if (CONSONANT_SOUND_INITIAL_VOWEL.has(firstWord)) return 'a';
+  if (VOWEL_SOUND_INITIAL_CONSONANT.has(firstWord)) return 'an';
   return /^[aeiou]/i.test(word) ? 'an' : 'a';
 }
 

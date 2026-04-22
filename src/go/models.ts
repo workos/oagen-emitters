@@ -59,9 +59,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (batchedAliases.has(model.name)) continue;
 
       const canonicalStruct = className(canonicalName);
+      // Skip when different IR names map to the same Go type (e.g. synthetic
+      // models from enrichModelsFromSpec whose underscore names collapse to the
+      // same PascalCase as the original model).
+      if (structName === canonicalStruct) continue;
+
       const hash = modelHashMap.get(model.name)!;
       const groupNames = hashGroups.get(hash) ?? [];
-      const aliases = groupNames.filter((n) => aliasOf.has(n));
+      const aliases = groupNames.filter((n) => aliasOf.has(n) && className(n) !== className(aliasOf.get(n)!));
 
       if (aliases.length >= 5) {
         // Batch emit all aliases for this group at once

@@ -11,7 +11,7 @@ import type {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { generateModels } from './models.js';
+import { generateModels, primeModelAliases } from './models.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { generateEnums, primeEnumAliases } from './enums.js';
 import { generateResources } from './resources.js';
@@ -151,6 +151,7 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnums = getSyntheticEnums();
     primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums);
+    primeModelAliases(enrichModelsFromSpec(c.spec.models));
     const files = generateResources(services, c);
 
     // Also generate wrapper options classes
@@ -201,6 +202,7 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnumsForTests = getSyntheticEnums();
     primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums);
+    primeModelAliases(enrichModelsFromSpec(c.spec.models));
     return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },
 
@@ -229,7 +231,7 @@ export const dotnetEmitter: Emitter = {
       args: ['format', workspace, '--no-restore', '--include'],
       // Keep batches small enough to stay under argv length limits while
       // still amortizing MSBuild startup across many files.
-      batchSize: 50,
+      batchSize: 500,
     };
   },
 };
@@ -239,8 +241,8 @@ function findDotnetWorkspace(targetDir: string): string | null {
   if (!fs.existsSync(targetDir)) return null;
   const entries = fs.readdirSync(targetDir);
   const sln = entries.find((e) => e.endsWith('.sln') || e.endsWith('.slnx'));
-  if (sln) return path.join(targetDir, sln);
+  if (sln) return path.resolve(targetDir, sln);
   const csproj = entries.find((e) => e.endsWith('.csproj'));
-  if (csproj) return path.join(targetDir, csproj);
+  if (csproj) return path.resolve(targetDir, csproj);
   return null;
 }

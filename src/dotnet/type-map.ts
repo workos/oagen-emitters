@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className } from './naming.js';
+import { className, modelClassName } from './naming.js';
 
 /** Known C# value types that need `?` for nullable. */
 const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal', 'byte', 'short', 'DateTimeOffset']);
@@ -21,10 +21,33 @@ const enumAliases = new Map<string, string>();
  */
 const singleValueEnumNames = new Set<string>();
 
+/**
+ * Module-level alias map for structurally-identical models. Populated by
+ * `setModelAliases` from model deduplication; consulted by `mapTypeRef` so
+ * that every reference to a duplicate model resolves to the canonical name.
+ */
+const modelAliases = new Map<string, string>();
+
 /** Replace the current enum-alias map. Safe to call more than once. */
 export function setEnumAliases(aliases: Map<string, string>): void {
   enumAliases.clear();
   for (const [k, v] of aliases) enumAliases.set(k, v);
+}
+
+/** Replace the current model-alias map. Safe to call more than once. */
+export function setModelAliases(aliases: Map<string, string>): void {
+  modelAliases.clear();
+  for (const [k, v] of aliases) modelAliases.set(k, v);
+}
+
+/** Check if a model name is an alias (i.e., structurally identical to another model). */
+export function isModelAlias(name: string): boolean {
+  return modelAliases.has(name);
+}
+
+/** Resolve a model name to its canonical form (identity if not an alias). */
+export function resolveModelName(name: string): string {
+  return modelAliases.get(name) ?? name;
 }
 
 /** Replace the set of enum names that are single-value discriminator stand-ins. */
@@ -45,7 +68,7 @@ export function mapTypeRef(ref: TypeRef): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_ref, items) => `List<${items}>`,
-    model: (r) => className(r.name),
+    model: (r) => modelClassName(modelAliases.get(r.name) ?? r.name),
     enum: (r) => {
       // Single-value enums (discriminator consts in disguise) map to `string`
       // so the caller can't misuse a public one-member enum type. The
@@ -123,21 +146,25 @@ export function isEnumRef(ref: TypeRef): boolean {
 }
 
 /**
- * Emit JSON attributes for a request-side property. When `isRequiredEnum` is
- * true, configure both serializers to skip the field when its value equals the
- * enum default (0 = Unknown sentinel). This converts "unset required enum"
- * from a silent `"unknown"` wire value into a clean omission so the API
- * returns a clear `missing required field` error instead of a confusing 422.
+ * Emit JSON attributes for a request-side property. Property name mapping is
+ * handled by a global SnakeCaseLower / SnakeCaseNamingStrategy configuration
+ * on both serializers, so per-property name attributes are not emitted.
+ *
+ * When `isRequiredEnum` is true, configure both serializers to skip the field
+ * when its value equals the enum default (0 = Unknown sentinel). This converts
+ * "unset required enum" from a silent `"unknown"` wire value into a clean
+ * omission so the API returns a clear `missing required field` error instead
+ * of a confusing 422.
  */
-export function emitJsonPropertyAttributes(wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
+export function emitJsonPropertyAttributes(_wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
   if (options.isRequiredEnum) {
     return [
-      `        [JsonProperty("${wireName}", DefaultValueHandling = DefaultValueHandling.Ignore)]`,
-      `        [STJS.JsonPropertyName("${wireName}")]`,
+      `        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]`,
       `        [STJS.JsonIgnore(Condition = STJS.JsonIgnoreCondition.WhenWritingDefault)]`,
     ];
   }
-  return [`        [JsonProperty("${wireName}")]`, `        [STJS.JsonPropertyName("${wireName}")]`];
+  // Convention-based: SnakeCaseLower naming policy handles the name mapping.
+  return [];
 }
 
 function mapPrimitive(ref: PrimitiveType): string {
@@ -188,13 +215,13 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
     return 'object';
   }
 
-  if (unique.length >= 2 && unique.length <= 3) return `AnyOf<${unique.join(', ')}>`;
-  // AnyOf only supports arity 2 and 3. Higher-arity unions collapse to
-  // `object`, losing type information. Warn so the author knows the spec
-  // outgrew the runtime support instead of silently degrading.
-  if (unique.length >= 4) {
+  if (unique.length >= 2 && unique.length <= 9) return `OneOf.OneOf<${unique.join(', ')}>`;
+  // OneOf supports arity 2-9. Higher-arity unions collapse to `object`,
+  // losing type information. Warn so the author knows the spec outgrew the
+  // runtime support instead of silently degrading.
+  if (unique.length >= 10) {
     console.warn(
-      `[oagen:dotnet] Union with ${unique.length} variants exceeds AnyOf<T1,T2,T3> arity; falling back to object. Variants: ${unique.join(', ')}`,
+      `[oagen:dotnet] Union with ${unique.length} variants exceeds OneOf<T0..T8> arity; falling back to object. Variants: ${unique.join(', ')}`,
     );
   }
   return 'object';

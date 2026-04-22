@@ -436,7 +436,7 @@ describe('generateModels', () => {
     expect(file!.content).not.toContain('instanceof \\BackedEnum');
   });
 
-  it('deduplicates structurally identical models', () => {
+  it('emits all structurally identical models as full classes', () => {
     const models: Model[] = [
       {
         name: 'FlagCreatedContextActor',
@@ -464,11 +464,12 @@ describe('generateModels', () => {
     const specWithModels = { ...emptySpec, models };
     const result = generateModels(models, { ...ctx, spec: specWithModels });
 
-    // Only the trait + one canonical model file should be emitted (not 3)
+    // PHP readonly classes cannot be aliased, so all models are emitted as full classes
     const modelFiles = result.filter((f) => !f.path.includes('Trait'));
-    expect(modelFiles).toHaveLength(1);
-    // Shortest class name wins as canonical
+    expect(modelFiles).toHaveLength(3);
     expect(modelFiles[0].path).toContain('FlagCreatedContextActor');
+    expect(modelFiles[1].path).toContain('FlagUpdatedContextActor');
+    expect(modelFiles[2].path).toContain('FlagDeletedContextActor');
   });
 
   it('does not produce double |null in @var for nullable optional arrays', () => {

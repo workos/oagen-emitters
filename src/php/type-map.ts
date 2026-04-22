@@ -15,7 +15,14 @@ export function mapTypeRef(ref: TypeRef, opts?: { qualified?: boolean }): string
     enum: (r) => `${prefix}${enumClassName(r.name)}`,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_ref, inner) => `?${inner}`,
-    literal: (r) => (typeof r.value === 'number' ? (Number.isInteger(r.value) ? 'int' : 'float') : 'string'),
+    literal: (r) =>
+      typeof r.value === 'number'
+        ? Number.isInteger(r.value)
+          ? 'int'
+          : 'float'
+        : typeof r.value === 'boolean'
+          ? 'bool'
+          : 'string',
     map: (_ref, _value) => 'array',
   });
 }
@@ -34,7 +41,14 @@ export function mapTypeRefForPHPDoc(ref: TypeRef, opts?: { prefix?: string }): s
     enum: (r) => `${prefix}${enumClassName(r.name)}`,
     union: (r, variants) => joinDocUnionVariants(r, variants),
     nullable: (_ref, inner) => `${inner}|null`,
-    literal: (r) => (typeof r.value === 'string' ? 'string' : typeof r.value === 'number' ? 'int' : 'string'),
+    literal: (r) =>
+      typeof r.value === 'string'
+        ? 'string'
+        : typeof r.value === 'number'
+          ? 'int'
+          : typeof r.value === 'boolean'
+            ? 'bool'
+            : 'string',
     map: (_ref, value) => `array<string, ${value}>`,
   });
 }

@@ -77,7 +77,37 @@ function emitWrapperMethod(
   const returnType = responseTypeName ?? 'void';
 
   // JSDoc
-  lines.push(`  /** ${formatWrapperDescription(wrapper.name)}. */`);
+  const docParts: string[] = [];
+  docParts.push(formatWrapperDescription(wrapper.name) + '.');
+
+  for (const p of op.pathParams) {
+    if (p.description) {
+      docParts.push(`@param ${fieldName(p.name)} - ${p.description}`);
+    }
+  }
+
+  for (const { paramName, field } of wrapperParams) {
+    const tsName = fieldName(paramName);
+    if (field?.description) {
+      docParts.push(`@param ${tsName} - ${field.description}`);
+    }
+  }
+
+  if (responseTypeName) {
+    docParts.push(`@returns {Promise<${returnType}>}`);
+  }
+
+  if (docParts.length === 1) {
+    lines.push(`  /** ${docParts[0]} */`);
+  } else {
+    lines.push('  /**');
+    for (const part of docParts) {
+      for (const line of part.split('\n')) {
+        lines.push(line === '' ? '   *' : `   * ${line}`);
+      }
+    }
+    lines.push('   */');
+  }
 
   // Method signature
   lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<${returnType}> {`);

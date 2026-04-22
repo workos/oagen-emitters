@@ -80,18 +80,17 @@ describe('dotnet/models', () => {
     // Class definition
     expect(content).toContain('public class Organization');
 
-    // Required fields with JSON attributes
-    expect(content).toContain('[JsonProperty("id")]');
+    // Required fields — convention-based naming (no per-property JSON attributes)
     expect(content).toContain('public string Id');
-    expect(content).toContain('[JsonProperty("name")]');
     expect(content).toContain('public string Name');
+    expect(content).not.toContain('[JsonProperty("id")]');
+    expect(content).not.toContain('[STJS.JsonPropertyName(');
 
     // DateTime field
     expect(content).toContain('DateTimeOffset');
-    expect(content).toContain('[JsonProperty("created_at")]');
 
     // Optional/nullable field
-    expect(content).toContain('[JsonProperty("external_id")]');
+    expect(content).toContain('public string? ExternalId');
   });
 
   it('skips list wrapper and list metadata models', () => {
@@ -168,10 +167,9 @@ describe('dotnet/models', () => {
     expect(canonicalFile).toBeDefined();
     expect(canonicalFile.content).toContain('public class OrganizationDomain');
 
-    // Alias model should be a subclass of canonical
-    const aliasFile = files.find((f) => f.path.includes('OrganizationDomainStandAlone.cs'))!;
-    expect(aliasFile).toBeDefined();
-    expect(aliasFile.content).toContain('OrganizationDomain');
+    // Alias model should NOT be emitted — references are rewritten to the canonical
+    const aliasFile = files.find((f) => f.path.includes('OrganizationDomainStandAlone.cs'));
+    expect(aliasFile).toBeUndefined();
   });
 
   it('emits [System.Obsolete] for deprecated fields', () => {

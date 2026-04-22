@@ -57,7 +57,7 @@ describe('kotlin/models', () => {
     const content = modelFile.content;
     expect(content).toContain('data class Organization');
     expect(content).toContain('@JsonProperty("id")');
-    expect(content).toContain('@JvmField');
+    expect(content).not.toContain('@JvmField');
     expect(content).toContain('OffsetDateTime');
     expect(content).toContain('externalId: String?');
   });

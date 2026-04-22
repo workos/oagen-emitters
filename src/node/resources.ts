@@ -263,17 +263,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
   for (const service of mergedServices) {
     if (isServiceCoveredByExisting(service, ctx)) {
-      // Fully covered: generate with ALL operations so the merger's docstring
-      // refresh pass can update JSDoc on existing methods.
-      const file = generateResourceClass(service, ctx);
-      // When the baseline class is missing methods for some operations,
-      // remove skipIfExists so the merger adds the new methods.
-      if (hasMethodsAbsentFromBaseline(service, ctx)) {
-        delete file.skipIfExists;
-        // Suppress auto-generated header — the file is a merge target
-        // containing hand-written code, not a fully generated file.
-        file.headerPlacement = 'skip';
+      if (!hasMethodsAbsentFromBaseline(service, ctx)) {
+        continue; // Fully covered, no new methods -- skip entirely
       }
+      // Partially covered -- has new methods that need to be added.
+      const file = generateResourceClass(service, ctx);
+      delete file.skipIfExists;
+      // Suppress auto-generated header — the file is a merge target
+      // containing hand-written code, not a fully generated file.
+      file.headerPlacement = 'skip';
       files.push(file);
       continue;
     }
@@ -307,6 +305,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // stable.  Placing them under `interfaces/` lets the per-service barrel
   // pick them up automatically.
   for (const service of mergedServices) {
+    if (isServiceCoveredByExisting(service, ctx) && !hasMethodsAbsentFromBaseline(service, ctx)) continue;
     files.push(...generatePaginatedOptionsInterfaces(service, ctx, topLevelEnumNames));
   }
 
@@ -384,11 +383,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
   for (const { op, plan, method } of plans) {
-    // Skip imports for methods that already exist in the baseline class.
-    // The merger keeps baseline method bodies, so their imports are already
-    // present in the existing file.  Including them here would create
-    // orphaned imports when the generated return type differs from the
-    // baseline's (e.g., generated `List` vs baseline `RoleList`).
+    // Always collect param type refs for enums — inline options interfaces
+    // are generated for all methods (including baseline ones), so their
+    // type dependencies must always be imported.
+    const queryParams = plan.isPaginated
+      ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
+      : op.queryParams;
+    for (const param of [...queryParams, ...op.pathParams]) {
+      collectParamTypeRefs(param.type, paramEnums, paramModels);
+    }
+
+    // Skip response/request model imports for methods that already exist in
+    // the baseline class.  The merger keeps baseline method bodies, so their
+    // imports are already present in the existing file.
     if (baselineMethodSet.has(method)) continue;
 
     if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
@@ -427,15 +434,6 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         }
       }
     }
-    // Collect types referenced in query and path parameters.
-    // For paginated operations, skip standard pagination params (limit, before, after, order)
-    // since they're handled by PaginationOptions and don't need explicit imports.
-    const queryParams = plan.isPaginated
-      ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
-      : op.queryParams;
-    for (const param of [...queryParams, ...op.pathParams]) {
-      collectParamTypeRefs(param.type, paramEnums, paramModels);
-    }
   }
 
   // Collect response models from union split wrappers so their types and
@@ -467,8 +465,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
-    lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
-    lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
+    lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
+    lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
 
   // Paginated list options live in their own interface files so they're
@@ -731,12 +729,16 @@ function renderMethod(
     if (op.description) docParts.push(op.description);
     for (const param of op.pathParams) {
       const paramName = fieldName(param.name);
-      if (validParamNames && !validParamNames.has(paramName)) continue;
+      // When the overlay folds a path param into the options object,
+      // document it as @param options.paramName instead of top-level.
+      const folded = validParamNames && !validParamNames.has(paramName) && validParamNames.has('options');
+      if (validParamNames && !validParamNames.has(paramName) && !folded) continue;
+      const docName = folded ? `options.${paramName}` : paramName;
       const deprecatedPrefix = param.deprecated ? '(deprecated) ' : '';
       if (param.description) {
-        docParts.push(`@param ${paramName} - ${deprecatedPrefix}${param.description}`);
+        docParts.push(`@param ${docName} - ${deprecatedPrefix}${param.description}`);
       } else if (param.deprecated) {
-        docParts.push(`@param ${paramName} - (deprecated)`);
+        docParts.push(`@param ${docName} - (deprecated)`);
       }
       if (param.default !== undefined) docParts.push(`@default ${JSON.stringify(param.default)}`);
       if (param.example !== undefined) docParts.push(`@example ${JSON.stringify(param.example)}`);
@@ -763,35 +765,121 @@ function renderMethod(
     }
     // Skip header and cookie params in JSDoc — they are not exposed in the method signature.
     // The SDK handles headers and cookies internally, so documenting them would be misleading.
-    // Document payload parameter when there is a request body
+    // Document payload/body parameter when there is a request body.
+    // Detect the actual param name from the overlay — the hand-written SDK may
+    // fold the body into an 'options' param instead of the generated 'payload'.
+    let bodyDocParamName: string | null = null;
     if (plan.hasBody) {
-      const bodyInfo = extractRequestBodyType(op, ctx);
-      if (bodyInfo?.kind === 'model') {
-        const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
-        let payloadDesc: string;
-        if (bodyModel?.description) {
-          payloadDesc = `@param payload - ${bodyModel.description}`;
-        } else if (bodyModel) {
-          // When the model lacks a description, list its required fields to help
-          // callers understand what must be provided.
-          const requiredFieldNames = bodyModel.fields.filter((f) => f.required).map((f) => fieldName(f.name));
-          payloadDesc =
-            requiredFieldNames.length > 0
-              ? `@param payload - Object containing ${requiredFieldNames.join(', ')}.`
-              : '@param payload - The request body.';
-        } else {
-          payloadDesc = '@param payload - The request body.';
+      let bodyParamName = 'payload';
+      let overlayHadUnusableName = false;
+      if (validParamNames && !validParamNames.has('payload') && overlayMethod) {
+        const pathNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+        const candidates = overlayMethod.params.filter((p) => !pathNames.has(p.name) && p.name !== 'requestOptions');
+        // Filter out destructuring artifacts (e.g., __0) from extracted param names
+        const isUsableName = (name: string) => !/^__\d+$/.test(name);
+        if (candidates.length === 1 && isUsableName(candidates[0].name)) {
+          bodyParamName = candidates[0].name;
+        } else if (candidates.length === 1 && !isUsableName(candidates[0].name)) {
+          overlayHadUnusableName = true;
+        } else if (candidates.length > 1) {
+          // Multiple non-path params — match by type against the request body model
+          const bodyInfo = extractRequestBodyType(op, ctx);
+          if (bodyInfo?.kind === 'model') {
+            const bodyTypeName = resolveInterfaceName(bodyInfo.name, ctx);
+            const typeMatch = candidates.find((p) => p.type === bodyTypeName && isUsableName(p.name));
+            if (typeMatch) {
+              bodyParamName = typeMatch.name;
+            } else {
+              // Type names diverge (overlay vs spec). Fall back to matching
+              // overlay param names against body model field names so each
+              // extracted param gets documented individually.
+              const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
+              if (bodyModel) {
+                const fieldMap = new Map(bodyModel.fields.map((f) => [fieldName(f.name), f]));
+                for (const candidate of candidates) {
+                  const matchingField = fieldMap.get(candidate.name);
+                  if (matchingField?.description) {
+                    docParts.push(`@param ${candidate.name} - ${matchingField.description}`);
+                    if (matchingField.example !== undefined)
+                      docParts.push(`@example ${JSON.stringify(matchingField.example)}`);
+                  }
+                }
+                bodyDocParamName = '__multi__'; // prevent duplicate body doc below
+              }
+            }
+          }
         }
-        docParts.push(payloadDesc);
-      } else {
-        docParts.push('@param payload - The request body.');
+      }
+
+      // When the overlay had an unusable param name (e.g., destructured __0),
+      // force documentation under 'payload' so the body isn't silently dropped.
+      if (
+        bodyDocParamName !== '__multi__' &&
+        (overlayHadUnusableName || !validParamNames || validParamNames.has(bodyParamName))
+      ) {
+        bodyDocParamName = bodyParamName;
+        const bodyInfo = extractRequestBodyType(op, ctx);
+        if (bodyInfo?.kind === 'model') {
+          const bodyModel = ctx.spec.models.find((m) => m.name === bodyInfo.name);
+          let bodyDesc: string;
+          if (bodyModel?.description) {
+            bodyDesc = `@param ${bodyParamName} - ${bodyModel.description}`;
+          } else if (bodyModel) {
+            // When the model lacks a description, list its required fields to help
+            // callers understand what must be provided.
+            const requiredFieldNames = bodyModel.fields.filter((f) => f.required).map((f) => fieldName(f.name));
+            bodyDesc =
+              requiredFieldNames.length > 0
+                ? `@param ${bodyParamName} - Object containing ${requiredFieldNames.join(', ')}.`
+                : `@param ${bodyParamName} - The request body.`;
+          } else {
+            bodyDesc = `@param ${bodyParamName} - The request body.`;
+          }
+          docParts.push(bodyDesc);
+
+          // When the body is folded into an options-style param (not 'payload'),
+          // expand individual fields so IDEs surface per-field documentation.
+          if (bodyParamName !== 'payload' && bodyModel) {
+            for (const bField of bodyModel.fields) {
+              const fName = `${bodyParamName}.${fieldName(bField.name)}`;
+              const deprecatedPrefix = bField.deprecated ? '(deprecated) ' : '';
+              if (bField.description) {
+                docParts.push(`@param ${fName} - ${deprecatedPrefix}${bField.description}`);
+              } else if (bField.deprecated) {
+                docParts.push(`@param ${fName} - (deprecated)`);
+              }
+              if (bField.example !== undefined) docParts.push(`@example ${JSON.stringify(bField.example)}`);
+            }
+          }
+        } else {
+          docParts.push(`@param ${bodyParamName} - The request body.`);
+        }
       }
     }
     // Document options parameter for paginated operations
+    const hasOptionsSummary = () => docParts.some((p) => /^@param options(\s|$)/.test(p));
     if (plan.isPaginated) {
       docParts.push('@param options - Pagination and filter options.');
-    } else if (op.queryParams.filter((q) => !hiddenParams.has(q.name)).length > 0) {
+    } else if (!hasOptionsSummary() && op.queryParams.filter((q) => !hiddenParams.has(q.name)).length > 0) {
       docParts.push('@param options - Additional query options.');
+    }
+    // Ensure an @param options summary exists when there are @param options.xxx
+    // entries (from folded path/body params) or when the overlay exposes an
+    // options param that wasn't otherwise documented.
+    if (validParamNames?.has('options') && !hasOptionsSummary()) {
+      const hasOptionsDotEntries = docParts.some((p) => p.startsWith('@param options.'));
+      if (hasOptionsDotEntries || overlayMethod) {
+        docParts.push('@param options - The request options.');
+      }
+    }
+    // Reorder: ensure @param options summary comes before any @param options.xxx entries
+    {
+      const summaryIdx = docParts.findIndex((p) => /^@param options(\s|$)/.test(p));
+      const firstDotIdx = docParts.findIndex((p) => p.startsWith('@param options.'));
+      if (summaryIdx > firstDotIdx && firstDotIdx >= 0) {
+        const [summary] = docParts.splice(summaryIdx, 1);
+        docParts.splice(firstDotIdx, 0, summary);
+      }
     }
     // @returns for the primary response model.
     // When an overlay method exists, prefer its return type so the JSDoc
@@ -924,10 +1012,26 @@ function renderPaginatedMethod(
   const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
+  const wireType = wireInterfaceName(itemType);
+  const serializeCall = serializerArg ? `options ? serialize${optionsType}(options) : undefined` : 'options';
+
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push(
-    `    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options${serializerArg});`,
-  );
+  lines.push(`    return new AutoPaginatable(`);
+  lines.push(`      await fetchAndDeserialize<${wireType}, ${itemType}>(`);
+  lines.push(`        this.workos,`);
+  lines.push(`        ${pathStr},`);
+  lines.push(`        deserialize${itemType},`);
+  lines.push(`        ${serializeCall},`);
+  lines.push(`      ),`);
+  lines.push(`      (params) =>`);
+  lines.push(`        fetchAndDeserialize<${wireType}, ${itemType}>(`);
+  lines.push(`          this.workos,`);
+  lines.push(`          ${pathStr},`);
+  lines.push(`          deserialize${itemType},`);
+  lines.push(`          params,`);
+  lines.push(`        ),`);
+  lines.push(`      options,`);
+  lines.push(`    );`);
   lines.push('  }');
 }
 

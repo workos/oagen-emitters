@@ -36,6 +36,7 @@ const services: Service[] = [
         queryParams: [],
         headerParams: [],
         response: { kind: 'primitive', type: 'unknown' },
+        successResponses: [{ statusCode: 202, type: { kind: 'primitive', type: 'unknown' } }],
         errors: [],
         injectIdempotencyKey: false,
       },
@@ -77,6 +78,7 @@ describe('generateTests', () => {
     expect(content).toContain('class TestOrganizations:');
     expect(content).toContain('def test_get_organization(');
     expect(content).toContain('def test_delete_organization(');
+    expect(content).toContain('httpx_mock.add_response(status_code=202, content=b"\\n")');
     expect(content).toContain('assert result is None');
     expect(content).toContain('isinstance(result, Organization)');
   });

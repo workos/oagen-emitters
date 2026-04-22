@@ -582,7 +582,6 @@ function emitAssignment(lhs: string, expr: string, accessExpr: string, guard: Gu
 interface SerializerContext {
   modelToService: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
-  useStringDates: boolean;
   dedup: Map<string, string>;
   skippedSerializeModels: Set<string>;
   ctx: EmitterContext;
@@ -614,31 +613,30 @@ export function buildSerializerImports(
     const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
     const depName = resolveInterfaceName(dep, sctx.ctx);
     const rel = relativeImport(serializerPath, depSerializerPath);
-    lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
+    // Check the canonical name for dedup'd models
+    const canon = sctx.dedup.get(dep);
+    const depSkipSerialize =
+      sctx.skippedSerializeModels.has(dep) || (canon != null && sctx.skippedSerializeModels.has(canon));
+    if (depSkipSerialize) {
+      lines.push(`import { deserialize${depName} } from '${rel}';`);
+    } else {
+      lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
+    }
   }
   lines.push('');
   return lines;
 }
 
 /** Build the set of field names where format conversion should be skipped. */
-export function buildSkipFormatFields(
-  model: Model,
-  useStringDates: boolean,
-  baselineDomain: BaselineInterface | undefined,
-): Set<string> {
+export function buildSkipFormatFields(model: Model, baselineDomain: BaselineInterface | undefined): Set<string> {
   const skipFormatFields = new Set<string>();
-  if (useStringDates) {
-    for (const field of model.fields) {
-      if (hasDateTimeConversion(field.type)) {
-        skipFormatFields.add(field.name);
-      }
-    }
-  }
   if (baselineDomain) {
     for (const field of model.fields) {
       if (skipFormatFields.has(field.name)) continue;
       const baselineField = baselineDomain.fields?.[fieldName(field.name)];
       if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
+        // Always convert date-time fields to Date regardless of baseline
+        if (hasDateTimeConversion(field.type)) continue;
         skipFormatFields.add(field.name);
       }
     }

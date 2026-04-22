@@ -18,6 +18,17 @@ export interface NonSpecService {
    * someone reading this file understands what the service does.
    */
   description: string;
+
+  /**
+   * When true, the generated Client struct includes a cached field for this
+   * service and a public accessor method — identical to spec-driven services.
+   * The hand-written file must export the service type (e.g. PasswordlessService)
+   * but should NOT define its own Client accessor (the generated code handles that).
+   *
+   * Defaults to false — most non-spec modules are standalone helpers, not
+   * Client-mounted services.
+   */
+  hasClientAccessor?: boolean;
 }
 
 /**
@@ -29,10 +40,12 @@ export const NON_SPEC_SERVICES: readonly NonSpecService[] = [
   {
     id: 'passwordless',
     description: 'Passwordless (magic-link) session endpoints, not yet in the OpenAPI spec.',
+    hasClientAccessor: true,
   },
   {
     id: 'vault',
     description: 'Vault KV storage, key operations, and client-side AES-GCM encrypt/decrypt.',
+    hasClientAccessor: true,
   },
   {
     id: 'webhook_verification',

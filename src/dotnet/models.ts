@@ -1,14 +1,20 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
-import { mapTypeRef, isValueTypeRef, isEnumRef, emitJsonPropertyAttributes } from './type-map.js';
+import {
+  mapTypeRef,
+  isValueTypeRef,
+  isEnumRef,
+  emitJsonPropertyAttributes,
+  setModelAliases,
+  isModelAlias,
+} from './type-map.js';
 import {
   articleFor,
-  className,
-  escapeXml,
   fieldName,
   humanize,
   emitXmlDoc,
   deprecationMessage,
   escapeCsAttributeString,
+  modelClassName,
 } from './naming.js';
 
 // Import and re-export shared model detection utilities
@@ -35,90 +41,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const files: GeneratedFile[] = [];
 
-  // Build structural hash for deduplication. Run the hash → canonical pass
-  // iteratively so that parent classes whose only structural difference is
-  // an already-aliased child type also collapse. Terminates when a full
-  // round produces no new aliases.
-  const eligibleModels = models.filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
-  const aliasOf = new Map<string, string>();
-  while (true) {
-    const hashGroups = new Map<string, string[]>();
-    for (const model of eligibleModels) {
-      const hash = structuralHash(model, aliasOf);
-      if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-      hashGroups.get(hash)!.push(model.name);
-    }
-
-    let added = false;
-    for (const [hash, names] of hashGroups) {
-      if (names.length <= 1) continue;
-      if (hash === '') continue;
-      const sorted = [...names].sort();
-      const canonical = sorted[0];
-      for (let i = 1; i < sorted.length; i++) {
-        const name = sorted[i];
-        if (aliasOf.get(name) !== canonical) {
-          aliasOf.set(name, canonical);
-          added = true;
-        }
-      }
-    }
-    if (!added) break;
-  }
+  // Compute and publish model aliases so mapTypeRef rewrites references.
+  primeModelAliases(models);
 
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
 
-    const csClassName = className(model.name);
-    const canonicalName = aliasOf.get(model.name);
+    const csClassName = modelClassName(model.name);
 
-    if (canonicalName) {
-      // Emit alias as subclass of canonical
-      const canonicalClass = className(canonicalName);
-      const lines: string[] = [];
-      lines.push(`namespace ${ctx.namespacePascal}`);
-      lines.push('{');
-      if (model.description) {
-        const descLines = model.description
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => l);
-        lines.push(`    /// <summary>${escapeXml(descLines[0])}</summary>`);
-        if (descLines.length > 1) {
-          lines.push(`    /// <remarks>`);
-          for (const remark of descLines.slice(1)) {
-            lines.push(`    /// ${escapeXml(remark)}`);
-          }
-          lines.push(`    /// Structurally identical to <see cref="${canonicalClass}"/>.`);
-          lines.push(`    /// </remarks>`);
-        } else {
-          lines.push(`    /// <remarks>Structurally identical to <see cref="${canonicalClass}"/>.</remarks>`);
-        }
-      } else {
-        const human = humanize(model.name);
-        lines.push(`    /// <summary>Represents ${articleFor(human)} ${human}.</summary>`);
-        lines.push(`    /// <remarks>Structurally identical to <see cref="${canonicalClass}"/>.</remarks>`);
-      }
-      lines.push(`    public class ${csClassName} : ${canonicalClass} { }`);
-      lines.push('}');
-
-      files.push({
-        path: `Entities/${csClassName}.cs`,
-        content: lines.join('\n'),
-        overwriteExisting: true,
-      });
-      continue;
-    }
+    // Skip alias models — all references are already rewritten to the
+    // canonical type by mapTypeRef, so the alias class would be dead code.
+    if (isModelAlias(model.name)) continue;
 
     const lines: string[] = [];
-    const needsCollections = model.fields.some((f) => {
-      const csType = mapTypeRef(f.type);
-      return csType.startsWith('List<') || csType.startsWith('Dictionary<');
-    });
-    const needsSystem = model.fields.some((f) => {
-      const csType = mapTypeRef(f.type);
-      return csType.includes('DateTimeOffset');
-    });
+    const fieldTypes = model.fields.map((f) => mapTypeRef(f.type));
+    const needsCollections = fieldTypes.some((t) => t.startsWith('List<') || t.startsWith('Dictionary<'));
+    const needsSystem = fieldTypes.some((t) => t.includes('DateTimeOffset'));
+    const needsJsonAttrs = model.fields.some((f) => f.required && isEnumRef(f.type));
 
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -128,8 +67,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (needsCollections) {
       lines.push('    using System.Collections.Generic;');
     }
-    lines.push('    using Newtonsoft.Json;');
-    lines.push('    using STJS = System.Text.Json.Serialization;');
+    if (needsJsonAttrs) {
+      lines.push('    using Newtonsoft.Json;');
+      lines.push('    using STJS = System.Text.Json.Serialization;');
+    }
     lines.push('');
 
     // XML doc comment
@@ -303,6 +244,41 @@ function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, 
   // Enum wire values serialize as strings in JSON, and mapTypeRef returns
   // `string` for single-value enums — so always quote.
   return JSON.stringify(wire);
+}
+
+/**
+ * Compute and publish the model alias map. Safe to call multiple times
+ * (idempotent for a given set of models). Must be invoked before any emitter
+ * phase that calls `mapTypeRef` with model references.
+ */
+export function primeModelAliases(models: Model[]): void {
+  const eligibleModels = models.filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
+  const aliasOf = new Map<string, string>();
+  while (true) {
+    const hashGroups = new Map<string, string[]>();
+    for (const model of eligibleModels) {
+      const hash = structuralHash(model, aliasOf);
+      if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+      hashGroups.get(hash)!.push(model.name);
+    }
+
+    let added = false;
+    for (const [hash, names] of hashGroups) {
+      if (names.length <= 1) continue;
+      if (hash === '') continue;
+      const sorted = [...names].sort();
+      const canonical = sorted[0];
+      for (let i = 1; i < sorted.length; i++) {
+        const name = sorted[i];
+        if (aliasOf.get(name) !== canonical) {
+          aliasOf.set(name, canonical);
+          added = true;
+        }
+      }
+    }
+    if (!added) break;
+  }
+  setModelAliases(aliasOf);
 }
 
 /**

@@ -12,7 +12,13 @@ import type {
 import { planOperation } from '@workos/oagen';
 import { apiClassName, packageSegment, resolveMethodName, ktStringLiteral, className, propertyName } from './naming.js';
 import { mapTypeRef } from './type-map.js';
-import { groupByMount, lookupResolved, buildResolvedLookup, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  lookupResolved,
+  buildResolvedLookup,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
@@ -72,6 +78,8 @@ interface OpTest {
   requiredBodyPaths: string[];
   /** `name=value` pairs required on the query string — asserted via matchingRegex. */
   requiredQueryAssertions: { name: string; valueRegex: string }[];
+  /** Wire field names that must NOT appear as query params (e.g. password on POST). */
+  forbiddenQueryParams: string[];
   /** Assertions on response fields: { kotlinAccessor, expectedExpr }. */
   responseAssertions: { accessor: string; expectedExpr: string }[];
 }
@@ -148,7 +156,7 @@ function generateServiceTestClass(
   const verifyMethods = new Set<string>();
   for (const t of uniqueTests) {
     if (!t.canEmitHappyPath) continue;
-    if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0) {
+    if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0 || t.forbiddenQueryParams.length > 0) {
       verifyMethods.add(t.httpMethod);
     }
   }
@@ -160,8 +168,10 @@ function generateServiceTestClass(
   }
   const anyBody = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredBodyPaths.length > 0);
   const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
+  const anyForbidden = uniqueTests.some((t) => t.canEmitHappyPath && t.forbiddenQueryParams.length > 0);
   if (anyBody) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath');
   if (anyQuery) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matching');
+  if (anyForbidden) imports.add('com.github.tomakehurst.wiremock.client.WireMock.absent');
   // assertEquals is needed when any test has response field assertions.
   if (uniqueTests.some((t) => t.canEmitHappyPath && t.responseAssertions.length > 0)) {
     imports.add('org.junit.jupiter.api.Assertions.assertEquals');
@@ -217,6 +227,7 @@ function buildOperationTest(
   if (!svc) return null;
   const method = resolveMethodName(op, svc, ctx);
   const plan = planOperation(op);
+  const mountPackage = packageSegment(resolved?.mountOn ?? svc.name);
 
   const hidden = buildHiddenParams(resolved);
 
@@ -229,8 +240,18 @@ function buildOperationTest(
 
   for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
 
-  const queryFields = op.queryParams.filter((p) => !hidden.has(p.name));
+  const groupedParamNames = collectGroupedParamNames(op);
+
+  const queryFields = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
+  const sharedQueryBodyParams = new Set<string>();
+  const bodyModel = resolveBodyModel(op, ctx);
+  for (const qp of queryFields) {
+    const matchingBodyField = bodyModel?.fields.find((field) => field.name === qp.name);
+    if (matchingBodyField && mapTypeRef(qp.type) === mapTypeRef(matchingBodyField.type)) {
+      sharedQueryBodyParams.add(qp.name);
+    }
+  }
   for (const qp of sortedQuery) {
     if (!qp.required) break;
     const val = synthValue(qp.type, ctx, imports);
@@ -242,14 +263,25 @@ function buildOperationTest(
     if (regex !== null) requiredQueryAssertions.push({ name: qp.name, valueRegex: regex });
   }
 
-  const bodyModel = resolveBodyModel(op, ctx);
+  // Parameter group args — emit as named args (they appear after optionals in the signature)
+  const groupParamNames = assignGroupParameterNames(op, hidden, queryFields, bodyModel, groupedParamNames);
+  for (const group of op.parameterGroups ?? []) {
+    const variant = group.variants[0];
+    const sealedName = sealedGroupName(group.name);
+    const variantName = className(variant.name);
+    const variantArgs = variant.parameters.map((_p) => ktStringLiteral('sample-arg')).join(', ');
+    imports.add(`com.workos.${mountPackage}.${sealedName}`);
+    argParts.push(`${groupParamNames.get(group.name)!} = ${sealedName}.${variantName}(${variantArgs})`);
+  }
+
   if (bodyModel) {
     // Body fields always pass; colliding names are renamed (e.g. slug →
     // bodySlug) by the resources emitter, so every required body field still
     // needs a test argument here.
-    const bodyFields = bodyModel.fields.filter((f) => !hidden.has(f.name));
+    const bodyFields = bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name));
     const sortedBody = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
     for (const bf of sortedBody) {
+      if (sharedQueryBodyParams.has(bf.name)) continue;
       if (!bf.required) break;
       const val = synthValue(bf.type, ctx, imports);
       if (val === null) return null;
@@ -284,6 +316,20 @@ function buildOperationTest(
       ? buildResponseAssertions(plan2.responseModelName, ctx)
       : [];
 
+  // For POST/PUT/PATCH with parameter groups, collect all wire field names
+  // from the groups — these must NOT appear as query parameters.
+  const forbiddenQueryParams: string[] = [];
+  const httpUpper = op.httpMethod.toUpperCase();
+  if (['POST', 'PUT', 'PATCH'].includes(httpUpper) && (op.parameterGroups?.length ?? 0) > 0) {
+    for (const group of op.parameterGroups!) {
+      for (const variant of group.variants) {
+        for (const p of variant.parameters) {
+          if (!forbiddenQueryParams.includes(p.name)) forbiddenQueryParams.push(p.name);
+        }
+      }
+    }
+  }
+
   return {
     method,
     httpMethod: op.httpMethod.toLowerCase(),
@@ -295,8 +341,67 @@ function buildOperationTest(
     imports,
     requiredBodyPaths,
     requiredQueryAssertions,
+    forbiddenQueryParams,
     responseAssertions,
   };
+}
+
+function assignGroupParameterNames(
+  op: Operation,
+  hidden: Set<string>,
+  queryFields: Operation['queryParams'],
+  bodyModel: Model | null,
+  groupedParamNames: Set<string> = new Set(),
+): Map<string, string> {
+  const occupiedNames = new Set<string>();
+
+  for (const pp of op.pathParams) occupiedNames.add(propertyName(pp.name));
+  for (const qp of queryFields) occupiedNames.add(propertyName(qp.name));
+
+  for (const bf of bodyModel?.fields ?? []) {
+    if (hidden.has(bf.name) || groupedParamNames.has(bf.name)) continue;
+    const natural = propertyName(bf.name);
+    if (occupiedNames.has(natural)) {
+      occupiedNames.add(`body${natural.charAt(0).toUpperCase()}${natural.slice(1)}`);
+    } else {
+      occupiedNames.add(natural);
+    }
+  }
+
+  const names = new Map<string, string>();
+  for (const group of op.parameterGroups ?? []) {
+    const natural = propertyName(sealedGroupName(group.name));
+    const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
+    names.set(group.name, assigned);
+  }
+  return names;
+}
+
+function sealedGroupName(name: string): string {
+  const resolved = className(name);
+  if (resolved === 'Password') return 'CreateUserPassword';
+  if (resolved === 'Role') return 'CreateUserRole';
+  return resolved;
+}
+
+function reserveUniqueGroupParameterName(base: string, occupiedNames: Set<string>): string {
+  if (!occupiedNames.has(base)) {
+    occupiedNames.add(base);
+    return base;
+  }
+
+  const capitalized = `${base.charAt(0).toUpperCase()}${base.slice(1)}`;
+  const prefixed = `group${capitalized}`;
+  if (!occupiedNames.has(prefixed)) {
+    occupiedNames.add(prefixed);
+    return prefixed;
+  }
+
+  let index = 2;
+  while (occupiedNames.has(`${prefixed}${index}`)) index += 1;
+  const fallback = `${prefixed}${index}`;
+  occupiedNames.add(fallback);
+  return fallback;
 }
 
 /** True if the synthesized body value serializes to a concrete JSON scalar. */
@@ -383,6 +488,7 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
     imports,
     requiredBodyPaths: [],
     requiredQueryAssertions: [],
+    forbiddenQueryParams: [],
     responseAssertions,
   };
 }
@@ -643,7 +749,7 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
   // Verify the outbound request shape.  Body fields and query assertions
   // live on the `OpTest` and are only emitted when we know the synthesized
   // arguments produce a deterministic wire representation.
-  if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0) {
+  if (t.requiredBodyPaths.length > 0 || t.requiredQueryAssertions.length > 0 || t.forbiddenQueryParams.length > 0) {
     lines.push('    wireMockRule.verify(');
     lines.push(`      ${t.httpMethod}RequestedFor(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
     for (const path of t.requiredBodyPaths) {
@@ -651,6 +757,10 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
     }
     for (const qa of t.requiredQueryAssertions) {
       lines.push(`        .withQueryParam(${ktStringLiteral(qa.name)}, matching(${ktStringLiteral(qa.valueRegex)}))`);
+    }
+    // Assert sensitive fields from parameter groups never leak into the URL.
+    for (const name of t.forbiddenQueryParams) {
+      lines.push(`        .withQueryParam(${ktStringLiteral(name)}, absent())`);
     }
     lines.push('    )');
   }
@@ -874,9 +984,13 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   // models, arrays, maps, and literals — much broader than the old
   // primitives-only filter.
   const targets: { model: Model; json: string }[] = [];
+  const seenModelClassNames = new Set<string>();
   for (const m of spec.models) {
     if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
     if (m.fields.length === 0) continue;
+    const cls = className(m.name);
+    if (seenModelClassNames.has(cls)) continue;
+    seenModelClassNames.add(cls);
     // Only include models where ALL fields are required AND all types are
     // round-trip safe (primitives, nullable, literals, simple arrays/maps).
     // Nested model/enum references break round-trip because Jackson

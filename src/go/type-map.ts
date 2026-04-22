@@ -13,8 +13,10 @@ export function mapTypeRef(ref: TypeRef, asPointer = false): string {
     enum: (r) => className(r.name),
     union: (_r, variants) => joinUnionVariants(_r, variants),
     nullable: (_ref, inner) => {
-      // If inner is already a pointer type (model), don't double-pointer
-      if (inner.startsWith('*')) return inner;
+      // Slices, maps, and pointer types (models) don't get pointer-wrapped:
+      // nil slice/map + omitempty already handles absence, and double-pointers
+      // are confusing at the call site.
+      if (inner.startsWith('*') || inner.startsWith('[]') || inner.startsWith('map[')) return inner;
       return `*${inner}`;
     },
     literal: (r) => {
@@ -43,7 +45,10 @@ export function mapTypeRefValue(ref: TypeRef): string {
     model: (r) => className(r.name),
     enum: (r) => className(r.name),
     union: (_r, variants) => joinUnionVariants(_r, variants),
-    nullable: (_ref, inner) => `*${inner}`,
+    nullable: (_ref, inner) => {
+      if (inner.startsWith('*') || inner.startsWith('[]') || inner.startsWith('map[')) return inner;
+      return `*${inner}`;
+    },
     literal: (r) => {
       if (r.value === null) return 'interface{}';
       if (typeof r.value === 'string') return 'string';

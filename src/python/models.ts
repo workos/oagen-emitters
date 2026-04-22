@@ -18,6 +18,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
   const emittedModelSymbolsByDir = new Map<string, string[]>();
+  // Overrides fileName() for symbols that live in a differently-named file.
+  // Used for variant type aliases (e.g. EventSchemaVariant → event_schema).
+  const symbolToFile = new Map<string, string>();
   const modelUsage = collectModelUsage(ctx.spec);
 
   // Build recursive structural hashes for deduplication.
@@ -54,6 +57,95 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const modelClassName = className(model.name);
+
+    // If this model is a discriminated union dispatcher, generate a factory class
+    // instead of a regular dataclass (e.g. EventSchema where each variant has
+    // event: const: "..."). The dispatcher owns a Union type alias and a from_dict
+    // method that routes to the correct concrete variant at runtime.
+    if ((model as any).discriminator) {
+      const disc = (model as any).discriminator as { property: string; mapping: Record<string, string> };
+      const variantNames = Object.values(disc.mapping); // model names, e.g. ["ActionAuthenticationDenied", ...]
+      const variantTypeName = `${modelClassName}Variant`; // e.g. "EventSchemaVariant"
+
+      const dispLines: string[] = [];
+      dispLines.push('from __future__ import annotations');
+      dispLines.push('');
+      dispLines.push('from typing import Any, ClassVar, Dict, Union, cast');
+      dispLines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
+      dispLines.push('');
+
+      // Import each variant model from its resolved location
+      const sortedVariants = [...new Set(variantNames)].sort();
+      for (const variantModelName of sortedVariants) {
+        const variantService = modelToService.get(variantModelName);
+        const variantDir = resolveDir(variantService);
+        if (variantDir === dirName) {
+          dispLines.push(`from .${fileName(variantModelName)} import ${className(variantModelName)}`);
+        } else {
+          dispLines.push(
+            `from ${ctx.namespace}.${dirToModule(variantDir)}.models.${fileName(variantModelName)} import ${className(variantModelName)}`,
+          );
+        }
+      }
+
+      dispLines.push('');
+      dispLines.push('');
+
+      // Union type alias
+      dispLines.push(`${variantTypeName} = Union[`);
+      for (const variantModelName of sortedVariants) {
+        dispLines.push(`    ${className(variantModelName)},`);
+      }
+      dispLines.push(']');
+
+      dispLines.push('');
+      dispLines.push('');
+
+      // Dispatcher class
+      if (model.description) {
+        dispLines.push(`class ${modelClassName}:`);
+        dispLines.push(`    """${model.description}"""`);
+      } else {
+        dispLines.push(`class ${modelClassName}:`);
+        dispLines.push(`    """Discriminated union dispatcher (discriminated by '${disc.property}')."""`);
+      }
+      dispLines.push('');
+      dispLines.push(`    _DISPATCH: ClassVar[Dict[str, Any]] = {`);
+      for (const [value, variantModelName] of Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b))) {
+        dispLines.push(`        "${value}": ${className(variantModelName)},`);
+      }
+      dispLines.push('    }');
+      dispLines.push('');
+      dispLines.push('    @classmethod');
+      dispLines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${variantTypeName}":`);
+      dispLines.push('        """Deserialize from a dictionary, dispatching to the correct variant."""');
+      dispLines.push(`        if "${disc.property}" not in data:`);
+      dispLines.push(
+        `            _raise_deserialize_error("${modelClassName}", ValueError("Missing required field '${disc.property}'"))`,
+      );
+      dispLines.push(`        event_type = data["${disc.property}"]`);
+      dispLines.push('        if event_type is not None:');
+      dispLines.push('            dispatch_cls = cls._DISPATCH.get(str(event_type))');
+      dispLines.push('            if dispatch_cls is not None:');
+      dispLines.push(`                return cast("${variantTypeName}", dispatch_cls.from_dict(data))`);
+      dispLines.push(
+        `        _raise_deserialize_error("${modelClassName}", ValueError(f"Unknown ${disc.property}: {event_type!r}"))`,
+      );
+
+      files.push({
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        content: dispLines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+
+      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+      // Also register the variant type alias in the barrel, pointing to the same file
+      emittedModelSymbolsByDir.get(dirName)!.push(variantTypeName);
+      symbolToFile.set(variantTypeName, fileName(model.name));
+      continue;
+    }
 
     // If this model is an alias for a canonical model, generate a type alias file
     const canonicalName = aliasOf.get(model.name);
@@ -312,7 +404,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const uniqueNames = [...new Set(names)].sort();
     const importLines: string[] = [];
     for (const name of uniqueNames) {
-      importLines.push(`from .${fileName(name)} import ${className(name)} as ${className(name)}`);
+      const fileNameForSymbol = symbolToFile.get(name) ?? fileName(name);
+      importLines.push(`from .${fileNameForSymbol} import ${className(name)} as ${className(name)}`);
     }
     const imports = importLines.join('\n');
     files.push({

@@ -1,17 +1,26 @@
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import {
-  className,
   fixtureFileName,
   fieldName as csFieldName,
   methodName as csMethodName,
+  appendAsyncSuffix,
+  modelClassName,
   resolveMethodName,
+  resolveMethodStem,
   serviceTypeName,
 } from './naming.js';
+import { resolveModelName } from './type-map.js';
 import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 
 /**
  * Generate C# test files and JSON fixtures.
@@ -194,7 +203,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push(`            this.httpMock.AssertRequestWasMade(HttpMethod.Delete, "${expectedPath}");`);
       lines.push('        }');
     } else if (plan.responseModelName) {
-      const respModel = plan.responseModelName;
+      const respModel = resolveModelName(plan.responseModelName);
       const fixturePath = `testdata/${fixtureFileName(respModel)}.json`;
       const httpMethodCs = op.httpMethod.charAt(0).toUpperCase() + op.httpMethod.slice(1).toLowerCase();
 
@@ -261,8 +270,9 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     const plan = planOperation(op);
     if (!plan.isPaginated || !op.pagination) continue;
 
-    const method = resolveCsMethodName(op, resolvedName, ctx);
-    const autoPagingTestName = `Test${method}AutoPagingAsync`;
+    const methodStem = resolveCsMethodStem(op, resolvedName, ctx);
+    const autoPagingMethod = `${methodStem}AutoPagingAsync`;
+    const autoPagingTestName = `Test${autoPagingMethod}`;
     if (emittedTestMethods.has(autoPagingTestName)) continue;
     emittedTestMethods.add(autoPagingTestName);
 
@@ -282,8 +292,8 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
             if (inner) resolved = inner;
           }
         }
-        itemTypeName = className(resolved.name);
-        fixtureName = fixtureFileName(resolved.name);
+        itemTypeName = modelClassName(resolveModelName(resolved.name));
+        fixtureName = fixtureFileName(resolveModelName(resolved.name));
       }
     }
 
@@ -310,7 +320,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     );
     lines.push('');
     lines.push(`            var items = new List<${itemTypeName}>();`);
-    lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+    lines.push(`            await foreach (var item in this.service.${autoPagingMethod}(${autoPagingArgs}))`);
     lines.push('            {');
     lines.push('                items.Add(item);');
     lines.push('            }');
@@ -319,7 +329,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push('        }');
 
     // Test with empty first page
-    const emptyTestName = `Test${method}AutoPagingAsyncEmpty`;
+    const emptyTestName = `Test${autoPagingMethod}Empty`;
     if (!emittedTestMethods.has(emptyTestName)) {
       emittedTestMethods.add(emptyTestName);
       lines.push('');
@@ -332,7 +342,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       );
       lines.push('');
       lines.push(`            var items = new List<${itemTypeName}>();`);
-      lines.push(`            await foreach (var item in this.service.${method}AutoPagingAsync(${autoPagingArgs}))`);
+      lines.push(`            await foreach (var item in this.service.${autoPagingMethod}(${autoPagingArgs}))`);
       lines.push('            {');
       lines.push('                items.Add(item);');
       lines.push('            }');
@@ -348,7 +358,8 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     if (!resolvedOp?.wrappers || resolvedOp.wrappers.length === 0) continue;
 
     for (const wrapper of resolvedOp.wrappers) {
-      const wrapperMethod = csMethodName(wrapper.name);
+      const wrapperMethodStem = csMethodName(wrapper.name);
+      const wrapperMethod = appendAsyncSuffix(wrapperMethodStem);
       const wrapperTestName = `Test${wrapperMethod}`;
       if (emittedTestMethods.has(wrapperTestName)) continue;
       emittedTestMethods.add(wrapperTestName);
@@ -363,7 +374,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push('        {');
 
       if (responseType) {
-        const fixturePath = `testdata/${fixtureFileName(responseType)}.json`;
+        const fixturePath = `testdata/${fixtureFileName(resolveModelName(responseType))}.json`;
         lines.push(`            var fixture = System.IO.File.ReadAllText("${fixturePath}");`);
         lines.push(
           `            this.httpMock.MockResponse(HttpMethod.${httpMethodCs}, "${expectedPath}", HttpStatusCode.OK, fixture);`,
@@ -379,7 +390,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       for (const p of sortPathParamsByTemplateOrder(op)) {
         wrapperArgs.push(`"test_${p.name}"`);
       }
-      wrapperArgs.push(`new ${wrapperMethod}Options()`);
+      wrapperArgs.push(`new ${wrapperMethodStem}Options()`);
 
       if (responseType) {
         lines.push(`            var result = await this.service.${wrapperMethod}(${wrapperArgs.join(', ')});`);
@@ -411,11 +422,11 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     );
     if (plan.isPaginated || plan.isDelete || !plan.responseModelName) {
       lines.push(
-        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+        `            await Assert.ThrowsAsync<AuthenticationException>(() => this.service.${method}(${callArgs}));`,
       );
     } else {
       lines.push(
-        `            await Assert.ThrowsAsync<AuthenticationError>(() => this.service.${method}(${callArgs}));`,
+        `            await Assert.ThrowsAsync<AuthenticationException>(() => this.service.${method}(${callArgs}));`,
       );
     }
     lines.push('        }');
@@ -428,7 +439,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push(
       `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.NotFound, "{\\"code\\":\\"not_found\\",\\"message\\":\\"Not Found\\"}");`,
     );
-    lines.push(`            await Assert.ThrowsAsync<NotFoundError>(() => this.service.${method}(${callArgs}));`);
+    lines.push(`            await Assert.ThrowsAsync<NotFoundException>(() => this.service.${method}(${callArgs}));`);
     lines.push('        }');
 
     // 422
@@ -440,7 +451,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)422, "{\\"code\\":\\"unprocessable_entity\\",\\"message\\":\\"Unprocessable\\"}");`,
     );
     lines.push(
-      `            await Assert.ThrowsAsync<UnprocessableEntityError>(() => this.service.${method}(${callArgs}));`,
+      `            await Assert.ThrowsAsync<UnprocessableEntityException>(() => this.service.${method}(${callArgs}));`,
     );
     lines.push('        }');
 
@@ -453,7 +464,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       `            this.httpMock.MockResponseForAnyRequest((HttpStatusCode)429, "{\\"code\\":\\"too_many_requests\\",\\"message\\":\\"Too Many Requests\\"}");`,
     );
     lines.push(
-      `            await Assert.ThrowsAsync<RateLimitExceededError>(() => this.service.${method}(${callArgs}));`,
+      `            await Assert.ThrowsAsync<RateLimitExceededException>(() => this.service.${method}(${callArgs}));`,
     );
     lines.push('        }');
 
@@ -465,7 +476,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
     lines.push(
       `            this.httpMock.MockResponseForAnyRequest(HttpStatusCode.InternalServerError, "{\\"code\\":\\"server_error\\",\\"message\\":\\"Server Error\\"}");`,
     );
-    lines.push(`            await Assert.ThrowsAsync<ServerError>(() => this.service.${method}(${callArgs}));`);
+    lines.push(`            await Assert.ThrowsAsync<ServerException>(() => this.service.${method}(${callArgs}));`);
     lines.push('        }');
   }
 
@@ -481,6 +492,10 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
 
 function resolveCsMethodName(op: Operation, mountName: string, ctx: EmitterContext): string {
   return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
+}
+
+function resolveCsMethodStem(op: Operation, mountName: string, ctx: EmitterContext): string {
+  return resolveMethodStem(op, { name: mountName, operations: [op] }, ctx);
 }
 
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
@@ -502,7 +517,10 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   const resolvedLookup = buildResolvedLookup(ctx);
   const resolvedOp = lookupResolved(op, resolvedLookup);
   const hidden = buildHiddenParams(resolvedOp);
-  const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
+  const groupedParams = collectGroupedParamNames(op);
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0 ||
+    (op.parameterGroups?.length ?? 0) > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
   if (hasBody && op.requestBody?.kind === 'model') {
@@ -513,8 +531,8 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   }
 
   if (hasVisibleBodyFields || hasVisibleQueryParams) {
-    const method = resolveCsMethodName(op, mountName, ctx);
-    const optName = optionsClassName(mountName, method);
+    const methodStem = resolveCsMethodStem(op, mountName, ctx);
+    const optName = optionsClassName(mountName, methodStem);
     args.push(`new ${optName}()`);
   }
 
@@ -566,8 +584,10 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   // call sends it via the body — so skip the query assertion to avoid a
   // false-failing `AssertQueryParam`.
   const bodyWireNames = new Set(bodySeeds.map((s) => s.wire));
+  const groupedParamNames = collectGroupedParamNames(op);
   for (const param of op.queryParams) {
     if (hidden.has(param.name)) continue;
+    if (groupedParamNames.has(param.name)) continue;
     if (!param.required) continue;
     if (!isSeedableStringRef(param.type)) continue;
     // Skip pagination fields — they're set by the caller or the autopaging loop
@@ -585,8 +605,8 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
     return { setupLines: [], seededCallArgs: null, assertLines: [] };
   }
 
-  const method = resolveCsMethodName(op, mountName, ctx);
-  const optName = optionsClassName(mountName, method);
+  const methodStem = resolveCsMethodStem(op, mountName, ctx);
+  const optName = optionsClassName(mountName, methodStem);
 
   // Rebuild call args with a seeded options variable named `options`.
   const args: string[] = [];

@@ -20,6 +20,8 @@ import {
   relativeImport,
   isListMetadataModel,
   isListWrapperModel,
+  modelHasNewFields,
+  computeNonEventReachable,
 } from './utils.js';
 import { groupByMount } from '../shared/resolved-ops.js';
 
@@ -29,7 +31,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // Generate fixture JSON files
   const fixtures = generateFixtures(spec, ctx);
   for (const f of fixtures) {
-    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', integrateTarget: false });
+    files.push({ path: f.path, content: f.content, headerPlacement: 'skip', skipIfExists: true });
   }
 
   // Build model lookup for response field assertions
@@ -54,11 +56,33 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
 
+  // When integrating into an existing SDK, only generate tests for services
+  // that have a registered property on the WorkOS class.  The WorkOS client
+  // file uses skipIfExists, so new service properties aren't added — tests
+  // referencing workos.<service> would fail at compile time.
+  const baselineWorkOSProps = new Set<string>();
+  if (ctx.apiSurface?.classes?.['WorkOS']?.methods) {
+    // The extractor stores property accessors as methods
+    for (const name of Object.keys(ctx.apiSurface.classes['WorkOS'].methods)) {
+      baselineWorkOSProps.add(name);
+    }
+  }
+  if (ctx.apiSurface?.classes?.['WorkOS']?.properties) {
+    for (const name of Object.keys(ctx.apiSurface.classes['WorkOS'].properties)) {
+      baselineWorkOSProps.add(name);
+    }
+  }
+
   for (const { name: mountName, operations } of testEntries) {
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
     const ops = uncoveredOperations(mergedService, ctx);
     if (ops.length === 0) continue;
+
+    // Skip tests for services without a WorkOS property in the baseline
+    const propName = mountAccessors.get(mountName) ?? servicePropertyName(mountName);
+    if (ctx.apiSurface && baselineWorkOSProps.size > 0 && !baselineWorkOSProps.has(propName)) continue;
+
     const testService = ops.length < operations.length ? { ...mergedService, operations: ops } : mergedService;
     files.push(generateServiceTest(testService, spec, ctx, modelMap, mountAccessors));
   }
@@ -155,7 +179,7 @@ function generateServiceTest(
         // List fixtures are always generated in the current service's directory
         // (the service owning the list operation), not in the model's home service.
         // Always use a local import path.
-        const fixturePath = `./fixtures/list-${fileName(itemModelName)}.fixture.json`;
+        const fixturePath = `./fixtures/list-${fileName(itemModelName)}.json`;
         fixtureImports.add(`import list${itemModelName}Fixture from '${fixturePath}';`);
       }
     } else if (plan.responseModelName) {
@@ -163,8 +187,8 @@ function generateServiceTest(
       const respDir = resolveDir(respService);
       const fixturePath =
         respDir === serviceDir
-          ? `./fixtures/${fileName(plan.responseModelName)}.fixture.json`
-          : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.fixture.json`;
+          ? `./fixtures/${fileName(plan.responseModelName)}.json`
+          : `../${respDir}/fixtures/${fileName(plan.responseModelName)}.json`;
       fixtureImports.add(`import ${toCamelCase(plan.responseModelName)}Fixture from '${fixturePath}';`);
     }
     // NOTE: Request body fixtures are not imported for body tests because
@@ -216,7 +240,7 @@ function generateServiceTest(
 
   lines.push('});');
 
-  return { path: testPath, content: lines.join('\n'), skipIfExists: true };
+  return { path: testPath, content: lines.join('\n'), overwriteExisting: true };
 }
 
 /** Compute the test value for a single path parameter.
@@ -840,11 +864,23 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
   // Only generate round-trip tests for models with fields that have serializers generated.
   // Skip list metadata and list wrapper models since their serializers are not emitted.
+  // Skip models unchanged from baseline (no new fields) since their serializers are not regenerated.
+  // Skip models unreachable from non-event services (no model/serializer files generated).
+  const nonEventReachable = computeNonEventReachable(spec.services, spec.models);
   const eligibleModels = spec.models.filter(
-    (m) => modelNeedsRoundTripTest(m) && !isListMetadataModel(m) && !isListWrapperModel(m),
+    (m) =>
+      nonEventReachable.has(m.name) &&
+      modelNeedsRoundTripTest(m) &&
+      !isListMetadataModel(m) &&
+      !isListWrapperModel(m) &&
+      modelHasNewFields(m, ctx),
   );
 
   if (eligibleModels.length === 0) return files;
+
+  // Use the skipped-serialize set computed by the serializer generator.
+  // It's stashed on the context during generateSerializers.
+  const serializeSkipped: Set<string> = (ctx as any)._skippedSerializeModels ?? new Set<string>();
 
   // Group eligible models by service directory for one test file per service
   const modelsByDir = new Map<string, Model[]>();
@@ -872,14 +908,20 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const modelDir = resolveDir(service);
       const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
       const interfacePath = `src/${modelDir}/interfaces/${fileName(model.name)}.interface.ts`;
-      const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.fixture.json`;
+      const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.json`;
 
-      serializerImports.push(
-        `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
-      );
+      if (serializeSkipped.has(model.name)) {
+        serializerImports.push(
+          `import { deserialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
+        );
+      } else {
+        serializerImports.push(
+          `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
+        );
+      }
       const wireName = wireInterfaceName(domainName);
       interfaceImports.push(`import type { ${wireName} } from '${relativeImport(testPath, interfacePath)}';`);
-      const camelName = domainName.charAt(0).toLowerCase() + domainName.slice(1);
+      const camelName = toCamelCase(domainName);
       fixtureImports.push(`import ${camelName}Fixture from '${relativeImport(testPath, fixturePath)}';`);
     }
 
@@ -896,29 +938,36 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
     for (const model of models) {
       const domainName = resolveInterfaceName(model.name, ctx);
-      const camelDomain = domainName.charAt(0).toLowerCase() + domainName.slice(1);
-      const fixtureName = `${camelDomain}Fixture`;
-
+      const fixtureName = `${toCamelCase(domainName)}Fixture`;
       const wireName = wireInterfaceName(domainName);
-      lines.push(`describe('${domainName}Serializer', () => {`);
-      lines.push("  it('round-trips through serialize/deserialize', () => {");
-      // Cast the fixture to the wire-type interface — JSON imports are inferred
-      // with primitive types (e.g., `string`) that don't satisfy literal-typed
-      // response fields (e.g., `type: "enum"`), so the deserialize call needs
-      // the explicit cast to compile.
-      lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
-      lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
-      lines.push(`    const reserialized = serialize${domainName}(deserialized);`);
-      lines.push('    expect(reserialized).toEqual(expect.objectContaining(fixture));');
-      lines.push('  });');
-      lines.push('});');
+
+      if (serializeSkipped.has(model.name)) {
+        // Deserialize-only test (no serialize function available)
+        lines.push(`describe('${domainName}Serializer', () => {`);
+        lines.push("  it('deserializes correctly', () => {");
+        lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
+        lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
+        lines.push('    expect(deserialized).toBeDefined();');
+        lines.push('  });');
+        lines.push('});');
+      } else {
+        // Round-trip test
+        lines.push(`describe('${domainName}Serializer', () => {`);
+        lines.push("  it('round-trips through serialize/deserialize', () => {");
+        lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
+        lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
+        lines.push(`    const reserialized = serialize${domainName}(deserialized);`);
+        lines.push('    expect(reserialized).toEqual(expect.objectContaining(fixture));');
+        lines.push('  });');
+        lines.push('});');
+      }
       lines.push('');
     }
 
     files.push({
       path: testPath,
       content: lines.join('\n'),
-      skipIfExists: true,
+      overwriteExisting: true,
     });
   }
 

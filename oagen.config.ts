@@ -6,6 +6,7 @@ import { phpEmitter } from './src/php/index.js';
 import { goEmitter } from './src/go/index.js';
 import { dotnetEmitter } from './src/dotnet/index.js';
 import { kotlinEmitter } from './src/kotlin/index.js';
+import { rubyEmitter } from './src/ruby/index.js';
 import { nodeExtractor } from './src/compat/extractors/node.js';
 import { rubyExtractor } from './src/compat/extractors/ruby.js';
 import { pythonExtractor } from './src/compat/extractors/python.js';
@@ -100,6 +101,10 @@ const operationHints: Record<string, OperationHint> = {
   'POST /authorization/organization_memberships/{organization_membership_id}/check': {
     name: 'check',
   },
+  'GET /authorization/organization_memberships/{organization_membership_id}/resources/{resource_type_slug}/{external_id}/permissions':
+    {
+      name: 'list_effective_permissions_by_external_id',
+    },
   'POST /authorization/organization_memberships/{organization_membership_id}/role_assignments': {
     name: 'assign_role',
   },
@@ -185,11 +190,11 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_code',
-        targetVariant: 'CodeSessionAuthenticateRequest',
+        targetVariant: 'AuthorizationCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'authorization_code' },
         inferFromClient: ['client_id', 'client_secret'],
-        exposedParams: ['code', 'ip_address', 'device_id', 'user_agent'],
-        optionalParams: ['ip_address', 'device_id', 'user_agent'],
+        exposedParams: ['code', 'code_verifier', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['code_verifier', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_refresh_token',
@@ -201,7 +206,7 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_magic_auth',
-        targetVariant: 'MagicAuthSessionAuthenticateRequest',
+        targetVariant: 'MagicAuthCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:magic-auth:code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'email', 'invitation_token', 'ip_address', 'device_id', 'user_agent'],
@@ -209,15 +214,15 @@ const operationHints: Record<string, OperationHint> = {
       },
       {
         name: 'authenticate_with_email_verification',
-        targetVariant: 'EmailVerificationSessionAuthenticateRequest',
+        targetVariant: 'EmailVerificationCodeSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:email-verification:code' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: ['code', 'pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
-        optionalParams: ['pending_authentication_token', 'ip_address', 'device_id', 'user_agent'],
+        optionalParams: ['ip_address', 'device_id', 'user_agent'],
       },
       {
         name: 'authenticate_with_totp',
-        targetVariant: 'TotpSessionAuthenticateRequest',
+        targetVariant: 'MFATotpSessionAuthenticateRequest',
         defaults: { grant_type: 'urn:workos:oauth:grant-type:mfa-totp' },
         inferFromClient: ['client_id', 'client_secret'],
         exposedParams: [
@@ -329,7 +334,7 @@ const mountRules: Record<string, string> = {
 };
 
 const config: OagenConfig = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter],
+  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter, rubyEmitter],
   extractors: [
     nodeExtractor,
     rubyExtractor,

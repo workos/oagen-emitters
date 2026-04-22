@@ -1,11 +1,22 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
-import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
+import { buildResolvedLookup, lookupMethodName, lookupResolved, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix } from '../shared/naming-utils.js';
 
 /** PascalCase class/type name. */
 export function className(name: string): string {
   return toPascalCase(stripUrnPrefix(name));
+}
+
+/** Display name for a model type, including consumer-friendly aliases. */
+export function modelClassName(name: string): string {
+  switch (name) {
+    case 'EmailChangeConfirmationUser':
+    case 'UserlandUser':
+      return 'User';
+    default:
+      return className(name);
+  }
 }
 
 /** PascalCase file name (without extension). */
@@ -57,15 +68,42 @@ export function resolveServiceDir(resolvedServiceName: string): string {
   return moduleName(resolvedServiceName);
 }
 
-/** Resolve the SDK method name for an operation. */
-export function resolveMethodName(op: Operation, _service: Service, ctx: EmitterContext): string {
+function trimAsyncSuffix(name: string): string {
+  return name.endsWith('Async') ? name.slice(0, -5) : name;
+}
+
+/** Append Async once for TAP-style method names. */
+export function appendAsyncSuffix(name: string): string {
+  return name.endsWith('Async') ? name : `${name}Async`;
+}
+
+/** Resolve the stable method stem for an operation (without any Async suffix). */
+export function resolveMethodStem(op: Operation, _service: Service, ctx: EmitterContext): string {
   const lookup = buildResolvedLookup(ctx);
   const resolved = lookupMethodName(op, lookup);
-  if (resolved) return trimMountedResourceFromMethod(methodName(resolved), resolveClassName(_service, ctx));
+  if (resolved) {
+    return trimMountedResourceFromMethod(methodName(trimAsyncSuffix(resolved)), resolveClassName(_service, ctx));
+  }
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
-  if (existing) return trimMountedResourceFromMethod(methodName(existing.methodName), resolveClassName(_service, ctx));
-  return trimMountedResourceFromMethod(methodName(op.name), resolveClassName(_service, ctx));
+  if (existing) {
+    return trimMountedResourceFromMethod(
+      methodName(trimAsyncSuffix(existing.methodName)),
+      resolveClassName(_service, ctx),
+    );
+  }
+  return trimMountedResourceFromMethod(methodName(trimAsyncSuffix(op.name)), resolveClassName(_service, ctx));
+}
+
+/** Resolve the SDK method name for an operation. */
+export function resolveMethodName(op: Operation, service: Service, ctx: EmitterContext): string {
+  const stem = resolveMethodStem(op, service, ctx);
+  const resolved = lookupResolved(op, buildResolvedLookup(ctx));
+  if (resolved?.urlBuilder ?? false) {
+    return stem;
+  }
+
+  return appendAsyncSuffix(stem);
 }
 
 /** Resolve the SDK class name for a service. */
