@@ -78,6 +78,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.6.0"
+    "@workos/oagen": "^0.7.0"
   }
 }
