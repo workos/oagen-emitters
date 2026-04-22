@@ -1,4 +1,5 @@
 import type { Model, Field, TypeRef, Enum } from '@workos/oagen';
+import { toSnakeCase } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 // @ts-ignore -- js-yaml has no type declarations in this project
@@ -159,7 +160,7 @@ function rawSchemaToTypeRef(
   if (schema.enum && collector && parentModelName && fName) {
     // Generate a synthetic enum
     const syntheticName = `${parentModelName}_${fName}`;
-    if (!collector.usedNames.has(syntheticName)) {
+    if (!collector.usedNames.has(syntheticName) && !collector.usedNames.has(toSnakeCase(syntheticName))) {
       collector.usedNames.add(syntheticName);
       collector.enums.push({
         name: syntheticName,
@@ -197,7 +198,7 @@ function rawSchemaToTypeRef(
   if (baseType === 'object' && schema.properties && collector && parentModelName && fName) {
     // Inline object -- generate a synthetic model
     const syntheticName = `${parentModelName}_${fName}`;
-    if (!collector.usedNames.has(syntheticName)) {
+    if (!collector.usedNames.has(syntheticName) && !collector.usedNames.has(toSnakeCase(syntheticName))) {
       collector.usedNames.add(syntheticName);
       const fields: Field[] = [];
       const requiredSet = new Set<string>(schema.required ?? []);
@@ -388,6 +389,102 @@ export function getSyntheticEnums(): Enum[] {
   return _lastSyntheticEnums;
 }
 
+// ---------------------------------------------------------------------------
+// Implicit discriminator detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Find a property name that has a `const` value in ALL oneOf variants.
+ * Returns null if no shared const property is found.
+ */
+function findSharedConstProperty(oneOfSchemas: Record<string, any>[]): string | null {
+  if (oneOfSchemas.length === 0) return null;
+
+  const first = oneOfSchemas[0];
+  if (!first.properties) return null;
+
+  // Candidate properties from the first variant that have const values
+  const candidates = Object.keys(first.properties).filter((name) => first.properties[name].const !== undefined);
+
+  // Return the first candidate that has const values in ALL variants
+  for (const candidate of candidates) {
+    const allHaveConst = oneOfSchemas.every((variant) => variant.properties?.[candidate]?.const !== undefined);
+    if (allHaveConst) return candidate;
+  }
+
+  return null;
+}
+
+/**
+ * Build a discriminator mapping from const values to IR model names.
+ * For each oneOf variant's const value on `discProperty`, find the IR model
+ * whose field with the same name is a Literal type with that value.
+ */
+function buildDiscriminatorMapping(
+  discProperty: string,
+  oneOfSchemas: Record<string, any>[],
+  models: Model[],
+  parentModelName: string,
+): Record<string, string> {
+  const mapping: Record<string, string> = {};
+
+  for (const variant of oneOfSchemas) {
+    const constValue = variant.properties?.[discProperty]?.const;
+    if (constValue === undefined) continue;
+
+    const variantModel = models.find(
+      (m) =>
+        m.name !== parentModelName &&
+        m.fields.some(
+          (f) => f.name === discProperty && f.type.kind === 'literal' && (f.type as any).value === constValue,
+        ),
+    );
+    if (variantModel) {
+      mapping[String(constValue)] = variantModel.name;
+    }
+  }
+
+  return mapping;
+}
+
+/**
+ * Detect implicit discriminators on models without full oneOf flattening.
+ * Returns a new array with discriminator annotations; models without
+ * discriminators are returned as-is. Use this when you need discriminator
+ * info but don't want the side-effects of full enrichment (synthetic
+ * models/enums, field flattening).
+ */
+export function detectDiscriminators(models: Model[]): Model[] {
+  const spec = loadRawSpec();
+  if (!spec) return models;
+
+  let changed = false;
+  const result = models.map((model) => {
+    if ((model as any).discriminator) return model;
+
+    const rawSchema = lookupRawSchema(model.name);
+    if (!rawSchema) return model;
+
+    const oneOfContainer = rawSchema.allOf?.find((s: any) => s.oneOf);
+    if (!oneOfContainer?.oneOf || oneOfContainer.oneOf.length === 0) return model;
+
+    const discProperty = findSharedConstProperty(oneOfContainer.oneOf);
+    if (!discProperty) return model;
+
+    const mapping = buildDiscriminatorMapping(discProperty, oneOfContainer.oneOf, models, model.name);
+    if (Object.keys(mapping).length === 0) return model;
+
+    changed = true;
+    return {
+      ...model,
+      fields: [],
+      discriminator: { property: discProperty, mapping },
+    };
+  });
+
+  return changed ? result : models;
+}
+
 /**
  * Enrich IR models by flattening oneOf/allOf+oneOf variant fields from the raw spec.
  *
@@ -411,8 +508,13 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
   }
 
   const collector = createCollector();
-  // Avoid name collisions with existing models
-  for (const m of models) collector.usedNames.add(m.name);
+  // Avoid name collisions with existing models (check both PascalCase and
+  // snake_case to prevent synthetic models from shadowing existing ones when
+  // they share a file name, e.g. FooBar vs Foo_bar -> foo_bar).
+  for (const m of models) {
+    collector.usedNames.add(m.name);
+    collector.usedNames.add(toSnakeCase(m.name));
+  }
 
   const enriched = models.map((model) => {
     const rawSchema = lookupRawSchema(model.name);
@@ -421,12 +523,31 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
     const hasOneOf = rawSchema.oneOf || rawSchema.allOf?.some((s: any) => s.oneOf);
     if (!hasOneOf) return model;
 
-    // Skip schemas with discriminator -- those are intentional unions
+    // Skip schemas with explicit discriminator -- those are intentional unions
     const hasDiscriminator =
       rawSchema.discriminator ||
       rawSchema.oneOf?.some((v: any) => v.discriminator) ||
       rawSchema.allOf?.some((s: any) => s.discriminator || s.oneOf?.some((v: any) => v.discriminator));
     if (hasDiscriminator) return model;
+
+    // Detect implicit discriminators: allOf+oneOf where all variants share a
+    // property with const values (e.g., EventSchema with event: const: "user.created").
+    // When found, attach a discriminator mapping and clear fields so the emitter
+    // generates a dispatcher class instead of a flat dataclass.
+    const oneOfContainer = rawSchema.allOf?.find((s: any) => s.oneOf);
+    if (oneOfContainer?.oneOf && oneOfContainer.oneOf.length > 0) {
+      const discProperty = findSharedConstProperty(oneOfContainer.oneOf);
+      if (discProperty) {
+        const mapping = buildDiscriminatorMapping(discProperty, oneOfContainer.oneOf, models, model.name);
+        if (Object.keys(mapping).length > 0) {
+          return {
+            ...model,
+            fields: [],
+            discriminator: { property: discProperty, mapping },
+          };
+        }
+      }
+    }
 
     // Collect all variant fields from the raw schema, generating synthetic
     // models/enums for inline definitions along the way.
@@ -467,6 +588,9 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
     values: e.values.map((v) => ({ value: v.value, description: v.description })),
   })) as Enum[];
 
-  // Append synthetic models to the output
-  return [...enriched2, ...collector.models];
+  // Append synthetic models, skipping those whose snake_case name collides
+  // with an existing model (prevents broken TypeAlias self-imports).
+  const existingSnakeNames = new Set(enriched2.map((m) => toSnakeCase(m.name)));
+  const filteredSynthetic = collector.models.filter((m) => !existingSnakeNames.has(toSnakeCase(m.name)));
+  return [...enriched2, ...filteredSynthetic];
 }

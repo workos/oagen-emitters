@@ -10,6 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
+import { detectDiscriminators } from '../shared/model-utils.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
@@ -25,11 +26,23 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   return files;
 }
 
+/**
+ * Annotate models with implicit discriminator info (without full oneOf
+ * field flattening which can break existing model structures/fixtures).
+ */
+function withDiscriminators(ctx: EmitterContext): EmitterContext {
+  const annotated = detectDiscriminators(ctx.spec.models);
+  if (annotated === ctx.spec.models) return ctx;
+  const spec: ApiSpec = { ...ctx.spec, models: annotated };
+  return { ...ctx, spec };
+}
+
 export const pythonEmitter: Emitter = {
   language: 'python',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateModels(models, ctx));
+    const annotated = detectDiscriminators(models);
+    return ensureTrailingNewlines(generateModels(annotated, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -37,11 +50,11 @@ export const pythonEmitter: Emitter = {
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateResources(services, ctx));
+    return ensureTrailingNewlines(generateResources(services, withDiscriminators(ctx)));
   },
 
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateClient(spec, ctx));
+    return ensureTrailingNewlines(generateClient(spec, withDiscriminators(ctx)));
   },
 
   generateErrors(): GeneratedFile[] {
@@ -57,7 +70,15 @@ export const pythonEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateTests(spec, ctx));
+    // Use original spec for model filtering (requestOnlyModelNames etc.) but
+    // annotate discriminator models so dispatch tests are generated.
+    const annotated = detectDiscriminators(spec.models);
+    // Only replace discriminator-annotated models, keep the rest unchanged
+    // so request-only filtering and field-based logic work correctly.
+    const annotatedByName = new Map(annotated.filter((m: any) => m.discriminator).map((m) => [m.name, m]));
+    const testModels = spec.models.map((m) => annotatedByName.get(m.name) ?? m);
+    const testSpec: ApiSpec = { ...spec, models: testModels };
+    return ensureTrailingNewlines(generateTests(testSpec, { ...ctx, spec: testSpec }));
   },
 
   generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

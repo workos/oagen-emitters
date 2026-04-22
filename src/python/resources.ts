@@ -665,7 +665,9 @@ function emitMethodBody(
       lines.push(`            ${awaitPrefix}self._client.request_page(`);
       lines.push(`                method="${httpMethod}",`);
       lines.push(`                path=${pathStr},`);
-      lines.push(`                model=${itemTypeClass},  # type: ignore[arg-type]`);
+      lines.push(
+        `                model=${itemTypeClass},  # type: ignore[arg-type]  # dispatcher; pagination only calls from_dict`,
+      );
       lines.push('                params=params,');
       lines.push('                request_options=request_options,');
       lines.push('            )');

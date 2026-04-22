@@ -139,6 +139,24 @@ function generateServiceTest(
     if (plan.responseModelName) modelImports.add(plan.responseModelName);
     if (op.pagination?.itemType.kind === 'model') {
       modelImports.add(op.pagination.itemType.name);
+      // Unwrap list wrapper to find the inner item model (may be a discriminated union)
+      let paginationItemName = op.pagination.itemType.name;
+      const wrapperModel = spec.models.find((m) => m.name === paginationItemName);
+      if (wrapperModel && isListWrapperModel(wrapperModel)) {
+        const dataField = wrapperModel.fields.find((f) => f.name === 'data');
+        if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
+          paginationItemName = dataField.type.items.name;
+        }
+      }
+      // For discriminated union pagination items, also import the first variant for isinstance checks
+      const paginationModel = spec.models.find((m) => m.name === paginationItemName);
+      if (paginationModel && (paginationModel as any).discriminator) {
+        const disc = (paginationModel as any).discriminator as { property: string; mapping: Record<string, string> };
+        const sortedEntries = Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b));
+        if (sortedEntries.length > 0) {
+          modelImports.add(sortedEntries[0][1]);
+        }
+      }
     }
     // Collect model-typed and enum-typed body fields (used as method arguments)
     if (plan.hasBody && op.requestBody?.kind === 'model') {
@@ -267,6 +285,8 @@ function generateServiceTest(
         }
       }
       // Skip fixture-based testing for models with no fields (discriminated unions)
+      // Save the unwrapped name before nulling — needed for discriminator check below
+      const unwrappedItemName = itemName;
       if (itemName) {
         const itemModel = spec.models.find((m) => m.name === itemName);
         if (itemModel && itemModel.fields.length === 0) itemName = null;
@@ -290,9 +310,29 @@ function generateServiceTest(
         lines.push('        assert isinstance(page, SyncPage)');
         lines.push('        assert page.data == []');
       } else {
-        lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
-        lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
-        lines.push('        assert isinstance(page, SyncPage)');
+        // Check if the unwrapped item is a discriminated union — test dispatch through pagination
+        const discModel = unwrappedItemName ? spec.models.find((m) => m.name === unwrappedItemName) : null;
+        const disc =
+          discModel && (discModel as any).discriminator
+            ? ((discModel as any).discriminator as { property: string; mapping: Record<string, string> })
+            : null;
+        const discEntries = disc ? Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b)) : [];
+        if (disc && discEntries.length > 0) {
+          const [, firstVariantName] = discEntries[0];
+          const variantFixture = `${fileName(firstVariantName)}.json`;
+          const variantClass = className(firstVariantName);
+          lines.push('        httpx_mock.add_response(');
+          lines.push(`            json={"data": [load_fixture("${variantFixture}")], "list_metadata": {}},`);
+          lines.push('        )');
+          lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
+          lines.push('        assert isinstance(page, SyncPage)');
+          lines.push('        assert len(page.data) == 1');
+          lines.push(`        assert isinstance(page.data[0], ${variantClass})`);
+        } else {
+          lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
+          lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
+          lines.push('        assert isinstance(page, SyncPage)');
+        }
       }
     } else if (isDelete) {
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
@@ -543,6 +583,8 @@ function generateServiceTest(
         }
       }
       // Skip fixture-based testing for models with no fields (discriminated unions)
+      // Save the unwrapped name before nulling — needed for discriminator check below
+      const unwrappedItemName = itemName;
       if (itemName) {
         const itemModel = spec.models.find((m) => m.name === itemName);
         if (itemModel && itemModel.fields.length === 0) itemName = null;
@@ -562,9 +604,29 @@ function generateServiceTest(
         lines.push('        assert isinstance(page, AsyncPage)');
         lines.push('        assert page.data == []');
       } else {
-        lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
-        lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
-        lines.push('        assert isinstance(page, AsyncPage)');
+        // Check if the unwrapped item is a discriminated union — test dispatch through pagination
+        const discModel = unwrappedItemName ? spec.models.find((m) => m.name === unwrappedItemName) : null;
+        const disc =
+          discModel && (discModel as any).discriminator
+            ? ((discModel as any).discriminator as { property: string; mapping: Record<string, string> })
+            : null;
+        const discEntries = disc ? Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b)) : [];
+        if (disc && discEntries.length > 0) {
+          const [, firstVariantName] = discEntries[0];
+          const variantFixture = `${fileName(firstVariantName)}.json`;
+          const variantClass = className(firstVariantName);
+          lines.push('        httpx_mock.add_response(');
+          lines.push(`            json={"data": [load_fixture("${variantFixture}")], "list_metadata": {}},`);
+          lines.push('        )');
+          lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+          lines.push('        assert isinstance(page, AsyncPage)');
+          lines.push('        assert len(page.data) == 1');
+          lines.push(`        assert isinstance(page.data[0], ${variantClass})`);
+        } else {
+          lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
+          lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
+          lines.push('        assert isinstance(page, AsyncPage)');
+        }
       }
     } else if (isDelete) {
       const deletePath = buildExpectedPath(op);
@@ -1311,6 +1373,14 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     if (!importsByDir.has(dirName)) importsByDir.set(dirName, []);
     importsByDir.get(dirName)!.push(className(model.name));
   }
+  // Add discriminator Unknown variant classes to imports for dispatch tests
+  for (const model of models) {
+    if (!(model as any).discriminator) continue;
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    if (!importsByDir.has(dirName)) importsByDir.set(dirName, []);
+    importsByDir.get(dirName)!.push(`${className(model.name)}Unknown`);
+  }
 
   for (const [dirName, names] of [...importsByDir].sort()) {
     lines.push(`from ${ctx.namespace}.${dirToModule(dirName)}.models import ${names.sort().join(', ')}`);
@@ -1398,6 +1468,55 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
       lines.push(`        data = ${toPythonLiteral(unknownEnumPayload)}`);
       lines.push(`        instance = ${modelClass}.from_dict(data)`);
       lines.push('        assert instance.to_dict() == data');
+    }
+  }
+
+  // Discriminator dispatch tests — targeted coverage for from_dict routing
+  const discriminatorModels = models.filter((m) => (m as any).discriminator);
+  if (discriminatorModels.length > 0) {
+    lines.push('');
+    lines.push('');
+    lines.push('class TestDiscriminatorDispatch:');
+
+    for (const model of discriminatorModels) {
+      const disc = (model as any).discriminator as { property: string; mapping: Record<string, string> };
+      const modelClass = className(model.name);
+      const unknownClass = `${modelClass}Unknown`;
+
+      // Pick the first variant (alphabetically by discriminator value) for tests
+      const sortedEntries = Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b));
+      if (sortedEntries.length === 0) continue;
+      const [, firstVariantName] = sortedEntries[0];
+      const firstVariantClass = className(firstVariantName);
+      const firstVariantFixture = `${fileName(firstVariantName)}.json`;
+
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_dispatches_known_variant(self):`);
+      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
+      lines.push(`        result = ${modelClass}.from_dict(data)`);
+      lines.push(`        assert isinstance(result, ${firstVariantClass})`);
+
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_returns_unknown_for_unrecognized_type(self):`);
+      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
+      lines.push(`        data = {**data, "${disc.property}": "future.unrecognized.type"}`);
+      lines.push(`        result = ${modelClass}.from_dict(data)`);
+      lines.push(`        assert isinstance(result, ${unknownClass})`);
+      lines.push('        assert result.raw_data == data');
+
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_raises_on_missing_discriminator(self):`);
+      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
+      lines.push(`        data = {k: v for k, v in data.items() if k != "${disc.property}"}`);
+      lines.push('        with pytest.raises(Exception):');
+      lines.push(`            ${modelClass}.from_dict(data)`);
+
+      lines.push('');
+      lines.push(`    def test_${fileName(model.name)}_raises_on_none_discriminator(self):`);
+      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
+      lines.push(`        data = {**data, "${disc.property}": None}`);
+      lines.push('        with pytest.raises(Exception):');
+      lines.push(`            ${modelClass}.from_dict(data)`);
     }
   }
 

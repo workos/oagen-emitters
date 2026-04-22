@@ -109,6 +109,93 @@ describe('generateTests', () => {
     expect(data).toHaveProperty('name');
   });
 
+  it('generates discriminator dispatch tests for dispatcher models', () => {
+    const discriminatorModel: any = {
+      name: 'EventSchema',
+      fields: [],
+      discriminator: {
+        property: 'event',
+        mapping: {
+          'user.created': 'UserCreated',
+          'dsync.user.created': 'DsyncUserCreated',
+        },
+      },
+    };
+
+    const discModels: Model[] = [
+      discriminatorModel,
+      {
+        name: 'UserCreated',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'user.created' }, required: true },
+          { name: 'data', type: { kind: 'primitive', type: 'unknown' }, required: true },
+        ],
+      },
+      {
+        name: 'DsyncUserCreated',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'dsync.user.created' }, required: true },
+          { name: 'data', type: { kind: 'primitive', type: 'unknown' }, required: true },
+        ],
+      },
+    ];
+
+    const discServices: Service[] = [
+      {
+        name: 'Events',
+        operations: [
+          {
+            name: 'listEvents',
+            httpMethod: 'get',
+            path: '/events',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'EventSchema' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'EventSchema' },
+            },
+          },
+        ],
+      },
+    ];
+
+    const discSpec: ApiSpec = {
+      ...spec,
+      models: discModels,
+      services: discServices,
+      enums: [],
+    };
+
+    const files = generateTests(discSpec, { ...ctx, spec: discSpec });
+    const roundTripTest = files.find((f) => f.path === 'tests/test_models_round_trip.py');
+    expect(roundTripTest).toBeDefined();
+
+    const content = roundTripTest!.content;
+    expect(content).toContain('class TestDiscriminatorDispatch:');
+    expect(content).toContain('def test_event_schema_dispatches_known_variant(self)');
+    expect(content).toContain('def test_event_schema_returns_unknown_for_unrecognized_type(self)');
+    expect(content).toContain('isinstance(result, EventSchemaUnknown)');
+    expect(content).toContain('def test_event_schema_raises_on_missing_discriminator(self)');
+    expect(content).toContain('def test_event_schema_raises_on_none_discriminator(self)');
+    expect(content).toContain('pytest.raises(Exception)');
+
+    // Service test should exercise discriminated union dispatch through pagination
+    const serviceTest = files.find((f) => f.path === 'tests/test_events.py');
+    expect(serviceTest).toBeDefined();
+    const svcContent = serviceTest!.content;
+    expect(svcContent).toContain('load_fixture("dsync_user_created.json")');
+    expect(svcContent).toContain('isinstance(page.data[0], DsyncUserCreated)');
+    expect(svcContent).toContain('assert len(page.data) == 1');
+  });
+
   it('generates model edge-case and query/pagination regression tests', () => {
     const edgeModels: Model[] = [
       {
