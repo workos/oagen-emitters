@@ -263,17 +263,15 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
   for (const service of mergedServices) {
     if (isServiceCoveredByExisting(service, ctx)) {
-      // Fully covered: generate with ALL operations so the merger's docstring
-      // refresh pass can update JSDoc on existing methods.
-      const file = generateResourceClass(service, ctx);
-      // When the baseline class is missing methods for some operations,
-      // remove skipIfExists so the merger adds the new methods.
-      if (hasMethodsAbsentFromBaseline(service, ctx)) {
-        delete file.skipIfExists;
-        // Suppress auto-generated header — the file is a merge target
-        // containing hand-written code, not a fully generated file.
-        file.headerPlacement = 'skip';
+      if (!hasMethodsAbsentFromBaseline(service, ctx)) {
+        continue; // Fully covered, no new methods -- skip entirely
       }
+      // Partially covered -- has new methods that need to be added.
+      const file = generateResourceClass(service, ctx);
+      delete file.skipIfExists;
+      // Suppress auto-generated header — the file is a merge target
+      // containing hand-written code, not a fully generated file.
+      file.headerPlacement = 'skip';
       files.push(file);
       continue;
     }
@@ -307,6 +305,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // stable.  Placing them under `interfaces/` lets the per-service barrel
   // pick them up automatically.
   for (const service of mergedServices) {
+    if (isServiceCoveredByExisting(service, ctx) && !hasMethodsAbsentFromBaseline(service, ctx)) continue;
     files.push(...generatePaginatedOptionsInterfaces(service, ctx, topLevelEnumNames));
   }
 
@@ -384,11 +383,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
   for (const { op, plan, method } of plans) {
-    // Skip imports for methods that already exist in the baseline class.
-    // The merger keeps baseline method bodies, so their imports are already
-    // present in the existing file.  Including them here would create
-    // orphaned imports when the generated return type differs from the
-    // baseline's (e.g., generated `List` vs baseline `RoleList`).
+    // Always collect param type refs for enums — inline options interfaces
+    // are generated for all methods (including baseline ones), so their
+    // type dependencies must always be imported.
+    const queryParams = plan.isPaginated
+      ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
+      : op.queryParams;
+    for (const param of [...queryParams, ...op.pathParams]) {
+      collectParamTypeRefs(param.type, paramEnums, paramModels);
+    }
+
+    // Skip response/request model imports for methods that already exist in
+    // the baseline class.  The merger keeps baseline method bodies, so their
+    // imports are already present in the existing file.
     if (baselineMethodSet.has(method)) continue;
 
     if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
@@ -427,15 +434,6 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         }
       }
     }
-    // Collect types referenced in query and path parameters.
-    // For paginated operations, skip standard pagination params (limit, before, after, order)
-    // since they're handled by PaginationOptions and don't need explicit imports.
-    const queryParams = plan.isPaginated
-      ? op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name))
-      : op.queryParams;
-    for (const param of [...queryParams, ...op.pathParams]) {
-      collectParamTypeRefs(param.type, paramEnums, paramModels);
-    }
   }
 
   // Collect response models from union split wrappers so their types and
@@ -467,8 +465,8 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
     lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
-    lines.push("import type { AutoPaginatable } from '../common/utils/pagination';");
-    lines.push("import { createPaginatedList } from '../common/utils/fetch-and-deserialize';");
+    lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
+    lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
 
   // Paginated list options live in their own interface files so they're
@@ -1014,10 +1012,26 @@ function renderPaginatedMethod(
   const pathParams = buildPathParams(op, specEnumNames);
   const allParams = pathParams ? `${pathParams}, options?: ${optionsType}` : `options?: ${optionsType}`;
 
+  const wireType = wireInterfaceName(itemType);
+  const serializeCall = serializerArg ? `options ? serialize${optionsType}(options) : undefined` : 'options';
+
   lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
-  lines.push(
-    `    return createPaginatedList<${wireInterfaceName(itemType)}, ${itemType}, ${optionsType}>(this.workos, ${pathStr}, deserialize${itemType}, options${serializerArg});`,
-  );
+  lines.push(`    return new AutoPaginatable(`);
+  lines.push(`      await fetchAndDeserialize<${wireType}, ${itemType}>(`);
+  lines.push(`        this.workos,`);
+  lines.push(`        ${pathStr},`);
+  lines.push(`        deserialize${itemType},`);
+  lines.push(`        ${serializeCall},`);
+  lines.push(`      ),`);
+  lines.push(`      (params) =>`);
+  lines.push(`        fetchAndDeserialize<${wireType}, ${itemType}>(`);
+  lines.push(`          this.workos,`);
+  lines.push(`          ${pathStr},`);
+  lines.push(`          deserialize${itemType},`);
+  lines.push(`          params,`);
+  lines.push(`        ),`);
+  lines.push(`      options,`);
+  lines.push(`    );`);
   lines.push('  }');
 }
 

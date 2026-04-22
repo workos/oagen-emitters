@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, Service, Operation } from '@workos/oagen';
+import type { Model, EmitterContext, Service, Operation, TypeRef } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 export {
   collectModelRefs,
@@ -269,17 +269,31 @@ function modelFingerprint(model: Model): string {
  *
  * Returns a Map from duplicate model name → canonical model name.
  */
-export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Map<string, string> {
+export function buildDeduplicationMap(
+  models: Model[],
+  ctx?: EmitterContext,
+  reachable?: Set<string>,
+): Map<string, string> {
   const dedup = new Map<string, string>();
 
   // Pass 1: structural fingerprint dedup (exact match)
+  // When a reachability set is provided, prefer reachable models as canonicals
+  // so that aliases always point to models that will actually be generated.
   const fingerprints = new Map<string, string>();
   for (const model of models) {
     if (model.fields.length === 0) continue;
     const fp = modelFingerprint(model);
     const existing = fingerprints.get(fp);
     if (existing) {
-      dedup.set(model.name, existing);
+      // If the existing canonical is unreachable but this model is reachable,
+      // swap: make this model the canonical and demote the old one to alias.
+      if (reachable && !reachable.has(existing) && reachable.has(model.name)) {
+        dedup.delete(existing); // remove stale alias if present
+        dedup.set(existing, model.name);
+        fingerprints.set(fp, model.name);
+      } else {
+        dedup.set(model.name, existing);
+      }
     } else {
       fingerprints.set(fp, model.name);
     }
@@ -287,7 +301,8 @@ export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Ma
 
   // Pass 2: name-based dedup for models that resolve to the same interface
   // name across services.  Only applies when context with name resolution is
-  // available.  Picks the model with the most fields as canonical.
+  // available.  Picks the model with the most fields as canonical, preferring
+  // reachable models when a reachability set is provided.
   if (ctx) {
     const byDomainName = new Map<string, Model[]>();
     for (const model of models) {
@@ -303,8 +318,15 @@ export function buildDeduplicationMap(models: Model[], ctx?: EmitterContext): Ma
     }
     for (const [, group] of byDomainName) {
       if (group.length < 2) continue;
-      // Choose canonical: most fields, then alphabetically by name
-      group.sort((a, b) => b.fields.length - a.fields.length || a.name.localeCompare(b.name));
+      // Choose canonical: prefer reachable, then most fields, then alphabetically
+      group.sort((a, b) => {
+        if (reachable) {
+          const aReach = reachable.has(a.name) ? 0 : 1;
+          const bReach = reachable.has(b.name) ? 0 : 1;
+          if (aReach !== bReach) return aReach - bReach;
+        }
+        return b.fields.length - a.fields.length || a.name.localeCompare(b.name);
+      });
       const canonical = group[0];
       for (let i = 1; i < group.length; i++) {
         dedup.set(group[i].name, canonical.name);
@@ -398,6 +420,26 @@ export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterConte
 }
 
 /**
+ * Check whether an IR model has fields not present in the baseline interface.
+ * Returns true if the model has new fields that need generation.
+ * Returns true if no baseline exists (new model entirely).
+ */
+export function modelHasNewFields(model: Model, ctx: EmitterContext): boolean {
+  if (!ctx.apiSurface?.interfaces) return true; // No surface = generate everything
+
+  const domainName = resolveInterfaceName(model.name, ctx);
+  const baseline = ctx.apiSurface.interfaces[domainName];
+  if (!baseline?.fields) return true; // No baseline for this model = new model
+
+  for (const field of model.fields) {
+    const camelName = fieldName(field.name);
+    if (!baseline.fields[camelName]) return true; // New field found
+  }
+
+  return false; // All fields exist in baseline
+}
+
+/**
  * Return operations in a service that are NOT covered by existing hand-written
  * service classes. For fully uncovered services, returns all operations.
  * For partially covered services, returns only the uncovered operations.
@@ -416,4 +458,52 @@ export function uncoveredOperations(service: Service, ctx: EmitterContext): Oper
     if (!match) return true; // Not in overlay → uncovered
     return !existingClassNames.has(match.className); // Class doesn't exist → uncovered
   });
+}
+
+/**
+ * Compute the set of model names reachable from non-event service operations.
+ * The Events service pulls in hundreds of webhook payload models that the
+ * existing SDK handles via hand-written event types, so those models are
+ * excluded from generation.
+ *
+ * Shared between model generation, barrel generation, dedup, and tests to
+ * ensure consistency: every module agrees on which models will be generated.
+ */
+export function computeNonEventReachable(services: Service[], models: Model[]): Set<string> {
+  const seeds = new Set<string>();
+  for (const svc of services) {
+    if (svc.name.toLowerCase() === 'events') continue;
+    for (const op of svc.operations) {
+      const collectFromRef = (t: TypeRef | undefined): void => {
+        if (!t) return;
+        if (t.kind === 'model') seeds.add(t.name);
+        if (t.kind === 'array') collectFromRef(t.items);
+        if (t.kind === 'nullable') collectFromRef(t.inner);
+        if (t.kind === 'union') t.variants.forEach(collectFromRef);
+      };
+      collectFromRef(op.response);
+      collectFromRef(op.requestBody);
+      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
+    }
+  }
+  const modelMap = new Map(models.map((m) => [m.name, m]));
+  const reachable = new Set<string>();
+  const queue = [...seeds];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (reachable.has(name)) continue;
+    reachable.add(name);
+    const m = modelMap.get(name);
+    if (!m) continue;
+    for (const field of m.fields) {
+      const walk = (t: TypeRef): void => {
+        if (t.kind === 'model' && !reachable.has(t.name)) queue.push(t.name);
+        if (t.kind === 'array') walk(t.items);
+        if (t.kind === 'nullable') walk(t.inner);
+        if (t.kind === 'union') t.variants.forEach(walk);
+      };
+      walk(field.type);
+    }
+  }
+  return reachable;
 }

@@ -613,7 +613,15 @@ export function buildSerializerImports(
     const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
     const depName = resolveInterfaceName(dep, sctx.ctx);
     const rel = relativeImport(serializerPath, depSerializerPath);
-    lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
+    // Check the canonical name for dedup'd models
+    const canon = sctx.dedup.get(dep);
+    const depSkipSerialize =
+      sctx.skippedSerializeModels.has(dep) || (canon != null && sctx.skippedSerializeModels.has(canon));
+    if (depSkipSerialize) {
+      lines.push(`import { deserialize${depName} } from '${rel}';`);
+    } else {
+      lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
+    }
   }
   lines.push('');
   return lines;

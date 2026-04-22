@@ -871,6 +871,13 @@ describe('model deduplication', () => {
             type: { kind: 'primitive', type: 'string', format: 'date-time' },
             required: true,
           },
+          // Extra field not in baseline so modelHasNewFields returns true
+          // (allowing the dedup test to proceed with generation)
+          {
+            name: 'role_name',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
         ],
       },
     ];

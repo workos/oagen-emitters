@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { collectReferencedNames } from '@workos/oagen';
+
 import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
   docComment,
@@ -9,6 +9,7 @@ import {
   isServiceCoveredByExisting,
   isListMetadataModel,
   isListWrapperModel,
+  computeNonEventReachable,
 } from './utils.js';
 import { resolveResourceClassName } from './resources.js';
 
@@ -186,12 +187,12 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   // Models -> service directories
   // Skip list wrapper and list metadata models — they use shared List<T>/ListMetadata
   // from common utils, so no per-resource interface file is generated.
-  // Also skip unreachable models — oagen only passes service-referenced models
-  // to generateModels, so unreachable models have no interface file to export.
-  const barrelReachable = collectReferencedNames(spec.services, spec.models);
+  // Also skip unreachable models — use the same non-event reachability as model
+  // generation so every barrel entry has a corresponding generated file.
+  const barrelReachable = computeNonEventReachable(spec.services, spec.models);
   for (const model of spec.models) {
     if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
-    if (!barrelReachable.models.has(model.name)) continue;
+    if (!barrelReachable.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     if (!dirExports.has(dirName)) {
@@ -265,12 +266,38 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
       addBaselineExports(ctx.apiSurface.typeAliases);
       addBaselineExports(ctx.apiSurface.enums);
 
-      // Scan the target directory for interface files not captured by the
-      // api-surface (e.g., list wrappers, hand-written types).  Only add
-      // files whose exported symbols don't collide with symbols already
-      // claimed by another directory's barrel (TS2308 prevention).
+      // Preserve existing barrel entries: read the current barrel from the
+      // target directory and keep every `export * from './<stem>'` whose
+      // corresponding file still exists on disk.  This prevents dropping
+      // hand-written types (e.g., Factor in multi-factor-auth) when a
+      // generated model in the same file causes a symbol collision.
       if (ctx.targetDir) {
         const interfacesDir = path.join(ctx.targetDir, 'src', dirName, 'interfaces');
+        try {
+          const barrelPath = path.join(interfacesDir, 'index.ts');
+          const barrelContent = fs.readFileSync(barrelPath, 'utf-8');
+          for (const line of barrelContent.split('\n')) {
+            const match = line.match(/^export \* from '\.\/(.*?)';?$/);
+            if (!match) continue;
+            const stem = match[1];
+            const exportLine = `export * from './${stem}';`;
+            if (exportSet.has(exportLine)) continue;
+            // Verify the referenced file still exists
+            const filePath = path.join(interfacesDir, `${stem}.ts`);
+            try {
+              fs.accessSync(filePath);
+              exportSet.add(exportLine);
+            } catch {
+              // File no longer exists — don't preserve stale entry
+            }
+          }
+        } catch {
+          // No existing barrel — nothing to preserve
+        }
+
+        // Also scan for NEW interface files not in the existing barrel or
+        // apiSurface (e.g., list wrappers, hand-written types added after
+        // the last generation).
         const symbols = dirSymbols.get(dirName) ?? new Set<string>();
         try {
           for (const entry of fs.readdirSync(interfacesDir)) {
@@ -545,8 +572,8 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Filter to reachable models only: oagen's generateAllFiles passes only
   // service-referenced models to generateModels, so unreachable models
   // never get interface files.  Exporting them here would create broken imports.
-  const reachable = collectReferencedNames(spec.services, spec.models);
-  const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name) && reachable.models.has(m.name));
+  const reachable = computeNonEventReachable(spec.services, spec.models);
+  const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name) && reachable.has(m.name));
   const commonEnums = spec.enums.filter((e) => {
     const enumService = findEnumService(e.name, spec.services);
     return !enumService;

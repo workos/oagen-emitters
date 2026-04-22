@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Model, Field, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef } from './type-map.js';
 import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
@@ -14,6 +16,8 @@ import {
   isListWrapperModel,
   buildDeduplicationMap,
   relativeImport,
+  modelHasNewFields,
+  computeNonEventReachable,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import {
@@ -83,40 +87,28 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   // Only generate files for models reachable from non-event service operations.
   // Event operations (listEvents) pull in hundreds of webhook payload models
   // that the existing SDK handles via hand-written event types. Skip those.
-  const seeds = new Set<string>();
-  for (const svc of ctx.spec.services) {
-    if (svc.name.toLowerCase() === 'events') continue; // skip events service
-    for (const op of svc.operations) {
-      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
-        if (!t) return;
-        if (t.kind === 'model') seeds.add(t.name);
-        if (t.kind === 'array') collectFromRef(t.items);
-        if (t.kind === 'nullable') collectFromRef(t.inner);
-        if (t.kind === 'union') t.variants.forEach(collectFromRef);
-      };
-      collectFromRef(op.response);
-      collectFromRef(op.requestBody);
-      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
-    }
-  }
-  // Transitive closure: expand seeds to include all models referenced by seed models
-  const modelMap = new Map(models.map((m) => [m.name, m]));
-  const reachableModels = new Set<string>();
-  const queue = [...seeds];
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (reachableModels.has(name)) continue;
-    reachableModels.add(name);
-    const m = modelMap.get(name);
-    if (!m) continue;
-    for (const field of m.fields) {
-      const walk = (t: import('@workos/oagen').TypeRef): void => {
-        if (t.kind === 'model' && !reachableModels.has(t.name)) queue.push(t.name);
-        if (t.kind === 'array') walk(t.items);
-        if (t.kind === 'nullable') walk(t.inner);
-        if (t.kind === 'union') t.variants.forEach(walk);
-      };
-      walk(field.type);
+  const reachableModels = computeNonEventReachable(ctx.spec.services, models);
+
+  // Force-generate models that are dependencies of generated models but whose
+  // baseline definitions are inline in another file. The merger will replace the
+  // parent symbol, losing the inline definition, so a separate file is needed.
+  const forceGenerate = new Set<string>();
+  for (const model of models) {
+    if (!reachableModels.has(model.name)) continue;
+    if (!modelHasNewFields(model, ctx)) continue;
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    const parentPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+    const deps = collectFieldDependencies(model);
+    for (const dep of deps.models) {
+      if (forceGenerate.has(dep)) continue;
+      const depName = resolveInterfaceName(dep, ctx);
+      const depBaseline = ctx.apiSurface?.interfaces?.[depName];
+      const depSrc = (depBaseline as any)?.sourceFile as string | undefined;
+      if (depSrc === parentPath) {
+        // The dependency's baseline is inline in the parent's file — force-generate
+        forceGenerate.add(dep);
+      }
     }
   }
 
@@ -128,6 +120,10 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
 
     // Fix #6: Skip per-domain list wrapper interfaces — the shared List<T>/ListResponse<T> covers these
     if (isListWrapperModel(model)) continue;
+
+    // Skip models that are unchanged from baseline (no new fields),
+    // unless they're force-generated (inline dependency of a regenerated model).
+    if (!modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
 
     // Deduplication: if this model is structurally identical to a canonical model,
     // emit a type alias instead of a full interface.
@@ -251,10 +247,27 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
           if (irEnumName && !deps.enums.has(irEnumName)) {
             const eService = enumToService.get(irEnumName);
             const eDir = resolveDir(eService);
-            const relPath =
-              eDir === dirName
-                ? `./${fileName(irEnumName)}.interface`
-                : `../../${eDir}/interfaces/${fileName(irEnumName)}.interface`;
+            // Check baseline sourceFile — if the enum lives at a different path
+            // than the generated one, import from the baseline location.
+            const bEnum = ctx.apiSurface?.enums?.[irEnumName];
+            const bAlias = ctx.apiSurface?.typeAliases?.[irEnumName];
+            const bSrc = (bEnum as any)?.sourceFile ?? (bAlias as any)?.sourceFile;
+            const gPath = `src/${eDir}/interfaces/${fileName(irEnumName)}.interface.ts`;
+            const cPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+            // If defined inline in the same file, just add to importable names
+            if (bSrc === cPath) {
+              importableNames.add(name);
+              continue;
+            }
+            let relPath: string;
+            if (bSrc && bSrc !== gPath) {
+              relPath = relativeImport(cPath, bSrc).replace(/\.ts$/, '');
+            } else {
+              relPath =
+                eDir === dirName
+                  ? `./${fileName(irEnumName)}.interface`
+                  : `../../${eDir}/interfaces/${fileName(irEnumName)}.interface`;
+            }
             crossServiceImports.set(name, { name, relPath });
             importableNames.add(name);
             continue;
@@ -286,10 +299,32 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       lines.push(`import type { ${depName}, ${wireInterfaceName(depName)} } from '${relPath}';`);
     }
     for (const dep of deps.enums) {
+      // Check if the enum has a baseline sourceFile — if it lives at a
+      // different path than the generated one, import from the baseline
+      // location since the enum file won't be regenerated there.
+      const baselineEnum = ctx.apiSurface?.enums?.[dep];
+      const baselineAlias = ctx.apiSurface?.typeAliases?.[dep];
+      const baselineSrc = (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile;
       const depService = enumToService.get(dep);
       const depDir = resolveDir(depService);
-      const relPath =
-        depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
+      const generatedPath = `src/${depDir}/interfaces/${fileName(dep)}.interface.ts`;
+      const currentFilePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+
+      // If the baseline enum is defined in the SAME file we're generating,
+      // skip the import — the merger will preserve the inline definition.
+      if (baselineSrc === currentFilePath) {
+        importableNames.add(dep);
+        continue;
+      }
+
+      let relPath: string;
+      if (baselineSrc && baselineSrc !== generatedPath) {
+        // Baseline provides the enum from a different file — import from there.
+        relPath = relativeImport(currentFilePath, baselineSrc).replace(/\.ts$/, '');
+      } else {
+        relPath =
+          depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
+      }
       lines.push(`import type { ${dep} } from '${relPath}';`);
     }
     for (const [, imp] of crossServiceImports) {
@@ -407,8 +442,98 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       lines.push('}');
     } // close else for non-empty wire interface
 
+    // When overwriting an existing interface file, preserve inline types whose
+    // sourceFile matches this file but which aren't generated as separate files.
+    // Query the apiSurface rather than parsing the target file with regex.
+    const filePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+    if (ctx.apiSurface) {
+      const generatedNames = new Set<string>();
+      for (const line of lines) {
+        const m = line.match(/^export\s+(?:interface|type|enum|class|const|function)\s+(\w+)/);
+        if (m) generatedNames.add(m[1]);
+      }
+
+      // Read the existing file to extract inline declarations verbatim
+      if (ctx.targetDir) {
+        try {
+          const existingContent = fs.readFileSync(path.join(ctx.targetDir, filePath), 'utf-8');
+          // Collect names of inline types from the apiSurface
+          const inlineNames = new Set<string>();
+          const checkSurface = (items: Record<string, any> | undefined) => {
+            if (!items) return;
+            for (const [name, item] of Object.entries(items)) {
+              const src = (item as any).sourceFile as string | undefined;
+              if (src !== filePath) continue;
+              if (generatedNames.has(name)) continue;
+              // Check that no separate file is generated for this type
+              const sepPath = `src/${dirName}/interfaces/${fileName(name)}.interface.ts`;
+              if (sepPath !== filePath && files.some((f) => f.path === sepPath)) continue;
+              inlineNames.add(name);
+            }
+          };
+          checkSurface(ctx.apiSurface.interfaces);
+          checkSurface(ctx.apiSurface.typeAliases);
+          checkSurface(ctx.apiSurface.enums);
+
+          // Extract each inline type's verbatim declaration from the existing file
+          if (inlineNames.size > 0) {
+            const existingLines = existingContent.split('\n');
+            let ei = 0;
+            while (ei < existingLines.length) {
+              const eline = existingLines[ei];
+              // Match exported or non-exported declarations
+              const dm = eline.match(/^(export\s+)?(?:interface|type|enum|class|const|function)\s+(\w+)/);
+              if (!dm || !inlineNames.has(dm[2])) {
+                ei++;
+                continue;
+              }
+
+              // Collect the full declaration via brace tracking
+              const block: string[] = [eline];
+              let braces = (eline.match(/\{/g) || []).length - (eline.match(/\}/g) || []).length;
+              if (braces === 0 && eline.includes(';')) {
+                lines.push('');
+                lines.push(block.join('\n'));
+                ei++;
+                continue;
+              }
+              // Multi-line type alias (union with |)
+              if (braces === 0) {
+                ei++;
+                while (ei < existingLines.length) {
+                  const nl = existingLines[ei];
+                  block.push(nl);
+                  ei++;
+                  if (
+                    nl.trimEnd().endsWith(';') ||
+                    (nl.trim() !== '' && !nl.trim().startsWith('|') && !nl.trim().startsWith('&'))
+                  )
+                    break;
+                }
+                lines.push('');
+                lines.push(block.join('\n'));
+                continue;
+              }
+              // Brace-delimited
+              ei++;
+              while (ei < existingLines.length && braces > 0) {
+                const nl = existingLines[ei];
+                block.push(nl);
+                braces += (nl.match(/\{/g) || []).length - (nl.match(/\}/g) || []).length;
+                ei++;
+              }
+              lines.push('');
+              lines.push(block.join('\n'));
+            }
+          }
+        } catch {
+          // No existing file — nothing to preserve
+        }
+      }
+    }
+
     files.push({
-      path: `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`,
+      path: filePath,
       content: pruneUnusedImports(lines).join('\n'),
       overwriteExisting: true,
     });
@@ -526,7 +651,8 @@ function buildSharedContext(models: Model[], ctx: EmitterContext): SharedModelCo
   const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
   const genericDefaults = buildGenericModelDefaults(ctx.spec.models);
   enrichGenericDefaultsFromBaseline(genericDefaults, models, ctx, resolveDir, modelToService);
-  const dedup = buildDeduplicationMap(models, ctx);
+  const nonEventReachable = computeNonEventReachable(ctx.spec.services, models);
+  const dedup = buildDeduplicationMap(models, ctx, nonEventReachable);
   return { modelToService, resolveDir, dedup, genericDefaults };
 }
 
@@ -550,49 +676,90 @@ export function generateSerializers(
   const files: GeneratedFile[] = [];
   const skippedSerializeModels = new Set<string>();
 
-  // Reuse the same reachability set from generateModels (via shared context)
-  // to skip serializers for unreachable models.
-  const serializerSeeds = new Set<string>();
-  for (const svc of ctx.spec.services) {
-    if (svc.name.toLowerCase() === 'events') continue;
-    for (const op of svc.operations) {
-      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
-        if (!t) return;
-        if (t.kind === 'model') serializerSeeds.add(t.name);
-        if (t.kind === 'array') collectFromRef(t.items);
-        if (t.kind === 'nullable') collectFromRef(t.inner);
-        if (t.kind === 'union') t.variants.forEach(collectFromRef);
-      };
-      collectFromRef(op.response);
-      collectFromRef(op.requestBody);
-      if (op.pagination?.itemType) collectFromRef(op.pagination.itemType);
-    }
-  }
-  const serializerModelMap = new Map(models.map((m) => [m.name, m]));
-  const serializerReachable = new Set<string>();
-  const serializerQueue = [...serializerSeeds];
-  while (serializerQueue.length > 0) {
-    const name = serializerQueue.pop()!;
-    if (serializerReachable.has(name)) continue;
-    serializerReachable.add(name);
-    const m = serializerModelMap.get(name);
-    if (!m) continue;
-    for (const field of m.fields) {
-      const walk = (t: import('@workos/oagen').TypeRef): void => {
-        if (t.kind === 'model' && !serializerReachable.has(t.name)) serializerQueue.push(t.name);
-        if (t.kind === 'array') walk(t.items);
-        if (t.kind === 'nullable') walk(t.inner);
-        if (t.kind === 'union') t.variants.forEach(walk);
-      };
-      walk(field.type);
+  // Reuse the same reachability set from generateModels to skip serializers
+  // for unreachable models (e.g., event/webhook payload types).
+  const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
+
+  // Pre-populate skippedSerializeModels for baseline models that won't be
+  // regenerated. Their existing serializers may only export deserialize.
+  if (ctx.targetDir) {
+    for (const model of models) {
+      if (!serializerReachable.has(model.name)) continue;
+      if (modelHasNewFields(model, ctx)) continue; // will be regenerated
+      const service = modelToService.get(model.name);
+      const dirName = resolveDir(service);
+      const domainName = resolveInterfaceName(model.name, ctx);
+      const serializerFile = path.join(
+        ctx.targetDir,
+        'src',
+        dirName,
+        'serializers',
+        `${fileName(model.name)}.serializer.ts`,
+      );
+      try {
+        const content = fs.readFileSync(serializerFile, 'utf-8');
+        if (!new RegExp(`\\bserialize${domainName}\\b`).test(content)) {
+          skippedSerializeModels.add(model.name);
+        }
+      } catch {
+        // Serializer doesn't exist — model may be new or generated differently
+      }
     }
   }
 
+  // Force-generate serializers for inline dependency models (same logic as interfaces).
+  const forceGenerateSerializer = new Set<string>();
+  for (const model of models) {
+    if (!serializerReachable.has(model.name)) continue;
+    if (!modelHasNewFields(model, ctx)) continue;
+    const service = modelToService.get(model.name);
+    const dirName = resolveDir(service);
+    const parentPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+    const deps = collectFieldDependencies(model);
+    for (const dep of deps.models) {
+      const depName = resolveInterfaceName(dep, ctx);
+      const depBaseline = ctx.apiSurface?.interfaces?.[depName];
+      const depSrc = (depBaseline as any)?.sourceFile as string | undefined;
+      if (depSrc === parentPath) {
+        forceGenerateSerializer.add(dep);
+      }
+    }
+  }
+
+  // --- Pass 1: pre-compute which models skip serialize (ordering-independent) ---
+  // This must run BEFORE file generation so that buildSerializerImports can
+  // check the fully-populated set and avoid importing non-existent serialize functions.
+  const eligibleModels: Model[] = [];
   for (const model of models) {
     if (!serializerReachable.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
+    if (!modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
+    eligibleModels.push(model);
+  }
 
+  // First pass: determine shouldSkipSerialize for every eligible model
+  for (const model of eligibleModels) {
+    if (dedup.has(model.name)) continue; // dedup aliases don't get their own serialize
+    const domainName = resolveInterfaceName(model.name, ctx);
+    const responseName = wireInterfaceName(domainName);
+    const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
+    const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
+    const shouldSkip = shouldSkipSerializeForModel(
+      model,
+      baselineResponse,
+      baselineDomain,
+      dedup,
+      skippedSerializeModels,
+      ctx,
+    );
+    if (shouldSkip) {
+      skippedSerializeModels.add(model.name);
+    }
+  }
+
+  // --- Pass 2: generate serializer files using fully-populated skip set ---
+  for (const model of eligibleModels) {
     // Deduplication: for structurally identical models, re-export the canonical serializer
     const canonicalName = dedup.get(model.name);
     if (canonicalName) {
@@ -614,9 +781,13 @@ export function generateSerializers(
       if (serializerPath === canonSerializerPath) continue;
       if (domainName === canonDomainName) continue;
       const rel = relativeImport(serializerPath, canonSerializerPath);
+      const canonSkipSerialize = skippedSerializeModels.has(canonicalName) || skippedSerializeModels.has(model.name);
+      const reexportContent = canonSkipSerialize
+        ? `export { deserialize${canonDomainName} as deserialize${domainName} } from '${rel}';`
+        : `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`;
       files.push({
         path: serializerPath,
-        content: `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`,
+        content: reexportContent,
         overwriteExisting: true,
       });
       continue;
@@ -633,17 +804,7 @@ export function generateSerializers(
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
 
     const skipFormatFields = buildSkipFormatFields(model, baselineDomain);
-    const shouldSkipSerialize = shouldSkipSerializeForModel(
-      model,
-      baselineResponse,
-      baselineDomain,
-      dedup,
-      skippedSerializeModels,
-      ctx,
-    );
-    if (shouldSkipSerialize) {
-      skippedSerializeModels.add(model.name);
-    }
+    const shouldSkipSerialize = skippedSerializeModels.has(model.name);
 
     const sctx = { modelToService, resolveDir, dedup, skippedSerializeModels, ctx };
     const lines = [
@@ -667,6 +828,10 @@ export function generateSerializers(
       overwriteExisting: true,
     });
   }
+
+  // Stash the fully-computed skip set on the context so the test generator
+  // can read it without duplicating the detection logic.
+  (ctx as any)._skippedSerializeModels = skippedSerializeModels;
 
   return files;
 }
