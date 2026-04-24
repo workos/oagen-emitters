@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/workos/oagen-emitters/compare/v0.5.0...v0.6.0) (2026-04-24)
+
+
+### Features
+
+* extract plugin bundle and move manifest ownership to framework ([#44](https://github.com/workos/oagen-emitters/issues/44)) ([6a8c3a9](https://github.com/workos/oagen-emitters/commit/6a8c3a9897bf9952e83b7143037a97b0c5ecc508))
+
 ## [0.5.0](https://github.com/workos/oagen-emitters/compare/v0.4.0...v0.5.0) (2026-04-24)
 
 
