@@ -16,7 +16,7 @@ import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
-import { generateManifest } from './manifest.js';
+import { buildOperationsMap } from './manifest.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 
 /** Ensure every generated file ends with a trailing newline. */
@@ -69,8 +69,8 @@ export const kotlinEmitter: Emitter = {
     return ensureTrailingNewlines(generateTests(enrichedSpec, { ...ctx, spec: enrichedSpec }));
   },
 
-  generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateManifest(spec, ctx));
+  buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    return buildOperationsMap(spec, ctx);
   },
 
   fileHeader(): string {

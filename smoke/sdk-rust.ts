@@ -167,15 +167,21 @@ function createProxyServer(
 // ---------------------------------------------------------------------------
 
 function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
-  const manifestPath = resolve(sdkPath, 'smoke-manifest.json');
+  const manifestPath = resolve(sdkPath, '.oagen-manifest.json');
   if (!existsSync(manifestPath)) {
-    console.warn(`Warning: No smoke-manifest.json found at ${manifestPath}`);
-    console.warn('  Method resolution will rely on heuristic tiers — most operations may be skipped.');
+    console.warn(`Warning: No .oagen-manifest.json found at ${manifestPath}`);
+    console.warn('  Method resolution will rely on heuristic tiers -- most operations may be skipped.');
     return null;
   }
-  const raw = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  const parsed = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  const operations = parsed?.operations;
+  if (!operations || typeof operations !== 'object') {
+    console.warn('Warning: .oagen-manifest.json has no operations field');
+    console.warn('  Method resolution will rely on heuristic tiers -- most operations may be skipped.');
+    return null;
+  }
   const manifest = new Map<string, ManifestEntry>();
-  for (const [httpKey, entry] of Object.entries(raw)) {
+  for (const [httpKey, entry] of Object.entries(operations)) {
     manifest.set(httpKey, entry as ManifestEntry);
   }
   return manifest;

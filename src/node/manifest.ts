@@ -1,9 +1,9 @@
-import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { ApiSpec, EmitterContext, OperationsMap } from '@workos/oagen';
 import { resolveMethodName, servicePropertyName } from './naming.js';
 import { resolveResourceClassName } from './resources.js';
 
-export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-  const manifest: Record<string, { sdkMethod: string; service: string }> = {};
+export function buildOperationsMap(spec: ApiSpec, ctx: EmitterContext): OperationsMap {
+  const manifest: OperationsMap = {};
 
   for (const service of spec.services) {
     const propName = servicePropertyName(resolveResourceClassName(service, ctx));
@@ -14,12 +14,5 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     }
   }
 
-  return [
-    {
-      path: 'smoke-manifest.json',
-      content: JSON.stringify(manifest, null, 2),
-      integrateTarget: false,
-      overwriteExisting: true,
-    },
-  ];
+  return manifest;
 }
