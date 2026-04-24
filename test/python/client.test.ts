@@ -155,28 +155,24 @@ describe('generateClient', () => {
               pathParams: [],
               queryParams: [],
               headerParams: [],
-              body: [
-                { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
-                { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false },
-                {
-                  name: 'role_slugs',
-                  type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
-                  required: false,
-                },
-              ],
+              requestBody: { kind: 'model', name: 'CreateOrganizationMembershipRequest' },
               parameterGroups: [
                 {
                   name: 'role',
-                  discriminator: 'role_slug',
+                  optional: false,
                   variants: [
                     {
                       name: 'single',
-                      parameters: [{ name: 'role_slug', type: { kind: 'primitive', type: 'string' } }],
+                      parameters: [{ name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: true }],
                     },
                     {
                       name: 'multiple',
                       parameters: [
-                        { name: 'role_slugs', type: { kind: 'array', items: { kind: 'primitive', type: 'string' } } },
+                        {
+                          name: 'role_slugs',
+                          type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                          required: true,
+                        },
                       ],
                     },
                   ],
