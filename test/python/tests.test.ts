@@ -277,6 +277,8 @@ describe('generateTests', () => {
     const roundTripTest = files.find((f) => f.path === 'tests/test_models_round_trip.py');
 
     expect(serviceTest).toBeDefined();
+    expect(serviceTest!.content).toContain('assert len(page.data) == 1');
+    expect(serviceTest!.content).toContain('assert isinstance(page.data[0], Organization)');
     expect(serviceTest!.content).toContain('def test_list_organizations_empty_page(');
     expect(serviceTest!.content).toContain('def test_list_organizations_encodes_query_params(');
     expect(serviceTest!.content).toContain('assert request.url.params["email"] == "value email/test"');

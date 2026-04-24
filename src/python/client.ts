@@ -1,8 +1,8 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
-import { resolveResourceClassName } from './resources.js';
-import { getMountTarget } from '../shared/resolved-ops.js';
+import { resolveResourceClassName, collectParameterGroupClassNames } from './resources.js';
+import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
 /** Python-specific wiring for each non-spec service. */
@@ -254,12 +254,22 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const topLevel = deduplicateByMount(spec.services, ctx);
   const serviceDirMap = buildMountDirMap(ctx);
 
+  // Build a map from mount target -> operations so we can discover parameter
+  // group dataclasses that need re-exporting from __init__.py.
+  const mountGroups = groupByMount(ctx);
+
   for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const lines: string[] = [];
 
-    lines.push(`from ._resource import ${resolvedName}, Async${resolvedName}`);
+    // Collect parameter group class names from all operations in this mount group
+    const mountTarget = getMountTarget(service, ctx);
+    const ops = mountGroups.get(mountTarget)?.operations ?? service.operations;
+    const groupClassNames = collectParameterGroupClassNames(ops);
+
+    const resourceImports = [resolvedName, `Async${resolvedName}`, ...groupClassNames];
+    lines.push(`from ._resource import ${resourceImports.join(', ')}`);
     lines.push('from .models import *');
 
     files.push({

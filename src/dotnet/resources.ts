@@ -145,11 +145,18 @@ function generateParameterGroupTypes(
 }
 
 /**
- * Emit manual query serialization for parameter group variants in the service
+ * Emit manual serialization for parameter group variants in the service
  * method body. Each group field on the options class is pattern-matched via
- * `is` checks and its variant parameters are added to the query string.
+ * `is` checks and its variant parameters are added to the appropriate target
+ * (query string or request body).
  */
-function emitGroupQuerySerialization(mountName: string, op: Operation, indent: string, models: Model[]): string[] {
+function emitGroupSerialization(
+  mountName: string,
+  op: Operation,
+  indent: string,
+  models: Model[],
+  target: 'query' | 'body',
+): string[] {
   const lines: string[] = [];
   const bodyFieldTypes = collectBodyFieldTypes(op, models);
 
@@ -171,7 +178,7 @@ function emitGroupQuerySerialization(mountName: string, op: Operation, indent: s
         const csField = fieldName(param.name);
         const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
         const accessor = `${localVar}.${csField}`;
-        const paramLines = emitQueryParamValue(param.name, accessor, effectiveType, indent + '    ');
+        const paramLines = emitParamValue(param.name, accessor, effectiveType, indent + '    ', target);
         // SA1513: closing brace must be followed by a blank line before the next statement
         if (prevWasBlock) lines.push('');
         lines.push(...paramLines);
@@ -185,14 +192,22 @@ function emitGroupQuerySerialization(mountName: string, op: Operation, indent: s
 }
 
 /**
- * Emit one or more lines to add a query param, adapting to the parameter's
- * IR type: enums use JsonConvert for wire-value serialization, arrays are
- * comma-joined, and reference types (string, List) get a null guard.
+ * Emit one or more lines to add a param to the query string or request body,
+ * adapting to the parameter's IR type: enums use JsonConvert for wire-value
+ * serialization, arrays are comma-joined, and reference types (string, List)
+ * get a null guard.
  *
  * Reference types always get a null guard because variant classes are shared
  * across operations whose body models may disagree on nullability.
  */
-function emitQueryParamValue(wireName: string, accessor: string, typeRef: TypeRef, indent: string): string[] {
+function emitParamValue(
+  wireName: string,
+  accessor: string,
+  typeRef: TypeRef,
+  indent: string,
+  target: 'query' | 'body',
+): string[] {
+  const method = target === 'body' ? 'AddBodyParam' : 'AddQueryParam';
   const isNullable = typeRef.kind === 'nullable';
   const inner: TypeRef = isNullable ? (typeRef as { kind: 'nullable'; inner: TypeRef }).inner : typeRef;
 
@@ -202,15 +217,18 @@ function emitQueryParamValue(wireName: string, accessor: string, typeRef: TypeRe
   const needsNullGuard = isNullable || !isValueTypeRef(inner);
 
   if (inner.kind === 'array') {
+    // Body params pass the list directly so it serializes as a JSON array;
+    // query params comma-join into a single string value.
+    const valueExpr = target === 'body' ? accessor : `string.Join(",", ${accessor})`;
     if (needsNullGuard) {
       return [
         `${indent}if (${accessor} != null)`,
         `${indent}{`,
-        `${indent}    request.AddQueryParam("${wireName}", string.Join(",", ${accessor}));`,
+        `${indent}    request.${method}("${wireName}", ${valueExpr});`,
         `${indent}}`,
       ];
     }
-    return [`${indent}request.AddQueryParam("${wireName}", string.Join(",", ${accessor}));`];
+    return [`${indent}request.${method}("${wireName}", ${valueExpr});`];
   }
 
   if (inner.kind === 'enum') {
@@ -219,23 +237,23 @@ function emitQueryParamValue(wireName: string, accessor: string, typeRef: TypeRe
       return [
         `${indent}if (${accessor} != null)`,
         `${indent}{`,
-        `${indent}    request.AddQueryParam("${wireName}", ${serExpr});`,
+        `${indent}    request.${method}("${wireName}", ${serExpr});`,
         `${indent}}`,
       ];
     }
-    return [`${indent}request.AddQueryParam("${wireName}", ${serExpr});`];
+    return [`${indent}request.${method}("${wireName}", ${serExpr});`];
   }
 
   if (needsNullGuard) {
     return [
       `${indent}if (${accessor} != null)`,
       `${indent}{`,
-      `${indent}    request.AddQueryParam("${wireName}", ${accessor});`,
+      `${indent}    request.${method}("${wireName}", ${accessor});`,
       `${indent}}`,
     ];
   }
 
-  return [`${indent}request.AddQueryParam("${wireName}", ${accessor});`];
+  return [`${indent}request.${method}("${wireName}", ${accessor});`];
 }
 
 /** Check whether any parameter group variant contains an enum-typed parameter. */
@@ -707,10 +725,14 @@ function generateMethod(
     }
     lines.push('            };');
 
-    // Serialize parameter group variants into query params
+    // Serialize parameter group variants into query params (GET/DELETE)
+    // or body params (POST/PUT/PATCH) so sensitive fields like passwords
+    // never leak into the URL.  DELETE is routed to query because the
+    // dotnet HTTP client only sends body content for non-GET/DELETE methods.
     if (hasGroups) {
+      const groupTarget = hasBody && !isDelete ? 'body' : 'query';
       lines.push('');
-      lines.push(...emitGroupQuerySerialization(mountName, op, '            ', ctx.spec.models));
+      lines.push(...emitGroupSerialization(mountName, op, '            ', ctx.spec.models, groupTarget));
       lines.push('');
     }
 

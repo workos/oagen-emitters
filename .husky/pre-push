@@ -1,2 +1,13 @@
+# Block pushes if package.json has local file: references
+if grep -q '"file:\.\.' package.json 2>/dev/null; then
+  echo ""
+  echo "ERROR: package.json contains local file: references."
+  echo "Run 'npm run dev:unlink' before pushing, or commit with published versions."
+  echo ""
+  grep '"file:\.\.' package.json
+  echo ""
+  exit 1
+fi
+
 npm run typecheck
 npm test

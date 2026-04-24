@@ -195,9 +195,9 @@ function generateParameterGroupFiles(
 
 /**
  * Generate instanceof dispatch lines to serialize a grouped parameter
- * into the $query array using each variant's wire names.
+ * into a target array ($query or $body) using each variant's wire names.
  */
-function generateGroupDispatch(op: Operation, indent: string): string[] {
+function generateGroupDispatch(op: Operation, indent: string, target: '$query' | '$body' = '$query'): string[] {
   const lines: string[] = [];
 
   for (const group of op.parameterGroups ?? []) {
@@ -212,7 +212,7 @@ function generateGroupDispatch(op: Operation, indent: string): string[] {
 
       for (const param of variant.parameters) {
         const phpField = deriveVariantFieldName(param.name, group.name);
-        lines.push(`${indent}    $query['${param.name}'] = $${phpParamName}->${phpField};`);
+        lines.push(`${indent}    ${target}['${param.name}'] = $${phpParamName}->${phpField};`);
       }
 
       lines.push(`${indent}}`);
@@ -464,6 +464,10 @@ function generateMethod(
       for (const clientField of getOpInferFromClient(resolvedOp)) {
         lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
       }
+      // Inject parameter group dispatch into body
+      if ((op.parameterGroups?.length ?? 0) > 0) {
+        lines.push(...generateGroupDispatch(op, '        ', '$body'));
+      }
     }
     // Build query params if present
     const deleteQueryLines = buildQueryArray(op);
@@ -514,6 +518,11 @@ function generateMethod(
     // Inject fields from client config
     for (const clientField of getOpInferFromClient(resolvedOp)) {
       lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
+    }
+    // Inject parameter group dispatch into body so sensitive fields
+    // (passwords, role slugs) never leak into the URL query string.
+    if ((op.parameterGroups?.length ?? 0) > 0) {
+      lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);

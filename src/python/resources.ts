@@ -125,6 +125,28 @@ function hasParameterGroups(operations: Operation[]): boolean {
   return operations.some((op) => (op.parameterGroups?.length ?? 0) > 0);
 }
 
+/**
+ * Collect the PascalCase class names of all parameter group variants
+ * across a set of operations.  Used by client.ts to re-export these
+ * dataclasses from the service __init__.py.
+ */
+export function collectParameterGroupClassNames(operations: Operation[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const op of operations) {
+    for (const group of op.parameterGroups ?? []) {
+      for (const variant of group.variants) {
+        const cls = groupVariantClassName(group.name, variant.name);
+        if (!seen.has(cls)) {
+          seen.add(cls);
+          names.push(cls);
+        }
+      }
+    }
+  }
+  return names;
+}
+
 // ─── Shared method-emission helpers ──────────────────────────────────
 
 /** Metadata returned by emitMethodSignature, consumed by docstring & body emitters. */
