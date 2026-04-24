@@ -161,6 +161,7 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
     lines.push(`loader.collapse("#{__dir__}/workos/${dir}")`);
   }
   lines.push(`loader.ignore("#{__dir__}/workos/errors.rb")`);
+  lines.push(`loader.ignore("#{__dir__}/workos/inflections.rb")`);
   lines.push('loader.setup');
   lines.push('');
   lines.push(`require 'workos/errors'`);
