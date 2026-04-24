@@ -1,13 +1,13 @@
-import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { ApiSpec, EmitterContext, OperationsMap } from '@workos/oagen';
 import { resolveMethodName } from './naming.js';
 import { buildServiceAccessPaths } from './client.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
 /**
- * Generate smoke test manifest mapping HTTP operations to SDK methods.
+ * Build operation-to-SDK-method mapping for the manifest.
  */
-export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-  const manifest: Record<string, { sdkMethod: string; service: string }> = {};
+export function buildOperationsMap(spec: ApiSpec, ctx: EmitterContext): OperationsMap {
+  const manifest: OperationsMap = {};
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
 
   for (const service of spec.services) {
@@ -27,12 +27,5 @@ export function generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     }
   }
 
-  return [
-    {
-      path: 'smoke-manifest.json',
-      content: JSON.stringify(manifest, null, 2),
-      integrateTarget: false,
-      overwriteExisting: true,
-    },
-  ];
+  return manifest;
 }

@@ -16,7 +16,7 @@ import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
-import { generateManifest } from './manifest.js';
+import { buildOperationsMap } from './manifest.js';
 import { initializeEnumDedup } from './naming.js';
 
 /** Initialize enum deduplication from spec data. */
@@ -71,9 +71,9 @@ export const phpEmitter: Emitter = {
     return ensureTrailingNewlines(generateTests(spec, ctx));
   },
 
-  generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
     ensureNamingInitialized(ctx);
-    return ensureTrailingNewlines(generateManifest(spec, ctx));
+    return buildOperationsMap(spec, ctx);
   },
 
   fileHeader(): string {

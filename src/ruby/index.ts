@@ -13,7 +13,7 @@ import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
-import { generateManifest } from './manifest.js';
+import { buildOperationsMap } from './manifest.js';
 import { generateRbiFiles } from './rbi.js';
 
 /** Ensure every generated file's content ends with a trailing newline. */
@@ -61,8 +61,8 @@ export const rubyEmitter: Emitter = {
     return ensureTrailingNewlines(generateTests(spec, ctx));
   },
 
-  generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateManifest(spec, ctx));
+  buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    return buildOperationsMap(spec, ctx);
   },
 
   fileHeader(): string {

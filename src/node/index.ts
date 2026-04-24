@@ -18,7 +18,7 @@ import { generateClient } from './client.js';
 import { generateErrors } from './errors.js';
 
 import { generateTests } from './tests.js';
-import { generateManifest } from './manifest.js';
+import { buildOperationsMap } from './manifest.js';
 
 /** Ensure every generated file's content ends with a trailing newline. */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
@@ -62,8 +62,8 @@ export const nodeEmitter: Emitter = {
     return ensureTrailingNewlines(generateTests(spec, ctx));
   },
 
-  generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateManifest(spec, ctx));
+  buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    return buildOperationsMap(spec, ctx);
   },
 
   fileHeader(): string {

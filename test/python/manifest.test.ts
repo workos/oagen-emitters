@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateManifest } from '../../src/python/manifest.js';
+import { buildOperationsMap } from '../../src/python/manifest.js';
 import type { ApiSpec, EmitterContext, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
@@ -61,14 +61,14 @@ const ctx: EmitterContext = {
   spec,
 };
 
-describe('generateManifest', () => {
+describe('buildOperationsMap', () => {
   it('uses flat client access paths (no dotted namespaces)', () => {
-    const files = generateManifest(spec, ctx);
-    expect(files).toHaveLength(1);
+    const ops = buildOperationsMap(spec, ctx);
 
-    const manifest = JSON.parse(files[0].content) as Record<string, { sdkMethod: string; service: string }>;
-    expect(manifest['GET /organizations'].service).toBe('organizations');
+    const orgEntry = ops['GET /organizations'] as { sdkMethod: string; service: string };
+    expect(orgEntry.service).toBe('organizations');
     // Flat: no dotted access, each service has its own accessor
-    expect(manifest['GET /organizations/api_keys'].service).toBe('organizations_api_keys');
+    const apiKeysEntry = ops['GET /organizations/api_keys'] as { sdkMethod: string; service: string };
+    expect(apiKeysEntry.service).toBe('organizations_api_keys');
   });
 });

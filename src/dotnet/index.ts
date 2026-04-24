@@ -17,7 +17,7 @@ import { generateEnums, primeEnumAliases } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
-import { generateManifest } from './manifest.js';
+import { buildOperationsMap } from './manifest.js';
 import { generateWrapperOptionsClasses } from './wrappers.js';
 import { groupByMount } from '../shared/resolved-ops.js';
 import { discriminatedUnions } from './type-map.js';
@@ -206,8 +206,8 @@ export const dotnetEmitter: Emitter = {
     return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },
 
-  generateManifest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateManifest(spec, fixNamespace(ctx)));
+  buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    return buildOperationsMap(spec, fixNamespace(ctx));
   },
 
   fileHeader(): string {

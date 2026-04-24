@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateManifest } from '../../src/dotnet/manifest.js';
+import { buildOperationsMap } from '../../src/dotnet/manifest.js';
 import type { ApiSpec, EmitterContext, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
@@ -62,21 +62,22 @@ const ctx: EmitterContext = {
 };
 
 describe('dotnet/manifest', () => {
-  it('generates smoke-manifest.json', () => {
-    const files = generateManifest(spec, ctx);
-    expect(files).toHaveLength(1);
-    expect(files[0].path).toBe('smoke-manifest.json');
+  it('returns an operations map', () => {
+    const ops = buildOperationsMap(spec, ctx);
+    expect(typeof ops).toBe('object');
+    expect(Object.keys(ops).length).toBeGreaterThan(0);
   });
 
   it('maps HTTP operations to SDK method names and services', () => {
-    const files = generateManifest(spec, ctx);
-    const manifest = JSON.parse(files[0].content) as Record<string, { sdkMethod: string; service: string }>;
+    const ops = buildOperationsMap(spec, ctx);
 
-    expect(manifest['GET /organizations']).toBeDefined();
-    expect(manifest['GET /organizations'].sdkMethod).toBeDefined();
-    expect(manifest['GET /organizations'].service).toBeDefined();
+    expect(ops['GET /organizations']).toBeDefined();
+    const entry = ops['GET /organizations'] as { sdkMethod: string; service: string };
+    expect(entry.sdkMethod).toBeDefined();
+    expect(entry.service).toBeDefined();
 
-    expect(manifest['GET /organizations/api_keys']).toBeDefined();
-    expect(manifest['GET /organizations/api_keys'].sdkMethod).toBeDefined();
+    expect(ops['GET /organizations/api_keys']).toBeDefined();
+    const entry2 = ops['GET /organizations/api_keys'] as { sdkMethod: string; service: string };
+    expect(entry2.sdkMethod).toBeDefined();
   });
 });
