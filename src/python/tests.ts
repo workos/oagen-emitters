@@ -33,6 +33,36 @@ import {
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
 
+/**
+ * Resolve the Python class name to use for isinstance checks on paginated items.
+ * For discriminated unions, generates the fixture and determines which variant
+ * the discriminator value maps to. For regular models, returns the model class.
+ */
+function resolvePaginatedItemClass(itemName: string | null, spec: ApiSpec): string | null {
+  if (!itemName) return null;
+  const itemModel = spec.models.find((m) => m.name === itemName);
+  if (!itemModel) return className(itemName);
+
+  const disc = (itemModel as any).discriminator as { property: string; mapping: Record<string, string> } | undefined;
+  if (!disc) return className(itemName);
+
+  // Generate the fixture to determine which discriminator value appears
+  const modelMap = new Map(spec.models.map((m) => [m.name, m]));
+  const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
+  const fixture = generateModelFixture(itemModel, modelMap, enumMap);
+  const discValue = fixture[disc.property];
+
+  if (typeof discValue === 'string' && disc.mapping[discValue]) {
+    return className(disc.mapping[discValue]);
+  }
+
+  // Fallback: first variant alphabetically
+  const sortedEntries = Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b));
+  if (sortedEntries.length > 0) return className(sortedEntries[0][1]);
+
+  return className(itemName);
+}
+
 /** Check if an operation is a redirect endpoint (same logic as resources.ts). */
 function isRedirectEndpoint(op: Operation): boolean {
   if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) return true;
@@ -146,15 +176,24 @@ function generateServiceTest(
         const dataField = wrapperModel.fields.find((f) => f.name === 'data');
         if (dataField && dataField.type.kind === 'array' && dataField.type.items.kind === 'model') {
           paginationItemName = dataField.type.items.name;
+          modelImports.add(paginationItemName);
         }
       }
-      // For discriminated union pagination items, also import the first variant for isinstance checks
-      const paginationModel = spec.models.find((m) => m.name === paginationItemName);
-      if (paginationModel && (paginationModel as any).discriminator) {
-        const disc = (paginationModel as any).discriminator as { property: string; mapping: Record<string, string> };
-        const sortedEntries = Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b));
-        if (sortedEntries.length > 0) {
-          modelImports.add(sortedEntries[0][1]);
+      // For discriminated union pagination items, import the variant that the fixture resolves to
+      const resolvedVariantClass = resolvePaginatedItemClass(paginationItemName, spec);
+      if (resolvedVariantClass && resolvedVariantClass !== className(paginationItemName)) {
+        // Find the model name from the class name — reverse-lookup through the discriminator mapping
+        const paginationModel = spec.models.find((m) => m.name === paginationItemName);
+        const disc =
+          paginationModel &&
+          ((paginationModel as any).discriminator as { property: string; mapping: Record<string, string> } | undefined);
+        if (disc) {
+          for (const variantName of Object.values(disc.mapping)) {
+            if (className(variantName) === resolvedVariantClass) {
+              modelImports.add(variantName);
+              break;
+            }
+          }
         }
       }
     }
@@ -293,6 +332,11 @@ function generateServiceTest(
       }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
 
+      // Determine the class name to use for isinstance checks on paginated items.
+      // If the item model is a discriminated union (has a discriminator), the fixture
+      // will deserialize to a concrete variant, so assert on that variant class.
+      const paginatedItemClass = resolvePaginatedItemClass(itemName, spec);
+
       const paginatedArgs = buildTestArgs(op, spec, hiddenParams);
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       if (fixtureName) {
@@ -301,12 +345,14 @@ function generateServiceTest(
         lines.push('        )');
         lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
         lines.push('        assert isinstance(page, SyncPage)');
-        lines.push('        assert isinstance(page.data, list)');
+        lines.push('        assert len(page.data) == 1');
+        lines.push(`        assert isinstance(page.data[0], ${paginatedItemClass})`);
 
         lines.push('');
         lines.push(`    def test_${method}_empty_page(self, workos, httpx_mock):`);
         lines.push('        httpx_mock.add_response(json={"data": [], "list_metadata": {}})');
         lines.push(`        page = workos.${propName}.${method}(${paginatedArgs})`);
+
         lines.push('        assert isinstance(page, SyncPage)');
         lines.push('        assert page.data == []');
       } else {
@@ -590,12 +636,16 @@ function generateServiceTest(
         if (itemModel && itemModel.fields.length === 0) itemName = null;
       }
       const fixtureName = itemName ? `list_${fileName(itemName)}.json` : null;
+
+      const asyncPaginatedItemClass = resolvePaginatedItemClass(itemName, spec);
+
       pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       if (fixtureName) {
         lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
         lines.push(`        page = await async_workos.${propName}.${method}(${asyncArgs})`);
         lines.push('        assert isinstance(page, AsyncPage)');
-        lines.push('        assert isinstance(page.data, list)');
+        lines.push('        assert len(page.data) == 1');
+        lines.push(`        assert isinstance(page.data[0], ${asyncPaginatedItemClass})`);
 
         lines.push('');
         pushAsyncTestDef(lines, `    async def test_${method}_empty_page(self, async_workos, httpx_mock):`);

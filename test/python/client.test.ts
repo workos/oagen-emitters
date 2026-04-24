@@ -141,6 +141,66 @@ describe('generateClient', () => {
     expect(clientFile!.content).toContain('OrganizationsApiKeys');
   });
 
+  it('re-exports parameter group classes from service __init__.py', () => {
+    const groupSpec: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'UserManagement',
+          operations: [
+            {
+              name: 'createOrganizationMembership',
+              httpMethod: 'post',
+              path: '/user_management/organization_memberships',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              body: [
+                { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+                { name: 'role_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+                {
+                  name: 'role_slugs',
+                  type: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+                  required: false,
+                },
+              ],
+              parameterGroups: [
+                {
+                  name: 'role',
+                  discriminator: 'role_slug',
+                  variants: [
+                    {
+                      name: 'single',
+                      parameters: [{ name: 'role_slug', type: { kind: 'primitive', type: 'string' } }],
+                    },
+                    {
+                      name: 'multiple',
+                      parameters: [
+                        { name: 'role_slugs', type: { kind: 'array', items: { kind: 'primitive', type: 'string' } } },
+                      ],
+                    },
+                  ],
+                },
+              ],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const files = generateClient(groupSpec, { ...ctx, spec: groupSpec });
+    const serviceInit = files.find((f) => f.path === 'src/workos/user_management/__init__.py');
+    expect(serviceInit).toBeDefined();
+    expect(serviceInit!.content).toContain('RoleSingle');
+    expect(serviceInit!.content).toContain('RoleMultiple');
+    expect(serviceInit!.content).toContain(
+      'from ._resource import UserManagement, AsyncUserManagement, RoleSingle, RoleMultiple',
+    );
+  });
+
   it('does not generate compat shim modules', () => {
     const files = generateClient(spec, ctx);
 
