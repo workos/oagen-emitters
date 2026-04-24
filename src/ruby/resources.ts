@@ -304,34 +304,39 @@ function emitMethod(args: {
     (q) => !hiddenParams.has(q.name) && !(hasBodyMethod && bodyFieldNameSet.has(q.name)),
   );
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  const hasQuery = qEntries.length > 0 || hasGroups;
+  // Groups go to query only for operations without a request body (GET/DELETE).
+  // For POST/PUT/PATCH, groups are dispatched into the body below.
+  const groupsGoToQuery = hasGroups && !hasBodyMethod;
+  const hasQuery = qEntries.length > 0 || groupsGoToQuery;
   if (hasQuery) {
     lines.push('      params = {');
     for (let i = 0; i < qEntries.length; i++) {
       const q = qEntries[i];
-      const sep = i === qEntries.length - 1 && !hasGroups ? '' : ',';
+      const sep = i === qEntries.length - 1 && !groupsGoToQuery ? '' : ',';
       lines.push(`        ${rubyStringLit(q.name)} => ${safeParamName(q.name)}${sep}`);
     }
     lines.push('      }.compact');
 
-    // Parameter group dispatch: merge grouped params into the query hash
-    for (const group of op.parameterGroups ?? []) {
-      const prop = fieldName(group.name);
-      if (group.optional) {
-        lines.push(`      if ${prop}`);
-        lines.push(`        case ${prop}[:type]`);
-      } else {
-        lines.push(`      case ${prop}[:type]`);
-      }
-      for (const variant of group.variants) {
-        lines.push(`      when ${rubyStringLit(variant.name)}`);
-        for (const p of variant.parameters) {
-          lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+    if (groupsGoToQuery) {
+      // Parameter group dispatch: merge grouped params into the query hash
+      for (const group of op.parameterGroups ?? []) {
+        const prop = fieldName(group.name);
+        if (group.optional) {
+          lines.push(`      if ${prop}`);
+          lines.push(`        case ${prop}[:type]`);
+        } else {
+          lines.push(`      case ${prop}[:type]`);
         }
-      }
-      lines.push('      end');
-      if (group.optional) {
+        for (const variant of group.variants) {
+          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          for (const p of variant.parameters) {
+            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+          }
+        }
         lines.push('      end');
+        if (group.optional) {
+          lines.push('      end');
+        }
       }
     }
   }
@@ -360,6 +365,31 @@ function emitMethod(args: {
       lines.push(`        ${bodyEntries[i]}${sep}`);
     }
     lines.push('      }.compact');
+
+    // Parameter group dispatch into body for POST/PUT/PATCH so sensitive
+    // fields (passwords, role slugs) never leak into the URL query string.
+    // DELETE groups are already handled via query above (groupsGoToQuery).
+    if (hasGroups && hasBodyMethod) {
+      for (const group of op.parameterGroups ?? []) {
+        const prop = fieldName(group.name);
+        if (group.optional) {
+          lines.push(`      if ${prop}`);
+          lines.push(`        case ${prop}[:type]`);
+        } else {
+          lines.push(`      case ${prop}[:type]`);
+        }
+        for (const variant of group.variants) {
+          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          for (const p of variant.parameters) {
+            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+          }
+        }
+        lines.push('      end');
+        if (group.optional) {
+          lines.push('      end');
+        }
+      }
+    }
   }
 
   // Make the request via the unified @client.request helper.
