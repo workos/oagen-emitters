@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/workos/oagen-emitters/compare/v0.4.0...v0.5.0) (2026-04-24)
+
+
+### Features
+
+* multi-language emitter improvements, parameter groups, and JSDoc fixes ([#40](https://github.com/workos/oagen-emitters/issues/40)) ([6d32479](https://github.com/workos/oagen-emitters/commit/6d3247911cbf39c66539a0cda441893fe8ef4748))
+* **python:** add implicit discriminator detection with unknown fallback variant ([#42](https://github.com/workos/oagen-emitters/issues/42)) ([b7fec64](https://github.com/workos/oagen-emitters/commit/b7fec644b906a446bb6d8f98d04f8641131c4d2e))
+
 ## [0.4.0](https://github.com/workos/oagen-emitters/compare/v0.3.0...v0.4.0) (2026-04-14)
 
 
