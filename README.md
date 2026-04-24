@@ -1,252 +1,63 @@
 # oagen-emitters
 
-Language emitters for [oagen](../oagen); generates SDK code from OpenAPI specs.
+Language emitters, extractors, and smoke runners for [oagen](../oagen). This package is a **plugin library** -- it provides SDK generation capabilities but does not own the consumer config. The canonical generation config lives in the spec-consuming project (e.g. https://github.com/workos/openapi-spec/oagen.config.ts`).
 
-## Supported languages
+## Plugin export
 
-| Language        | Emitter       | Extractor       | Smoke Test          |
-| --------------- | ------------- | --------------- | ------------------- |
-| Node/TypeScript | `nodeEmitter` | `nodeExtractor` | `smoke/sdk-node.ts` |
+The primary export for consumers is the `workosEmittersPlugin` bundle:
 
-## Quickstart
+```ts
+import { workosEmittersPlugin } from "@workos/oagen-emitters";
+
+const config: OagenConfig = {
+  ...workosEmittersPlugin,
+  // consumer-owned spec policy goes here
+  docUrl: "https://workos.com/docs",
+  operationHints,
+  mountRules,
+};
+```
+
+The plugin bundle registers all emitters, extractors, and smoke runners provided by this package.
+
+## Development
 
 ```bash
 npm install
 npm test          # run emitter unit tests
 npm run typecheck # verify types
+npm run build     # build dist/ output
 ```
 
 ### Using a local `oagen` checkout
 
-This repo depends on a published `@workos/oagen` by default.
-
-If you are actively changing the sibling checkout at `../oagen`, you can switch this repo to a local linked copy:
-
 ```bash
-npm run oagen:use:local
+npm run oagen:use:local     # build and link ../oagen
+npm run oagen:build:local   # rebuild ../oagen after changes
+npm run oagen:use:published # switch back to published package
+npm run git:push -- <args>  # push with published oagen, then restore local link
 ```
 
-That script:
+## Emitter development
 
-1. builds `../oagen`
-2. links it into this repo with `npm link`
+Each emitter lives in `src/<lang>/` and implements the `Emitter` interface from `@workos/oagen`. Extractors live in `src/compat/extractors/<lang>.ts`. Smoke runners live in `smoke/sdk-<lang>.ts`.
 
-`@workos/oagen` exports from `dist/`, so rebuild the local repo after changes:
+When building or changing an emitter:
 
-```bash
-npm run oagen:build:local
-```
+1. Implement or update the emitter code in `src/<lang>/`
+2. Implement or update the extractor in `src/compat/extractors/` if needed
+3. Implement or update the smoke runner in `smoke/` if needed
+4. Export the emitter through `src/plugin.ts` and `src/index.ts`
+5. Run `npm test` and `npm run typecheck`
+6. Switch to the consumer project (e.g. `openapi-spec`) and run the real end-to-end flow
 
-To go back to the published package from npm:
-
-```bash
-npm run oagen:use:published
-```
-
-Git does not provide a standard `post-push` hook, so the reliable way to push with the published package and then restore the local link is the wrapper script:
-
-```bash
-npm run git:push -- <git push args>
-```
-
-Example:
-
-```bash
-npm run git:push -- origin HEAD
-```
-
-That command:
-
-1. switches to the published `@workos/oagen`
-2. runs `git push ...`
-3. restores the local `../oagen` link on exit, even if the push fails
-
-## Workflows
-
-### Setting up a new language
-
-```bash
-# 1. Extract the live SDK's public API surface
-npm run sdk:extract:node
-
-# 2. Generate and integrate
-npm run sdk:generate:node
-
-# 3. Verify
-npm run sdk:verify:node
-```
-
-### Ongoing spec updates
-
-```bash
-# 1. Incremental generation from spec changes
-npm run sdk:diff:node
-
-# 2. Verify
-npm run sdk:verify:node
-```
-
-### After manually editing the live SDK
-
-If you rename methods, add exports, or change the live SDK's public API by hand:
-
-```bash
-# 1. Re-extract the baseline so the overlay stays in sync
-npm run sdk:extract:node
-
-# 2. Regenerate (the overlay will use the updated baseline)
-npm run sdk:generate:node
-```
-
-## Commands
-
-All SDK commands are in `package.json` under `scripts`. Replace `node` with the target language for other SDKs.
-
-### `npm run sdk:extract:node`
-
-```bash
-oagen extract --lang node --sdk-path ../backend/workos-node --output ./sdk-node-surface.json
-```
-
-Extracts the live SDK's public API surface (classes, interfaces, type aliases, enums, exports) into `sdk-node-surface.json`. This is **per-language** — each language has its own extractor that understands the language's public surface conventions (TypeScript exports, Ruby public methods, Python `__all__`, etc.).
-
-**When to run:** Before the first generation, and whenever the live SDK's public API changes (hand-written additions, renamed methods, new exports).
-
-### `npm run sdk:generate:node`
-
-```bash
-oagen generate --lang node --output ./sdk --namespace workos \
-  --spec ../openapi-spec/spec/open-api-spec.yaml \
-  --api-surface ./sdk-node-surface.json \
-  --target ../backend/workos-node
-```
-
-Full generation from the OpenAPI spec. Produces a standalone SDK at `./sdk/` and integrates new interface, serializer, enum, and fixture files into the live SDK at `--target`.
-
-**What gets integrated:** New type definitions (interfaces, serializers, enums, fixtures) that don't already exist in the live SDK. Existing files are never modified.
-
-**What stays standalone:** Resource classes, tests, client, barrel exports, error classes, and common utilities remain in `./sdk/` only. The developer wires up resource classes and client accessors manually.
-
-**When to run:** First-time setup, or when you want a full regeneration (e.g., after a major spec overhaul).
-
-### `npm run sdk:diff:node`
-
-```bash
-oagen diff --old ./sdk/spec-snapshot.yaml --new ../openapi-spec/spec/open-api-spec.yaml \
-  --lang node --output ./sdk \
-  --target ../backend/workos-node \
-  --api-surface ./sdk-node-surface.json
-```
-
-Incremental generation — compares the previous spec snapshot against the current spec and only regenerates files affected by the changes.
-
-**Requires** a prior `sdk:generate:node` run which creates `./sdk/spec-snapshot.yaml`.
-
-**When to run:** After the OpenAPI spec is updated (new endpoints, changed models, etc.).
-
-### `npm run sdk:verify:node`
-
-```bash
-oagen verify --lang node --output ./sdk \
-  --spec ../openapi-spec/spec/open-api-spec.yaml \
-  --api-surface ./sdk-node-surface.json
-```
-
-Runs compat verification (checks that generated types preserve the live SDK's public API surface) and smoke tests (checks wire-level HTTP behavior).
-
-**When to run:** After any generation to verify correctness, or in CI.
-
-## SDK Behavior
-
-Emitters read runtime policy (retry, errors, telemetry, pagination, etc.) from `ctx.spec.sdk` rather than hardcoding values. The `ApiSpec.sdk` field is always populated with defaults from `defaultSdkBehavior()`.
-
-```ts
-function generateHttpClient(ctx: EmitterContext) {
-  const sdk = ctx.spec.sdk;
-  const retryCodes = sdk.retry.retryableStatusCodes; // [429, 500, 502, 503, 504]
-  const timeout = sdk.timeout.defaultTimeoutSeconds; // 60
-}
-```
-
-Per-language overrides go in the SDK's `oagen.config.ts`:
-
-```ts
-// Example: Python SDK overrides
-export default {
-  sdkBehavior: {
-    retry: { backoff: { initialDelay: 0.5, maxDelay: 8.0 } },
-    timeout: {
-      defaultTimeoutSeconds: 30,
-      timeoutEnvVar: "WORKOS_REQUEST_TIMEOUT",
-    },
-  },
-};
-```
-
-See `@workos/oagen`'s `src/ir/sdk-behavior.ts` for all interfaces and default values.
-
-## Operation Hints
-
-`oagen.config.ts` defines `operationHints` and `mountRules` that control how operations are named and organized across all SDKs.
-
-### Adding a hint for a new operation
-
-When the spec adds a new endpoint and the algorithm-derived name is wrong, add an entry to `operationHints`:
-
-```ts
-const operationHints: Record<string, OperationHint> = {
-  // Override derived name
-  "GET /sso/authorize": { name: "get_authorization_url" },
-
-  // Remount to a different service
-  "GET /organizations/{id}/audit_logs_retention": { mountOn: "AuditLogs" },
-};
-```
-
-### Adding a union split
-
-For endpoints that accept a discriminated union body (multiple request shapes), use `split`:
-
-```ts
-'POST /user_management/authenticate': {
-  split: [
-    {
-      name: 'authenticate_with_password',
-      targetVariant: 'PasswordSessionAuthenticateRequest',
-      defaults: { grant_type: 'password' },
-      inferFromClient: ['client_id', 'client_secret'],
-      exposedParams: ['email', 'password', 'invitation_token'],
-    },
-    // ... more variants
-  ],
-},
-```
-
-### Mount rules
-
-Instead of adding `mountOn` to every operation individually, use `mountRules` for service-level remounting:
-
-```ts
-const mountRules: Record<string, string> = {
-  Connections: "SSO", // All Connections ops → SSO namespace
-  DirectoryGroups: "DirectorySync",
-  UserManagementUsers: "UserManagement",
-};
-```
-
-### Reviewing operations
-
-```bash
-npx oagen resolve --spec ../openapi-spec/spec/open-api-spec.yaml --format table
-```
-
-## Adding a new language
+### Adding a new language
 
 Use the oagen skills:
 
 ```bash
-claude --plugin-dir ../oagen
+claude --plugin-dir node_modules/@workos/oagen
 /oagen:generate-sdk <language>
 ```
 
-This orchestrates: emitter scaffolding → extractor → compat verification → smoke tests → integration.
+This orchestrates: emitter scaffolding, extractor, compat verification, smoke tests, and integration.

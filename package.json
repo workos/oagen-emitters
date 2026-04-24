@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
+    },
+    "./plugin": {
+      "types": "./dist/plugin.d.mts",
+      "import": "./dist/plugin.mjs"
     }
   },
   "scripts": {
@@ -28,38 +32,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "git:push": "sh ./scripts/git-push-with-published-oagen.sh",
     "oagen:build:local": "npm --prefix ../oagen run build",
-    "oagen:use:local": "npm run oagen:build:local && npm link ../oagen",
-    "oagen:use:published": "sh -c 'npm unlink @workos/oagen >/dev/null 2>&1 || true; npm install --ignore-scripts @workos/oagen@^0.4.0'",
-    "prepare": "husky",
-    "sdk:generate:dotnet": "oagen generate --lang dotnet --output ./sdk-dotnet --namespace workos --api-surface ./sdk-dotnet-surface.json",
-    "sdk:verify:dotnet": "oagen verify --lang dotnet --output ./sdk-dotnet --api-surface ./sdk-dotnet-surface.json",
-    "sdk:extract:dotnet": "oagen extract --lang dotnet --output ./sdk-dotnet-surface.json",
-    "sdk:generate:elixir": "oagen generate --lang elixir --output ./sdk-elixir --namespace workos --api-surface ./sdk-elixir-surface.json",
-    "sdk:verify:elixir": "oagen verify --lang elixir --output ./sdk-elixir --api-surface ./sdk-elixir-surface.json",
-    "sdk:extract:elixir": "oagen extract --lang elixir --output ./sdk-elixir-surface.json",
-    "sdk:generate:go": "oagen generate --lang go --output ./sdk-go --namespace workos --api-surface ./sdk-go-surface.json",
-    "sdk:verify:go": "oagen verify --lang go --output ./sdk-go --api-surface ./sdk-go-surface.json",
-    "sdk:extract:go": "oagen extract --lang go --output ./sdk-go-surface.json",
-    "sdk:generate:kotlin": "oagen generate --lang kotlin --output ./sdk-kotlin --namespace workos --api-surface ./sdk-kotlin-surface.json",
-    "sdk:verify:kotlin": "oagen verify --lang kotlin --output ./sdk-kotlin --api-surface ./sdk-kotlin-surface.json",
-    "sdk:extract:kotlin": "oagen extract --lang kotlin --output ./sdk-kotlin-surface.json",
-    "sdk:generate:node": "oagen generate --lang node --output ./sdk-node --namespace workos --api-surface ./sdk-node-surface.json",
-    "sdk:verify:node": "oagen verify --lang node --output ./sdk-node --api-surface ./sdk-node-surface.json",
-    "sdk:extract:node": "oagen extract --lang node --output ./sdk-node-surface.json",
-    "sdk:generate:php": "node scripts/generate-php.js",
-    "sdk:verify:php": "oagen verify --lang php --output ./sdk-php --api-surface ./sdk-php-surface.json",
-    "sdk:extract:php": "oagen extract --lang php --output ./sdk-php-surface.json",
-    "sdk:generate:python": "oagen generate --lang python --output ./sdk-python --namespace workos --api-surface ./sdk-python-surface.json",
-    "sdk:verify:python": "oagen verify --lang python --output ./sdk-python --api-surface ./sdk-python-surface.json",
-    "sdk:extract:python": "oagen extract --lang python --output ./sdk-python-surface.json",
-    "sdk:generate:ruby": "oagen generate --lang ruby --output ./sdk-ruby --namespace workos --api-surface ./sdk-ruby-surface.json",
-    "sdk:verify:ruby": "oagen verify --lang ruby --output ./sdk-ruby --api-surface ./sdk-ruby-surface.json",
-    "sdk:extract:ruby": "oagen extract --lang ruby --output ./sdk-ruby-surface.json",
-    "sdk:generate:rust": "oagen generate --lang rust --output ./sdk-rust --namespace workos --api-surface ./sdk-rust-surface.json",
-    "sdk:verify:rust": "oagen verify --lang rust --output ./sdk-rust --api-surface ./sdk-rust-surface.json",
-    "sdk:extract:rust": "oagen extract --lang rust --output ./sdk-rust-surface.json"
+    "dev:link": "npm run oagen:build:local && npm link --prefix ../oagen && npm link @workos/oagen",
+    "dev:unlink": "npm install",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
