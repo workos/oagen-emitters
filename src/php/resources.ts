@@ -261,12 +261,14 @@ function generateMethod(
   }
 
   // @param for body fields
+  const groupedParamNames = collectGroupedParamNames(op);
   if (plan.hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = modelMap.get(op.requestBody.name);
     if (bodyModel) {
       const bodyParamMap = buildBodyParamMap(op, bodyModel);
       for (const field of bodyModel.fields) {
         if (hiddenParams.has(field.name)) continue;
+        if (groupedParamNames.has(field.name)) continue;
         const docType = mapTypeRefForPHPDoc(field.type);
         const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
         if (seenDocParams.has(phpName)) continue;
@@ -280,7 +282,6 @@ function generateMethod(
   }
 
   // @param for parameter groups (union-typed)
-  const groupedParamNames = collectGroupedParamNames(op);
   for (const group of op.parameterGroups ?? []) {
     const phpName = fieldName(group.name);
     if (seenDocParams.has(phpName)) continue;
@@ -438,7 +439,9 @@ function generateMethod(
     if (plan.hasBody) {
       const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
       const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
-      const visibleFields = bodyModel?.fields.filter((f) => !hiddenParams.has(f.name)) ?? [];
+      const deleteGroupedParams = collectGroupedParamNames(op);
+      const visibleFields =
+        bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name)) ?? [];
       const hasOptionalFields = visibleFields.some((f) => !f.required);
       if (hasOptionalFields) {
         lines.push('        $body = array_filter([');
@@ -493,7 +496,9 @@ function generateMethod(
   } else if (plan.hasBody) {
     const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
     const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
-    const visibleFields = bodyModel?.fields.filter((f) => !hiddenParams.has(f.name)) ?? [];
+    const bodyGroupedParams = collectGroupedParamNames(op);
+    const visibleFields =
+      bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name)) ?? [];
     const hasOptionalFields = visibleFields.some((f) => !f.required);
     if (hasOptionalFields) {
       lines.push('        $body = array_filter([');
@@ -617,7 +622,6 @@ function buildMethodParams(
   const usedNames = new Set<string>();
   const hidden = hiddenParams ?? new Set();
   const groupedParams = collectGroupedParamNames(op);
-
   // Path params (always required)
   for (const p of op.pathParams) {
     const phpType = mapTypeRef(p.type, { qualified: true });
@@ -633,6 +637,7 @@ function buildMethodParams(
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
+        if (groupedParams.has(field.name)) continue;
         const phpType = mapTypeRef(field.type, { qualified: true });
         let phpName = fieldName(field.name);
         if (usedNames.has(phpName)) {

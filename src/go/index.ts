@@ -33,7 +33,21 @@ export const goEmitter: Emitter = {
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     // Enrich models by flattening oneOf/allOf+oneOf variant fields from the raw spec
     const enriched = enrichModelsFromSpec(models);
-    return ensureTrailingNewlines(generateModels(enriched, ctx));
+    // Go has no sum types, so discriminated union base models (e.g. EventSchema)
+    // need their base fields preserved. enrichModelsFromSpec clears fields for
+    // discriminated models so dispatcher-capable languages can generate sealed
+    // classes; restore the original fields here since Go just emits flat structs.
+    const originalByName = new Map(models.map((m) => [m.name, m]));
+    const goModels = enriched.map((m) => {
+      if ((m as any).discriminator && m.fields.length === 0) {
+        const original = originalByName.get(m.name);
+        if (original && original.fields.length > 0) {
+          return { ...m, fields: original.fields };
+        }
+      }
+      return m;
+    });
+    return ensureTrailingNewlines(generateModels(goModels, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
