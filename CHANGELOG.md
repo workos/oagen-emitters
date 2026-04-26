@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/workos/oagen-emitters/compare/v0.6.0...v0.6.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* **php:** exclude grouped body params from signature, PHPDoc, and body array ([#46](https://github.com/workos/oagen-emitters/issues/46)) ([7772c8a](https://github.com/workos/oagen-emitters/commit/7772c8a9c167155009fb81f48af67680287db93e))
+
 ## [0.6.0](https://github.com/workos/oagen-emitters/compare/v0.5.0...v0.6.0) (2026-04-24)
 
 
