@@ -3,16 +3,12 @@ import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { wireInterfaceName } from './naming.js';
 
 export interface MapTypeRefOpts {
-  /** Map from model name → default type args (e.g., `'<Record<string, unknown>>'`).
-   *  When present, model refs for generic models get their defaults appended. */
   genericDefaults?: Map<string, string>;
 }
 
 /**
  * Map an IR TypeRef to a TypeScript domain type string.
  * Domain types use PascalCase model names (e.g., `Organization`).
- *
- * @param opts.genericDefaults - When present, appends default type args to generic model refs.
  */
 export function mapTypeRef(ref: TypeRef, opts?: MapTypeRefOpts): string {
   const genericDefaults = opts?.genericDefaults;
@@ -31,7 +27,6 @@ export function mapTypeRef(ref: TypeRef, opts?: MapTypeRefOpts): string {
 /**
  * Map an IR TypeRef to a TypeScript wire/response type string.
  * Model references get the `Response` suffix (e.g., `OrganizationResponse`).
- * Wire types use JSON-native types (string for date-time, number/string for int64).
  */
 export function mapWireTypeRef(ref: TypeRef, opts?: { genericDefaults?: Map<string, string> }): string {
   const genericDefaults = opts?.genericDefaults;
@@ -69,10 +64,6 @@ function mapPrimitive(ref: PrimitiveType): string {
   }
 }
 
-/**
- * Map an IR PrimitiveType to a TypeScript wire/JSON type string.
- * Wire types match JSON encoding: date-time stays string, int64 stays string/number.
- */
 function mapWirePrimitive(ref: PrimitiveType): string {
   switch (ref.type) {
     case 'string':
@@ -87,10 +78,6 @@ function mapWirePrimitive(ref: PrimitiveType): string {
   }
 }
 
-/**
- * Join union variant type strings using the appropriate operator.
- * allOf unions use `&` (intersection), oneOf/anyOf/unspecified use `|` (union).
- */
 function joinUnionVariants(ref: UnionType, variants: string[]): string {
   const unique = [...new Set(variants)];
   if (ref.compositionKind === 'allOf') {
@@ -100,7 +87,6 @@ function joinUnionVariants(ref: UnionType, variants: string[]): string {
   return unique.join(' | ');
 }
 
-/** Wrap union/intersection types in parentheses when used as array item type. */
 function parenthesizeUnion(type: string): string {
   return type.includes(' | ') || type.includes(' & ') ? `(${type})` : type;
 }

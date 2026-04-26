@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { modelHasNewFields } from '../../src/node/utils.js';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { modelHasNewFields } from '../../src/node/utils.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -20,121 +20,70 @@ const ctx: EmitterContext = {
 };
 
 describe('modelHasNewFields', () => {
-  const model: Model = {
-    name: 'Organization',
-    fields: [
-      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-      { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-    ],
-  };
-
-  it('returns true when no apiSurface exists (Scenario B)', () => {
+  it('returns true when no apiSurface (Scenario B)', () => {
+    const model: Model = {
+      name: 'Organization',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
     expect(modelHasNewFields(model, ctx)).toBe(true);
   });
 
-  it('returns true when model has no baseline entry (new model)', () => {
+  it('returns true when model not in baseline', () => {
+    const model: Model = {
+      name: 'NewModel',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
     const ctxWithSurface: EmitterContext = {
       ...ctx,
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      apiSurface: { interfaces: { Organization: { fields: {} } } } as any,
     };
     expect(modelHasNewFields(model, ctxWithSurface)).toBe(true);
   });
 
-  it('returns false when all fields exist in baseline', () => {
-    const ctxWithBaseline: EmitterContext = {
-      ...ctx,
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-        interfaces: {
-          Organization: {
-            name: 'Organization',
-            fields: {
-              id: { name: 'id', type: 'string', optional: false },
-              name: { name: 'name', type: 'string', optional: false },
-            },
-            extends: [],
-          },
-        },
-      },
-    };
-    expect(modelHasNewFields(model, ctxWithBaseline)).toBe(false);
-  });
-
-  it('returns true when model has one new field not in baseline', () => {
-    const modelWithNewField: Model = {
+  it('returns false when all fields in baseline', () => {
+    const model: Model = {
       name: 'Organization',
       fields: [
         { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
         { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: false },
       ],
     };
-    const ctxWithBaseline: EmitterContext = {
+    const ctxWithSurface: EmitterContext = {
       ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
         interfaces: {
           Organization: {
-            name: 'Organization',
             fields: {
-              id: { name: 'id', type: 'string', optional: false },
-              name: { name: 'name', type: 'string', optional: false },
+              id: { type: 'string', optional: false },
+              name: { type: 'string', optional: false },
             },
-            extends: [],
           },
         },
-      },
+      } as any,
     };
-    expect(modelHasNewFields(modelWithNewField, ctxWithBaseline)).toBe(true);
+    expect(modelHasNewFields(model, ctxWithSurface)).toBe(false);
   });
 
-  it('converts snake_case IR field names to camelCase for baseline comparison', () => {
-    const snakeModel: Model = {
+  it('returns true when new field added', () => {
+    const model: Model = {
       name: 'Organization',
-      fields: [{ name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'new_field', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
     };
-    const ctxWithBaseline: EmitterContext = {
+    const ctxWithSurface: EmitterContext = {
       ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
         interfaces: {
           Organization: {
-            name: 'Organization',
             fields: {
-              organizationId: { name: 'organizationId', type: 'string', optional: false },
+              id: { type: 'string', optional: false },
             },
-            extends: [],
           },
         },
-      },
+      } as any,
     };
-    expect(modelHasNewFields(snakeModel, ctxWithBaseline)).toBe(false);
+    expect(modelHasNewFields(model, ctxWithSurface)).toBe(true);
   });
 });

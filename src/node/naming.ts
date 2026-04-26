@@ -53,17 +53,14 @@ export function servicePropertyName(name: string): string {
 
 /**
  * Resolve the effective service name, using the overlay-resolved class name
- * when available. This ensures directory names, file names, and property names
- * all derive from the same resolved name (e.g., "Mfa" instead of "MultiFactorAuth").
+ * when available.
  */
 export function resolveServiceName(service: Service, ctx: EmitterContext): string {
   return resolveClassName(service, ctx);
 }
 
 /**
- * Build a map from IR service name → resolved service name.
- * Used to translate modelToService/enumToService map values to overlay-resolved
- * directory names when the code only has the IR service name string.
+ * Build a map from IR service name -> resolved service name.
  */
 export function buildServiceNameMap(services: Service[], ctx: EmitterContext): Map<string, string> {
   const map = new Map<string, string>();
@@ -73,10 +70,7 @@ export function buildServiceNameMap(services: Service[], ctx: EmitterContext): M
   return map;
 }
 
-/**
- * Resolve the output directory for a service.
- * Mount rules already handle directory placement, so this is a simple kebab-case conversion.
- */
+/** Resolve the output directory for a service. */
 export function resolveServiceDir(resolvedServiceName: string): string {
   return serviceDirName(resolvedServiceName);
 }
@@ -86,7 +80,6 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   const lookup = buildResolvedLookup(ctx);
   const resolved = lookupMethodName(op, lookup);
   if (resolved) return toCamelCase(resolved);
-  // Fallback to overlay, then spec-derived
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) return existing.methodName;
@@ -95,11 +88,9 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
 
 /** Resolve the SDK class name for a service, using resolved ops mountOn as canonical. */
 export function resolveClassName(service: Service, ctx: EmitterContext): string {
-  // Use resolved ops mountOn as canonical class name
   for (const r of ctx.resolvedOperations ?? []) {
     if (r.service.name === service.name) return r.mountOn;
   }
-  // Fallback to overlay
   if (ctx.overlayLookup?.methodByOperation) {
     for (const op of service.operations) {
       const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -110,19 +101,13 @@ export function resolveClassName(service: Service, ctx: EmitterContext): string 
   return toPascalCase(service.name);
 }
 
-/** Resolve the interface name for a model, checking overlay first.
- *
- * @param opts.skipTypeAlias - When true, skip apiSurface typeAlias resolution.
- *   Use this for dedup models to ensure the file exports match the import
- *   names (preserved files export the raw name, not the resolved alias).
+/**
+ * Resolve the interface name for a model, checking overlay first.
  */
 export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: { skipTypeAlias?: boolean }): string {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
 
-  // If the model name is a type alias that points to a canonical interface,
-  // use the canonical name.  This prevents the merger from generating unused
-  // backward-compat aliases (e.g., `type FlagOwner = FeatureFlagOwner`).
   if (!opts?.skipTypeAlias && ctx.apiSurface?.typeAliases) {
     const alias = ctx.apiSurface.typeAliases[name] as { value?: string } | undefined;
     if (alias?.value && ctx.apiSurface.interfaces?.[alias.value]) {
@@ -130,9 +115,6 @@ export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: {
     }
   }
 
-  // Strip spec-noise suffixes (e.g., "Dto") only for models without a
-  // baseline.  When an overlay exists (Scenario A), the overlay check above
-  // handles existing models.  New models (no overlay entry) get clean names.
   const cleaned = ctx.apiSurface ? name : stripNoiseSuffixes(name);
   return toPascalCase(stripUrnPrefix(cleaned));
 }

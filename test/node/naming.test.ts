@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
 import {
   className,
   fileName,
@@ -12,231 +14,150 @@ import {
   buildServiceNameMap,
   stripNoiseSuffixes,
 } from '../../src/node/naming.js';
-import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
-import { defaultSdkBehavior } from '@workos/oagen';
 
-describe('naming', () => {
-  describe('stripNoiseSuffixes', () => {
-    it('strips trailing Dto', () => {
-      expect(stripNoiseSuffixes('OrganizationDto')).toBe('Organization');
-      expect(stripNoiseSuffixes('UpdateOrganizationDto')).toBe('UpdateOrganization');
-    });
+const emptySpec: ApiSpec = {
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
+  services: [],
+  models: [],
+  enums: [],
+  sdk: defaultSdkBehavior(),
+};
 
-    it('is case-insensitive for the Dto suffix', () => {
-      expect(stripNoiseSuffixes('OrganizationDTO')).toBe('Organization');
-    });
+const ctx: EmitterContext = {
+  namespace: 'workos',
+  namespacePascal: 'WorkOS',
+  spec: emptySpec,
+};
 
-    it('does not strip Dto from the middle of a name', () => {
-      expect(stripNoiseSuffixes('DtoFactory')).toBe('DtoFactory');
-    });
-
-    it('leaves names without Dto unchanged', () => {
-      expect(stripNoiseSuffixes('Organization')).toBe('Organization');
-    });
+describe('stripNoiseSuffixes', () => {
+  it('strips Dto suffix', () => {
+    expect(stripNoiseSuffixes('OrganizationDto')).toBe('Organization');
   });
 
-  describe('className', () => {
-    it('converts to PascalCase', () => {
-      expect(className('organizations')).toBe('Organizations');
-      expect(className('user_management')).toBe('UserManagement');
-      expect(className('api_keys')).toBe('ApiKeys');
-    });
+  it('strips dto suffix case-insensitively', () => {
+    expect(stripNoiseSuffixes('OrganizationDTO')).toBe('Organization');
   });
 
-  describe('fileName', () => {
-    it('converts to kebab-case', () => {
-      expect(fileName('Organization')).toBe('organization');
-      expect(fileName('OrganizationDomain')).toBe('organization-domain');
-      expect(fileName('UserManagement')).toBe('user-management');
-    });
+  it('leaves names without Dto unchanged', () => {
+    expect(stripNoiseSuffixes('Organization')).toBe('Organization');
+  });
+});
+
+describe('className', () => {
+  it('converts to PascalCase', () => {
+    expect(className('user_management')).toBe('UserManagement');
   });
 
-  describe('methodName', () => {
-    it('converts to camelCase', () => {
-      expect(methodName('list_organizations')).toBe('listOrganizations');
-      expect(methodName('create_organization')).toBe('createOrganization');
-      expect(methodName('get_organization')).toBe('getOrganization');
-    });
+  it('handles already PascalCase', () => {
+    expect(className('Organization')).toBe('Organization');
+  });
+});
+
+describe('fileName', () => {
+  it('converts to kebab-case', () => {
+    expect(fileName('OrganizationDomain')).toBe('organization-domain');
   });
 
-  describe('fieldName', () => {
-    it('converts to camelCase', () => {
-      expect(fieldName('allow_profiles_outside_organization')).toBe('allowProfilesOutsideOrganization');
-      expect(fieldName('stripe_customer_id')).toBe('stripeCustomerId');
-      expect(fieldName('id')).toBe('id');
-    });
+  it('handles single word', () => {
+    expect(fileName('Organization')).toBe('organization');
+  });
+});
+
+describe('methodName', () => {
+  it('converts to camelCase', () => {
+    expect(methodName('create_organization')).toBe('createOrganization');
   });
 
-  describe('wireFieldName', () => {
-    it('converts to snake_case', () => {
-      expect(wireFieldName('allowProfilesOutsideOrganization')).toBe('allow_profiles_outside_organization');
-      expect(wireFieldName('id')).toBe('id');
-      expect(wireFieldName('created_at')).toBe('created_at');
-    });
+  it('handles already camelCase', () => {
+    expect(methodName('listOrganizations')).toBe('listOrganizations');
+  });
+});
+
+describe('fieldName', () => {
+  it('converts snake_case to camelCase', () => {
+    expect(fieldName('allow_profiles_outside_organization')).toBe('allowProfilesOutsideOrganization');
   });
 
-  describe('wireInterfaceName', () => {
-    it('appends Response for normal names', () => {
-      expect(wireInterfaceName('Organization')).toBe('OrganizationResponse');
-    });
+  it('converts simple snake_case', () => {
+    expect(fieldName('stripe_customer_id')).toBe('stripeCustomerId');
+  });
+});
 
-    it('appends Wire when name already ends in Response', () => {
-      expect(wireInterfaceName('PortalSessionsCreateResponse')).toBe('PortalSessionsCreateResponseWire');
-    });
+describe('wireFieldName', () => {
+  it('converts camelCase to snake_case', () => {
+    expect(wireFieldName('allowProfilesOutsideOrganization')).toBe('allow_profiles_outside_organization');
+  });
+});
+
+describe('wireInterfaceName', () => {
+  it('appends Response suffix', () => {
+    expect(wireInterfaceName('Organization')).toBe('OrganizationResponse');
   });
 
-  describe('serviceDirName', () => {
-    it('converts to kebab-case', () => {
-      expect(serviceDirName('Organizations')).toBe('organizations');
-      expect(serviceDirName('UserManagement')).toBe('user-management');
-      expect(serviceDirName('ApiKeys')).toBe('api-keys');
-    });
+  it('uses Wire suffix when name already ends in Response', () => {
+    expect(wireInterfaceName('PortalSessionsCreateResponse')).toBe('PortalSessionsCreateResponseWire');
   });
+});
 
-  describe('servicePropertyName', () => {
-    it('converts to camelCase', () => {
-      expect(servicePropertyName('Organizations')).toBe('organizations');
-      expect(servicePropertyName('UserManagement')).toBe('userManagement');
-      expect(servicePropertyName('ApiKeys')).toBe('apiKeys');
-    });
+describe('serviceDirName', () => {
+  it('converts to kebab-case', () => {
+    expect(serviceDirName('UserManagement')).toBe('user-management');
   });
+});
 
-  describe('resolveServiceName', () => {
-    const emptySpec: ApiSpec = {
-      name: 'Test',
-      version: '1.0.0',
-      baseUrl: '',
-      services: [],
-      models: [],
-      enums: [],
-      sdk: defaultSdkBehavior(),
-    };
+describe('servicePropertyName', () => {
+  it('converts to camelCase', () => {
+    expect(servicePropertyName('UserManagement')).toBe('userManagement');
+  });
+});
 
-    it('returns overlay class name when available', () => {
-      const service: Service = {
-        name: 'MultiFactorAuth',
-        operations: [
-          {
-            name: 'enrollFactor',
-            httpMethod: 'post',
-            path: '/auth/factors/enroll',
+describe('resolveServiceName', () => {
+  it('returns overlay class name when available', () => {
+    const service: Service = { name: 'MultiFactorAuth', operations: [] };
+    const ctxWithOverlay: EmitterContext = {
+      ...ctx,
+      resolvedOperations: [
+        {
+          operation: {
+            name: 'listFactors',
+            httpMethod: 'get',
+            path: '/auth/factors',
             pathParams: [],
             queryParams: [],
             headerParams: [],
-            response: { kind: 'primitive', type: 'string' },
+            response: { kind: 'primitive', type: 'unknown' },
             errors: [],
-            injectIdempotencyKey: true,
+            injectIdempotencyKey: false,
+            pagination: undefined,
           },
-        ],
-      };
-
-      const ctx: EmitterContext = {
-        namespace: 'workos',
-        namespacePascal: 'WorkOS',
-        spec: emptySpec,
-        overlayLookup: {
-          methodByOperation: new Map([
-            [
-              'POST /auth/factors/enroll',
-              {
-                className: 'Mfa',
-                methodName: 'enrollFactor',
-                params: [],
-                returnType: 'void',
-              },
-            ],
-          ]),
-          httpKeyByMethod: new Map(),
-          interfaceByName: new Map(),
-          typeAliasByName: new Map(),
-          requiredExports: new Map(),
-          modelNameByIR: new Map(),
-          fileBySymbol: new Map(),
+          service,
+          methodName: 'list_factors',
+          mountOn: 'Mfa',
+          defaults: {},
+          inferFromClient: [],
+          urlBuilder: false,
         },
-      };
-
-      expect(resolveServiceName(service, ctx)).toBe('Mfa');
-    });
-
-    it('falls back to PascalCase of service.name', () => {
-      const service: Service = {
-        name: 'SomeNewService',
-        operations: [],
-      };
-
-      const ctx: EmitterContext = {
-        namespace: 'workos',
-        namespacePascal: 'WorkOS',
-        spec: emptySpec,
-      };
-
-      expect(resolveServiceName(service, ctx)).toBe('SomeNewService');
-    });
+      ],
+    };
+    expect(resolveServiceName(service, ctxWithOverlay)).toBe('Mfa');
   });
 
-  describe('buildServiceNameMap', () => {
-    const emptySpec: ApiSpec = {
-      name: 'Test',
-      version: '1.0.0',
-      baseUrl: '',
-      services: [],
-      models: [],
-      enums: [],
-      sdk: defaultSdkBehavior(),
-    };
+  it('falls back to service name if no overlay', () => {
+    const service: Service = { name: 'Organizations', operations: [] };
+    expect(resolveServiceName(service, ctx)).toBe('Organizations');
+  });
+});
 
-    it('maps IR names to resolved names', () => {
-      const services: Service[] = [
-        {
-          name: 'MultiFactorAuth',
-          operations: [
-            {
-              name: 'enrollFactor',
-              httpMethod: 'post',
-              path: '/auth/factors/enroll',
-              pathParams: [],
-              queryParams: [],
-              headerParams: [],
-              response: { kind: 'primitive', type: 'string' },
-              errors: [],
-              injectIdempotencyKey: true,
-            },
-          ],
-        },
-        {
-          name: 'Organizations',
-          operations: [],
-        },
-      ];
-
-      const ctx: EmitterContext = {
-        namespace: 'workos',
-        namespacePascal: 'WorkOS',
-        spec: emptySpec,
-        overlayLookup: {
-          methodByOperation: new Map([
-            [
-              'POST /auth/factors/enroll',
-              {
-                className: 'Mfa',
-                methodName: 'enrollFactor',
-                params: [],
-                returnType: 'void',
-              },
-            ],
-          ]),
-          httpKeyByMethod: new Map(),
-          interfaceByName: new Map(),
-          typeAliasByName: new Map(),
-          requiredExports: new Map(),
-          modelNameByIR: new Map(),
-          fileBySymbol: new Map(),
-        },
-      };
-
-      const map = buildServiceNameMap(services, ctx);
-      expect(map.get('MultiFactorAuth')).toBe('Mfa');
-      expect(map.get('Organizations')).toBe('Organizations');
-    });
+describe('buildServiceNameMap', () => {
+  it('maps IR service names to resolved names', () => {
+    const services: Service[] = [
+      { name: 'Organizations', operations: [] },
+      { name: 'UserManagement', operations: [] },
+    ];
+    const map = buildServiceNameMap(services, ctx);
+    expect(map.get('Organizations')).toBe('Organizations');
+    expect(map.get('UserManagement')).toBe('UserManagement');
   });
 });

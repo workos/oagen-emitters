@@ -3,7 +3,7 @@ import { fileName } from './naming.js';
 import { buildNodeStatusExceptions } from './sdk-errors.js';
 
 /**
- * Static exception classes are now hand-maintained in the target SDK.
+ * Static exception classes are hand-maintained in the target SDK.
  * Only typed exceptions derived from spec error models are generated here.
  */
 export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
@@ -45,8 +45,6 @@ export function generateErrors(ctx?: EmitterContext): GeneratedFile[] {
     exportLines.push(`export { ${exceptionClassName} } from './${fileName(modelName)}.exception';`);
   }
 
-  // Generate a barrel for typed errors only (appended to existing exceptions/index.ts
-  // via region preservation if needed)
   if (exportLines.length > 0) {
     files.push({
       path: 'src/common/exceptions/typed-errors.ts',
@@ -64,11 +62,7 @@ function collectTypedErrors(
 ): { modelName: string; statusCode: number; baseException: string | null }[] {
   const statusToBase = buildNodeStatusExceptions(ctx.spec.sdk);
   const seen = new Set<string>();
-  const results: {
-    modelName: string;
-    statusCode: number;
-    baseException: string | null;
-  }[] = [];
+  const results: { modelName: string; statusCode: number; baseException: string | null }[] = [];
 
   for (const service of ctx.spec.services) {
     for (const op of service.operations) {

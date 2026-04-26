@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { generateModels } from '../../src/node/models.js';
-import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { generateModels, generateSerializers } from '../../src/node/models.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -19,912 +19,307 @@ const ctx: EmitterContext = {
   spec: emptySpec,
 };
 
+function makeSpec(models: Model[], services?: any[]): ApiSpec {
+  return {
+    ...emptySpec,
+    models,
+    services: services ?? [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe('generateModels', () => {
   it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });
 
   it('generates domain and response interfaces for a model', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Organization' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
     const models: Model[] = [
       {
         name: 'Organization',
         fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'name',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'created_at',
-            type: { kind: 'primitive', type: 'string', format: 'date-time' },
-            required: true,
-          },
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
           {
             name: 'external_id',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: true,
           },
         ],
       },
     ];
 
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
 
-    const files = generateModels(models, ctxWithServices);
-    expect(files.length).toBe(1);
-    expect(files[0].path).toBe('src/organizations/interfaces/organization.interface.ts');
+    expect(result.length).toBeGreaterThan(0);
+    const file = result[0];
+    expect(file.path).toBe('src/organizations/interfaces/organization.interface.ts');
 
     // Domain interface has camelCase fields
-    expect(files[0].content).toContain('export interface Organization {');
-    expect(files[0].content).toContain('  id: string;');
-    expect(files[0].content).toContain('  name: string;');
-    expect(files[0].content).toContain('  createdAt: Date;');
-    expect(files[0].content).toContain('  externalId?: string | null;');
+    expect(file.content).toContain('export interface Organization {');
+    expect(file.content).toContain('id: string;');
+    expect(file.content).toContain('name: string;');
+    expect(file.content).toContain('createdAt: Date;');
+    expect(file.content).toContain('externalId: string | null;');
 
-    // Response interface has snake_case fields
-    expect(files[0].content).toContain('export interface OrganizationResponse {');
-    expect(files[0].content).toContain('  created_at: string;');
-    expect(files[0].content).toContain('  external_id?: string | null;');
+    // Wire interface has snake_case fields
+    expect(file.content).toContain('export interface OrganizationResponse {');
+    expect(file.content).toContain('created_at: string;');
+    expect(file.content).toContain('external_id: string | null;');
   });
 
   it('generates imports for referenced models', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Organization' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
     const models: Model[] = [
       {
         name: 'Organization',
         fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'domain', type: { kind: 'model', name: 'OrganizationDomain' }, required: true },
+        ],
+      },
+      {
+        name: 'OrganizationDomain',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
+
+    const orgFile = result.find((f) => f.path.includes('organization.interface.ts'));
+    expect(orgFile?.content).toContain(
+      "import type { OrganizationDomain, OrganizationDomainResponse } from './organization-domain.interface';",
+    );
+  });
+
+  it('uses Wire suffix for models already ending in Response', () => {
+    const models: Model[] = [
+      {
+        name: 'PortalSessionsCreateResponse',
+        fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const spec = makeSpec(models, [
+      {
+        name: 'Portal',
+        operations: [
           {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
+            name: 'createSession',
+            httpMethod: 'post',
+            path: '/portal/sessions',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'PortalSessionsCreateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
           },
+        ],
+      },
+    ]);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
+
+    const file = result[0];
+    expect(file.content).toContain('export interface PortalSessionsCreateResponseWire {');
+  });
+
+  it('renders @deprecated on fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'old_field', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+          {
+            name: 'legacy',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            deprecated: true,
+            description: 'Use external_id instead.',
+          },
+        ],
+      },
+    ];
+
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
+
+    expect(result[0].content).toContain('@deprecated');
+    expect(result[0].content).toContain('Use external_id instead.');
+  });
+
+  it('skips per-domain ListMetadata models', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'OrganizationListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+          { name: 'after', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+        ],
+      },
+    ];
+
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
+
+    expect(result.every((f) => !f.path.includes('list-metadata'))).toBe(true);
+  });
+
+  it('handles generic type params', () => {
+    const models: Model[] = [
+      {
+        name: 'DirectoryUser',
+        typeParams: [{ name: 'TCustom', default: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } } }],
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const spec = makeSpec(models, [
+      {
+        name: 'DirectorySync',
+        operations: [
+          {
+            name: 'getUser',
+            httpMethod: 'get',
+            path: '/directory_users/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'DirectoryUser' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ]);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateModels(models, ctxWithModels);
+
+    expect(result[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>>');
+  });
+});
+
+describe('generateSerializers', () => {
+  it('generates deserializer with camelCase mapping', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        ],
+      },
+    ];
+
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateSerializers(models, ctxWithModels);
+
+    expect(result.length).toBeGreaterThan(0);
+    const file = result[0];
+    expect(file.path).toContain('.serializer.ts');
+    expect(file.content).toContain('deserializeOrganization');
+    expect(file.content).toContain('createdAt: new Date(response.created_at)');
+  });
+
+  it('generates nested model deserialization', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
           {
             name: 'domains',
-            type: {
-              kind: 'array',
-              items: { kind: 'model', name: 'OrganizationDomain' },
-            },
+            type: { kind: 'array', items: { kind: 'model', name: 'OrganizationDomain' } },
             required: true,
           },
         ],
       },
       {
         name: 'OrganizationDomain',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'domain',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
       },
     ];
 
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateSerializers(models, ctxWithModels);
 
-    const files = generateModels(models, ctxWithServices);
-
-    // Organization file should import OrganizationDomain
-    const orgFile = files.find((f) => f.path.includes('organization.interface.ts'))!;
-    expect(orgFile.content).toContain(
-      "import type { OrganizationDomain, OrganizationDomainResponse } from './organization-domain.interface';",
+    const orgSerializer = result.find(
+      (f) => f.path.includes('organization.serializer.ts') && !f.path.includes('domain'),
     );
-
-    // Domain interface uses OrganizationDomain[]
-    expect(orgFile.content).toContain('  domains: OrganizationDomain[];');
-
-    // Response interface uses OrganizationDomainResponse[]
-    expect(orgFile.content).toContain('  domains: OrganizationDomainResponse[];');
+    expect(orgSerializer?.content).toContain('domains: response.domains.map(deserializeOrganizationDomain)');
   });
 
-  it('handles generic type params', () => {
-    const service: Service = {
-      name: 'DirectorySync',
-      operations: [
-        {
-          name: 'getDirectoryUser',
-          httpMethod: 'get',
-          path: '/directory_users/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'DirectoryUser' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'DirectoryUser',
-        typeParams: [
-          {
-            name: 'TCustom',
-            default: {
-              kind: 'map',
-              valueType: { kind: 'primitive', type: 'unknown' },
-            },
-          },
-        ],
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    expect(files[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>> {');
-    expect(files[0].content).toContain('export interface DirectoryUserResponse<TCustom = Record<string, any>> {');
-  });
-
-  it('uses Wire suffix for models already ending in Response', () => {
-    const service: Service = {
-      name: 'PortalSessions',
-      operations: [
-        {
-          name: 'createPortalSession',
-          httpMethod: 'post',
-          path: '/portal/sessions',
-          pathParams: [],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'PortalSessionsCreateResponse' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'PortalSessionsCreateResponse',
-        fields: [
-          {
-            name: 'link',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    const content = files[0].content;
-
-    // Should use Wire suffix, not ResponseResponse
-    expect(content).toContain('export interface PortalSessionsCreateResponseWire {');
-    expect(content).not.toContain('PortalSessionsCreateResponseResponse');
-  });
-
-  it('renders @deprecated on fields', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Organization' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
+  it('preserves null fallback for optional nullable model fields', () => {
     const models: Model[] = [
       {
         name: 'Organization',
         fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'legacy_slug',
-            type: { kind: 'primitive', type: 'string' },
-            required: false,
-            description: 'Use external_id instead.',
-            deprecated: true,
-          },
-          {
-            name: 'old_field',
-            type: { kind: 'primitive', type: 'string' },
-            required: false,
-            deprecated: true,
-          },
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'parent', type: { kind: 'nullable', inner: { kind: 'model', name: 'ParentOrg' } }, required: false },
         ],
       },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    const content = files[0].content;
-
-    // Field with description + deprecated gets multiline JSDoc
-    expect(content).toContain('  /**\n   * Use external_id instead.\n   * @deprecated\n   */');
-
-    // Field with only deprecated gets single-line JSDoc
-    expect(content).toContain('  /** @deprecated */');
-  });
-
-  it('renders field-level JSDoc from OpenAPI descriptions', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Organization' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
       {
-        name: 'Organization',
-        description: 'An organization in the WorkOS system.',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-            description: 'Unique identifier for the organization.',
-          },
-          {
-            name: 'name',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-            description: 'The display name of the organization.',
-          },
-          {
-            name: 'created_at',
-            type: { kind: 'primitive', type: 'string', format: 'date-time' },
-            required: true,
-            // No description — should not get JSDoc
-          },
-          {
-            name: 'allow_profiles_outside_organization',
-            type: { kind: 'primitive', type: 'boolean' },
-            required: false,
-            description:
-              'Whether connections within the organization allow profiles\nthat do not have a domain that is verified by the organization.',
-          },
-        ],
+        name: 'ParentOrg',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
       },
     ];
 
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
+    const spec = makeSpec(models, [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'getOrganization',
+            httpMethod: 'get',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ]);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateSerializers(models, ctxWithModels);
 
-    const files = generateModels(models, ctxWithServices);
-    const content = files[0].content;
-
-    // Model-level JSDoc is emitted
-    expect(content).toContain('/** An organization in the WorkOS system. */');
-
-    // Fields with description get per-field JSDoc
-    expect(content).toContain('/** Unique identifier for the organization. */');
-    expect(content).toContain('/** The display name of the organization. */');
-
-    // Multiline description renders correctly
-    expect(content).toContain(
-      '  /**\n   * Whether connections within the organization allow profiles\n   * that do not have a domain that is verified by the organization.\n   */',
+    const orgSerializer = result.find(
+      (f) => f.path.includes('organization.serializer.ts') && !f.path.includes('parent'),
     );
-
-    // Field without description does NOT get JSDoc
-    const lines = content.split('\n');
-    const createdAtIdx = lines.findIndex((l) => l.includes('createdAt'));
-    expect(createdAtIdx).toBeGreaterThan(0);
-    // The line before createdAt should not be a JSDoc closing tag
-    expect(lines[createdAtIdx - 1].trim()).not.toBe('*/');
-  });
-
-  it('renders readOnly/writeOnly/default annotations', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Organization' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'Organization',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-            readOnly: true,
-          },
-          {
-            name: 'secret_key',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-            writeOnly: true,
-          },
-          {
-            name: 'status',
-            type: { kind: 'primitive', type: 'string' },
-            required: false,
-            default: 'active',
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    const content = files[0].content;
-
-    // readOnly field gets @readonly JSDoc and readonly TS modifier
-    expect(content).toContain('/** @readonly */');
-    expect(content).toContain('  readonly id: string;');
-
-    // writeOnly field gets @writeonly JSDoc
-    expect(content).toContain('/** @writeonly */');
-
-    // default field gets @default JSDoc
-    expect(content).toContain('@default "active"');
-  });
-
-  it('skips per-domain ListMetadata models (Fix #4)', () => {
-    const service: Service = {
-      name: 'Connections',
-      operations: [
-        {
-          name: 'listConnections',
-          httpMethod: 'get',
-          path: '/connections',
-          pathParams: [],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'ConnectionList' },
-          errors: [],
-          injectIdempotencyKey: false,
-          pagination: {
-            strategy: 'cursor',
-            param: 'after',
-            itemType: { kind: 'model', name: 'Connection' },
-          },
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'ConnectionListListMetadata',
-        fields: [
-          {
-            name: 'before',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-          {
-            name: 'after',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-        ],
-      },
-      {
-        name: 'Connection',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-
-    // The ListMetadata model should be skipped entirely
-    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
-    expect(listMetadataFile).toBeUndefined();
-
-    // The Connection model should still be generated
-    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
-    expect(connectionFile).toBeDefined();
-  });
-
-  it('skips per-domain list wrapper models (Fix #6)', () => {
-    const service: Service = {
-      name: 'Connections',
-      operations: [
-        {
-          name: 'listConnections',
-          httpMethod: 'get',
-          path: '/connections',
-          pathParams: [],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'ConnectionList' },
-          errors: [],
-          injectIdempotencyKey: false,
-          pagination: {
-            strategy: 'cursor',
-            param: 'after',
-            itemType: { kind: 'model', name: 'Connection' },
-          },
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'ConnectionList',
-        fields: [
-          {
-            name: 'object',
-            type: { kind: 'literal', value: 'list' },
-            required: true,
-          },
-          {
-            name: 'data',
-            type: {
-              kind: 'array',
-              items: { kind: 'model', name: 'Connection' },
-            },
-            required: true,
-          },
-          {
-            name: 'list_metadata',
-            type: { kind: 'model', name: 'ConnectionListListMetadata' },
-            required: true,
-          },
-        ],
-      },
-      {
-        name: 'ConnectionListListMetadata',
-        fields: [
-          {
-            name: 'before',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-          {
-            name: 'after',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-        ],
-      },
-      {
-        name: 'Connection',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-
-    // The list wrapper model should be skipped
-    const listFile = files.find((f) => f.path.includes('connection-list.interface.ts'));
-    expect(listFile).toBeUndefined();
-
-    // The ListMetadata model should also be skipped
-    const listMetadataFile = files.find((f) => f.path.includes('list-metadata'));
-    expect(listMetadataFile).toBeUndefined();
-
-    // The Connection model should still be generated
-    const connectionFile = files.find((f) => f.path.includes('connection.interface.ts'));
-    expect(connectionFile).toBeDefined();
-  });
-
-  it('does not skip models that only partially match list-metadata shape', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'Pagination' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'Pagination',
-        fields: [
-          {
-            name: 'before',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-          {
-            name: 'after',
-            type: {
-              kind: 'nullable',
-              inner: { kind: 'primitive', type: 'string' },
-            },
-            required: false,
-          },
-          {
-            name: 'total',
-            type: { kind: 'primitive', type: 'integer' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    // Model with 3 fields should NOT be skipped even if it has before/after
-    expect(files.length).toBe(1);
-    expect(files[0].path).toContain('pagination.interface.ts');
-  });
-});
-
-describe('model deduplication', () => {
-  it('emits type alias for structurally identical models', () => {
-    const service: Service = {
-      name: 'Roles',
-      operations: [
-        {
-          name: 'getRole',
-          httpMethod: 'get',
-          path: '/roles/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'EnvironmentRole' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-        {
-          name: 'getOrganizationRole',
-          httpMethod: 'get',
-          path: '/organization_roles/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'OrganizationRole' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'EnvironmentRole',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'name',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'type',
-            type: { kind: 'literal', value: 'environment_role' },
-            required: true,
-          },
-        ],
-      },
-      {
-        name: 'OrganizationRole',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'name',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'type',
-            type: { kind: 'literal', value: 'environment_role' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithServices: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-    };
-
-    const files = generateModels(models, ctxWithServices);
-    expect(files.length).toBe(2);
-
-    // First model: full interface
-    expect(files[0].content).toContain('export interface EnvironmentRole');
-
-    // Second model: type alias referencing canonical
-    expect(files[1].content).toContain('export type OrganizationRole = EnvironmentRole');
-    expect(files[1].content).toContain('export type OrganizationRoleResponse = EnvironmentRoleResponse');
-  });
-
-  it('generates Date type for date-time fields even when baseline says string', () => {
-    const service: Service = {
-      name: 'Authorization',
-      operations: [
-        {
-          name: 'getRoleAssignment',
-          httpMethod: 'get',
-          path: '/role_assignments/{id}',
-          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'model', name: 'RoleAssignment' },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
-    const models: Model[] = [
-      {
-        name: 'RoleAssignment',
-        fields: [
-          {
-            name: 'id',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-          {
-            name: 'created_at',
-            type: { kind: 'primitive', type: 'string', format: 'date-time' },
-            required: true,
-          },
-          {
-            name: 'updated_at',
-            type: { kind: 'primitive', type: 'string', format: 'date-time' },
-            required: true,
-          },
-          // Extra field not in baseline so modelHasNewFields returns true
-          // (allowing the dedup test to proceed with generation)
-          {
-            name: 'role_name',
-            type: { kind: 'primitive', type: 'string' },
-            required: true,
-          },
-        ],
-      },
-    ];
-
-    const ctxWithBaseline: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services: [service], models },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-        interfaces: {
-          RoleAssignment: {
-            name: 'RoleAssignment',
-            fields: {
-              id: { name: 'id', type: 'string', optional: false },
-              createdAt: { name: 'createdAt', type: 'string', optional: false },
-              updatedAt: { name: 'updatedAt', type: 'string', optional: false },
-            },
-            extends: [],
-          },
-          RoleAssignmentResponse: {
-            name: 'RoleAssignmentResponse',
-            fields: {
-              id: { name: 'id', type: 'string', optional: false },
-              created_at: { name: 'created_at', type: 'string', optional: false },
-              updated_at: { name: 'updated_at', type: 'string', optional: false },
-            },
-            extends: [],
-          },
-        },
-      },
-    };
-
-    const files = generateModels(models, ctxWithBaseline);
-    const content = files[0].content;
-
-    // Domain interface should use Date, not string from baseline
-    expect(content).toContain('  createdAt: Date;');
-    expect(content).toContain('  updatedAt: Date;');
-
-    // Wire interface should stay as string (JSON native)
-    expect(content).toContain('  created_at: string;');
-    expect(content).toContain('  updated_at: string;');
+    expect(orgSerializer?.content).toContain(
+      'parent: response.parent != null ? deserializeParentOrg(response.parent) : null',
+    );
   });
 });

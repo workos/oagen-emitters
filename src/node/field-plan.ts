@@ -4,7 +4,7 @@ import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterface
 import { relativeImport, buildKnownTypeNames, isBaselineGeneric, createServiceDirResolver } from './utils.js';
 
 // ---------------------------------------------------------------------------
-// Guard strategy — determines how a field assignment is wrapped
+// Guard strategy
 // ---------------------------------------------------------------------------
 
 type GuardStrategy =
@@ -12,10 +12,6 @@ type GuardStrategy =
   | { kind: 'null-check'; fallback: string }
   | { kind: 'coalesce'; fallback: string }
   | { kind: 'non-null-assert' };
-
-// ---------------------------------------------------------------------------
-// Baseline types used by planning functions
-// ---------------------------------------------------------------------------
 
 interface BaselineFieldInfo {
   type: string;
@@ -31,10 +27,6 @@ interface BaselineInterface {
 // Expression builders
 // ---------------------------------------------------------------------------
 
-/**
- * Build a deserialization expression for a type reference.
- * @param nullFallback - fallback value for nullable inner expressions (default 'null')
- */
 export function deserializeExpression(
   ref: TypeRef,
   wireExpr: string,
@@ -83,10 +75,6 @@ export function deserializeExpression(
   }
 }
 
-/**
- * Build a serialization expression for a type reference.
- * @param nullFallback - fallback value for nullable inner expressions (default 'null')
- */
 export function serializeExpression(
   ref: TypeRef,
   domainExpr: string,
@@ -155,7 +143,6 @@ function serializePrimitive(ref: PrimitiveType, domainExpr: string): string {
 // Union helpers
 // ---------------------------------------------------------------------------
 
-/** Extract unique model names from a union's variants. */
 export function uniqueModelVariants(ref: UnionType): string[] {
   const modelNames = new Set<string>();
   for (const v of ref.variants) {
@@ -199,7 +186,6 @@ function renderAllOfMerge(
 // Type inspection helpers
 // ---------------------------------------------------------------------------
 
-/** Check whether a TypeRef involves a function call in serialization. */
 export function needsNullGuard(ref: TypeRef): boolean {
   switch (ref.kind) {
     case 'model':
@@ -241,11 +227,6 @@ export function hasDateTimeConversion(ref: TypeRef): boolean {
   }
 }
 
-/**
- * Collect model names that will actually be called in serialize/deserialize expressions.
- * Unlike collectModelRefs (which walks all union variants), this only includes models
- * that the expression functions will actually invoke a serializer/deserializer for.
- */
 export function collectSerializedModelRefs(ref: TypeRef): string[] {
   switch (ref.kind) {
     case 'model':
@@ -270,7 +251,6 @@ export function collectSerializedModelRefs(ref: TypeRef): string[] {
   }
 }
 
-/** Return a TypeScript default value expression for a type. */
 export function defaultForType(ref: TypeRef): string | null {
   switch (ref.kind) {
     case 'literal':
@@ -414,10 +394,9 @@ export function serializerHasBaselineIncompatibility(
 }
 
 // ---------------------------------------------------------------------------
-// Field assignment planning — replaces inline if/else chains
+// Field assignment planning
 // ---------------------------------------------------------------------------
 
-/** Plan a single deserializer field assignment. */
 export function planDeserializeField(
   field: Field,
   baselineDomain: BaselineInterface | undefined,
@@ -446,13 +425,11 @@ function planDeserializeGuard(
   isNewField: boolean | null | undefined,
   baselineResponse: BaselineInterface | undefined,
 ): GuardStrategy {
-  // Optional field with function-call expression → null check
   if (effectivelyOptional && expr !== wireAccess && needsNullGuard(field.type)) {
     const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
     return { kind: 'null-check', fallback };
   }
 
-  // Required field with direct assignment — may need coalesce fallback
   if (field.required && expr === wireAccess) {
     const wire = wireFieldName(field.name);
     const responseFieldInfo = baselineResponse?.fields?.[wire];
@@ -467,7 +444,6 @@ function planDeserializeGuard(
   return { kind: 'direct' };
 }
 
-/** Plan a single serializer field assignment. */
 export function planSerializeField(
   field: Field,
   baselineDomain: BaselineInterface | undefined,
@@ -508,14 +484,12 @@ function planSerializeGuard(
   const wire = wireFieldName(field.name);
   const domain = fieldName(field.name);
 
-  // Function-call expression for optional/nullable fields → null check
   const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
   if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
     const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
     return { kind: 'null-check', fallback };
   }
 
-  // Optional domain → required wire: needs coalesce or assert
   const baselineWireField = baselineResponse?.fields?.[wire];
   const baselineDomainField = baselineDomain?.fields?.[domain];
   const isNewFieldOnExistingDomain = baselineDomain && !baselineDomainField;
@@ -532,7 +506,6 @@ function planSerializeGuard(
     return { kind: 'non-null-assert' };
   }
 
-  // Nullable with direct assignment → may need coalesce for domain-response mismatch
   if (field.type.kind === 'nullable' && expr === domainAccess) {
     const domainWireField2 = wireFieldName(field.name);
     const responseBaselineField2 = baselineResponse?.fields?.[domainWireField2];
@@ -551,19 +524,11 @@ function planSerializeGuard(
   return { kind: 'direct' };
 }
 
-// ---------------------------------------------------------------------------
-// Field assignment emission — single function for all guard strategies
-// ---------------------------------------------------------------------------
-
 function emitAssignment(lhs: string, expr: string, accessExpr: string, guard: GuardStrategy): string {
   switch (guard.kind) {
     case 'direct':
       return `  ${lhs}: ${expr},`;
     case 'null-check':
-      // If the expression already contains a null guard from nullable type handling
-      // (e.g., `response.x != null ? deserializeFoo(response.x) : null`),
-      // emit it directly — the fallback was baked into the expression.
-      // Otherwise, wrap with an outer null check using the accessor.
       if (expr.includes(`${accessExpr} != null ?`)) {
         return `  ${lhs}: ${expr},`;
       }
@@ -587,7 +552,6 @@ interface SerializerContext {
   ctx: EmitterContext;
 }
 
-/** Build the import block for a serializer file. */
 export function buildSerializerImports(
   model: Model,
   serializerPath: string,
@@ -613,7 +577,6 @@ export function buildSerializerImports(
     const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
     const depName = resolveInterfaceName(dep, sctx.ctx);
     const rel = relativeImport(serializerPath, depSerializerPath);
-    // Check the canonical name for dedup'd models
     const canon = sctx.dedup.get(dep);
     const depSkipSerialize =
       sctx.skippedSerializeModels.has(dep) || (canon != null && sctx.skippedSerializeModels.has(canon));
@@ -627,7 +590,6 @@ export function buildSerializerImports(
   return lines;
 }
 
-/** Build the set of field names where format conversion should be skipped. */
 export function buildSkipFormatFields(model: Model, baselineDomain: BaselineInterface | undefined): Set<string> {
   const skipFormatFields = new Set<string>();
   if (baselineDomain) {
@@ -635,7 +597,6 @@ export function buildSkipFormatFields(model: Model, baselineDomain: BaselineInte
       if (skipFormatFields.has(field.name)) continue;
       const baselineField = baselineDomain.fields?.[fieldName(field.name)];
       if (baselineField && !baselineField.type.includes('Date') && hasFormatConversion(field.type)) {
-        // Always convert date-time fields to Date regardless of baseline
         if (hasDateTimeConversion(field.type)) continue;
         skipFormatFields.add(field.name);
       }
@@ -644,7 +605,6 @@ export function buildSkipFormatFields(model: Model, baselineDomain: BaselineInte
   return skipFormatFields;
 }
 
-/** Check if serialize should be skipped (baseline incompat or cascading dependency). */
 export function shouldSkipSerializeForModel(
   model: Model,
   baselineResponse: BaselineInterface | undefined,
@@ -673,7 +633,6 @@ export function shouldSkipSerializeForModel(
   return shouldSkip;
 }
 
-/** Emit deserializer + serializer body lines for a model. */
 export function emitSerializerBody(
   model: Model,
   domainName: string,
@@ -687,7 +646,6 @@ export function emitSerializerBody(
 ): string[] {
   const lines: string[] = [];
 
-  // Deserialize function (wire → domain)
   const seenDeserFields = new Set<string>();
   const deserParamPrefix = model.fields.length === 0 ? '_' : '';
   lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
@@ -702,7 +660,6 @@ export function emitSerializerBody(
   }
   lines.push('});');
 
-  // Serialize function (domain → wire)
   if (!shouldSkipSerialize) {
     const serParamPrefix = model.fields.length === 0 ? '_' : '';
     lines.push('');
