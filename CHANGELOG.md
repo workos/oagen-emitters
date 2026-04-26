@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/workos/oagen-emitters/compare/v0.6.1...v0.6.2) (2026-04-26)
+
+
+### Bug Fixes
+
+* use per-operation mountOn in manifest service field ([#48](https://github.com/workos/oagen-emitters/issues/48)) ([f55bf72](https://github.com/workos/oagen-emitters/commit/f55bf72c9b3011785a060f079dd8fc0ed9984af4))
+
 ## [0.6.1](https://github.com/workos/oagen-emitters/compare/v0.6.0...v0.6.1) (2026-04-25)
 
 
