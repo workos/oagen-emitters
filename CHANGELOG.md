@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/workos/oagen-emitters/compare/v0.6.2...v0.6.3) (2026-04-27)
+
+
+### Bug Fixes
+
+* PHP grouped body params and Go discriminated union base fields ([#50](https://github.com/workos/oagen-emitters/issues/50)) ([b72ee16](https://github.com/workos/oagen-emitters/commit/b72ee166fd48ff0c20346f8603a7e70665a1ff8a))
+
 ## [0.6.2](https://github.com/workos/oagen-emitters/compare/v0.6.1...v0.6.2) (2026-04-26)
 
 
