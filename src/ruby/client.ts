@@ -162,9 +162,11 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   }
   lines.push(`loader.ignore("#{__dir__}/workos/errors.rb")`);
   lines.push(`loader.ignore("#{__dir__}/workos/inflections.rb")`);
+  lines.push(`loader.ignore("#{__dir__}/workos/configuration.rb")`);
   lines.push('loader.setup');
   lines.push('');
   lines.push(`require 'workos/errors'`);
+  lines.push(`require 'workos/configuration'`);
 
   return {
     path: 'lib/workos.rb',
