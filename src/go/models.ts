@@ -166,10 +166,27 @@ function makeOptional(goType: string): string {
 }
 
 function structuralHash(model: Model): string {
-  return model.fields
+  const fieldHash = model.fields
     .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
     .sort()
     .join('|');
+  // Include entity domain for CRUD-prefixed models to prevent cross-domain
+  // aliasing (e.g. UpdateGroup vs UpdateAuthorizationPermission have identical
+  // fields but belong to different API domains and should stay separate types).
+  const domain = crudEntityDomain(model.name);
+  return domain ? `${domain}::${fieldHash}` : fieldHash;
+}
+
+const CRUD_PREFIXES = ['Create', 'Update', 'Delete', 'Get', 'List'];
+
+/** Strip CRUD verb prefix to get the entity name, or null if no prefix matches. */
+function crudEntityDomain(name: string): string | null {
+  for (const prefix of CRUD_PREFIXES) {
+    if (name.startsWith(prefix) && name.length > prefix.length) {
+      return name.slice(prefix.length);
+    }
+  }
+  return null;
 }
 
 /** Known acronyms to preserve as single tokens during humanization. */
