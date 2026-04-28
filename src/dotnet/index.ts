@@ -161,8 +161,10 @@ export const dotnetEmitter: Emitter = {
 
     // Generate converters for discriminated base models (model-level
     // discriminators detected by enrichModelsFromSpec, e.g. EventSchema).
-    // Uses Populate to avoid infinite recursion with the [JsonConverter]
-    // attribute applied to the base class.
+    // ReadJson uses Populate (not Deserialize) to avoid infinite recursion
+    // with the [JsonConverter] attribute applied to the base class.
+    // CanWrite is false so serialization uses the default path and never
+    // re-enters WriteJson.
     for (const [baseName, disc] of modelDiscriminators) {
       const baseClass = modelClassName(baseName);
       const converterName = `${baseClass}DiscriminatorConverter`;
@@ -204,11 +206,15 @@ export const dotnetEmitter: Emitter = {
       lines.push('            return target;');
       lines.push('        }');
       lines.push('');
+      lines.push('        public override bool CanWrite => false;');
+      lines.push('');
       lines.push(
         '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object? value, Newtonsoft.Json.JsonSerializer serializer)',
       );
       lines.push('        {');
-      lines.push('            serializer.Serialize(writer, value);');
+      lines.push(
+        '            throw new NotImplementedException("Serialization is handled by the default serializer.");',
+      );
       lines.push('        }');
       lines.push('    }');
       lines.push('}');
