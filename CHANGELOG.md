@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/workos/oagen-emitters/compare/v0.6.4...v0.6.5) (2026-04-28)
+
+
+### Bug Fixes
+
+* **python,kotlin,dotnet:** skip literal defaults for optional fields; fix dotnet JsonConverter nullability ([#56](https://github.com/workos/oagen-emitters/issues/56)) ([78d4c4c](https://github.com/workos/oagen-emitters/commit/78d4c4c303d67f7399d799dc37ad06d8e8997faa))
+
 ## [0.6.4](https://github.com/workos/oagen-emitters/compare/v0.6.3...v0.6.4) (2026-04-28)
 
 
