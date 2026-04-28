@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.4](https://github.com/workos/oagen-emitters/compare/v0.6.3...v0.6.4) (2026-04-28)
+
+
+### Bug Fixes
+
+* **dotnet,kotlin:** restore fields on discriminated base models ([#54](https://github.com/workos/oagen-emitters/issues/54)) ([6928b8f](https://github.com/workos/oagen-emitters/commit/6928b8f5012d2dc77069950cb438a72963086277))
+* **php,python:** use fallback defaults for literal fields during deserialization ([#55](https://github.com/workos/oagen-emitters/issues/55)) ([0affb47](https://github.com/workos/oagen-emitters/commit/0affb47296f14121e2797545edc0b6fa0f8ba30f))
+* **ruby:** eagerly load configuration.rb to fix WorkOS.configure ([#52](https://github.com/workos/oagen-emitters/issues/52)) ([fc99d36](https://github.com/workos/oagen-emitters/commit/fc99d365fe14778fa3e000335ead369dfe7abec6))
+
 ## [0.6.3](https://github.com/workos/oagen-emitters/compare/v0.6.2...v0.6.3) (2026-04-27)
 
 
