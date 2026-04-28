@@ -307,7 +307,10 @@ function generateServiceTest(
       // Success test
       const respModel = plan.responseModelName;
       const isArrayResponse = !isPaginated && op.response?.kind === 'array';
-      const fixturePath = `testdata/${fileName(respModel)}.json`;
+      let fixturePath = `testdata/${fileName(respModel)}.json`;
+      if (fixtureRewrites.has(fixturePath)) {
+        fixturePath = fixtureRewrites.get(fixturePath)!;
+      }
       const expectedPath = buildExpectedPath(op);
 
       const httpMethodUpper = op.httpMethod.toUpperCase();
@@ -411,7 +414,10 @@ function generateServiceTest(
       const wrapperParamsStruct = paramsStructName(resolvedName, wrapperMethod);
       const responseType = wrapper.responseModelName;
       const testName = `Test${accessorName}_${wrapperMethod}`;
-      const fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
+      let fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
+      if (fixturePath && fixtureRewrites.has(fixturePath)) {
+        fixturePath = fixtureRewrites.get(fixturePath)!;
+      }
 
       const wrapperCallArgs: string[] = ['context.Background()'];
       for (const p of sortPathParamsByTemplateOrder(op)) {
