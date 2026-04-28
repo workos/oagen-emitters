@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.7](https://github.com/workos/oagen-emitters/compare/v0.6.6...v0.6.7) (2026-04-28)
+
+
+### Bug Fixes
+
+* cross-domain aliases and minor emitter fixes ([#65](https://github.com/workos/oagen-emitters/issues/65)) ([9f305ce](https://github.com/workos/oagen-emitters/commit/9f305ce68c008d4341b254eafa0e0d5c0ce59598))
+* **dotnet:** mark discriminator property as internal set on base class ([#63](https://github.com/workos/oagen-emitters/issues/63)) ([dcd32bc](https://github.com/workos/oagen-emitters/commit/dcd32bcc327b54995e078f7a3767198a4d87fa5b))
+
 ## [0.6.6](https://github.com/workos/oagen-emitters/compare/v0.6.5...v0.6.6) (2026-04-28)
 
 
