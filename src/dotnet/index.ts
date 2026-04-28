@@ -188,6 +188,8 @@ export const dotnetEmitter: Emitter = {
       lines.push(`    /// </summary>`);
       lines.push(`    public class ${converterName} : Newtonsoft.Json.JsonConverter`);
       lines.push('    {');
+      lines.push('        public override bool CanWrite => false;');
+      lines.push('');
       lines.push(
         `        public override bool CanConvert(Type objectType) => typeof(${baseClass}).IsAssignableFrom(objectType);`,
       );
@@ -212,8 +214,6 @@ export const dotnetEmitter: Emitter = {
       lines.push('            serializer.Populate(jObject.CreateReader(), target);');
       lines.push('            return target;');
       lines.push('        }');
-      lines.push('');
-      lines.push('        public override bool CanWrite => false;');
       lines.push('');
       lines.push(
         '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object? value, Newtonsoft.Json.JsonSerializer serializer)',
