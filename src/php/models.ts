@@ -150,6 +150,11 @@ function generateFromArrayAccessor(ref: TypeRef, wireName: string, required: boo
     }
     return `$data['${wireName}'] ?? null`;
   }
+  // Literal fields have a statically known value; use ?? with a default
+  // so deserialization is resilient when the API omits the key.
+  if (ref.kind === 'literal') {
+    return `$data['${wireName}'] ?? ${phpLiteralDefault(ref.value)}`;
+  }
   // Required field: access directly
   return generateFromArrayValue(ref, `$data['${wireName}']`);
 }
@@ -196,6 +201,14 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
     case 'literal':
       return accessor;
   }
+}
+
+/** Convert a LiteralType value to a PHP default expression for use with ??. */
+function phpLiteralDefault(value: string | number | boolean | null): string {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'string') return `'${value}'`;
+  return String(value);
 }
 
 /**
