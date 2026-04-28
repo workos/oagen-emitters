@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.6](https://github.com/workos/oagen-emitters/compare/v0.6.5...v0.6.6) (2026-04-28)
+
+
+### Bug Fixes
+
+* **dotnet:** prevent infinite recursion in discriminator converter WriteJson ([#59](https://github.com/workos/oagen-emitters/issues/59)) ([b2a2b7e](https://github.com/workos/oagen-emitters/commit/b2a2b7e1d18348423debb40ca6c331b4b7a34dc2))
+* **go:** resolve test fixture paths through dedup rewrite map ([#58](https://github.com/workos/oagen-emitters/issues/58)) ([815750a](https://github.com/workos/oagen-emitters/commit/815750a9eef8d8c3883ab505848e585732a02a05))
+* **python:** emit non-spec imports as plain imports instead of ignore block ([#60](https://github.com/workos/oagen-emitters/issues/60)) ([bf86e0c](https://github.com/workos/oagen-emitters/commit/bf86e0cfbb3ce7b48454be68d0f9fcfe5f6265c4))
+
 ## [0.6.5](https://github.com/workos/oagen-emitters/compare/v0.6.4...v0.6.5) (2026-04-28)
 
 
