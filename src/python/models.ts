@@ -356,7 +356,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const pyFieldName = fieldName(field.name);
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
-      const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+      let accessor: string;
+      if (field.type.kind === 'literal') {
+        // Literal fields have a statically known value; use .get() with a default
+        // so deserialization is resilient when the API omits the key.
+        accessor = `data.get("${wireKey}", ${pythonLiteralDefault(field.type.value)})`;
+      } else {
+        accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+      }
       // For deserialization expressions, nullable types must always handle None
       // even when the field itself is required (the key must be present, but value can be null).
       const deserRequired = isRequired && field.type.kind !== 'nullable';
@@ -630,6 +637,14 @@ function isOptionalField(modelName: string, field: Model['fields'][number], ctx:
   // The spec's required status always takes precedence over the old SDK's API surface.
   if (!field.required || field.deprecated) return true;
   return false;
+}
+
+/** Convert a LiteralType value to a Python default expression for use in data.get(). */
+function pythonLiteralDefault(value: string | number | boolean | null): string {
+  if (value === null) return 'None';
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  if (typeof value === 'string') return `"${value}"`;
+  return String(value);
 }
 
 function resolveModelFieldType(ref: any): string {
