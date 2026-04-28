@@ -127,7 +127,7 @@ export const dotnetEmitter: Emitter = {
         lines.push('        public override bool CanConvert(Type objectType) => objectType == typeof(object);');
         lines.push('');
         lines.push(
-          '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object existingValue, Newtonsoft.Json.JsonSerializer serializer)',
+          '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
         );
         lines.push('        {');
         lines.push('            var jObject = JObject.Load(reader);');
@@ -143,7 +143,7 @@ export const dotnetEmitter: Emitter = {
         lines.push('        }');
         lines.push('');
         lines.push(
-          '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object value, Newtonsoft.Json.JsonSerializer serializer)',
+          '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object? value, Newtonsoft.Json.JsonSerializer serializer)',
         );
         lines.push('        {');
         lines.push('            serializer.Serialize(writer, value);');
@@ -184,7 +184,7 @@ export const dotnetEmitter: Emitter = {
       );
       lines.push('');
       lines.push(
-        '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object existingValue, Newtonsoft.Json.JsonSerializer serializer)',
+        '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
       );
       lines.push('        {');
       lines.push('            var jObject = JObject.Load(reader);');
@@ -205,7 +205,7 @@ export const dotnetEmitter: Emitter = {
       lines.push('        }');
       lines.push('');
       lines.push(
-        '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object value, Newtonsoft.Json.JsonSerializer serializer)',
+        '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object? value, Newtonsoft.Json.JsonSerializer serializer)',
       );
       lines.push('        {');
       lines.push('            serializer.Serialize(writer, value);');

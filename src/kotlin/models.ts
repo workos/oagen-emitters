@@ -304,11 +304,13 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
     let kotlinType: string;
     let defaultExpr: string | null = null;
 
-    // Const literal fields: always emit a hardcoded default matching the
-    // literal value so callers don't have to pass it.
+    // Const literal fields: emit a hardcoded default matching the literal
+    // value so callers don't have to pass it — but only when the field is
+    // required. Optional literal fields must default to null so that absent
+    // keys round-trip correctly.
     const literalDefault = literalDefaultExpr(field.type);
 
-    if (literalDefault !== null) {
+    if (literalDefault !== null && field.required) {
       kotlinType = baseType;
       defaultExpr = literalDefault;
     } else if (!field.required) {
