@@ -103,7 +103,14 @@ export const dotnetEmitter: Emitter = {
       return m;
     });
 
-    const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase };
+    // Build a map of base model name → discriminator wire-property name so the
+    // model emitter can mark the discriminator field as internal-set.
+    const discriminatorProperties = new Map<string, string>();
+    for (const [baseName, disc] of modelDiscriminators) {
+      discriminatorProperties.set(baseName, disc.property);
+    }
+
+    const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase, discriminatorProperties };
     const files = generateModels(dotnetModels, c, discCtx);
 
     // Generate discriminator converters for oneOf unions with discriminator

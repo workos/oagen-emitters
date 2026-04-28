@@ -31,6 +31,8 @@ export interface DiscriminatorContext {
   discriminatorBases: Set<string>;
   /** Maps variant model name → base model name. */
   variantToBase: Map<string, string>;
+  /** Maps base model name → wire name of the discriminator property. */
+  discriminatorProperties?: Map<string, string>;
 }
 
 /**
@@ -161,6 +163,12 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       let initializer = '';
       let setterModifier = '';
 
+      // On a discriminated union base, the discriminator property (e.g. "event")
+      // should be non-public-settable even though it lacks a single const value
+      // (each variant has a different value). Consumers must never mutate it.
+      const discProp = isDiscBase ? discCtx?.discriminatorProperties?.get(model.name) : undefined;
+      const isDiscriminatorField = discProp !== undefined && field.name === discProp;
+
       if (constInit !== null && !isOptional) {
         // Discriminator-style single-value enum/literal: emit with a const
         // initializer and a non-public setter so callers can't drift the
@@ -169,6 +177,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
         // so absent keys round-trip correctly.
         csType = baseType;
         initializer = ` = ${constInit};`;
+        setterModifier = 'internal ';
+      } else if (isDiscriminatorField) {
+        // Discriminator property on the base class: varies per variant but
+        // should still be non-public-settable so consumers can't change it.
+        csType = baseType;
+        if (!isAlreadyNullable && !isValueTypeRef(field.type)) {
+          initializer = ' = default!;';
+        }
         setterModifier = 'internal ';
       } else if (isOptional) {
         if (isAlreadyNullable) {
@@ -219,6 +235,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       lines.push(`        /// <paramref name="key"/> coerced to <typeparamref name="T"/>, or the default`);
       lines.push(`        /// value when the key is missing or the value is not convertible.`);
       lines.push(`        /// </summary>`);
+      if (isDiscBase) {
+        lines.push(`        /// <remarks>`);
+        lines.push(`        /// Variant subclasses provide strongly-typed <c>${dict.csName}</c> properties that`);
+        lines.push(`        /// shadow this dictionary. This accessor is intended for forward-compatible handling`);
+        lines.push(`        /// of types not yet known to this SDK version. For recognized types, cast to the`);
+        lines.push(`        /// specific subclass and access its typed <c>${dict.csName}</c> property directly.`);
+        lines.push(`        /// </remarks>`);
+      }
       lines.push(`        /// <typeparam name="T">Expected value type.</typeparam>`);
       lines.push(`        /// <param name="key">The key to look up.</param>`);
       lines.push(`        public T? Get${dict.csName}Attribute<T>(string key)`);
