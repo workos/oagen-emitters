@@ -161,10 +161,12 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       let initializer = '';
       let setterModifier = '';
 
-      if (constInit !== null) {
+      if (constInit !== null && !isOptional) {
         // Discriminator-style single-value enum/literal: emit with a const
         // initializer and a non-public setter so callers can't drift the
         // wire value. The converter still reads whatever the server sends.
+        // Only for required fields — optional literal fields must be nullable
+        // so absent keys round-trip correctly.
         csType = baseType;
         initializer = ` = ${constInit};`;
         setterModifier = 'internal ';

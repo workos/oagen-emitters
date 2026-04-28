@@ -357,8 +357,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
       let accessor: string;
-      if (field.type.kind === 'literal') {
-        // Literal fields have a statically known value; use .get() with a default
+      if (field.type.kind === 'literal' && isRequired) {
+        // Required literal fields have a statically known value; use .get() with a default
         // so deserialization is resilient when the API omits the key.
         accessor = `data.get("${wireKey}", ${pythonLiteralDefault(field.type.value)})`;
       } else {
