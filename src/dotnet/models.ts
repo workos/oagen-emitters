@@ -22,11 +22,23 @@ import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.j
 export { isListWrapperModel, isListMetadataModel };
 
 /**
+ * Context for discriminated union inheritance in generated models.
+ * When present, base models get a [JsonConverter] attribute and variant
+ * models extend the base class, inheriting common fields.
+ */
+export interface DiscriminatorContext {
+  /** Model names that are discriminated union bases. */
+  discriminatorBases: Set<string>;
+  /** Maps variant model name → base model name. */
+  variantToBase: Map<string, string>;
+}
+
+/**
  * Generate C# model classes from IR Models.
  * Each model becomes a separate .cs file under Services/{mount}/Entities/.
  * For initial generation, all models go into a flat Entities/ directory.
  */
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: DiscriminatorContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
   // Build a lookup from enum name → single wire value for 1-value enums so
@@ -43,6 +55,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   // Compute and publish model aliases so mapTypeRef rewrites references.
   primeModelAliases(models);
+
+  // Build a lookup of base model field C# names → C# types for inheritance.
+  // Variant models skip inherited fields and use `new` for type-divergent ones.
+  const baseFieldLookup = new Map<string, Map<string, string>>();
+  if (discCtx) {
+    for (const model of models) {
+      if (discCtx.discriminatorBases.has(model.name)) {
+        const fieldMap = new Map<string, string>();
+        for (const field of model.fields) {
+          fieldMap.set(fieldName(field.name), mapTypeRef(field.type));
+        }
+        baseFieldLookup.set(model.name, fieldMap);
+      }
+    }
+  }
 
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
@@ -81,7 +108,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`    /// <summary>Represents ${articleFor(human)} ${human}.</summary>`);
     }
 
-    lines.push(`    public class ${csClassName}`);
+    // Discriminated union base: add JsonConverter so the deserializer dispatches
+    // to the correct variant subclass.
+    const isDiscBase = discCtx?.discriminatorBases.has(model.name) ?? false;
+    if (isDiscBase) {
+      lines.push(`    [Newtonsoft.Json.JsonConverter(typeof(${csClassName}DiscriminatorConverter))]`);
+    }
+
+    // Variant: extend the base class to inherit common fields.
+    const baseName = discCtx?.variantToBase.get(model.name);
+    const baseClassName = baseName ? modelClassName(baseName) : null;
+    const baseFields = baseName ? baseFieldLookup.get(baseName) : undefined;
+
+    if (baseClassName) {
+      lines.push(`    public class ${csClassName} : ${baseClassName}`);
+    } else {
+      lines.push(`    public class ${csClassName}`);
+    }
     lines.push('    {');
 
     // Track Dictionary<string, object> fields so we can emit a typed
@@ -94,6 +137,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const csFieldName = fieldName(field.name);
       if (seenFieldNames.has(csFieldName)) continue;
       seenFieldNames.add(csFieldName);
+
+      // Inheritance: if this variant extends a base class, check each field
+      // against the base. Same C# type → skip (inherited). Different C# type
+      // → emit with `new` keyword so the variant has its own typed property.
+      let useNewModifier = false;
+      if (baseFields) {
+        const baseType = baseFields.get(csFieldName);
+        if (baseType !== undefined) {
+          const variantType = mapTypeRef(field.type);
+          if (baseType === variantType) {
+            continue; // Inherited from base — skip
+          }
+          useNewModifier = true;
+        }
+      }
 
       const isOptional = !field.required;
       const baseType = mapTypeRef(field.type);
@@ -141,7 +199,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
-      lines.push(`        public ${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
+      const newMod = useNewModifier ? 'new ' : '';
+      lines.push(`        public ${newMod}${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
 
       // Track additional-properties / metadata dictionaries for typed accessors.
       // Skip deprecated fields so the generated accessor doesn't reference

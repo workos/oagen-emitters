@@ -11,7 +11,7 @@ import type {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { generateModels, primeModelAliases } from './models.js';
+import { generateModels, primeModelAliases, type DiscriminatorContext } from './models.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { generateEnums, primeEnumAliases } from './enums.js';
 import { generateResources } from './resources.js';
@@ -21,6 +21,7 @@ import { buildOperationsMap } from './manifest.js';
 import { generateWrapperOptionsClasses } from './wrappers.js';
 import { groupByMount } from '../shared/resolved-ops.js';
 import { discriminatedUnions } from './type-map.js';
+import { modelClassName } from './naming.js';
 
 /**
  * Fix the namespace for C#. The CLI passes `--namespace workos` which gives
@@ -77,9 +78,36 @@ export const dotnetEmitter: Emitter = {
     if (synEnumsForModels.length > 0) {
       primeEnumAliases([...c.spec.enums, ...synEnumsForModels]);
     }
-    const files = generateModels(enriched, c);
+
+    // Restore fields on discriminated base models. enrichModelsFromSpec clears
+    // fields for dispatcher-capable languages; C# uses inheritance instead:
+    // the base class keeps its common fields and variant classes extend it.
+    const originalByName = new Map(models.map((m) => [m.name, m]));
+    const discriminatorBases = new Set<string>();
+    const variantToBase = new Map<string, string>();
+    const modelDiscriminators = new Map<string, { property: string; mapping: Record<string, string> }>();
+
+    const dotnetModels = enriched.map((m) => {
+      const disc = (m as any).discriminator;
+      if (disc && m.fields.length === 0) {
+        const original = originalByName.get(m.name);
+        if (original && original.fields.length > 0) {
+          discriminatorBases.add(m.name);
+          modelDiscriminators.set(m.name, disc);
+          for (const variantName of Object.values(disc.mapping) as string[]) {
+            variantToBase.set(variantName, m.name);
+          }
+          return { ...m, fields: original.fields };
+        }
+      }
+      return m;
+    });
+
+    const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase };
+    const files = generateModels(dotnetModels, c, discCtx);
 
     // Generate discriminator converters for oneOf unions with discriminator
+    // (union-type references, e.g. a field typed as oneOf with discriminator)
     if (discriminatedUnions.size > 0) {
       for (const [baseName, disc] of discriminatedUnions) {
         const converterName = `${baseName}DiscriminatorConverter`;
@@ -87,8 +115,6 @@ export const dotnetEmitter: Emitter = {
         lines.push(`namespace ${c.namespacePascal}`);
         lines.push('{');
         lines.push('    using System;');
-        lines.push('    using System.Text.Json;');
-        lines.push('    using System.Text.Json.Serialization;');
         lines.push('    using Newtonsoft.Json;');
         lines.push('    using Newtonsoft.Json.Linq;');
         lines.push('');
@@ -109,7 +135,7 @@ export const dotnetEmitter: Emitter = {
         lines.push('            switch (discriminatorValue)');
         lines.push('            {');
         for (const [value, modelName] of Object.entries(disc.mapping)) {
-          const csName = modelName.replace(/([a-z])([A-Z])/g, '$1$2');
+          const csName = modelClassName(modelName);
           lines.push(`                case "${value}": return jObject.ToObject<${csName}>(serializer);`);
         }
         lines.push('                default: return jObject.ToObject<object>(serializer);');
@@ -131,6 +157,67 @@ export const dotnetEmitter: Emitter = {
           overwriteExisting: true,
         });
       }
+    }
+
+    // Generate converters for discriminated base models (model-level
+    // discriminators detected by enrichModelsFromSpec, e.g. EventSchema).
+    // Uses Populate to avoid infinite recursion with the [JsonConverter]
+    // attribute applied to the base class.
+    for (const [baseName, disc] of modelDiscriminators) {
+      const baseClass = modelClassName(baseName);
+      const converterName = `${baseClass}DiscriminatorConverter`;
+      const lines: string[] = [];
+      lines.push(`namespace ${c.namespacePascal}`);
+      lines.push('{');
+      lines.push('    using System;');
+      lines.push('    using Newtonsoft.Json;');
+      lines.push('    using Newtonsoft.Json.Linq;');
+      lines.push('');
+      lines.push(`    /// <summary>`);
+      lines.push(`    /// JSON converter that deserializes <see cref="${baseClass}"/> into the`);
+      lines.push(`    /// correct variant subclass based on the "${disc.property}" property.`);
+      lines.push(`    /// </summary>`);
+      lines.push(`    public class ${converterName} : Newtonsoft.Json.JsonConverter`);
+      lines.push('    {');
+      lines.push(
+        `        public override bool CanConvert(Type objectType) => typeof(${baseClass}).IsAssignableFrom(objectType);`,
+      );
+      lines.push('');
+      lines.push(
+        '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object existingValue, Newtonsoft.Json.JsonSerializer serializer)',
+      );
+      lines.push('        {');
+      lines.push('            var jObject = JObject.Load(reader);');
+      lines.push(`            var discriminatorValue = jObject["${disc.property}"]?.ToString();`);
+      lines.push('');
+      lines.push('            object target;');
+      lines.push('            switch (discriminatorValue)');
+      lines.push('            {');
+      for (const [value, variantModelName] of Object.entries(disc.mapping)) {
+        const csName = modelClassName(variantModelName);
+        lines.push(`                case "${value}": target = new ${csName}(); break;`);
+      }
+      lines.push(`                default: target = new ${baseClass}(); break;`);
+      lines.push('            }');
+      lines.push('');
+      lines.push('            serializer.Populate(jObject.CreateReader(), target);');
+      lines.push('            return target;');
+      lines.push('        }');
+      lines.push('');
+      lines.push(
+        '        public override void WriteJson(Newtonsoft.Json.JsonWriter writer, object value, Newtonsoft.Json.JsonSerializer serializer)',
+      );
+      lines.push('        {');
+      lines.push('            serializer.Serialize(writer, value);');
+      lines.push('        }');
+      lines.push('    }');
+      lines.push('}');
+
+      files.push({
+        path: `Client/Utilities/${converterName}.cs`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
     }
 
     return prefixSourcePaths(ensureTrailingNewlines(files));
