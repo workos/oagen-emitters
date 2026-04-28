@@ -34,7 +34,22 @@ export const kotlinEmitter: Emitter = {
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     const enriched = enrichModelsFromSpec(models);
-    return ensureTrailingNewlines(generateModels(enriched, ctx));
+    // Kotlin uses sealed interfaces (WorkOSEvent) for event dispatch rather
+    // than class inheritance, so discriminated base models like EventSchema
+    // need their fields restored to be emitted as proper data classes.
+    // enrichModelsFromSpec clears fields for dispatcher-capable languages;
+    // restore the originals here so Kotlin emits a full data class.
+    const originalByName = new Map(models.map((m) => [m.name, m]));
+    const kotlinModels = enriched.map((m) => {
+      if ((m as any).discriminator && m.fields.length === 0) {
+        const original = originalByName.get(m.name);
+        if (original && original.fields.length > 0) {
+          return { ...m, fields: original.fields };
+        }
+      }
+      return m;
+    });
+    return ensureTrailingNewlines(generateModels(kotlinModels, ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
