@@ -265,7 +265,7 @@ describe('dotnet/models', () => {
           { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
           {
             name: 'data',
-            type: { kind: 'map', valueType: { kind: 'primitive', type: 'any' } },
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } },
             required: true,
           },
         ],
