@@ -22,11 +22,25 @@ import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.j
 export { isListWrapperModel, isListMetadataModel };
 
 /**
+ * Context for discriminated union inheritance in generated models.
+ * When present, base models get a [JsonConverter] attribute and variant
+ * models extend the base class, inheriting common fields.
+ */
+export interface DiscriminatorContext {
+  /** Model names that are discriminated union bases. */
+  discriminatorBases: Set<string>;
+  /** Maps variant model name → base model name. */
+  variantToBase: Map<string, string>;
+  /** Maps base model name → wire name of the discriminator property. */
+  discriminatorProperties?: Map<string, string>;
+}
+
+/**
  * Generate C# model classes from IR Models.
  * Each model becomes a separate .cs file under Services/{mount}/Entities/.
  * For initial generation, all models go into a flat Entities/ directory.
  */
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: DiscriminatorContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
   // Build a lookup from enum name → single wire value for 1-value enums so
@@ -43,6 +57,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   // Compute and publish model aliases so mapTypeRef rewrites references.
   primeModelAliases(models);
+
+  // Build a lookup of base model field C# names → C# types for inheritance.
+  // Variant models skip inherited fields and use `new` for type-divergent ones.
+  const baseFieldLookup = new Map<string, Map<string, string>>();
+  if (discCtx) {
+    for (const model of models) {
+      if (discCtx.discriminatorBases.has(model.name)) {
+        const fieldMap = new Map<string, string>();
+        for (const field of model.fields) {
+          fieldMap.set(fieldName(field.name), mapTypeRef(field.type));
+        }
+        baseFieldLookup.set(model.name, fieldMap);
+      }
+    }
+  }
 
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
@@ -81,7 +110,23 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`    /// <summary>Represents ${articleFor(human)} ${human}.</summary>`);
     }
 
-    lines.push(`    public class ${csClassName}`);
+    // Discriminated union base: add JsonConverter so the deserializer dispatches
+    // to the correct variant subclass.
+    const isDiscBase = discCtx?.discriminatorBases.has(model.name) ?? false;
+    if (isDiscBase) {
+      lines.push(`    [Newtonsoft.Json.JsonConverter(typeof(${csClassName}DiscriminatorConverter))]`);
+    }
+
+    // Variant: extend the base class to inherit common fields.
+    const baseName = discCtx?.variantToBase.get(model.name);
+    const baseClassName = baseName ? modelClassName(baseName) : null;
+    const baseFields = baseName ? baseFieldLookup.get(baseName) : undefined;
+
+    if (baseClassName) {
+      lines.push(`    public class ${csClassName} : ${baseClassName}`);
+    } else {
+      lines.push(`    public class ${csClassName}`);
+    }
     lines.push('    {');
 
     // Track Dictionary<string, object> fields so we can emit a typed
@@ -95,6 +140,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (seenFieldNames.has(csFieldName)) continue;
       seenFieldNames.add(csFieldName);
 
+      // Inheritance: if this variant extends a base class, check each field
+      // against the base. Same C# type → skip (inherited). Different C# type
+      // → emit with `new` keyword so the variant has its own typed property.
+      let useNewModifier = false;
+      if (baseFields) {
+        const baseType = baseFields.get(csFieldName);
+        if (baseType !== undefined) {
+          const variantType = mapTypeRef(field.type);
+          if (baseType === variantType) {
+            continue; // Inherited from base — skip
+          }
+          useNewModifier = true;
+        }
+      }
+
       const isOptional = !field.required;
       const baseType = mapTypeRef(field.type);
       const isAlreadyNullable = baseType.endsWith('?');
@@ -103,12 +163,28 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       let initializer = '';
       let setterModifier = '';
 
-      if (constInit !== null) {
+      // On a discriminated union base, the discriminator property (e.g. "event")
+      // should be non-public-settable even though it lacks a single const value
+      // (each variant has a different value). Consumers must never mutate it.
+      const discProp = isDiscBase ? discCtx?.discriminatorProperties?.get(model.name) : undefined;
+      const isDiscriminatorField = discProp !== undefined && field.name === discProp;
+
+      if (constInit !== null && !isOptional) {
         // Discriminator-style single-value enum/literal: emit with a const
         // initializer and a non-public setter so callers can't drift the
         // wire value. The converter still reads whatever the server sends.
+        // Only for required fields — optional literal fields must be nullable
+        // so absent keys round-trip correctly.
         csType = baseType;
         initializer = ` = ${constInit};`;
+        setterModifier = 'internal ';
+      } else if (isDiscriminatorField) {
+        // Discriminator property on the base class: varies per variant but
+        // should still be non-public-settable so consumers can't change it.
+        csType = baseType;
+        if (!isAlreadyNullable && !isValueTypeRef(field.type)) {
+          initializer = ' = default!;';
+        }
         setterModifier = 'internal ';
       } else if (isOptional) {
         if (isAlreadyNullable) {
@@ -141,7 +217,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
-      lines.push(`        public ${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
+      const newMod = useNewModifier ? 'new ' : '';
+      lines.push(`        public ${newMod}${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
 
       // Track additional-properties / metadata dictionaries for typed accessors.
       // Skip deprecated fields so the generated accessor doesn't reference
@@ -158,6 +235,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`        /// <paramref name="key"/> coerced to <typeparamref name="T"/>, or the default`);
       lines.push(`        /// value when the key is missing or the value is not convertible.`);
       lines.push(`        /// </summary>`);
+      if (isDiscBase) {
+        lines.push(`        /// <remarks>`);
+        lines.push(`        /// Variant subclasses provide strongly-typed <c>${dict.csName}</c> properties that`);
+        lines.push(`        /// shadow this dictionary. This accessor is intended for forward-compatible handling`);
+        lines.push(`        /// of types not yet known to this SDK version. For recognized types, cast to the`);
+        lines.push(`        /// specific subclass and access its typed <c>${dict.csName}</c> property directly.`);
+        lines.push(`        /// </remarks>`);
+      }
       lines.push(`        /// <typeparam name="T">Expected value type.</typeparam>`);
       lines.push(`        /// <param name="key">The key to look up.</param>`);
       lines.push(`        public T? Get${dict.csName}Attribute<T>(string key)`);

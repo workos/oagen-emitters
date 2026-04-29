@@ -24,12 +24,11 @@ export const ID_PREFIXES: Record<string, string> = {
 /**
  * Generate JSON fixture files for test data.
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}): { path: string; content: string }[] {
-  if (spec.models.length === 0) return [];
+export function generateFixtures(spec: { models: Model[]; enums: Enum[]; services: any[] }): {
+  files: { path: string; content: string }[];
+  pathRewrites: Map<string, string>;
+} {
+  if (spec.models.length === 0) return { files: [], pathRewrites: new Map() };
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
@@ -96,7 +95,7 @@ export function generateFixtures(spec: {
   // Remove duplicate files (they'll reference the canonical)
   const deduped = files.filter((f) => !pathRewrites.has(f.path));
 
-  return deduped;
+  return { files: deduped, pathRewrites };
 }
 
 function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {

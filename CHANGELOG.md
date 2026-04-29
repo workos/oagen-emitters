@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.6.7](https://github.com/workos/oagen-emitters/compare/v0.6.6...v0.6.7) (2026-04-28)
+
+
+### Bug Fixes
+
+* cross-domain aliases and minor emitter fixes ([#65](https://github.com/workos/oagen-emitters/issues/65)) ([9f305ce](https://github.com/workos/oagen-emitters/commit/9f305ce68c008d4341b254eafa0e0d5c0ce59598))
+* **dotnet:** mark discriminator property as internal set on base class ([#63](https://github.com/workos/oagen-emitters/issues/63)) ([dcd32bc](https://github.com/workos/oagen-emitters/commit/dcd32bcc327b54995e078f7a3767198a4d87fa5b))
+
+## [0.6.6](https://github.com/workos/oagen-emitters/compare/v0.6.5...v0.6.6) (2026-04-28)
+
+
+### Bug Fixes
+
+* **dotnet:** prevent infinite recursion in discriminator converter WriteJson ([#59](https://github.com/workos/oagen-emitters/issues/59)) ([b2a2b7e](https://github.com/workos/oagen-emitters/commit/b2a2b7e1d18348423debb40ca6c331b4b7a34dc2))
+* **go:** resolve test fixture paths through dedup rewrite map ([#58](https://github.com/workos/oagen-emitters/issues/58)) ([815750a](https://github.com/workos/oagen-emitters/commit/815750a9eef8d8c3883ab505848e585732a02a05))
+* **python:** emit non-spec imports as plain imports instead of ignore block ([#60](https://github.com/workos/oagen-emitters/issues/60)) ([bf86e0c](https://github.com/workos/oagen-emitters/commit/bf86e0cfbb3ce7b48454be68d0f9fcfe5f6265c4))
+
+## [0.6.5](https://github.com/workos/oagen-emitters/compare/v0.6.4...v0.6.5) (2026-04-28)
+
+
+### Bug Fixes
+
+* **python,kotlin,dotnet:** skip literal defaults for optional fields; fix dotnet JsonConverter nullability ([#56](https://github.com/workos/oagen-emitters/issues/56)) ([78d4c4c](https://github.com/workos/oagen-emitters/commit/78d4c4c303d67f7399d799dc37ad06d8e8997faa))
+
+## [0.6.4](https://github.com/workos/oagen-emitters/compare/v0.6.3...v0.6.4) (2026-04-28)
+
+
+### Bug Fixes
+
+* **dotnet,kotlin:** restore fields on discriminated base models ([#54](https://github.com/workos/oagen-emitters/issues/54)) ([6928b8f](https://github.com/workos/oagen-emitters/commit/6928b8f5012d2dc77069950cb438a72963086277))
+* **php,python:** use fallback defaults for literal fields during deserialization ([#55](https://github.com/workos/oagen-emitters/issues/55)) ([0affb47](https://github.com/workos/oagen-emitters/commit/0affb47296f14121e2797545edc0b6fa0f8ba30f))
+* **ruby:** eagerly load configuration.rb to fix WorkOS.configure ([#52](https://github.com/workos/oagen-emitters/issues/52)) ([fc99d36](https://github.com/workos/oagen-emitters/commit/fc99d365fe14778fa3e000335ead369dfe7abec6))
+
+## [0.6.3](https://github.com/workos/oagen-emitters/compare/v0.6.2...v0.6.3) (2026-04-27)
+
+
+### Bug Fixes
+
+* PHP grouped body params and Go discriminated union base fields ([#50](https://github.com/workos/oagen-emitters/issues/50)) ([b72ee16](https://github.com/workos/oagen-emitters/commit/b72ee166fd48ff0c20346f8603a7e70665a1ff8a))
+
+## [0.6.2](https://github.com/workos/oagen-emitters/compare/v0.6.1...v0.6.2) (2026-04-26)
+
+
+### Bug Fixes
+
+* use per-operation mountOn in manifest service field ([#48](https://github.com/workos/oagen-emitters/issues/48)) ([f55bf72](https://github.com/workos/oagen-emitters/commit/f55bf72c9b3011785a060f079dd8fc0ed9984af4))
+
+## [0.6.1](https://github.com/workos/oagen-emitters/compare/v0.6.0...v0.6.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* **php:** exclude grouped body params from signature, PHPDoc, and body array ([#46](https://github.com/workos/oagen-emitters/issues/46)) ([7772c8a](https://github.com/workos/oagen-emitters/commit/7772c8a9c167155009fb81f48af67680287db93e))
+
 ## [0.6.0](https://github.com/workos/oagen-emitters/compare/v0.5.0...v0.6.0) (2026-04-24)
 
 

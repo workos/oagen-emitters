@@ -72,7 +72,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   });
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  const { files: fixtures, pathRewrites: fixtureRewrites } = generateFixtures(spec);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
@@ -97,7 +97,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const { name: mountName, operations } of testEntries) {
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
-    const testFile = generateServiceTest(mergedService, spec, ctx, accessPaths);
+    const testFile = generateServiceTest(mergedService, spec, ctx, accessPaths, fixtureRewrites);
     if (testFile) files.push(testFile);
   }
 
@@ -109,6 +109,7 @@ function generateServiceTest(
   spec: ApiSpec,
   ctx: EmitterContext,
   _accessPaths: Map<string, string>,
+  fixtureRewrites: Map<string, string>,
 ): GeneratedFile | null {
   if (service.operations.length === 0) return null;
 
@@ -213,6 +214,10 @@ function generateServiceTest(
             }
           }
           fixturePath = `testdata/list_${fileName(resolved.name)}.json`;
+          // If this fixture was deduplicated, use the canonical path
+          if (fixtureRewrites.has(fixturePath)) {
+            fixturePath = fixtureRewrites.get(fixturePath)!;
+          }
         }
       }
 
@@ -302,7 +307,10 @@ function generateServiceTest(
       // Success test
       const respModel = plan.responseModelName;
       const isArrayResponse = !isPaginated && op.response?.kind === 'array';
-      const fixturePath = `testdata/${fileName(respModel)}.json`;
+      let fixturePath = `testdata/${fileName(respModel)}.json`;
+      if (fixtureRewrites.has(fixturePath)) {
+        fixturePath = fixtureRewrites.get(fixturePath)!;
+      }
       const expectedPath = buildExpectedPath(op);
 
       const httpMethodUpper = op.httpMethod.toUpperCase();
@@ -406,7 +414,10 @@ function generateServiceTest(
       const wrapperParamsStruct = paramsStructName(resolvedName, wrapperMethod);
       const responseType = wrapper.responseModelName;
       const testName = `Test${accessorName}_${wrapperMethod}`;
-      const fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
+      let fixturePath = responseType ? `testdata/${fileName(responseType)}.json` : null;
+      if (fixturePath && fixtureRewrites.has(fixturePath)) {
+        fixturePath = fixtureRewrites.get(fixturePath)!;
+      }
 
       const wrapperCallArgs: string[] = ['context.Background()'];
       for (const p of sortPathParamsByTemplateOrder(op)) {

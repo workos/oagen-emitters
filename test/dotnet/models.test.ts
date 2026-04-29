@@ -255,4 +255,81 @@ describe('dotnet/models', () => {
     expect(orgFile).toBeDefined();
     expect(orgFile.content).toContain('List<OrganizationDomain>');
   });
+
+  it('emits internal set on discriminator property of base class', () => {
+    const models: Model[] = [
+      {
+        name: 'EventSchema',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'data',
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'UserCreated',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'literal', value: 'user.created' }, required: true },
+          { name: 'data', type: { kind: 'model', name: 'UserCreatedData' }, required: true },
+        ],
+      },
+      {
+        name: 'UserCreatedData',
+        fields: [{ name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const discCtx = {
+      discriminatorBases: new Set(['EventSchema']),
+      variantToBase: new Map([['UserCreated', 'EventSchema']]),
+      discriminatorProperties: new Map([['EventSchema', 'event']]),
+    };
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } }, discCtx);
+
+    const baseFile = files.find((f) => f.path.includes('EventSchema.cs'))!;
+    expect(baseFile).toBeDefined();
+
+    // The discriminator property "event" should have internal set
+    expect(baseFile.content).toContain('Event { get; internal set; }');
+    // Non-discriminator required fields should NOT have internal set
+    expect(baseFile.content).toContain('Id { get; set; }');
+  });
+
+  it('adds remarks to dictionary accessors on discriminator base class', () => {
+    const models: Model[] = [
+      {
+        name: 'EventSchema',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'event', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'data',
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const discCtx = {
+      discriminatorBases: new Set(['EventSchema']),
+      variantToBase: new Map<string, string>(),
+      discriminatorProperties: new Map([['EventSchema', 'event']]),
+    };
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } }, discCtx);
+
+    const baseFile = files.find((f) => f.path.includes('EventSchema.cs'))!;
+    expect(baseFile).toBeDefined();
+
+    // Dictionary accessors on discriminator bases should have a remarks note
+    expect(baseFile.content).toContain('/// <remarks>');
+    expect(baseFile.content).toContain('forward-compatible');
+  });
 });

@@ -163,15 +163,17 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       lines.push(importLine);
     }
   }
-  // Non-spec service imports — wrapped in ignore markers so the merger
-  // matches them positionally and doesn't displace them.
-  lines.push('');
-  lines.push('# @oagen-ignore-start — non-spec service imports (hand-maintained)');
+  // Non-spec service imports — emitted as plain imports (not wrapped in
+  // ignore markers). The overwriteWithPreservedRegions() machinery in oagen
+  // relocates top-level ignore blocks to EOF because they have no containing
+  // class, stripping the markers from the imports while spliceExtraImports()
+  // preserves the bare import lines. Emitting them directly avoids the
+  // displacement entirely; spliceExtraImports() will preserve any additional
+  // hand-added imports from the existing file on subsequent regenerations.
   for (const s of NON_SPEC_SERVICES) {
     const w = PYTHON_NON_SPEC_WIRING[s.id];
     if (w) lines.push(w.importLine);
   }
-  lines.push('# @oagen-ignore-end');
   lines.push('');
   lines.push('');
 
