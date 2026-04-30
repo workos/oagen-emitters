@@ -8,10 +8,16 @@ import {
   servicePropertyName,
   resolveMethodName,
 } from './naming.js';
-import { buildResolvedLookup, groupByMount, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  buildResolvedLookup,
+  groupByMount,
+  lookupResolved,
+  buildHiddenParams,
+  collectBodyFieldTypes,
+} from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { buildGroupOwnerMap } from './parameter-groups.js';
+import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js';
 
 /**
  * Generate Ruby Minitest test files for each service and per-method.
@@ -26,8 +32,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   const groups = groupByMount(ctx);
+  const models = spec.models as Model[];
   const modelByName = new Map<string, Model>();
-  for (const m of spec.models as Model[]) modelByName.set(m.name, m);
+  for (const m of models) modelByName.set(m.name, m);
 
   const lookup = buildResolvedLookup(ctx);
   const groupOwners = buildGroupOwnerMap(ctx);
@@ -78,8 +85,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
       const resolved = lookupResolved(op, lookup);
       const hiddenParams = buildHiddenParams(resolved);
-      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners);
-      const bodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams);
+      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models);
+      const bodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models);
 
       // Collect method info for the parameterized 401 test (T20).
       authMethodManifest.push({ method, httpMethodSym, stubUrl, callArgs });
@@ -111,8 +118,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         for (let vi = 1; vi < group.variants.length; vi++) {
           const variant = group.variants[vi];
           const overrides = new Map<string, number>([[group.name, vi]]);
-          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, overrides);
-          const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, overrides);
+          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models, overrides);
+          const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models, overrides);
           const suffix = `with_${fieldName(group.name)}_${fieldName(variant.name)}`;
           lines.push('');
           lines.push(`  def test_${method}_${suffix}_returns_expected_result`);
@@ -330,6 +337,7 @@ function buildCallArgsStub(
   modelByName: Map<string, Model>,
   hiddenParams: Set<string>,
   groupOwners: Map<string, string>,
+  models: Model[],
   variantOverrides: Map<string, number> = new Map(),
 ): string {
   const parts: string[] = [];
@@ -379,6 +387,14 @@ function buildCallArgsStub(
   // variant's class. Optional groups are exercised too so the dispatcher
   // code path is covered — passing nothing would skip the body block and
   // hide silent-drop bugs (see workos/oagen-emitters#66).
+  //
+  // Variant param types are recovered from the body model: the IR's leaf type
+  // is often a bare primitive (`role_slugs: string`) even when the body model
+  // declares a richer shape (`Array<String>`). Stubbing without recovery would
+  // pass `"stub"` to `RoleMultiple.new(role_slugs:)` while the class signature
+  // declares `T::Array[String]` — the test passes locally but ships an invalid
+  // wire body the API rejects.
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
   for (const group of op.parameterGroups ?? []) {
     const name = fieldName(group.name);
     if (seen.has(name)) continue;
@@ -391,7 +407,9 @@ function buildCallArgsStub(
         throw new Error(`No owner mount target found for parameter group '${group.name}'`);
       }
       const variantClass = scopedGroupVariantClassName(owner, group.name, variant.name);
-      const fieldStubs = variant.parameters.map((p) => `${fieldName(p.name)}: ${stubValueFor(p.type)}`).join(', ');
+      const fieldStubs = variant.parameters
+        .map((p) => `${fieldName(p.name)}: ${stubValueFor(pickVariantParamType(p.type, bodyFieldTypes.get(p.name)))}`)
+        .join(', ');
       parts.push(`${name}: ${variantClass}.new(${fieldStubs})`);
     }
   }
@@ -414,6 +432,7 @@ function buildBodyMatcher(
   op: Operation,
   modelByName: Map<string, Model>,
   hiddenParams: Set<string>,
+  models: Model[],
   variantOverrides: Map<string, number> = new Map(),
 ): string | null {
   const httpMethod = op.httpMethod.toLowerCase();
@@ -443,13 +462,18 @@ function buildBodyMatcher(
     }
   }
 
-  // Selected variant of each group: its leaves get pumped into the body.
+  // Selected variant of each group: its leaves get pumped into the body. The
+  // matcher value must use the recovered (body-model) type, not the IR leaf —
+  // see buildCallArgsStub for the same reasoning. Without this, the matcher
+  // shape diverges from what the SDK actually sends.
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
   for (const group of op.parameterGroups ?? []) {
     const idx = variantOverrides.get(group.name) ?? 0;
     const variant = group.variants[idx];
     if (!variant) continue;
     for (const p of variant.parameters) {
-      entries.push(`"${p.name}" => ${stubValueFor(p.type)}`);
+      const recovered = pickVariantParamType(p.type, bodyFieldTypes.get(p.name));
+      entries.push(`"${p.name}" => ${stubValueFor(recovered)}`);
     }
   }
 
@@ -533,7 +557,10 @@ function stubValueFor(ref: TypeRef): string {
           return `nil`;
       }
     case 'array':
-      return `[]`;
+      // Single-element array — exercises the wire shape under hash_including
+      // matchers. An empty `[]` would match `"role_slugs": []` on the wire,
+      // hiding regressions where the SDK serializes the wrong type.
+      return `[${stubValueFor(ref.items)}]`;
     case 'map':
       return `{}`;
     case 'enum':

@@ -142,8 +142,12 @@ export function collectVariantsForMountTarget(
  * fidelity-recovery case the body fallback was added for. Strip any outer
  * nullable from the body type, since body nullability reflects the parent
  * group's optionality, not the leaf's required-ness within the variant.
+ *
+ * Exported so the test emitter can recover the same type the variant class
+ * declares — IR primitives for fields like `role_slugs` would otherwise stub
+ * as `"stub"` strings instead of the `["stub"]` arrays the class accepts.
  */
-function pickVariantParamType(irType: TypeRef, bodyType: TypeRef | undefined): TypeRef {
+export function pickVariantParamType(irType: TypeRef, bodyType: TypeRef | undefined): TypeRef {
   if (!bodyType) return irType;
   const unwrappedBody = bodyType.kind === 'nullable' ? bodyType.inner : bodyType;
   const bodyIsStructured =
