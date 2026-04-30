@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.8](https://github.com/workos/oagen-emitters/compare/v0.6.7...v0.6.8) (2026-04-30)
+
+
+### Bug Fixes
+
+* **ruby:** emit typed variant classes for parameter groups ([#66](https://github.com/workos/oagen-emitters/issues/66)) ([7699417](https://github.com/workos/oagen-emitters/commit/7699417e27da719487bdaf3c74bee0a759c77705))
+
 ## [0.6.7](https://github.com/workos/oagen-emitters/compare/v0.6.6...v0.6.7) (2026-04-28)
 
 
