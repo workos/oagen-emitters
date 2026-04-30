@@ -61,9 +61,12 @@ interface CollectedVariant {
  * The same group name can appear in multiple operations (e.g. `resource_target`
  * in `check`/`assign_role`/`remove_role`); we dedupe by class name.
  *
- * Variant parameter types are restored from the operation's request-body
- * model when available, since the IR's variant-level type info can fall back
- * to plain primitives and lose enum/array fidelity.
+ * Variant parameter types are taken from the IR's leaf type. When the IR's
+ * leaf is a bare primitive but the request body model has a richer type
+ * (array/enum/model/map), we fall back to the body type to recover fidelity
+ * the IR drops. Body nullability is stripped — when a parameter group is
+ * optional, the body field for the group becomes nullable, but within a
+ * variant the leaf is always required (selecting the variant means passing it).
  */
 function collectVariants(operations: Operation[], models: Model[]): CollectedVariant[] {
   const seen = new Set<string>();
@@ -82,13 +85,34 @@ function collectVariants(operations: Operation[], models: Model[]): CollectedVar
           variantName: variant.name,
           parameters: variant.parameters.map((p) => ({
             name: p.name,
-            type: bodyFieldTypes.get(p.name) ?? p.type,
+            type: pickVariantParamType(p.type, bodyFieldTypes.get(p.name)),
           })),
         });
       }
     }
   }
   return out;
+}
+
+/**
+ * Pick the type for a variant leaf parameter.
+ *
+ * Prefer the IR's leaf type. Use the body model's type only when the IR is a
+ * bare primitive but the body has a structured type — that's the original
+ * fidelity-recovery case the body fallback was added for. Strip any outer
+ * nullable from the body type, since body nullability reflects the parent
+ * group's optionality, not the leaf's required-ness within the variant.
+ */
+function pickVariantParamType(irType: TypeRef, bodyType: TypeRef | undefined): TypeRef {
+  if (!bodyType) return irType;
+  const unwrappedBody = bodyType.kind === 'nullable' ? bodyType.inner : bodyType;
+  const bodyIsStructured =
+    unwrappedBody.kind === 'array' ||
+    unwrappedBody.kind === 'enum' ||
+    unwrappedBody.kind === 'model' ||
+    unwrappedBody.kind === 'map';
+  if (irType.kind === 'primitive' && bodyIsStructured) return unwrappedBody;
+  return irType;
 }
 
 function readableName(name: string): string {
