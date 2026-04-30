@@ -1,6 +1,14 @@
 import type { Service, EmitterContext, GeneratedFile, Operation, TypeRef, Parameter, Model } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { className, fieldName, fileName, methodName, safeParamName, resolveMethodName } from './naming.js';
+import {
+  className,
+  fieldName,
+  fileName,
+  groupVariantClassName,
+  methodName,
+  safeParamName,
+  resolveMethodName,
+} from './naming.js';
 import { mapTypeRefForYard } from './type-map.js';
 import {
   buildResolvedLookup,
@@ -177,8 +185,11 @@ function emitMethod(args: {
   const groupedParamNames = collectGroupedParamNames(op);
   const queryParams = (op.queryParams ?? []).filter((q) => !groupedParamNames.has(q.name));
 
-  // Request body params: if body is a model, expand its fields.
-  const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName);
+  // Request body params: if body is a model, expand its fields. Drop any field
+  // whose name is also a parameter-group name — those are dispatched by the
+  // group kwarg below, so emitting them as flat kwargs would shadow the group
+  // and cause `String#[Symbol]` TypeErrors when the dispatcher reads `:type`.
+  const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName).filter((f) => !groupedParamNames.has(f.name));
 
   // Detect path/body name collisions and build a rename map for body fields.
   // When a body field's snake_case name matches a path param, prefix with "body_"
@@ -318,19 +329,22 @@ function emitMethod(args: {
     lines.push('      }.compact');
 
     if (groupsGoToQuery) {
-      // Parameter group dispatch: merge grouped params into the query hash
+      // Parameter group dispatch: callers pass a typed variant class instance
+      // (e.g. `WorkOS::ParentResourceById`); we pattern-match on its class
+      // and forward its readers into the query hash.
       for (const group of op.parameterGroups ?? []) {
         const prop = fieldName(group.name);
         if (group.optional) {
           lines.push(`      if ${prop}`);
-          lines.push(`        case ${prop}[:type]`);
+          lines.push(`        case ${prop}`);
         } else {
-          lines.push(`      case ${prop}[:type]`);
+          lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+          lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
         lines.push('      end');
@@ -369,19 +383,21 @@ function emitMethod(args: {
     // Parameter group dispatch into body for POST/PUT/PATCH so sensitive
     // fields (passwords, role slugs) never leak into the URL query string.
     // DELETE groups are already handled via query above (groupsGoToQuery).
+    // Callers pass a typed variant class instance and we pattern-match on it.
     if (hasGroups && hasBodyMethod) {
       for (const group of op.parameterGroups ?? []) {
         const prop = fieldName(group.name);
         if (group.optional) {
           lines.push(`      if ${prop}`);
-          lines.push(`        case ${prop}[:type]`);
+          lines.push(`        case ${prop}`);
         } else {
-          lines.push(`      case ${prop}[:type]`);
+          lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+          lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
         lines.push('      end');
@@ -763,6 +779,16 @@ function buildYardDoc(
     const suffix = q.required || alreadyNilable ? '' : ', nil';
     const deprecatedPrefix = q.deprecated ? '(deprecated) ' : '';
     lines.push(`# @param ${n} [${type}${suffix}] ${deprecatedPrefix}${oneLine(q.description)}`.trim());
+  }
+  // Parameter group kwargs: the type bracket lists the variant classes the
+  // caller may pass; no extra prose needed since YARD already renders them.
+  for (const group of op.parameterGroups ?? []) {
+    const n = fieldName(group.name);
+    if (emittedParamNames.has(n)) continue;
+    emittedParamNames.add(n);
+    const variantTypes = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`).join(', ');
+    const suffix = group.optional ? ', nil' : '';
+    lines.push(`# @param ${n} [${variantTypes}${suffix}] Identifies the ${group.name.replace(/_/g, ' ')}.`);
   }
   lines.push(`# @param request_options [Hash] (see WorkOS::Types::RequestOptions)`);
 

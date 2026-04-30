@@ -1,6 +1,6 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className, fieldName, fileName, safeParamName, resolveMethodName } from './naming.js';
+import { className, fieldName, fileName, groupVariantClassName, safeParamName, resolveMethodName } from './naming.js';
 import {
   buildResolvedLookup,
   groupByMount,
@@ -153,9 +153,22 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const hiddenParams = buildHiddenParams(resolved);
       const groupedParamNames = collectGroupedParamNames(op);
       const queryParams = (op.queryParams ?? []).filter((q) => !groupedParamNames.has(q.name));
-      const bodyFields = getRequestBodyFieldsFlat(op, hiddenParams, modelByName);
+      // Drop body fields that collide with a parameter-group name; the group
+      // dispatcher kwarg handles them. See ruby/resources.ts for the matching
+      // filter on the runtime side.
+      const bodyFields = getRequestBodyFieldsFlat(op, hiddenParams, modelByName).filter(
+        (f) => !groupedParamNames.has(f.name),
+      );
+      const parameterGroups = op.parameterGroups ?? [];
+      const groupSorbetType = (group: (typeof parameterGroups)[number]): string => {
+        const variants = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`);
+        if (variants.length === 1) return variants[0];
+        return `T.any(${variants.join(', ')})`;
+      };
 
-      // Build parameter list for sig
+      // Build parameter list for sig. Order mirrors the runtime emitter:
+      // path → required body → required query → required groups → optional
+      // body → optional query → optional groups → request_options.
       const sigParams: string[] = [];
       const seen = new Set<string>();
 
@@ -181,6 +194,13 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         seen.add(n);
         sigParams.push(`${n}: ${mapSorbetType(q.type)}`);
       }
+      for (const group of parameterGroups) {
+        if (group.optional) continue;
+        const n = fieldName(group.name);
+        if (seen.has(n)) continue;
+        seen.add(n);
+        sigParams.push(`${n}: ${groupSorbetType(group)}`);
+      }
       for (const f of bodyFields) {
         if (hiddenParams.has(f.name)) continue;
         if (f.required) continue;
@@ -196,6 +216,13 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         if (seen.has(n)) continue;
         seen.add(n);
         sigParams.push(`${n}: T.nilable(${unwrapNilable(mapSorbetType(q.type))})`);
+      }
+      for (const group of parameterGroups) {
+        if (!group.optional) continue;
+        const n = fieldName(group.name);
+        if (seen.has(n)) continue;
+        seen.add(n);
+        sigParams.push(`${n}: T.nilable(${groupSorbetType(group)})`);
       }
       sigParams.push('request_options: T::Hash[Symbol, T.untyped]');
 

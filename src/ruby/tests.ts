@@ -1,5 +1,13 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Model, Operation, ResolvedWrapper, TypeRef } from '@workos/oagen';
-import { className, fileName, fieldName, safeParamName, servicePropertyName, resolveMethodName } from './naming.js';
+import {
+  className,
+  fileName,
+  fieldName,
+  groupVariantClassName,
+  safeParamName,
+  servicePropertyName,
+  resolveMethodName,
+} from './naming.js';
 import { buildResolvedLookup, groupByMount, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -323,18 +331,17 @@ function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hidde
     parts.push(`${name}: ${stubValueFor(q.type)}`);
   }
 
-  // Required parameter group kwargs.
+  // Required parameter group kwargs: instantiate the first variant's class.
   for (const group of op.parameterGroups ?? []) {
     if (group.optional) continue;
     const name = fieldName(group.name);
     if (seen.has(name)) continue;
     seen.add(name);
-    // Stub as a hash with the first variant's type discriminant.
     const firstVariant = group.variants[0];
     if (firstVariant) {
-      parts.push(`${name}: { type: "${firstVariant.name}" }`);
-    } else {
-      parts.push(`${name}: {}`);
+      const variantClass = `WorkOS::${groupVariantClassName(group.name, firstVariant.name)}`;
+      const fieldStubs = firstVariant.parameters.map((p) => `${fieldName(p.name)}: ${stubValueFor(p.type)}`).join(', ');
+      parts.push(`${name}: ${variantClass}.new(${fieldStubs})`);
     }
   }
 
