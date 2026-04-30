@@ -1116,7 +1116,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const actualModelImports = [...modelImports];
 
     // Split imports into same-service and cross-service (using mount-based dirs)
-    const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services);
+    const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services, ctx.modelHints);
     // Discriminator variant type aliases (e.g. EventSchemaVariant) live in the same
     // service as their dispatcher model, so ensure they resolve to the same directory.
     for (const model of ctx.spec.models) {

@@ -854,7 +854,7 @@ function modelNeedsRoundTripTest(model: Model): boolean {
  */
 function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const modelToService = assignModelsToServices(spec.models, spec.services);
+  const modelToService = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
   const serviceNameMap = new Map<string, string>();
   for (const service of spec.services) {
     serviceNameMap.set(service.name, resolveResourceClassName(service, ctx));

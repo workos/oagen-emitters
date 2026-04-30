@@ -227,7 +227,7 @@ function generateServiceTest(
   });
 
   // Group imports by their actual service directory (models may live in different services)
-  const modelToServiceMap = assignModelsToServices(spec.models, spec.services);
+  const modelToServiceMap = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);
@@ -1402,7 +1402,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   );
   if (models.length === 0) return null;
 
-  const modelToService = assignModelsToServices(spec.models, spec.services);
+  const modelToService = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
   const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';

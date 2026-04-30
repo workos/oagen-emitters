@@ -182,7 +182,7 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
  * keep the generated namespace flat while the filesystem is grouped.
  */
 function collectModelSubdirs(spec: ApiSpec, ctx: EmitterContext): string[] {
-  const modelToService = assignModelsToServices(spec.models as Model[], spec.services);
+  const modelToService = assignModelsToServices(spec.models as Model[], spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const subdirs = new Set<string>();
   for (const model of spec.models as Model[]) {

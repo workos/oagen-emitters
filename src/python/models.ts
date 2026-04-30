@@ -11,7 +11,7 @@ import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
   const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>

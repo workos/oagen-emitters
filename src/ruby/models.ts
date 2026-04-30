@@ -67,7 +67,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Model → mount target directory. Each model is assigned to the first service
   // that references it (transitively). Orphans land in `shared/`. Zeitwerk is
   // told to collapse each subfolder (in client.ts) so the namespace stays flat.
-  const modelToService = assignModelsToServices(models, ctx.spec.services);
+  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const dirFor = (modelName: string): string => {
     const service = modelToService.get(modelName);

@@ -223,7 +223,7 @@ export function createServiceDirResolver(
   serviceNameMap: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
 } {
-  const modelToService = assignModelsToServices(models, services);
+  const modelToService = assignModelsToServices(models, services, ctx.modelHints);
   const serviceNameMap = buildServiceNameMap(services, ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
