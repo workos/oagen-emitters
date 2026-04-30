@@ -347,6 +347,8 @@ function emitMethod(args: {
             lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
+        lines.push(`      else`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -404,6 +406,8 @@ function emitMethod(args: {
             lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
+        lines.push(`      else`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -826,4 +830,14 @@ void methodName;
 /** Render a Ruby single-quoted string literal, escaping embedded quotes and backslashes. */
 function rubyStringLit(s: string): string {
   return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * Build a Ruby double-quoted string expression for the `else raise ArgumentError`
+ * arm of a parameter-group dispatcher. Lists the expected variant classes and
+ * interpolates the actual class of the value the caller passed.
+ */
+function dispatchErrorLiteral(group: { name: string; variants: { name: string }[] }, prop: string): string {
+  const expected = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`).join(', ');
+  return `"expected ${prop} to be one of: ${expected}, got #{${prop}.class}"`;
 }
