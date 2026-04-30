@@ -320,13 +320,19 @@ function emitMethod(args: {
   const groupsGoToQuery = hasGroups && !hasBodyMethod;
   const hasQuery = qEntries.length > 0 || groupsGoToQuery;
   if (hasQuery) {
+    // Skip `.compact` when no entry can be nil — required kwargs are always
+    // passed (Ruby raises ArgumentError otherwise), so the literal has no nil
+    // values to drop. Group dispatch happens after the literal is built and
+    // doesn't contribute potentially-nil entries either.
+    const queryHasNilable = qEntries.some((q) => !q.required);
+    const queryCompact = queryHasNilable ? '.compact' : '';
     lines.push('      params = {');
     for (let i = 0; i < qEntries.length; i++) {
       const q = qEntries[i];
       const sep = i === qEntries.length - 1 && !groupsGoToQuery ? '' : ',';
       lines.push(`        ${rubyStringLit(q.name)} => ${safeParamName(q.name)}${sep}`);
     }
-    lines.push('      }.compact');
+    lines.push(`      }${queryCompact}`);
 
     if (groupsGoToQuery) {
       // Parameter group dispatch: callers pass a typed variant class instance
@@ -375,16 +381,21 @@ function emitMethod(args: {
       const optKey = fc === 'client_secret' ? 'api_key' : fc;
       bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || @client.${clientProp})`);
     }
+    // Track whether any literal entry can be nil — defaults/inferFromClient
+    // resolve to non-nil values, so only optional body kwargs are nilable.
+    let bodyHasNilable = false;
     for (const f of bodyFields) {
       if (hiddenParams.has(f.name)) continue;
       bodyEntries.push(`${rubyStringLit(f.name)} => ${bodyKwargName(f.name)}`);
+      if (!f.required) bodyHasNilable = true;
     }
+    const bodyCompact = bodyHasNilable ? '.compact' : '';
     lines.push('      body = {');
     for (let i = 0; i < bodyEntries.length; i++) {
       const sep = i === bodyEntries.length - 1 ? '' : ',';
       lines.push(`        ${bodyEntries[i]}${sep}`);
     }
-    lines.push('      }.compact');
+    lines.push(`      }${bodyCompact}`);
 
     // Parameter group dispatch into body for POST/PUT/PATCH so sensitive
     // fields (passwords, role slugs) never leak into the URL query string.
