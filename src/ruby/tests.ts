@@ -101,6 +101,38 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       }
       lines.push('  end');
 
+      // Per-variant tests: for every parameter group with more than one
+      // variant, emit one extra test per non-first variant so the second/third
+      // arm of the dispatcher gets exercised. Without this, a wrong wire-name
+      // mapping in (e.g.) ResourceTargetByExternalId would slip through.
+      for (const group of op.parameterGroups ?? []) {
+        for (let vi = 1; vi < group.variants.length; vi++) {
+          const variant = group.variants[vi];
+          const overrides = new Map<string, number>([[group.name, vi]]);
+          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, overrides);
+          const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, overrides);
+          const suffix = `with_${fieldName(group.name)}_${fieldName(variant.name)}`;
+          lines.push('');
+          lines.push(`  def test_${method}_${suffix}_returns_expected_result`);
+          lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
+          if (variantBodyMatcher) lines.push(`      .with(body: ${variantBodyMatcher})`);
+          if (isList) {
+            lines.push(`      .to_return(body: '{"data": [], "list_metadata": {}}', status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    assert_kind_of WorkOS::Types::ListStruct, result');
+          } else if (op.response.kind === 'primitive') {
+            lines.push(`      .to_return(body: "{}", status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    assert_nil result');
+          } else {
+            lines.push(`      .to_return(body: "{}", status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    refute_nil result');
+          }
+          lines.push('  end');
+        }
+      }
+
       // Wrapper tests (union split variants).
       if (resolved?.wrappers && resolved.wrappers.length > 0) {
         for (const wrapper of resolved.wrappers) {
@@ -286,8 +318,17 @@ function roundTripStub(ref: TypeRef, enumNames: Set<string>): string {
   }
 }
 
-/** Build minimal placeholder arguments for calling the SDK method from a test. */
-function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hiddenParams: Set<string>): string {
+/** Build minimal placeholder arguments for calling the SDK method from a test.
+ *  `variantOverrides` selects a non-zero variant index per group; absent groups
+ *  default to variant 0. Used to emit per-variant test cases that exercise the
+ *  second/third arm of each parameter-group dispatcher.
+ */
+function buildCallArgsStub(
+  op: Operation,
+  modelByName: Map<string, Model>,
+  hiddenParams: Set<string>,
+  variantOverrides: Map<string, number> = new Map(),
+): string {
   const parts: string[] = [];
   const seen = new Set<string>();
 
@@ -339,10 +380,11 @@ function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hidde
     const name = fieldName(group.name);
     if (seen.has(name)) continue;
     seen.add(name);
-    const firstVariant = group.variants[0];
-    if (firstVariant) {
-      const variantClass = `WorkOS::${groupVariantClassName(group.name, firstVariant.name)}`;
-      const fieldStubs = firstVariant.parameters.map((p) => `${fieldName(p.name)}: ${stubValueFor(p.type)}`).join(', ');
+    const idx = variantOverrides.get(group.name) ?? 0;
+    const variant = group.variants[idx];
+    if (variant) {
+      const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+      const fieldStubs = variant.parameters.map((p) => `${fieldName(p.name)}: ${stubValueFor(p.type)}`).join(', ');
       parts.push(`${name}: ${variantClass}.new(${fieldStubs})`);
     }
   }
@@ -361,7 +403,12 @@ function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hidde
  * catches regressions where the dispatcher silently drops a passed group
  * (the original `update_organization_membership` regression).
  */
-function buildBodyMatcher(op: Operation, modelByName: Map<string, Model>, hiddenParams: Set<string>): string | null {
+function buildBodyMatcher(
+  op: Operation,
+  modelByName: Map<string, Model>,
+  hiddenParams: Set<string>,
+  variantOverrides: Map<string, number> = new Map(),
+): string | null {
   const httpMethod = op.httpMethod.toLowerCase();
   const hasBodyMethod = !['get', 'head', 'delete'].includes(httpMethod);
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
@@ -389,11 +436,12 @@ function buildBodyMatcher(op: Operation, modelByName: Map<string, Model>, hidden
     }
   }
 
-  // First variant of each group: its leaves get pumped into the body.
+  // Selected variant of each group: its leaves get pumped into the body.
   for (const group of op.parameterGroups ?? []) {
-    const firstVariant = group.variants[0];
-    if (!firstVariant) continue;
-    for (const p of firstVariant.parameters) {
+    const idx = variantOverrides.get(group.name) ?? 0;
+    const variant = group.variants[idx];
+    if (!variant) continue;
+    for (const p of variant.parameters) {
       entries.push(`"${p.name}" => ${stubValueFor(p.type)}`);
     }
   }
