@@ -15,7 +15,6 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { generateRbiFiles } from './rbi.js';
-import { generateParameterGroupClasses, generateParameterGroupRbi } from './parameter-groups.js';
 
 /** Ensure every generated file's content ends with a trailing newline. */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
@@ -32,8 +31,7 @@ export const rubyEmitter: Emitter = {
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     const modelFiles = generateModels(models, ctx);
-    const groupFiles = generateParameterGroupClasses(ctx.spec.services, ctx);
-    return ensureTrailingNewlines([...modelFiles, ...groupFiles]);
+    return ensureTrailingNewlines(modelFiles);
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -58,8 +56,7 @@ export const rubyEmitter: Emitter = {
 
   generateTypeSignatures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     const rbiFiles = generateRbiFiles(spec, ctx);
-    const groupRbiFiles = generateParameterGroupRbi(spec.services, ctx);
-    return ensureTrailingNewlines([...rbiFiles, ...groupRbiFiles]);
+    return ensureTrailingNewlines(rbiFiles);
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

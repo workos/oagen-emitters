@@ -3,14 +3,15 @@ import {
   className,
   fileName,
   fieldName,
-  groupVariantClassName,
   safeParamName,
+  scopedGroupVariantClassName,
   servicePropertyName,
   resolveMethodName,
 } from './naming.js';
 import { buildResolvedLookup, groupByMount, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { buildGroupOwnerMap } from './parameter-groups.js';
 
 /**
  * Generate Ruby Minitest test files for each service and per-method.
@@ -29,6 +30,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const m of spec.models as Model[]) modelByName.set(m.name, m);
 
   const lookup = buildResolvedLookup(ctx);
+  const groupOwners = buildGroupOwnerMap(ctx);
 
   for (const [mountTarget, group] of groups) {
     const cls = className(mountTarget);
@@ -76,7 +78,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
       const resolved = lookupResolved(op, lookup);
       const hiddenParams = buildHiddenParams(resolved);
-      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams);
+      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners);
       const bodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams);
 
       // Collect method info for the parameterized 401 test (T20).
@@ -109,7 +111,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         for (let vi = 1; vi < group.variants.length; vi++) {
           const variant = group.variants[vi];
           const overrides = new Map<string, number>([[group.name, vi]]);
-          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, overrides);
+          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, overrides);
           const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, overrides);
           const suffix = `with_${fieldName(group.name)}_${fieldName(variant.name)}`;
           lines.push('');
@@ -327,6 +329,7 @@ function buildCallArgsStub(
   op: Operation,
   modelByName: Map<string, Model>,
   hiddenParams: Set<string>,
+  groupOwners: Map<string, string>,
   variantOverrides: Map<string, number> = new Map(),
 ): string {
   const parts: string[] = [];
@@ -383,7 +386,11 @@ function buildCallArgsStub(
     const idx = variantOverrides.get(group.name) ?? 0;
     const variant = group.variants[idx];
     if (variant) {
-      const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+      const owner = groupOwners.get(group.name);
+      if (!owner) {
+        throw new Error(`No owner mount target found for parameter group '${group.name}'`);
+      }
+      const variantClass = scopedGroupVariantClassName(owner, group.name, variant.name);
       const fieldStubs = variant.parameters.map((p) => `${fieldName(p.name)}: ${stubValueFor(p.type)}`).join(', ');
       parts.push(`${name}: ${variantClass}.new(${fieldStubs})`);
     }

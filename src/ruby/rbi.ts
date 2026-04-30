@@ -1,6 +1,13 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className, fieldName, fileName, groupVariantClassName, safeParamName, resolveMethodName } from './naming.js';
+import {
+  className,
+  fieldName,
+  fileName,
+  safeParamName,
+  scopedGroupVariantClassName,
+  resolveMethodName,
+} from './naming.js';
 import {
   buildResolvedLookup,
   groupByMount,
@@ -9,6 +16,7 @@ import {
   collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
 
 /**
  * Map an IR TypeRef to a Sorbet type string for RBI files.
@@ -120,6 +128,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   for (const m of spec.models as Model[]) {
     if (isListWrapperModel(m)) listWrapperModels.set(m.name, m);
   }
+  const groupOwners = buildGroupOwnerMap(ctx);
 
   for (const [mountTarget, group] of groups) {
     const cls = className(mountTarget);
@@ -128,6 +137,15 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('');
     lines.push('module WorkOS');
     lines.push(`  class ${cls}`);
+
+    // Inline parameter-group variant RBI blocks owned by this mount target.
+    // Mirrors the runtime `class ... PasswordPlaintext = Data.define(...) end`
+    // layout in lib/workos/<service>.rb.
+    const variants = collectVariantsForMountTarget(ctx, spec.models as Model[], mountTarget);
+    for (const v of variants) {
+      for (const line of emitInlineVariantRbi(v)) lines.push(line);
+      lines.push('');
+    }
 
     lines.push('    sig { params(client: WorkOS::BaseClient).void }');
     lines.push('    def initialize(client); end');
@@ -161,7 +179,11 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       );
       const parameterGroups = op.parameterGroups ?? [];
       const groupSorbetType = (group: (typeof parameterGroups)[number]): string => {
-        const variants = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`);
+        const owner = groupOwners.get(group.name);
+        if (!owner) {
+          throw new Error(`No owner mount target found for parameter group '${group.name}'`);
+        }
+        const variants = group.variants.map((v) => scopedGroupVariantClassName(owner, group.name, v.name));
         if (variants.length === 1) return variants[0];
         return `T.any(${variants.join(', ')})`;
       };

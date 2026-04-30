@@ -4,10 +4,10 @@ import {
   className,
   fieldName,
   fileName,
-  groupVariantClassName,
   methodName,
   safeParamName,
   resolveMethodName,
+  scopedGroupVariantClassName,
 } from './naming.js';
 import { mapTypeRefForYard } from './type-map.js';
 import {
@@ -21,6 +21,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel } from '../shared/model-utils.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
+import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantClass } from './parameter-groups.js';
 
 /**
  * Generate Ruby resource (service) classes from IR services.
@@ -42,6 +43,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   for (const m of ctx.spec.models as Model[]) {
     if (isListWrapperModel(m)) listWrapperModels.set(m.name, m);
   }
+
+  // Resolve groupName -> owner mountTarget once per generation pass; every
+  // dispatcher and YARD `@param` reference resolves variant classes through
+  // this map so cross-resource references stay consistent.
+  const groupOwners = buildGroupOwnerMap(ctx);
 
   for (const [mountTarget, group] of groups) {
     const cls = className(mountTarget);
@@ -96,6 +102,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         modelByName,
         listWrapperModels,
         requires,
+        groupOwners,
       });
       methodBodies.push(body);
 
@@ -129,6 +136,18 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     }
     lines.push('module WorkOS');
     lines.push(`  class ${cls}`);
+
+    // Inline parameter-group variant classes owned by this mount target.
+    // Zeitwerk's `loader.collapse` flattens `lib/workos/<service>/` so files
+    // there can't define `WorkOS::<Service>::*` constants — variants must
+    // live inside the service's own file. Matches Python's per-resource
+    // dataclass layout.
+    const variants = collectVariantsForMountTarget(ctx, ctx.spec.models as Model[], mountTarget);
+    for (const v of variants) {
+      for (const line of emitInlineVariantClass(v)) lines.push(line);
+      lines.push('');
+    }
+
     lines.push('    def initialize(client)');
     lines.push('      @client = client');
     lines.push('    end');
@@ -162,6 +181,7 @@ function emitMethod(args: {
   modelByName: Map<string, Model>;
   listWrapperModels: Map<string, Model>;
   requires: Set<string>;
+  groupOwners: Map<string, string>;
 }): string {
   const {
     op,
@@ -174,8 +194,18 @@ function emitMethod(args: {
     modelByName,
     listWrapperModels,
     requires,
+    groupOwners,
   } = args;
   void enumNames;
+
+  /** Fully-qualified Ruby constant for a variant (e.g. WorkOS::UserManagement::PasswordPlaintext). */
+  const variantClassRef = (group: { name: string }, variantName: string): string => {
+    const owner = groupOwners.get(group.name);
+    if (!owner) {
+      throw new Error(`No owner mount target found for parameter group '${group.name}'`);
+    }
+    return scopedGroupVariantClassName(owner, group.name, variantName);
+  };
 
   const plan = planOperation(op);
   const lines: string[] = [];
@@ -280,7 +310,16 @@ function emitMethod(args: {
   sigParts.push('request_options: {}');
 
   // YARD docs.
-  const doc = buildYardDoc(op, pathParams, queryParams, bodyFields, hiddenParams, bodyFieldRenames, listWrapperModels);
+  const doc = buildYardDoc(
+    op,
+    pathParams,
+    queryParams,
+    bodyFields,
+    hiddenParams,
+    bodyFieldRenames,
+    listWrapperModels,
+    variantClassRef,
+  );
   for (const line of doc) lines.push(`    ${line}`);
 
   // Signature.
@@ -347,14 +386,14 @@ function emitMethod(args: {
           lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+          const variantClass = variantClassRef(group, variant.name);
           lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
             lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
         lines.push(`      else`);
-        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop)}`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop, variantClassRef)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -411,14 +450,14 @@ function emitMethod(args: {
           lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          const variantClass = `WorkOS::${groupVariantClassName(group.name, variant.name)}`;
+          const variantClass = variantClassRef(group, variant.name);
           lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
             lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
         lines.push(`      else`);
-        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop)}`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop, variantClassRef)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -754,8 +793,9 @@ function buildYardDoc(
   queryParams: Parameter[],
   bodyFields: { name: string; required: boolean; type: TypeRef; description?: string; deprecated?: boolean }[],
   hiddenParams: Set<string>,
-  bodyFieldRenames?: Map<string, string>,
-  listWrapperModels?: Map<string, Model>,
+  bodyFieldRenames: Map<string, string> | undefined,
+  listWrapperModels: Map<string, Model> | undefined,
+  variantClassRef: (group: { name: string }, variantName: string) => string,
 ): string[] {
   const lines: string[] = [];
   const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -805,7 +845,7 @@ function buildYardDoc(
     const n = fieldName(group.name);
     if (emittedParamNames.has(n)) continue;
     emittedParamNames.add(n);
-    const variantTypes = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`).join(', ');
+    const variantTypes = group.variants.map((v) => variantClassRef(group, v.name)).join(', ');
     const suffix = group.optional ? ', nil' : '';
     lines.push(`# @param ${n} [${variantTypes}${suffix}] Identifies the ${group.name.replace(/_/g, ' ')}.`);
   }
@@ -848,7 +888,11 @@ function rubyStringLit(s: string): string {
  * arm of a parameter-group dispatcher. Lists the expected variant classes and
  * interpolates the actual class of the value the caller passed.
  */
-function dispatchErrorLiteral(group: { name: string; variants: { name: string }[] }, prop: string): string {
-  const expected = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`).join(', ');
+function dispatchErrorLiteral(
+  group: { name: string; variants: { name: string }[] },
+  prop: string,
+  variantClassRef: (group: { name: string }, variantName: string) => string,
+): string {
+  const expected = group.variants.map((v) => variantClassRef(group, v.name)).join(', ');
   return `"expected ${prop} to be one of: ${expected}, got #{${prop}.class}"`;
 }

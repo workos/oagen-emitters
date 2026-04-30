@@ -1,7 +1,7 @@
-import type { Service, EmitterContext, GeneratedFile, Operation, TypeRef, Model } from '@workos/oagen';
-import { className, fieldName, groupVariantClassName, groupVariantFileName } from './naming.js';
-import { mapTypeRef as mapYardType, mapTypeRefForYard } from './type-map.js';
-import { collectBodyFieldTypes } from '../shared/resolved-ops.js';
+import type { EmitterContext, TypeRef, Model } from '@workos/oagen';
+import { className, fieldName, groupVariantClassName } from './naming.js';
+import { mapTypeRefForYard } from './type-map.js';
+import { collectBodyFieldTypes, groupByMount } from '../shared/resolved-ops.js';
 
 /**
  * Sorbet type string for a TypeRef. Mirrors `mapSorbetType` in rbi.ts but
@@ -48,18 +48,49 @@ function mapSorbetType(ref: TypeRef): string {
   return 'T.untyped';
 }
 
-interface CollectedVariant {
+export interface CollectedVariant {
   className: string;
-  fileName: string;
   groupName: string;
   variantName: string;
+  /** PascalCase mount target this variant is scoped under (e.g. "UserManagement"). */
+  mountTarget: string;
   parameters: { name: string; type: TypeRef }[];
 }
 
 /**
- * Walk every operation, collect each unique parameter-group variant once.
- * The same group name can appear in multiple operations (e.g. `resource_target`
- * in `check`/`assign_role`/`remove_role`); we dedupe by class name.
+ * Build a stable groupName -> mountTarget map. Each parameter group is owned
+ * by exactly one resource module — Ruby variant classes are inlined into
+ * `WorkOS::<MountTarget>::<Variant>` (matching Python's per-resource layout),
+ * so a dispatcher in another resource that references the same group still
+ * resolves to a single canonical class.
+ *
+ * Mount targets are visited in alphabetical order so first-wins is
+ * deterministic across runs. In the current spec no group is shared across
+ * mount targets; if one ever is, the alphabetically-first owner gets the
+ * class and other dispatchers reference it by full path.
+ */
+export function buildGroupOwnerMap(ctx: EmitterContext): Map<string, string> {
+  const owner = new Map<string, string>();
+  const groups = groupByMount(ctx);
+  const sortedTargets = [...groups.keys()].sort();
+  for (const target of sortedTargets) {
+    const g = groups.get(target);
+    if (!g) continue;
+    for (const op of g.operations) {
+      for (const grp of op.parameterGroups ?? []) {
+        if (!owner.has(grp.name)) owner.set(grp.name, target);
+      }
+    }
+  }
+  return owner;
+}
+
+/**
+ * Collect all variant classes a given mount target owns. Variants are
+ * inlined into the resource file (and its RBI counterpart) — Zeitwerk's
+ * collapse convention means subdirectories under `lib/workos/<service>/`
+ * don't add a namespace level, so files there can't define
+ * `WorkOS::<Service>::<Variant>`. Inline definitions sidestep that.
  *
  * Variant parameter types are taken from the IR's leaf type. When the IR's
  * leaf is a bare primitive but the request body model has a richer type
@@ -68,21 +99,30 @@ interface CollectedVariant {
  * optional, the body field for the group becomes nullable, but within a
  * variant the leaf is always required (selecting the variant means passing it).
  */
-function collectVariants(operations: Operation[], models: Model[]): CollectedVariant[] {
+export function collectVariantsForMountTarget(
+  ctx: EmitterContext,
+  models: Model[],
+  mountTarget: string,
+): CollectedVariant[] {
+  const owner = buildGroupOwnerMap(ctx);
   const seen = new Set<string>();
   const out: CollectedVariant[] = [];
-  for (const op of operations) {
+  const groups = groupByMount(ctx);
+  const g = groups.get(mountTarget);
+  if (!g) return out;
+  for (const op of g.operations) {
     const bodyFieldTypes = collectBodyFieldTypes(op, models);
     for (const group of op.parameterGroups ?? []) {
+      if (owner.get(group.name) !== mountTarget) continue;
       for (const variant of group.variants) {
         const cls = groupVariantClassName(group.name, variant.name);
         if (seen.has(cls)) continue;
         seen.add(cls);
         out.push({
           className: cls,
-          fileName: groupVariantFileName(group.name, variant.name),
           groupName: group.name,
           variantName: variant.name,
+          mountTarget,
           parameters: variant.parameters.map((p) => ({
             name: p.name,
             type: pickVariantParamType(p.type, bodyFieldTypes.get(p.name)),
@@ -120,106 +160,58 @@ function readableName(name: string): string {
 }
 
 /**
- * Generate a `Data.define` class file for each unique parameter-group variant
- * referenced by any service's operations. Files are emitted alongside models
- * under `lib/workos/<variant>.rb` so Zeitwerk autoloads them.
+ * Render the inline `Data.define` block for a single variant, indented for
+ * inclusion inside a `class <Service>` body. Returns an array of lines with
+ * 4-space indent (the resource file's class members are 4-space indented).
  */
-export function generateParameterGroupClasses(services: Service[], _ctx: EmitterContext): GeneratedFile[] {
-  const operations = services.flatMap((s) => s.operations);
-  const models = (_ctx.spec.models as Model[]) ?? [];
-  const variants = collectVariants(operations, models);
-
-  const files: GeneratedFile[] = [];
-  for (const v of variants) {
-    const lines: string[] = [];
-    lines.push('module WorkOS');
-    lines.push(`  # Identifies the ${readableName(v.groupName)} (${readableName(v.variantName)} variant).`);
-    lines.push('  #');
-    for (const p of v.parameters) {
-      const yardType = mapTypeRefForYard(p.type);
-      lines.push(`  # @!attribute [r] ${fieldName(p.name)}`);
-      lines.push(`  #   @return [${yardType}]`);
-    }
-    if (v.parameters.length === 0) {
-      lines.push(`  ${v.className} = Data.define`);
-    } else {
-      const fields = v.parameters.map((p) => `:${fieldName(p.name)}`).join(', ');
-      lines.push(`  ${v.className} = Data.define(${fields})`);
-    }
-    lines.push('end');
-    files.push({
-      path: `lib/workos/${v.fileName}.rb`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+export function emitInlineVariantClass(v: CollectedVariant): string[] {
+  const lines: string[] = [];
+  lines.push(`    # Identifies the ${readableName(v.groupName)} (${readableName(v.variantName)} variant).`);
+  lines.push('    #');
+  for (const p of v.parameters) {
+    const yardType = mapTypeRefForYard(p.type);
+    lines.push(`    # @!attribute [r] ${fieldName(p.name)}`);
+    lines.push(`    #   @return [${yardType}]`);
   }
-  return files;
+  if (v.parameters.length === 0) {
+    lines.push(`    ${v.className} = Data.define`);
+  } else {
+    const fields = v.parameters.map((p) => `:${fieldName(p.name)}`).join(', ');
+    lines.push(`    ${v.className} = Data.define(${fields})`);
+  }
+  return lines;
 }
 
 /**
- * Generate a Sorbet `.rbi` file for each variant class. Mirrors the shape
- * used by `rbi/workos/types/api_response.rbi`.
+ * Render the inline RBI `class` block for a single variant, indented for
+ * inclusion inside a `class <Service>` body in a service .rbi file. Returns
+ * lines with 4-space indent.
  */
-export function generateParameterGroupRbi(services: Service[], ctx: EmitterContext): GeneratedFile[] {
-  const operations = services.flatMap((s) => s.operations);
-  const models = (ctx.spec.models as Model[]) ?? [];
-  const variants = collectVariants(operations, models);
-
-  const files: GeneratedFile[] = [];
-  for (const v of variants) {
-    const lines: string[] = [];
-    lines.push('# typed: strong');
+export function emitInlineVariantRbi(v: CollectedVariant): string[] {
+  const lines: string[] = [];
+  const fqcn = `WorkOS::${v.mountTarget}::${v.className}`;
+  lines.push(`    class ${v.className}`);
+  for (const p of v.parameters) {
+    lines.push(`      sig { returns(${mapSorbetType(p.type)}) }`);
+    lines.push(`      def ${fieldName(p.name)}; end`);
     lines.push('');
-    lines.push('module WorkOS');
-    lines.push(`  class ${v.className}`);
-    for (const p of v.parameters) {
-      lines.push(`    sig { returns(${mapSorbetType(p.type)}) }`);
-      lines.push(`    def ${fieldName(p.name)}; end`);
-      lines.push('');
-    }
-    if (v.parameters.length === 0) {
-      lines.push(`    sig { returns(WorkOS::${v.className}) }`);
-      lines.push(`    def self.new; end`);
-    } else {
-      lines.push('    sig do');
-      lines.push('      params(');
-      for (let i = 0; i < v.parameters.length; i++) {
-        const p = v.parameters[i];
-        const sep = i === v.parameters.length - 1 ? '' : ',';
-        lines.push(`        ${fieldName(p.name)}: ${mapSorbetType(p.type)}${sep}`);
-      }
-      lines.push(`      ).returns(WorkOS::${v.className})`);
-      lines.push('    end');
-      const kwargs = v.parameters.map((p) => `${fieldName(p.name)}:`).join(', ');
-      lines.push(`    def self.new(${kwargs}); end`);
-    }
-    lines.push('  end');
-    lines.push('end');
-    files.push({
-      path: `rbi/workos/${v.fileName}.rbi`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
   }
-  return files;
-}
-
-/**
- * Build the YARD type-tag union string for a parameter group's kwarg.
- * E.g., `[WorkOS::PasswordPlaintext, WorkOS::PasswordHashed]`.
- */
-export function groupYardUnion(group: { name: string; variants: { name: string }[] }): string {
-  void mapYardType;
-  return group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`).join(', ');
-}
-
-/**
- * Build the Sorbet `T.any(...)` type for a parameter group's kwarg.
- */
-export function groupSorbetUnion(group: { name: string; variants: { name: string }[] }): string {
-  const variants = group.variants.map((v) => `WorkOS::${groupVariantClassName(group.name, v.name)}`);
-  if (variants.length === 1) return variants[0];
-  return `T.any(${variants.join(', ')})`;
+  if (v.parameters.length === 0) {
+    lines.push(`      sig { returns(${fqcn}) }`);
+    lines.push(`      def self.new; end`);
+  } else {
+    lines.push('      sig do');
+    lines.push('        params(');
+    for (let i = 0; i < v.parameters.length; i++) {
+      const p = v.parameters[i];
+      const sep = i === v.parameters.length - 1 ? '' : ',';
+      lines.push(`          ${fieldName(p.name)}: ${mapSorbetType(p.type)}${sep}`);
+    }
+    lines.push(`        ).returns(${fqcn})`);
+    lines.push('      end');
+    const kwargs = v.parameters.map((p) => `${fieldName(p.name)}:`).join(', ');
+    lines.push(`      def self.new(${kwargs}); end`);
+  }
+  lines.push('    end');
+  return lines;
 }
