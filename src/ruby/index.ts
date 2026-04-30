@@ -30,7 +30,8 @@ export const rubyEmitter: Emitter = {
   language: 'ruby',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateModels(models, ctx));
+    const modelFiles = generateModels(models, ctx);
+    return ensureTrailingNewlines(modelFiles);
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -54,7 +55,8 @@ export const rubyEmitter: Emitter = {
   },
 
   generateTypeSignatures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateRbiFiles(spec, ctx));
+    const rbiFiles = generateRbiFiles(spec, ctx);
+    return ensureTrailingNewlines(rbiFiles);
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {

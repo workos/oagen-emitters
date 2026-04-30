@@ -1,8 +1,23 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Model, Operation, ResolvedWrapper, TypeRef } from '@workos/oagen';
-import { className, fileName, fieldName, safeParamName, servicePropertyName, resolveMethodName } from './naming.js';
-import { buildResolvedLookup, groupByMount, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  className,
+  fileName,
+  fieldName,
+  safeParamName,
+  scopedGroupVariantClassName,
+  servicePropertyName,
+  resolveMethodName,
+} from './naming.js';
+import {
+  buildResolvedLookup,
+  groupByMount,
+  lookupResolved,
+  buildHiddenParams,
+  collectBodyFieldTypes,
+} from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js';
 
 /**
  * Generate Ruby Minitest test files for each service and per-method.
@@ -17,10 +32,12 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   const groups = groupByMount(ctx);
+  const models = spec.models as Model[];
   const modelByName = new Map<string, Model>();
-  for (const m of spec.models as Model[]) modelByName.set(m.name, m);
+  for (const m of models) modelByName.set(m.name, m);
 
   const lookup = buildResolvedLookup(ctx);
+  const groupOwners = buildGroupOwnerMap(ctx);
 
   for (const [mountTarget, group] of groups) {
     const cls = className(mountTarget);
@@ -68,30 +85,62 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
       const resolved = lookupResolved(op, lookup);
       const hiddenParams = buildHiddenParams(resolved);
-      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams);
+      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models);
+      const bodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models);
 
       // Collect method info for the parameterized 401 test (T20).
       authMethodManifest.push({ method, httpMethodSym, stubUrl, callArgs });
 
       const stubRegex = stubUrlRegex(stubUrl);
       lines.push(`  def test_${method}_returns_expected_result`);
+      lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
+      if (bodyMatcher) lines.push(`      .with(body: ${bodyMatcher})`);
       if (isList) {
-        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: '{"data": [], "list_metadata": {}}', status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
         lines.push('    assert_kind_of WorkOS::Types::ListStruct, result');
       } else if (op.response.kind === 'primitive') {
-        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: "{}", status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
         lines.push('    assert_nil result');
       } else {
-        lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
         lines.push(`      .to_return(body: "{}", status: 200)`);
         lines.push(`    result = @client.${prop}.${method}(${callArgs})`);
         lines.push('    refute_nil result');
       }
       lines.push('  end');
+
+      // Per-variant tests: for every parameter group with more than one
+      // variant, emit one extra test per non-first variant so the second/third
+      // arm of the dispatcher gets exercised. Without this, a wrong wire-name
+      // mapping in (e.g.) ResourceTargetByExternalId would slip through.
+      for (const group of op.parameterGroups ?? []) {
+        for (let vi = 1; vi < group.variants.length; vi++) {
+          const variant = group.variants[vi];
+          const overrides = new Map<string, number>([[group.name, vi]]);
+          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models, overrides);
+          const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models, overrides);
+          const suffix = `with_${fieldName(group.name)}_${fieldName(variant.name)}`;
+          lines.push('');
+          lines.push(`  def test_${method}_${suffix}_returns_expected_result`);
+          lines.push(`    stub_request(${httpMethodSym}, ${stubRegex})`);
+          if (variantBodyMatcher) lines.push(`      .with(body: ${variantBodyMatcher})`);
+          if (isList) {
+            lines.push(`      .to_return(body: '{"data": [], "list_metadata": {}}', status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    assert_kind_of WorkOS::Types::ListStruct, result');
+          } else if (op.response.kind === 'primitive') {
+            lines.push(`      .to_return(body: "{}", status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    assert_nil result');
+          } else {
+            lines.push(`      .to_return(body: "{}", status: 200)`);
+            lines.push(`    result = @client.${prop}.${method}(${variantCallArgs})`);
+            lines.push('    refute_nil result');
+          }
+          lines.push('  end');
+        }
+      }
 
       // Wrapper tests (union split variants).
       if (resolved?.wrappers && resolved.wrappers.length > 0) {
@@ -278,8 +327,19 @@ function roundTripStub(ref: TypeRef, enumNames: Set<string>): string {
   }
 }
 
-/** Build minimal placeholder arguments for calling the SDK method from a test. */
-function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hiddenParams: Set<string>): string {
+/** Build minimal placeholder arguments for calling the SDK method from a test.
+ *  `variantOverrides` selects a non-zero variant index per group; absent groups
+ *  default to variant 0. Used to emit per-variant test cases that exercise the
+ *  second/third arm of each parameter-group dispatcher.
+ */
+function buildCallArgsStub(
+  op: Operation,
+  modelByName: Map<string, Model>,
+  hiddenParams: Set<string>,
+  groupOwners: Map<string, string>,
+  models: Model[],
+  variantOverrides: Map<string, number> = new Map(),
+): string {
   const parts: string[] = [];
   const seen = new Set<string>();
 
@@ -323,22 +383,102 @@ function buildCallArgsStub(op: Operation, modelByName: Map<string, Model>, hidde
     parts.push(`${name}: ${stubValueFor(q.type)}`);
   }
 
-  // Required parameter group kwargs.
+  // Parameter group kwargs (required and optional): instantiate the first
+  // variant's class. Optional groups are exercised too so the dispatcher
+  // code path is covered — passing nothing would skip the body block and
+  // hide silent-drop bugs (see workos/oagen-emitters#66).
+  //
+  // Variant param types are recovered from the body model: the IR's leaf type
+  // is often a bare primitive (`role_slugs: string`) even when the body model
+  // declares a richer shape (`Array<String>`). Stubbing without recovery would
+  // pass `"stub"` to `RoleMultiple.new(role_slugs:)` while the class signature
+  // declares `T::Array[String]` — the test passes locally but ships an invalid
+  // wire body the API rejects.
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
   for (const group of op.parameterGroups ?? []) {
-    if (group.optional) continue;
     const name = fieldName(group.name);
     if (seen.has(name)) continue;
     seen.add(name);
-    // Stub as a hash with the first variant's type discriminant.
-    const firstVariant = group.variants[0];
-    if (firstVariant) {
-      parts.push(`${name}: { type: "${firstVariant.name}" }`);
-    } else {
-      parts.push(`${name}: {}`);
+    const idx = variantOverrides.get(group.name) ?? 0;
+    const variant = group.variants[idx];
+    if (variant) {
+      const owner = groupOwners.get(group.name);
+      if (!owner) {
+        throw new Error(`No owner mount target found for parameter group '${group.name}'`);
+      }
+      const variantClass = scopedGroupVariantClassName(owner, group.name, variant.name);
+      const fieldStubs = variant.parameters
+        .map((p) => `${fieldName(p.name)}: ${stubValueFor(pickVariantParamType(p.type, bodyFieldTypes.get(p.name)))}`)
+        .join(', ');
+      parts.push(`${name}: ${variantClass}.new(${fieldStubs})`);
     }
   }
 
   return parts.join(', ');
+}
+
+/**
+ * Build a Ruby `hash_including(...)` matcher describing the wire body the
+ * SDK should send for an operation whose body is constructed (in part) by a
+ * parameter-group dispatcher. Returns `null` for operations without body
+ * groups — those are still stubbed without a body matcher.
+ *
+ * The matcher includes every required non-group body field plus the first
+ * variant's wire-name leaves for each group dispatched into the body. This
+ * catches regressions where the dispatcher silently drops a passed group
+ * (the original `update_organization_membership` regression).
+ */
+function buildBodyMatcher(
+  op: Operation,
+  modelByName: Map<string, Model>,
+  hiddenParams: Set<string>,
+  models: Model[],
+  variantOverrides: Map<string, number> = new Map(),
+): string | null {
+  const httpMethod = op.httpMethod.toLowerCase();
+  const hasBodyMethod = !['get', 'head', 'delete'].includes(httpMethod);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  if (!hasBodyMethod || !hasGroups) return null;
+
+  const groupedParamNames = new Set<string>();
+  for (const group of op.parameterGroups ?? []) {
+    for (const variant of group.variants) {
+      for (const p of variant.parameters) groupedParamNames.add(p.name);
+    }
+  }
+
+  const entries: string[] = [];
+
+  // Required non-group body fields, keyed by wire name.
+  if (op.requestBody) {
+    const bodyModel = resolveBodyModel(op.requestBody, modelByName);
+    if (bodyModel) {
+      for (const f of bodyModel.fields) {
+        if (!f.required) continue;
+        if (hiddenParams.has(f.name)) continue;
+        if (groupedParamNames.has(f.name)) continue;
+        entries.push(`"${f.name}" => ${stubValueFor(f.type)}`);
+      }
+    }
+  }
+
+  // Selected variant of each group: its leaves get pumped into the body. The
+  // matcher value must use the recovered (body-model) type, not the IR leaf —
+  // see buildCallArgsStub for the same reasoning. Without this, the matcher
+  // shape diverges from what the SDK actually sends.
+  const bodyFieldTypes = collectBodyFieldTypes(op, models);
+  for (const group of op.parameterGroups ?? []) {
+    const idx = variantOverrides.get(group.name) ?? 0;
+    const variant = group.variants[idx];
+    if (!variant) continue;
+    for (const p of variant.parameters) {
+      const recovered = pickVariantParamType(p.type, bodyFieldTypes.get(p.name));
+      entries.push(`"${p.name}" => ${stubValueFor(recovered)}`);
+    }
+  }
+
+  if (entries.length === 0) return null;
+  return `hash_including(${entries.join(', ')})`;
 }
 
 function resolveBodyModel(ref: TypeRef, modelByName: Map<string, Model>): Model | null {
@@ -417,7 +557,10 @@ function stubValueFor(ref: TypeRef): string {
           return `nil`;
       }
     case 'array':
-      return `[]`;
+      // Single-element array — exercises the wire shape under hash_including
+      // matchers. An empty `[]` would match `"role_slugs": []` on the wire,
+      // hiding regressions where the SDK serializes the wrong type.
+      return `[${stubValueFor(ref.items)}]`;
     case 'map':
       return `{}`;
     case 'enum':

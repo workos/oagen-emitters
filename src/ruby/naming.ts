@@ -117,6 +117,29 @@ export function moduleName(name: string): string {
   return toSnakeCase(name);
 }
 
+/**
+ * PascalCase class name for a parameter-group variant. Mirrors the Python
+ * convention: group "password" + variant "plaintext" → `PasswordPlaintext`.
+ * Used as the Ruby constant under the WorkOS module.
+ */
+export function groupVariantClassName(groupName: string, variantName: string): string {
+  return className(`${groupName}_${variantName}`);
+}
+
+/** snake_case Zeitwerk-compatible filename for a parameter-group variant. */
+export function groupVariantFileName(groupName: string, variantName: string): string {
+  return fileName(`${groupName}_${variantName}`);
+}
+
+/**
+ * Fully-qualified Ruby constant for a parameter-group variant scoped under
+ * its owning resource module — e.g. "WorkOS::UserManagement::PasswordPlaintext".
+ * Mirrors Python's `workos.user_management.PasswordPlaintext` namespacing.
+ */
+export function scopedGroupVariantClassName(mountTarget: string, groupName: string, variantName: string): string {
+  return `WorkOS::${className(mountTarget)}::${groupVariantClassName(groupName, variantName)}`;
+}
+
 /** snake_case property name for service accessors on the client. */
 export function servicePropertyName(name: string): string {
   return toSnakeCase(name);
