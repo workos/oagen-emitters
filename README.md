@@ -15,6 +15,7 @@ const config: OagenConfig = {
   docUrl: "https://workos.com/docs",
   operationHints,
   mountRules,
+  modelHints,
 };
 ```
 
