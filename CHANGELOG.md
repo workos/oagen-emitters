@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/workos/oagen-emitters/compare/v0.6.8...v0.7.0) (2026-04-30)
+
+
+### Features
+
+* thread modelHints through assignModelsToServices call sites ([#68](https://github.com/workos/oagen-emitters/issues/68)) ([1ad5acd](https://github.com/workos/oagen-emitters/commit/1ad5acdda7eeb6a0f24bdd26c6144a76e82157f2))
+
 ## [0.6.8](https://github.com/workos/oagen-emitters/compare/v0.6.7...v0.6.8) (2026-04-30)
 
 
