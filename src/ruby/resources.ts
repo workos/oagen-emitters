@@ -355,8 +355,12 @@ function emitMethod(args: {
     }
   }
 
-  // Request body
-  const hasBody = bodyFields.length > 0 && !['get', 'head'].includes(method_http);
+  // Request body. Emit when there are non-group body fields OR a parameter
+  // group dispatches into the body — the latter case matters when an
+  // operation's body is exclusively managed by a group (e.g.
+  // update_organization_membership's `role`), where filtering the group's
+  // leaves leaves bodyFields empty but the request still needs a payload.
+  const hasBody = (bodyFields.length > 0 && !['get', 'head'].includes(method_http)) || (hasGroups && hasBodyMethod);
 
   if (hasBody) {
     const bodyEntries: string[] = [];
