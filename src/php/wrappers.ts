@@ -4,6 +4,7 @@ import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName } from './naming.js';
 import { phpDocComment } from './utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { buildPhpPathExpression } from './path-expression.js';
 
 /**
  * Generate PHP wrapper methods for split union operations.
@@ -108,15 +109,12 @@ function emitWrapperMethod(
 
   // Delegate to HTTP client
   const httpMethod = op.httpMethod.toUpperCase();
-  let path = op.path.startsWith('/') ? op.path.slice(1) : op.path;
-  const hasInterpolation = /\{[^}]+\}/.test(path);
-  path = path.replace(/\{([^}]+)\}/g, (_match, param) => `{$${fieldName(param)}}`);
-  const pathQuote = hasInterpolation ? '"' : "'";
+  const pathExpr = buildPhpPathExpression(op.path);
 
   lines.push('');
   lines.push('        $response = $this->client->request(');
   lines.push(`            method: '${httpMethod}',`);
-  lines.push(`            path: ${pathQuote}${path}${pathQuote},`);
+  lines.push(`            path: ${pathExpr},`);
   lines.push('            body: $body,');
   lines.push('            options: $options,');
   lines.push('        );');

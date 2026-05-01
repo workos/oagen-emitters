@@ -83,7 +83,8 @@ describe('generateResources', () => {
     // GET method with path param
     expect(content).toContain('def get_organization(');
     expect(content).toContain('id: str,');
-    expect(content).toContain('f"organizations/{id}"');
+    expect(content).toContain(`f"organizations/{quote(str(id), safe='')}"`);
+    expect(content).toContain('from urllib.parse import quote');
     expect(content).toContain('model=Organization');
     // Public request methods (no underscore prefix)
     expect(content).toContain('self._client.request(');

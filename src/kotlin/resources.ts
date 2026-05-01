@@ -37,6 +37,7 @@ import {
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
+import { buildKotlinPathExpression, KOTLIN_PATH_ENCODE_IMPORT } from './path-expression.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -113,6 +114,11 @@ function generateApiClass(
       }
       // Wrapper methods use bodyOf() for request body construction.
       imports.add('com.workos.common.http.bodyOf');
+      // Wrappers share the operation's path; if it has any {param}, the
+      // wrapper emits encodePathSegment(...) and needs the import.
+      if (/\{[^{}]+\}/.test(resolvedOp!.operation.path)) {
+        imports.add(KOTLIN_PATH_ENCODE_IMPORT);
+      }
       const wrapperLines = generateWrapperMethods(resolvedOp!, ctx);
       if (body.length > 0) body.push('');
       for (const line of wrapperLines) body.push(line);
@@ -374,7 +380,9 @@ function renderMethod(
       (Object.keys(defaults).length > 0 || inferFromClient.length > 0) &&
       specDeclaresBody);
   const appendDefaultsAsQuery = !hasBody && (Object.keys(defaults).length > 0 || inferFromClient.length > 0);
-  const pathExpr = buildPathExpression(op.path, pathParams);
+  const pathBuilt = buildKotlinPathExpression(op.path);
+  const pathExpr = pathBuilt.expression;
+  if (pathBuilt.requiresEncodeImport) imports.add(KOTLIN_PATH_ENCODE_IMPORT);
 
   if (
     op.path === '/user_management/authenticate' &&
@@ -725,25 +733,6 @@ function _emitBodyField(field: Field, kotlinParamName: string, isPatch: boolean)
     return [`    if (${prop} is PatchField.Present) body[${ktLiteral(field.name)}] = ${prop}.value`];
   }
   return [`    if (${prop} != null) body[${ktLiteral(field.name)}] = ${prop}`];
-}
-
-function buildPathExpression(path: string, pathParams: Parameter[]): string {
-  if (pathParams.length === 0) return ktLiteral(path);
-  let result = path;
-  for (const pp of pathParams) {
-    const placeholder = `{${pp.name}}`;
-    const propName = propertyName(pp.name);
-    // Use $propName for simple identifiers and ${propName} only when followed by
-    // an ident-continuing char (to avoid false continuations). ktlint prefers the
-    // unbraced form for bare identifiers.
-    const replacement = isBareIdentifier(propName) ? `\$${propName}` : `\${${propName}}`;
-    result = result.replaceAll(placeholder, replacement);
-  }
-  return `"${result.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function isBareIdentifier(name: string): boolean {
-  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name);
 }
 
 function pickNamedQueryParam(sorted: Parameter[], name: string): string {

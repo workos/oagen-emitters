@@ -40,6 +40,7 @@ import {
   getOpInferFromClient,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
+import { buildNodePathExpression } from './path-expression.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 
 /**
@@ -1417,8 +1418,7 @@ function renderQueryExpr(queryParams: { name: string; required: boolean }[]): st
 }
 
 function buildPathStr(op: Operation): string {
-  const interpolated = op.path.replace(/\{(\w+)\}/g, (_, p) => `\${${fieldName(p)}}`);
-  return interpolated.includes('${') ? `\`${interpolated}\`` : `'${op.path}'`;
+  return buildNodePathExpression(op.path);
 }
 
 function buildPathParams(op: Operation, specEnumNames?: Set<string>): string {

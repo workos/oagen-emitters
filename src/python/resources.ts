@@ -48,6 +48,7 @@ import {
   pythonLiteral,
   clientFieldExpression,
 } from './wrappers.js';
+import { buildPythonPathExpression } from './path-expression.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -1018,6 +1019,16 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('from __future__ import annotations');
     lines.push('');
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
+
+    // urllib.parse.quote is needed whenever any operation has a path parameter,
+    // so each interpolated id can be URL-encoded with safe="" before being
+    // concatenated into the request path.
+    const hasAnyPathParam =
+      allOperations.some((op) => op.pathParams.length > 0) || allOperations.some((op) => /\{[^{}]+\}/.test(op.path));
+    if (hasAnyPathParam) {
+      lines.push('from urllib.parse import quote');
+    }
+
     lines.push('');
     lines.push('if TYPE_CHECKING:');
     lines.push(`    from ${importPrefix}_client import AsyncWorkOSClient, WorkOSClient`);
@@ -1518,22 +1529,14 @@ function buildErrorRaisesBlock(op: Operation): string[] {
 
 /**
  * Build a Python f-string path expression from an operation path.
- * E.g., "/organizations/{id}" -> f"organizations/{id}"
+ * E.g., "/organizations/{id}" -> f"organizations/{quote(str(id), safe='')}"
  */
 function buildPathString(op: Operation): string {
-  // Strip leading slash and convert {param} to Python f-string interpolation
-  const path = op.path.replace(/^\//, '');
-  if (op.pathParams.length === 0) {
-    return `"${path}"`;
-  }
-  // Convert {paramName} to {fieldName(paramName)}
-  let fPath = path;
-  for (const param of op.pathParams) {
-    if (param.type.kind === 'enum' || (param.type.kind === 'nullable' && (param.type as any).inner?.kind === 'enum')) {
-      fPath = fPath.replace(`{${param.name}}`, `{enum_value(${fieldName(param.name)})}`);
-    } else {
-      fPath = fPath.replace(`{${param.name}}`, `{${fieldName(param.name)}}`);
+  const enumParams = new Set<string>();
+  for (const p of op.pathParams) {
+    if (p.type.kind === 'enum' || (p.type.kind === 'nullable' && (p.type as any).inner?.kind === 'enum')) {
+      enumParams.add(p.name);
     }
   }
-  return `f"${fPath}"`;
+  return buildPythonPathExpression(op.path, { enumParams });
 }
