@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/workos/oagen-emitters/compare/v0.7.0...v0.7.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **python:** use explicit re-export form in service __init__.py ([#70](https://github.com/workos/oagen-emitters/issues/70)) ([5fcbb83](https://github.com/workos/oagen-emitters/commit/5fcbb83cc2c87278df2b6f055ccdcaa6efb97ad4))
+
 ## [0.7.0](https://github.com/workos/oagen-emitters/compare/v0.6.8...v0.7.0) (2026-04-30)
 
 
