@@ -21,7 +21,7 @@ import { initializeEnumDedup } from './naming.js';
 
 /** Initialize enum deduplication from spec data. */
 function ensureNamingInitialized(ctx: EmitterContext): void {
-  initializeEnumDedup(ctx.spec.enums);
+  initializeEnumDedup(ctx.spec.enums, ctx.apiSurface);
 }
 
 /** Ensure every generated file's content ends with a trailing newline. */

@@ -1,6 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
+import { baselineEnumNamesFrom, buildEnumAliasMap } from '../shared/enum-dedup.js';
 
 /**
  * Generate Go typed string enum constants from IR Enum definitions.
@@ -15,7 +16,7 @@ import { className } from './naming.js';
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
-  const aliasOf = collectEnumAliasOf(enums);
+  const aliasOf = collectEnumAliasOf(enums, ctx);
   const files: GeneratedFile[] = [];
 
   // Group all enums into a single file per SDK
@@ -150,27 +151,11 @@ function humanize(name: string): string {
   return result;
 }
 
-function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
-  const hashGroups = new Map<string, string[]>();
-  for (const enumDef of enums) {
-    const hash = [...enumDef.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef.name);
-  }
-
-  const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
-  return aliasOf;
+function collectEnumAliasOf(enums: Enum[], ctx: EmitterContext): Map<string, string> {
+  return buildEnumAliasMap(enums, {
+    baselineCanonicalNames: baselineEnumNamesFrom(ctx.apiSurface),
+    classNameOf: className,
+  });
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

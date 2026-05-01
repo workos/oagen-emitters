@@ -1,5 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { className, ktStringLiteral } from './naming.js';
+import { baselineEnumNamesFrom } from '../shared/enum-dedup.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const ENUMS_PACKAGE = 'com.workos.types';
@@ -24,7 +25,7 @@ export const enumCanonicalMap = new Map<string, string>();
  * shortest PascalCase name becomes canonical and the rest emit `typealias`
  * files pointing at the canonical class.
  */
-export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFile[] {
+export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
   // Reset the canonical map on every generation run (guards against re-entry).
@@ -39,7 +40,16 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     hashGroups.get(hash)!.push(enumDef);
   }
 
-  // Within each group, pick the shortest className as canonical.
+  // Names that were canonical in the previous build; one of these wins
+  // canonicalship within its hash group when present, so the choice is stable
+  // across spec versions.
+  const baselineCanonicals = baselineEnumNamesFrom(ctx.apiSurface);
+
+  // Within each group, pick the canonical:
+  //   - all-sort-order groups collapse to the shared `SortOrder` typealias
+  //     regardless of which member is alphabetically first.
+  //   - otherwise prefer a previously-canonical name; fall back to shortest
+  //     className with alphabetical tie-break.
   const aliasOf = new Map<string, string>(); // enum name → canonical enum name
   for (const [, group] of hashGroups) {
     if (group.length <= 1) continue;
@@ -49,14 +59,11 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
       for (const enumDef of rest) enumCanonicalMap.set(enumDef.name, 'SortOrder');
       continue;
     }
-    const sorted = [...group].sort(
-      (a, b) =>
-        className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
-    );
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i].name, canonical.name);
-      enumCanonicalMap.set(sorted[i].name, canonical.name);
+    const canonical = pickCanonicalForGroup(group, baselineCanonicals);
+    for (const enumDef of group) {
+      if (enumDef.name === canonical.name) continue;
+      aliasOf.set(enumDef.name, canonical.name);
+      enumCanonicalMap.set(enumDef.name, canonical.name);
     }
   }
 
@@ -169,6 +176,25 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
 
 function canonicalEnumTypeName(enumDef: Enum): string {
   return isSharedSortOrderEnum(enumDef) ? 'SortOrder' : className(enumDef.name);
+}
+
+/**
+ * Pick the canonical enum within a value-equivalent group.
+ *   1. Prefer a name that was canonical in the previous build (its className
+ *      appears in `baseline`); break ties alphabetically by IR name.
+ *   2. Fall back to shortest className, alphabetical tie-break — Kotlin's
+ *      original heuristic.
+ */
+function pickCanonicalForGroup(group: readonly Enum[], baseline: ReadonlySet<string> | undefined): Enum {
+  if (baseline) {
+    const fromBaseline = group
+      .filter((e) => baseline.has(className(e.name)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (fromBaseline.length > 0) return fromBaseline[0];
+  }
+  return [...group].sort(
+    (a, b) => className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
+  )[0];
 }
 
 function isSharedSortOrderEnum(enumDef: Enum): boolean {

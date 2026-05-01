@@ -1,6 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName } from './naming.js';
+import { baselineEnumNamesFrom, buildEnumAliasMap } from '../shared/enum-dedup.js';
 
 /**
  * Generate Ruby enum class files.
@@ -9,11 +10,10 @@ import { className, fileName } from './naming.js';
  * and a frozen `ALL` array of all values.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-  void ctx;
   if (enums.length === 0) return [];
 
   const files: GeneratedFile[] = [];
-  const aliasOf = collectEnumAliasOf(enums);
+  const aliasOf = collectEnumAliasOf(enums, ctx);
 
   for (const enumDef of enums) {
     const cls = className(enumDef.name);
@@ -123,24 +123,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
  * Detect when two or more enums have the same value set — pick the lexicographically
  * first as canonical and return a map of aliasName -> canonicalName for the rest.
  */
-function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
-  const hashGroups = new Map<string, string[]>();
-  for (const e of enums) {
-    const hash = [...e.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(e.name);
-  }
-  const aliasOf = new Map<string, string>();
-  for (const names of hashGroups.values()) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
-  }
-  return aliasOf;
+function collectEnumAliasOf(enums: Enum[], ctx: EmitterContext): Map<string, string> {
+  return buildEnumAliasMap(enums, {
+    baselineCanonicalNames: baselineEnumNamesFrom(ctx.apiSurface),
+    classNameOf: className,
+  });
 }
 
 /** Collect the set of enum names that were emitted. */

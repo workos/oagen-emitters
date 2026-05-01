@@ -70,13 +70,13 @@ export const dotnetEmitter: Emitter = {
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     const c = fixNamespace(ctx);
-    primeEnumAliases(c.spec.enums);
+    primeEnumAliases(c.spec.enums, c);
     const enriched = enrichModelsFromSpec(models);
     // Re-prime after enrichment so synthetic enums from oneOf branches are
     // included in the alias map used by mapTypeRef during model emission.
     const synEnumsForModels = getSyntheticEnums();
     if (synEnumsForModels.length > 0) {
-      primeEnumAliases([...c.spec.enums, ...synEnumsForModels]);
+      primeEnumAliases([...c.spec.enums, ...synEnumsForModels], c);
     }
 
     // Restore fields on discriminated base models. enrichModelsFromSpec clears
@@ -250,7 +250,7 @@ export const dotnetEmitter: Emitter = {
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
     const c = fixNamespace(ctx);
     const synEnums = getSyntheticEnums();
-    primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums);
+    primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums, c);
     primeModelAliases(enrichModelsFromSpec(c.spec.models));
     const files = generateResources(services, c);
 
@@ -301,7 +301,7 @@ export const dotnetEmitter: Emitter = {
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     const c = fixNamespace(ctx);
     const synEnumsForTests = getSyntheticEnums();
-    primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums);
+    primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums, c);
     primeModelAliases(enrichModelsFromSpec(c.spec.models));
     return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },

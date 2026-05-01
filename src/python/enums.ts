@@ -1,6 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
+import { baselineEnumNamesFrom, buildEnumAliasMap } from '../shared/enum-dedup.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -28,7 +29,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
   const compatAliases = collectCompatEnumAliases(enums, ctx);
 
-  const aliasOf = collectEnumAliasOf(enums);
+  const aliasOf = collectEnumAliasOf(enums, ctx);
 
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
@@ -260,27 +261,11 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
   return aliases;
 }
 
-function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
-  const hashGroups = new Map<string, string[]>();
-  for (const enumDef of enums) {
-    const hash = [...enumDef.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef.name);
-  }
-
-  const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
-  return aliasOf;
+function collectEnumAliasOf(enums: Enum[], ctx: EmitterContext): Map<string, string> {
+  return buildEnumAliasMap(enums, {
+    baselineCanonicalNames: baselineEnumNamesFrom(ctx.apiSurface),
+    classNameOf: className,
+  });
 }
 
 export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {

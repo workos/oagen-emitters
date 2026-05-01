@@ -3,6 +3,7 @@ import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
+import { baselineEnumNamesFrom, buildEnumAliasMap } from '../shared/enum-dedup.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -17,7 +18,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   // Publish the alias map + single-value enum set so model/options/wrapper
   // emitters all resolve duplicate enum references to the canonical name and
   // rewrite 1-value enum refs to `string`.
-  const aliasOf = collectEnumAliasOf(enums);
+  const aliasOf = collectEnumAliasOf(enums, ctx);
   setEnumAliases(aliasOf);
   setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
   diagnoseDivergentEnums(enums);
@@ -129,8 +130,14 @@ function escapeXml(s: string): string {
  * references resolve to their canonical names regardless of which emitter
  * phase runs first.
  */
-export function primeEnumAliases(enums: Enum[]): void {
-  setEnumAliases(collectEnumAliasOf(enums));
+/**
+ * @param ctx - When omitted, no baseline-aware canonical preservation runs.
+ *   Production callers pass `ctx` so the previous build's `apiSurface.enums`
+ *   can pin a stable canonical across spec versions; unit tests typically
+ *   omit it because they assert on a fresh-spec view.
+ */
+export function primeEnumAliases(enums: Enum[], ctx?: EmitterContext): void {
+  setEnumAliases(collectEnumAliasOf(enums, ctx));
   setSingleValueEnumNames(enums.filter((e) => e.values.length === 1).map((e) => e.name));
 }
 
@@ -236,27 +243,11 @@ function valueSignature(e: Enum): string {
     .join('|');
 }
 
-function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
-  const hashGroups = new Map<string, string[]>();
-  for (const enumDef of enums) {
-    const hash = [...enumDef.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef.name);
-  }
-
-  const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
-  return aliasOf;
+function collectEnumAliasOf(enums: Enum[], ctx?: EmitterContext): Map<string, string> {
+  return buildEnumAliasMap(enums, {
+    baselineCanonicalNames: baselineEnumNamesFrom(ctx?.apiSurface),
+    classNameOf: className,
+  });
 }
 
 /**
@@ -291,8 +282,8 @@ function collectReferencedEnumNames(ctx: EmitterContext): Set<string> {
 }
 
 /** Get the canonical enum name if the given enum is an alias. */
-export function resolveEnumName(name: string, enums: Enum[]): string {
-  const aliasOf = collectEnumAliasOf(enums);
+export function resolveEnumName(name: string, enums: Enum[], ctx?: EmitterContext): string {
+  const aliasOf = collectEnumAliasOf(enums, ctx);
   return aliasOf.get(name) ? className(aliasOf.get(name)!) : className(name);
 }
 

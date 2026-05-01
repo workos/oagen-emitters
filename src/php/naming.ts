@@ -2,6 +2,7 @@ import type { Service, Operation, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
+import { baselineEnumNamesFrom, buildEnumAliasMap } from '../shared/enum-dedup.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -45,30 +46,19 @@ let enumAliasMap = new Map<string, string>();
 
 /**
  * Initialize enum deduplication by hashing sorted enum case values.
- * Enums with identical value sets are aliased to the one with the shortest PHP class name.
+ * Enums with identical value sets are aliased to a single canonical:
+ *   1. Prefer an enum whose PHP class name was canonical in the previous
+ *      build (`apiSurface.enums`). Stabilizes choices across spec versions
+ *      so adding a new identically-valued enum can't rename existing types.
+ *   2. Otherwise pick the shortest PHP class name (alphabetical tie-break).
  */
-export function initializeEnumDedup(enums: Enum[]): void {
-  enumAliasMap = new Map();
-  const groups = new Map<string, Enum[]>();
-
-  for (const e of enums) {
-    const hash = [...e.values]
-      .sort((a, b) => String(a.value).localeCompare(String(b.value)))
-      .map((v) => String(v.value))
-      .join('\0');
-    if (!groups.has(hash)) groups.set(hash, []);
-    groups.get(hash)!.push(e);
-  }
-
-  for (const [, group] of groups) {
-    if (group.length <= 1) continue;
-    // Pick shortest PHP class name as canonical
-    const sorted = [...group].sort((a, b) => className(a.name).length - className(b.name).length);
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      enumAliasMap.set(sorted[i].name, canonical.name);
-    }
-  }
+export function initializeEnumDedup(enums: Enum[], apiSurface?: EmitterContext['apiSurface']): void {
+  enumAliasMap = buildEnumAliasMap(enums, {
+    baselineCanonicalNames: baselineEnumNamesFrom(apiSurface),
+    classNameOf: className,
+    selectCanonical: (group) =>
+      [...group].sort((a, b) => className(a.name).length - className(b.name).length || a.name.localeCompare(b.name))[0],
+  });
 }
 
 /** Resolve an enum name to its canonical (deduplicated) name. */
