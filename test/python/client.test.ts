@@ -103,7 +103,9 @@ describe('generateClient', () => {
 
     const serviceInit = files.find((f) => f.path === 'src/workos/organizations/__init__.py');
     expect(serviceInit).toBeDefined();
-    expect(serviceInit!.content).toContain('from ._resource import Organizations, AsyncOrganizations');
+    expect(serviceInit!.content).toContain(
+      'from ._resource import Organizations as Organizations, AsyncOrganizations as AsyncOrganizations',
+    );
   });
 
   it('generates flat directory structure for services (no nested namespaces)', () => {
@@ -193,7 +195,7 @@ describe('generateClient', () => {
     expect(serviceInit!.content).toContain('RoleSingle');
     expect(serviceInit!.content).toContain('RoleMultiple');
     expect(serviceInit!.content).toContain(
-      'from ._resource import UserManagement, AsyncUserManagement, RoleSingle, RoleMultiple',
+      'from ._resource import UserManagement as UserManagement, AsyncUserManagement as AsyncUserManagement, RoleSingle as RoleSingle, RoleMultiple as RoleMultiple',
     );
   });
 
