@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/workos/oagen-emitters/compare/v0.7.1...v0.7.2) (2026-05-01)
+
+
+### Bug Fixes
+
+* **php:** wrap degenerate-union models in fromArray/toArray ([#72](https://github.com/workos/oagen-emitters/issues/72)) ([053d34a](https://github.com/workos/oagen-emitters/commit/053d34adcbbecbed6793c54c4fd48a03aef97f21))
+
 ## [0.7.1](https://github.com/workos/oagen-emitters/compare/v0.7.0...v0.7.1) (2026-05-01)
 
 
