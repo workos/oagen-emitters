@@ -134,6 +134,31 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 }
 
 /**
+ * Resolve a degenerate union to a single TypeRef when possible.
+ * - allOf: PHP collapses to the first variant (mirrors `mapTypeRef`).
+ * - oneOf/anyOf where every variant has the same generated PHP type: collapse
+ *   to that variant (e.g. discriminated unions whose branches the IR pinned to
+ *   one model name).
+ * Returns null when the union is genuinely polymorphic.
+ */
+function resolveDegenerateUnion(ref: TypeRef): TypeRef | null {
+  if (ref.kind !== 'union') return null;
+  if (ref.compositionKind === 'allOf') return ref.variants[0] ?? null;
+  if (ref.variants.length === 0) return null;
+  const signature = (v: TypeRef): string => {
+    if (v.kind === 'model') return `model:${v.name}`;
+    if (v.kind === 'enum') return `enum:${v.name}`;
+    return `kind:${v.kind}`;
+  };
+  const first = ref.variants[0];
+  const firstSig = signature(first);
+  for (const v of ref.variants) {
+    if (signature(v) !== firstSig) return null;
+  }
+  return first;
+}
+
+/**
  * Generate the fromArray accessor expression for a field.
  */
 function generateFromArrayAccessor(ref: TypeRef, wireName: string, required: boolean): string {
@@ -194,8 +219,11 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
       return accessor;
     case 'nullable':
       return generateFromArrayValue(ref.inner, accessor);
-    case 'union':
+    case 'union': {
+      const resolved = resolveDegenerateUnion(ref);
+      if (resolved) return generateFromArrayValue(resolved, accessor);
       return accessor;
+    }
     case 'map':
       return accessor;
     case 'literal':
@@ -225,6 +253,10 @@ function isComplexType(ref: TypeRef): boolean {
       return isComplexType(ref.items);
     case 'nullable':
       return isComplexType(ref.inner);
+    case 'union': {
+      const resolved = resolveDegenerateUnion(ref);
+      return resolved ? isComplexType(resolved) : false;
+    }
     default:
       return false;
   }
@@ -266,8 +298,11 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
       return generateToArrayValue(ref.inner, accessor, true);
     case 'map':
       return accessor;
-    case 'union':
+    case 'union': {
+      const resolved = resolveDegenerateUnion(ref);
+      if (resolved) return generateToArrayValue(resolved, accessor, nullable);
       return accessor;
+    }
     case 'literal':
       return accessor;
   }
