@@ -2,6 +2,7 @@ import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos
 import { toSnakeCase } from '@workos/oagen';
 import { className, fieldName } from './naming.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
+import { buildPythonPathExpression } from './path-expression.js';
 
 /**
  * Generate Python wrapper method lines for split operations.
@@ -115,16 +116,7 @@ function emitWrapperMethod(
   }
 
   // Build path expression
-  let pathExpr: string;
-  if (op.pathParams.length > 0) {
-    let path = op.path.replace(/^\//, '');
-    for (const p of op.pathParams) {
-      path = path.replace(`{${p.name}}`, `{${fieldName(p.name)}}`);
-    }
-    pathExpr = `f"${path}"`;
-  } else {
-    pathExpr = `"${op.path.replace(/^\//, '')}"`;
-  }
+  const pathExpr = buildPythonPathExpression(op.path);
 
   // Make the request
   const awaitPrefix = isAsync ? 'await ' : '';

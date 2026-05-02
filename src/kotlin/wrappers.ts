@@ -1,8 +1,9 @@
-import type { EmitterContext, ResolvedOperation, ResolvedWrapper, Parameter } from '@workos/oagen';
+import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import { className, propertyName, ktLiteral, clientFieldExpression, escapeReserved } from './naming.js';
 import { mapTypeRef, mapTypeRefOptional } from './type-map.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
+import { buildKotlinPathExpression } from './path-expression.js';
 
 /**
  * Emit Kotlin wrapper methods for a union-split operation. Each wrapper
@@ -125,7 +126,7 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     lines.push(`    val body = linkedMapOf<String, Any?>()`);
   }
 
-  const pathExpr = buildPathExpr(op.path, pathParams);
+  const pathExpr = buildKotlinPathExpression(op.path).expression;
   const httpMethod = op.httpMethod.toUpperCase();
 
   lines.push(`    val config =`);
@@ -153,16 +154,4 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
 
 function escapeKdoc(s: string): string {
   return s.replace(/\*\//g, '*\u200b/');
-}
-
-function buildPathExpr(path: string, pathParams: Parameter[]): string {
-  if (pathParams.length === 0) return ktLiteral(path);
-  let result = path;
-  for (const pp of pathParams) {
-    const placeholder = `{${pp.name}}`;
-    const propName = propertyName(pp.name);
-    const replacement = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(propName) ? `\$${propName}` : `\${${propName}}`;
-    result = result.replaceAll(placeholder, replacement);
-  }
-  return `"${result.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
