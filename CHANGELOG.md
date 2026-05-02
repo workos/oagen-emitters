@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/workos/oagen-emitters/compare/v0.7.2...v0.7.3) (2026-05-02)
+
+
+### Bug Fixes
+
+* url-encode path parameters in php/node/python/kotlin emitters ([#75](https://github.com/workos/oagen-emitters/issues/75)) ([34c08fc](https://github.com/workos/oagen-emitters/commit/34c08fc10510db53f1f989edab5b4d0cead15aa9))
+
 ## [0.7.2](https://github.com/workos/oagen-emitters/compare/v0.7.1...v0.7.2) (2026-05-01)
 
 
