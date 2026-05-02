@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/workos/oagen-emitters/compare/v0.7.3...v0.7.4) (2026-05-02)
+
+
+### Bug Fixes
+
+* update dep ([e6145b6](https://github.com/workos/oagen-emitters/commit/e6145b694b9cacaa086234ba97b48c6e4108c084))
+
 ## [0.7.3](https://github.com/workos/oagen-emitters/compare/v0.7.2...v0.7.3) (2026-05-02)
 
 
