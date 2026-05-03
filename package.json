@@ -38,12 +38,12 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.5.0",
-    "@commitlint/config-conventional": "^20.5.0",
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
     "@types/node": "^25.6.0",
     "husky": "^9.1.7",
-    "oxfmt": "^0.46.0",
-    "oxlint": "^1.61.0",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0",
     "prettier": "^3.8.3",
     "tsdown": "^0.21.10",
     "tsx": "^4.21.0",
@@ -54,6 +54,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.15.0"
+    "@workos/oagen": "^0.16.0"
   }
 }
