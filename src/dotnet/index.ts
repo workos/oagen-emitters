@@ -20,7 +20,7 @@ import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { generateWrapperOptionsClasses } from './wrappers.js';
 import { groupByMount } from '../shared/resolved-ops.js';
-import { discriminatedUnions } from './type-map.js';
+import { discriminatedUnions, resolveModelName } from './type-map.js';
 import { modelClassName } from './naming.js';
 
 /**
@@ -142,7 +142,7 @@ export const dotnetEmitter: Emitter = {
         lines.push('            switch (discriminatorValue)');
         lines.push('            {');
         for (const [value, modelName] of Object.entries(disc.mapping)) {
-          const csName = modelClassName(modelName);
+          const csName = modelClassName(resolveModelName(modelName));
           lines.push(`                case "${value}": return jObject.ToObject<${csName}>(serializer);`);
         }
         lines.push('                default: return jObject.ToObject<object>(serializer);');

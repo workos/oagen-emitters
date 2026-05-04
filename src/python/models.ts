@@ -709,7 +709,22 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, walru
       return deserializeField(ref.inner, accessor, false, walrusVar);
     case 'union': {
       const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
-      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
+      const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))] as string[];
+      // Discriminated union: dispatch on the discriminator property to call
+      // the matching variant's from_dict. Unknown discriminator values fall
+      // back to the raw payload so callers can introspect.
+      if (ref.discriminator && ref.discriminator.mapping) {
+        const entries = Object.entries(ref.discriminator.mapping as Record<string, string>);
+        if (entries.length > 0) {
+          const dispatchMap = entries.map(([value, modelName]) => `"${value}": ${className(modelName)}`).join(', ');
+          const dataExpr = isRequired ? accessor : walrusVar;
+          const dataCast = `cast(Dict[str, Any], ${dataExpr})`;
+          const lookupExpr = `{${dispatchMap}}.get(${dataCast}.get("${ref.discriminator.property}"))`;
+          const branch = `(_disc.from_dict(${dataCast}) if (_disc := ${lookupExpr}) is not None else ${dataExpr})`;
+          if (isRequired) return branch;
+          return `(${branch}) if (${walrusVar} := ${accessor}) is not None else None`;
+        }
+      }
       if (uniqueModels.length === 1) {
         return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, walrusVar);
       }

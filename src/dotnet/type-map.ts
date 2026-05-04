@@ -200,11 +200,18 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
     return variants[0] ?? 'object';
   }
   const unique = [...new Set(variants)];
-  if (unique.length === 1) return unique[0];
 
-  // Discriminated union: register for converter generation and return first variant as base
+  // Discriminated union: register for converter generation BEFORE collapsing
+  // single-unique to avoid losing the discriminator when all variants alias
+  // to the same canonical model (structural dedup). The base type used for
+  // the converter name comes from the discriminator's IR variant names so
+  // it stays stable even when the C# class names get rewritten by aliases.
   if (_ref.discriminator && _ref.discriminator.mapping) {
-    const baseName = unique[0];
+    const irVariantNames = _ref.variants
+      .filter((v) => v.kind === 'model')
+      .map((v) => (v.kind === 'model' ? v.name : ''))
+      .filter(Boolean);
+    const baseName = irVariantNames[0] ?? unique[0];
     discriminatedUnions.set(baseName, {
       property: _ref.discriminator.property,
       mapping: _ref.discriminator.mapping,
@@ -214,6 +221,8 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
     // AnyOf<> doesn't support discriminator-based deserialization
     return 'object';
   }
+
+  if (unique.length === 1) return unique[0];
 
   if (unique.length >= 2 && unique.length <= 9) return `OneOf.OneOf<${unique.join(', ')}>`;
   // OneOf supports arity 2-9. Higher-arity unions collapse to `object`,

@@ -1,4 +1,5 @@
-import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
+import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName } from './naming.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
@@ -6,6 +7,67 @@ import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-
 // Import and re-export shared model detection utilities
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 export { isListWrapperModel, isListMetadataModel };
+
+/**
+ * Collect names of models that are referenced **only** as a named request body
+ * model on an operation, with no other consumers (response types, pagination
+ * item types, error types, or fields on other models).
+ *
+ * The Go emitter synthesizes a `{Service}{Method}Params` struct from those
+ * request bodies (see `resources.ts:392`), and the method signature uses the
+ * synthesized struct — never the named model. So emitting the named model in
+ * `models.go` would leave callers with a duplicate, unused struct (the bug
+ * surfaced in workos-go#544 with `CreateUserAPIKey` /
+ * `UserManagementCreateAPIKeyParams`).
+ *
+ * Models in this set are skipped during model emission. Callers parameterize
+ * the API surface through `*Params` exclusively, which is the sole consumer
+ * of the spec's named request body schema.
+ */
+function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]): Set<string> {
+  const requestBodyNames = new Set<string>();
+  const otherReferences = new Set<string>();
+
+  const collect = (ref: TypeRef | undefined, into: Set<string>): void => {
+    if (!ref) return;
+    walkTypeRef(ref, {
+      model: (r) => into.add(r.name),
+    });
+  };
+
+  for (const service of services) {
+    for (const op of service.operations) {
+      if (op.requestBody?.kind === 'model') {
+        requestBodyNames.add(op.requestBody.name);
+      }
+      collect(op.response, otherReferences);
+      if (op.pagination) collect(op.pagination.itemType, otherReferences);
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+        collect(p.type, otherReferences);
+      }
+      if (op.successResponses) {
+        for (const sr of op.successResponses) collect(sr.type, otherReferences);
+      }
+      for (const err of op.errors) {
+        if (err.type) collect(err.type, otherReferences);
+      }
+    }
+  }
+
+  // Field references — a request body model that's also a field type elsewhere
+  // is a reusable schema (e.g. consumed by webhook event data), so we keep it.
+  for (const model of models) {
+    for (const field of model.fields) {
+      collect(field.type, otherReferences);
+    }
+  }
+
+  const result = new Set<string>();
+  for (const name of requestBodyNames) {
+    if (!otherReferences.has(name)) result.add(name);
+  }
+  return result;
+}
 
 /**
  * Generate Go struct definitions from IR Models.
@@ -20,11 +82,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   lines.push(`package ${ctx.namespace}`);
   lines.push('');
 
+  const requestBodyOnly = collectRequestBodyOnlyModelNames(ctx.spec.services, models);
+
   // Build structural hash for deduplication
   const modelHashMap = new Map<string, string>();
   const hashGroups = new Map<string, string[]>();
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (requestBodyOnly.has(model.name)) continue;
     const hash = structuralHash(model);
     modelHashMap.set(model.name, hash);
     if (!hashGroups.has(hash)) hashGroups.set(hash, []);
@@ -48,6 +113,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const batchedAliases = new Set<string>();
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (requestBodyOnly.has(model.name)) continue;
 
     const structName = className(model.name);
 
