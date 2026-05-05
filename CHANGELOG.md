@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/workos/oagen-emitters/compare/v0.7.5...v0.8.0) (2026-05-05)
+
+
+### Features
+
+* **emitters:** dispatch field-level discriminated unions and drop dead request bodies ([#81](https://github.com/workos/oagen-emitters/issues/81)) ([4d38d24](https://github.com/workos/oagen-emitters/commit/4d38d249dcc7079e2a61d8faeabb681d6798618f))
+
+
+### Bug Fixes
+
+* **go:** stop SSO auth code leaking into request URL ([#83](https://github.com/workos/oagen-emitters/issues/83)) ([bc520e6](https://github.com/workos/oagen-emitters/commit/bc520e6a3d966abdf785262e5c49736b5e105b92))
+
 ## [0.7.5](https://github.com/workos/oagen-emitters/compare/v0.7.4...v0.7.5) (2026-05-03)
 
 
