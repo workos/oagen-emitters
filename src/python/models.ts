@@ -447,6 +447,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
   }
 
+  // Emit an empty barrel for every service-models dir that has no symbols of
+  // its own (e.g. a service whose models live in another package via
+  // cross-domain aliases). Otherwise the live SDK can keep a stale
+  // `__init__.py` from a previous spec revision — when the underlying module
+  // gets pruned the dangling re-export survives and breaks pyright. Done here
+  // (not in client.ts) so a subsequent emission for the same path with real
+  // content always wins last-write-wins.
+  for (const dirPath of serviceDirModelPaths) {
+    if (!symbolsByDir.has(dirPath)) {
+      files.push({
+        path: `${dirPath}/__init__.py`,
+        content: '',
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
+  }
+
   for (const [dirPath, names] of symbolsByDir) {
     // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
     const uniqueNames = [...new Set(names)].sort();
@@ -719,7 +737,12 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, walru
           const dispatchMap = entries.map(([value, modelName]) => `"${value}": ${className(modelName)}`).join(', ');
           const dataExpr = isRequired ? accessor : walrusVar;
           const dataCast = `cast(Dict[str, Any], ${dataExpr})`;
-          const lookupExpr = `{${dispatchMap}}.get(${dataCast}.get("${ref.discriminator.property}"))`;
+          // The dispatch dict has `str` keys, so pyright (strict) rejects the
+          // raw `Any | None` returned by `.get(prop)` even though `dict.get`
+          // accepts any hashable. Cast through `str` to satisfy the parameter
+          // type — runtime semantics are unchanged because a missing/`None`
+          // discriminator simply misses the dispatch and falls through.
+          const lookupExpr = `{${dispatchMap}}.get(cast(str, ${dataCast}.get("${ref.discriminator.property}")))`;
           const branch = `(_disc.from_dict(${dataCast}) if (_disc := ${lookupExpr}) is not None else ${dataExpr})`;
           if (isRequired) return branch;
           return `(${branch}) if (${walrusVar} := ${accessor}) is not None else None`;
@@ -759,6 +782,12 @@ function serializeField(ref: any, accessor: string): string {
       const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))];
       if (uniqueModels.length === 1) {
         return `${accessor}.to_dict()`;
+      }
+      // Discriminated union: deserialize produced a dataclass instance for
+      // known discriminator values and the raw dict for unknowns. Round-trip
+      // both — call `.to_dict()` if it exists, otherwise pass through.
+      if (ref.discriminator && ref.discriminator.mapping && modelVariants.length > 0) {
+        return `${accessor}.to_dict() if hasattr(${accessor}, "to_dict") else ${accessor}`;
       }
       return accessor;
     }
