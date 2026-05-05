@@ -269,11 +269,30 @@ function deserializeExpression(
   }
 
   if (ref.kind === 'union') {
-    // Unions: if all variants are models, try each; otherwise return raw value.
-    const modelVariants = ref.variants.filter((v) => v.kind === 'model' && modelNames.has(v.name));
-    if (modelVariants.length > 0 && modelVariants.length === ref.variants.length) {
-      // Multiple model variants — default to first successful parse or raw value.
-      return accessor; // simplification: return raw, let user inspect
+    // Discriminated union: dispatch on the discriminator property to construct
+    // the matching variant. Unknown values fall back to the raw hash so callers
+    // can still introspect (rather than crashing on an unmapped discriminator).
+    if (ref.discriminator && ref.discriminator.mapping) {
+      const entries = Object.entries(ref.discriminator.mapping).filter(([, name]) => modelNames.has(name));
+      if (entries.length > 0) {
+        const propAccess = rubyHashAccessor(accessor, ref.discriminator.property);
+        const branches = entries
+          .map(([value, modelName]) => {
+            const cls = `WorkOS::${className(modelName)}`;
+            return `when ${JSON.stringify(value)} then ${cls}.new(${accessor})`;
+          })
+          .join(' ');
+        const dispatcher = `(case ${propAccess} ${branches} else ${accessor} end)`;
+        return `${accessor} ? ${dispatcher} : nil`;
+      }
+    }
+    // Non-discriminated union of models: pick the first variant as a best-
+    // effort typed wrapper. Preserves the pre-discriminator behavior of
+    // wrapping inline-variant unions whose owner used to be a single model.
+    const firstModelVariant = ref.variants.find((v) => v.kind === 'model' && modelNames.has(v.name));
+    if (firstModelVariant && firstModelVariant.kind === 'model') {
+      const cls = `WorkOS::${className(firstModelVariant.name)}`;
+      return `${accessor} ? ${cls}.new(${accessor}) : nil`;
     }
     return accessor;
   }

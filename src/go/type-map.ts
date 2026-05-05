@@ -82,6 +82,29 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
   }
   const unique = [...new Set(variants)];
   if (unique.length === 1) return unique[0];
-  // Go doesn't have union types; use interface{}
+  // Discriminated unions: Go has no sum types, so widen to the discriminator-
+  // resolver type when one is registered downstream (see resolveDiscriminatedUnionType).
+  // Fall back to interface{} for non-discriminated heterogeneous unions.
+  if (_ref.discriminator && _ref.discriminator.mapping) {
+    const resolverName = unionResolverName(_ref);
+    if (resolverName) return resolverName;
+  }
   return 'interface{}';
+}
+
+/**
+ * Pick a stable type name for a discriminated union's runtime resolver. Today
+ * we emit no resolver struct, so we treat the union's first model variant as
+ * the public type — matching the pre-discriminator behavior where Go just
+ * referenced one variant directly. The Owner field stays typed, callers
+ * can still inspect Type to detect the user variant (data loss on
+ * non-overlapping fields like organization_id is documented in the SDK
+ * compat report rather than fixed in the emitter — Go callers who need the
+ * user-only fields can json.Unmarshal the raw payload manually).
+ */
+function unionResolverName(ref: UnionType): string | null {
+  for (const v of ref.variants) {
+    if (v.kind === 'model') return `*${className(v.name)}`;
+  }
+  return null;
 }

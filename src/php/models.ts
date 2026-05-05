@@ -220,6 +220,18 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
     case 'nullable':
       return generateFromArrayValue(ref.inner, accessor);
     case 'union': {
+      // Discriminated union: dispatch via match() on the discriminator
+      // property to call the matching variant's fromArray. Unknown values
+      // pass through as raw arrays so callers can introspect.
+      if (ref.discriminator && ref.discriminator.mapping) {
+        const entries = Object.entries(ref.discriminator.mapping);
+        if (entries.length > 0) {
+          const arms = entries
+            .map(([value, modelName]) => `'${value}' => ${className(modelName)}::fromArray(${accessor})`)
+            .join(', ');
+          return `match (${accessor}['${ref.discriminator.property}'] ?? null) { ${arms}, default => ${accessor} }`;
+        }
+      }
       const resolved = resolveDegenerateUnion(ref);
       if (resolved) return generateFromArrayValue(resolved, accessor);
       return accessor;
