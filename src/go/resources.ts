@@ -410,9 +410,11 @@ function generateParamsStruct(
         const isOptional = !field.required;
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
         const jsonTag = field.required ? `json:"${field.name}"` : `json:"${field.name},omitempty"`;
-        // If this field also appears in query params, emit a url tag too
-        const isAlsoQueryParam = op.queryParams.some((qp) => !hidden.has(qp.name) && fieldName(qp.name) === goField);
-        const urlTag = isAlsoQueryParam ? ` url:"${field.name}${field.required ? '' : ',omitempty'}"` : '';
+        // Body fields are JSON-marshaled into the request body. Emit `url:"-"`
+        // so go-querystring's default field-name fallback doesn't also place
+        // them in the URL — important when the spec duplicates a field as both
+        // body and query param (e.g. /sso/token's `code`).
+        const urlTag = ' url:"-"';
         if (field.description) {
           const fdLines = field.description.split('\n').filter((l) => l.trim());
           lines.push(`\t// ${fieldDocComment(goField, fdLines[0])}`);
