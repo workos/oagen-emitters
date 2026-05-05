@@ -42,6 +42,35 @@ function ctxFor(services: Service[], enums = baseSpec.enums): EmitterContext {
 }
 
 describe('kotlin/resources', () => {
+  it('wraps every path-template interpolation in encodePathSegment', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          {
+            name: 'getUser',
+            httpMethod: 'get',
+            path: '/users/{id}/groups/{groupId}',
+            pathParams: [
+              { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'groupId', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services));
+    const file = files.find((f) => f.path.endsWith('/Users.kt'))!;
+    expect(file.content).toContain('import com.workos.common.http.encodePathSegment');
+    expect(file.content).toContain('path = "/users/${encodePathSegment(id)}/groups/${encodePathSegment(groupId)}"');
+    expect(file.content).not.toMatch(/path = "[^"]*\$id[^{]/);
+  });
+
   it('collapses duplicated query/body params into a single Kotlin parameter', () => {
     const services: Service[] = [
       {
