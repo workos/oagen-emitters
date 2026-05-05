@@ -24,7 +24,7 @@ describe('generateEnums', () => {
     expect(generateEnums([], ctx)).toEqual([]);
   });
 
-  it('generates string literal union type', () => {
+  it('generates const-object enum with derived type alias', () => {
     const enums: Enum[] = [
       {
         name: 'Status',
@@ -39,10 +39,13 @@ describe('generateEnums', () => {
     const result = generateEnums(enums, ctx);
 
     expect(result).toHaveLength(1);
+    expect(result[0].content).toContain('export const Status = {');
+    expect(result[0].content).toContain("Active: 'active'");
+    expect(result[0].content).toContain("Inactive: 'inactive'");
+    expect(result[0].content).toContain("Pending: 'pending'");
+    expect(result[0].content).toContain('} as const;');
     expect(result[0].content).toContain('export type Status =');
-    expect(result[0].content).toContain("| 'active'");
-    expect(result[0].content).toContain("| 'inactive'");
-    expect(result[0].content).toContain("| 'pending';");
+    expect(result[0].content).toContain('(typeof Status)[keyof typeof Status]');
   });
 
   it('places enum in common when not referenced by service', () => {

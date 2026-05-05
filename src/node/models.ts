@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Model, Field, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { mapTypeRef, mapWireTypeRef } from './type-map.js';
+import { mapTypeRef, mapWireTypeRef, isInlineEnum } from './type-map.js';
 import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
   collectFieldDependencies,
@@ -142,12 +142,37 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
         canonDir === dirName
           ? `./${fileName(canonicalName)}.interface`
           : `../../${canonDir}/interfaces/${fileName(canonicalName)}.interface`;
-      const aliasLines = [
-        `import type { ${canonDomainName}, ${canonResponseName} } from '${canonRelPath}';`,
-        '',
-        `export type ${domainName} = ${canonDomainName};`,
-        `export type ${responseName} = ${canonResponseName};`,
-      ];
+
+      // Single-form aliases: when the resolver collapses the IR model and
+      // its wire form to the same baseline name (or the alias's own
+      // domain/wire shapes coincide), emit only the unique exports. The
+      // earlier code unconditionally emitted both `export type X = Y;` and
+      // `export type X' = Y';` lines, producing TS2300 duplicate-identifier
+      // errors when X === X' and Y === Y'.
+      const aliasExports: string[] = [];
+      const importNeeded = new Set<string>();
+      const declared = new Set<string>();
+      const pushAlias = (lhs: string, rhs: string): void => {
+        if (lhs === rhs) return;
+        if (declared.has(lhs)) return;
+        declared.add(lhs);
+        aliasExports.push(`export type ${lhs} = ${rhs};`);
+        importNeeded.add(rhs);
+      };
+      pushAlias(domainName, canonDomainName);
+      pushAlias(responseName, canonResponseName);
+      if (aliasExports.length === 0) continue;
+
+      // Only import names that are referenced on the RHS of an alias AND
+      // aren't declared locally (which would shadow / collide with the
+      // import).
+      const importSymbols = [...importNeeded]
+        .filter((n) => !declared.has(n))
+        .sort()
+        .join(', ');
+      const aliasLines = importSymbols
+        ? [`import type { ${importSymbols} } from '${canonRelPath}';`, '', ...aliasExports]
+        : [...aliasExports];
       files.push({
         path: aliasPath,
         content: aliasLines.join('\n'),
@@ -256,11 +281,41 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const depName = resolveInterfaceName(dep, ctx);
       const depService = modelToService.get(dep);
       const depDir = resolveDir(depService);
-      const relPath =
-        depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
-      lines.push(`import type { ${depName}, ${wireInterfaceName(depName)} } from '${relPath}';`);
+
+      // When the resolver maps the IR name to a different baseline interface
+      // (via `overlayLookup.modelNameByIR` structural match), the import
+      // path must follow the baseline's `sourceFile`. Otherwise we'd point
+      // at the IR-named file (e.g. `audit-log-event.interface`) that the
+      // emitter never generates — the canonical baseline file is at a
+      // different stem (e.g. `create-audit-log-event-options.interface`).
+      const currentFilePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
+      const baselineSrc = (ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
+
+      // Self-reference: the dependency lives in the file we're currently
+      // emitting. Skip the import — it's already in scope.
+      if (baselineSrc === currentFilePath) continue;
+
+      let relPath: string;
+      if (baselineSrc) {
+        relPath = relativeImport(currentFilePath, baselineSrc).replace(/\.ts$/, '');
+      } else {
+        relPath =
+          depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
+      }
+
+      // `wireInterfaceName` consults the baseline interface set so it
+      // returns the bare `depName` when the resolver mapped to a
+      // single-form interface (no separate `*Wire`). That keeps the
+      // import statement requesting only what the baseline file exports.
+      const wireName = wireInterfaceName(depName);
+      const importNames = wireName === depName ? depName : `${depName}, ${wireName}`;
+      lines.push(`import type { ${importNames} } from '${relPath}';`);
     }
     for (const dep of deps.enums) {
+      // Inlined enums are emitted as literal unions at the usage site
+      // (handled by type-map). Skip the import — the file does not exist.
+      if (isInlineEnum(dep)) continue;
+
       const baselineEnum = ctx.apiSurface?.enums?.[dep];
       const baselineAlias = ctx.apiSurface?.typeAliases?.[dep];
       const baselineSrc = (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile;
@@ -289,11 +344,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
 
     if (lines.length > 0) lines.push('');
 
-    for (const [alias, typeExpr] of typeDecls) {
-      lines.push(`type ${alias} = ${typeExpr};`);
-    }
-    if (typeDecls.size > 0) lines.push('');
-
+    // Type-alias declarations are pre-collected from baseline field types.
+    // The IR-driven body may end up not using them (the body uses the
+    // resolved interface names, while aliases serve only as bridges from
+    // baseline-name references inside `baselineField.type`). Defer their
+    // emission, then filter to only those names actually referenced in
+    // the body or wire interface lines.
+    const typeDeclInsertIdx = lines.length;
     const typeParams = renderTypeParams(model, genericDefaults);
 
     // Domain interface
@@ -336,7 +393,15 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
         } else {
           const isNewFieldOnExistingModel = baselineDomain && !baselineField;
           const isNewFieldOnExistingResponse = !baselineDomain && baselineResponse && !responseBaselineField;
+          // Preserve baseline-declared optionality even when we're emitting
+          // the IR-derived type (e.g. baseline `Date` for an IR string with
+          // `format: date-time`). Without this, regenerating an existing
+          // interface flips `external_id?: string` into `external_id: string
+          // | null`, which silently breaks every hand-written test fixture
+          // missing that field.
+          const baselineSaysOptional = baselineField?.optional === true;
           const opt =
+            baselineSaysOptional ||
             !field.required ||
             isNewFieldOnExistingModel ||
             domainResponseOptionalMismatch ||
@@ -370,7 +435,12 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
           lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
         } else {
           const isNewFieldOnExistingModel = baselineResponse && !baselineField;
-          const opt = !field.required || isNewFieldOnExistingModel ? '?' : '';
+          // Same baseline-optional preservation as the domain side. The
+          // wire interface's optional flag drives test-fixture shape, so
+          // flipping it on regen breaks every fixture that omitted the
+          // field assuming it was optional.
+          const baselineSaysOptional = baselineField?.optional === true;
+          const opt = baselineSaysOptional || !field.required || isNewFieldOnExistingModel ? '?' : '';
           lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
         }
       }
@@ -455,6 +525,20 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       }
     }
 
+    // Splice in only the type aliases referenced by the body or wire lines.
+    if (typeDecls.size > 0) {
+      const bodyText = lines.slice(typeDeclInsertIdx).join('\n');
+      const usedDecls: string[] = [];
+      for (const [alias, typeExpr] of typeDecls) {
+        if (new RegExp(`\\b${alias}\\b`).test(bodyText)) {
+          usedDecls.push(`type ${alias} = ${typeExpr};`);
+        }
+      }
+      if (usedDecls.length > 0) {
+        lines.splice(typeDeclInsertIdx, 0, ...usedDecls, '');
+      }
+    }
+
     files.push({
       path: filePath,
       content: pruneUnusedImports(lines).join('\n'),
@@ -482,15 +566,19 @@ export function generateSerializers(
 
   const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
 
-  if (ctx.targetDir) {
+  // Detect models whose serializer file already exists in the live SDK but
+  // does not export a `serialize<Domain>` function. Generated serializers
+  // that reference such a model must skip their `serialize` half — calling
+  // a missing function would leave the SDK unable to compile.
+  const liveRoot = ctx.targetDir ?? ctx.outputDir;
+  if (liveRoot) {
     for (const model of models) {
       if (!serializerReachable.has(model.name)) continue;
-      if (modelHasNewFields(model, ctx)) continue;
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
       const domainName = resolveInterfaceName(model.name, ctx);
       const serializerFile = path.join(
-        ctx.targetDir,
+        liveRoot,
         'src',
         dirName,
         'serializers',
@@ -502,7 +590,7 @@ export function generateSerializers(
           skippedSerializeModels.add(model.name);
         }
       } catch {
-        // Serializer doesn't exist
+        // Serializer doesn't exist on disk yet — fine, we'll generate one.
       }
     }
   }

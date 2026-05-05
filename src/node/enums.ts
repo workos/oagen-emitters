@@ -2,6 +2,8 @@ import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen
 import { toPascalCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment } from './utils.js';
+import { isInlineEnum } from './type-map.js';
+import { liveSurfaceConstEnumMembers } from './live-surface.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
@@ -13,6 +15,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
+    // Inlined enums get expanded at usage sites by `type-map`. No file needed.
+    if (isInlineEnum(enumDef.name)) continue;
+
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
 
@@ -57,10 +62,36 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push(`export type ${enumDef.name} = ${baselineAlias.value};`);
       }
     } else {
+      // No baseline form available — emit the workos-node house style:
+      //
+      //   export const X = { Member: 'value', ... } as const;
+      //   export type X = (typeof X)[keyof typeof X];
+      //
+      // This dual declaration lets callers use either the type (`X`) or the
+      // namespace (`X.Member`) without paying for a TypeScript `enum`'s
+      // runtime overhead. Emitting only the type alias would compile but
+      // break hand-written test files that import the enum as a value.
+      //
+      // Member name resolution, per value:
+      //   1. If the live SDK already declares this enum as a const-object
+      //      with a member for this exact value, reuse the existing member
+      //      name. This preserves acronym casing (`DSync`, `SAML`, `JWT`)
+      //      that the simpler `toPascalCase` would otherwise flatten.
+      //   2. Otherwise PascalCase the value.
+      //   3. Skip duplicate values and duplicate member names — the union
+      //      type derived from the const captures every kept value.
       const values = enumDef.values;
-      lines.push(`export type ${enumDef.name} =`);
-      for (let i = 0; i < values.length; i++) {
-        const v = values[i];
+      const existingMembers = liveSurfaceConstEnumMembers(enumDef.name);
+      const seenMembers = new Set<string>();
+      const seenValues = new Set<string>();
+      lines.push(`export const ${enumDef.name} = {`);
+      for (const v of values) {
+        const valueKey = String(v.value);
+        if (seenValues.has(valueKey)) continue;
+        seenValues.add(valueKey);
+        const memberName = existingMembers?.get(valueKey) ?? toPascalCase(valueKey);
+        if (seenMembers.has(memberName)) continue;
+        seenMembers.add(memberName);
         const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
         if (v.description || v.deprecated) {
           const parts: string[] = [];
@@ -68,9 +99,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
           if (v.deprecated) parts.push('@deprecated');
           lines.push(...docComment(parts.join('\n'), 2));
         }
-        const suffix = i === values.length - 1 ? ';' : '';
-        lines.push(`  | ${valueStr}${suffix}`);
+        lines.push(`  ${memberName}: ${valueStr},`);
       }
+      lines.push(`} as const;`);
+      lines.push('');
+      lines.push(`export type ${enumDef.name} =`);
+      lines.push(`  (typeof ${enumDef.name})[keyof typeof ${enumDef.name}];`);
     }
 
     files.push({

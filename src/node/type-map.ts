@@ -7,6 +7,42 @@ export interface MapTypeRefOpts {
 }
 
 /**
+ * Map of enum name → inlined string-union TS source.
+ *
+ * Set by `index.ts` once per generation run, sourced from `spec.enums` for
+ * enums that have no baseline definition in the live SDK. When populated,
+ * `mapTypeRef`/`mapWireTypeRef` substitute the union directly at the
+ * reference site instead of emitting a separate import — this collapses
+ * ~100 single-line enum files into inline literal types.
+ */
+let inlineEnumUnions: Map<string, string> = new Map();
+export function setInlineEnumUnions(map: Map<string, string>): void {
+  inlineEnumUnions = map;
+}
+export function isInlineEnum(name: string): boolean {
+  return inlineEnumUnions.has(name);
+}
+
+/**
+ * Optional callback that resolves an IR model name to its live-SDK interface
+ * name. Set by `index.ts` once per run. When present, `mapTypeRef` and
+ * `mapWireTypeRef` use it instead of the raw IR name in their `model:` cases
+ * — keeping field-type references in sync with import statements that the
+ * caller emits via the same resolver. Without this, a structural match like
+ * IR `AuditLogSchemaJson` → live `AuditLogSchemaResponse` would produce
+ * `schema: AuditLogSchemaJson` in the body but
+ * `import type { AuditLogSchemaResponse }` in the imports, leaving
+ * `AuditLogSchemaJson` unbound.
+ */
+let domainNameResolver: ((irName: string) => string) | null = null;
+export function setDomainNameResolver(fn: ((irName: string) => string) | null): void {
+  domainNameResolver = fn;
+}
+function resolveDomainName(irName: string): string {
+  return domainNameResolver ? domainNameResolver(irName) : irName;
+}
+
+/**
  * Map an IR TypeRef to a TypeScript domain type string.
  * Domain types use PascalCase model names (e.g., `Organization`).
  */
@@ -15,8 +51,8 @@ export function mapTypeRef(ref: TypeRef, opts?: MapTypeRefOpts): string {
   return irMapTypeRef<string>(ref, {
     primitive: mapPrimitive,
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
-    model: (r) => r.name + (genericDefaults?.get(r.name) ?? ''),
-    enum: (r) => r.name,
+    model: (r) => resolveDomainName(r.name) + (genericDefaults?.get(r.name) ?? ''),
+    enum: (r) => inlineEnumUnions.get(r.name) ?? r.name,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `${inner} | null`,
     literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),
@@ -33,8 +69,8 @@ export function mapWireTypeRef(ref: TypeRef, opts?: { genericDefaults?: Map<stri
   return irMapTypeRef<string>(ref, {
     primitive: mapWirePrimitive,
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
-    model: (r) => wireInterfaceName(r.name) + (genericDefaults?.get(r.name) ?? ''),
-    enum: (r) => r.name,
+    model: (r) => wireInterfaceName(resolveDomainName(r.name)) + (genericDefaults?.get(r.name) ?? ''),
+    enum: (r) => inlineEnumUnions.get(r.name) ?? r.name,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `${inner} | null`,
     literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),

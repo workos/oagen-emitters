@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 
 import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import { isInlineEnum } from './type-map.js';
 import {
   docComment,
   createServiceDirResolver,
@@ -226,6 +227,9 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
 
   // Enums -> service directories
   for (const enumDef of spec.enums) {
+    // Inlined enums have no file to re-export.
+    if (isInlineEnum(enumDef.name)) continue;
+
     const enumService = findEnumService(enumDef.name, spec.services);
     const dirName = resolveDir(enumService);
     if (!dirExports.has(dirName)) {

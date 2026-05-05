@@ -11,7 +11,39 @@ import type {
 } from '@workos/oagen';
 import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
-import { mapTypeRef } from './type-map.js';
+import { mapTypeRef, isInlineEnum } from './type-map.js';
+import { liveSurfaceHasFunction, liveSurfaceHasFile } from './live-surface.js';
+
+/**
+ * Render the request-body argument for an HTTP call.
+ *
+ * Three cases:
+ *  1. `serialize${T}` is in the live SDK's serializer functions → call it.
+ *  2. The serializer file exists on disk but does *not* export `serialize${T}`
+ *     (e.g. workos-node's `validate-api-key.serializer.ts` ships only the
+ *     response deserializer). The user owns the file; we cannot add to it,
+ *     so pass `payload` straight through. `*Options` interfaces in
+ *     workos-node are already wire-shaped (primitives or pre-snake_cased
+ *     keys), so this preserves correctness for the workos-node convention.
+ *  3. Otherwise the emitter is producing the serializer this run → call.
+ */
+function bodyArgExpr(irModelName: string, resolvedName: string, ctx: EmitterContext, paramName = 'payload'): string {
+  const ser = `serialize${resolvedName}`;
+  if (liveSurfaceHasFunction(ser)) return `${ser}(${paramName})`;
+
+  const sourceFile = (ctx.apiSurface?.interfaces?.[resolvedName] as { sourceFile?: string } | undefined)?.sourceFile;
+  const candidate = sourceFile
+    ? sourceFile.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
+    : `src/${defaultModelDir(irModelName, ctx)}/serializers/${fileName(irModelName)}.serializer.ts`;
+  if (liveSurfaceHasFile(candidate)) return paramName;
+
+  return `${ser}(${paramName})`;
+}
+
+function defaultModelDir(irModelName: string, ctx: EmitterContext): string {
+  const { modelToService, resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
+  return resolveDir(modelToService.get(irModelName));
+}
 import {
   fieldName,
   wireFieldName,
@@ -268,6 +300,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
       // Partially covered -- has new methods that need to be added.
       const file = generateResourceClass(service, ctx);
+      if (!file) continue;
       delete file.skipIfExists;
       // Suppress auto-generated header — the file is a merge target
       // containing hand-written code, not a fully generated file.
@@ -284,6 +317,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       // for both covered and uncovered methods.  Remove skipIfExists so the
       // merger adds new methods AND refreshes existing JSDoc.
       const file = generateResourceClass(service, ctx);
+      if (!file) continue;
       delete file.skipIfExists;
       // Suppress auto-generated header — the file is a merge target
       // containing hand-written code, not a fully generated file.
@@ -295,6 +329,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       // overwrites — emitter improvements (serializer dispatch, JSDoc, etc.)
       // must propagate without manual intervention.
       const file = generateResourceClass(service, ctx);
+      if (!file) continue;
       delete file.skipIfExists;
       files.push(file);
     }
@@ -312,13 +347,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   return files;
 }
 
-function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile {
+function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile | null {
   const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = resolveServiceDir(resolvedName);
   const serviceClass = resolvedName;
   const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;
 
-  const plans = service.operations.map((op) => ({
+  let plans = service.operations.map((op) => ({
     op,
     plan: planOperation(op),
     method: resolveMethodName(op, service, ctx),
@@ -361,20 +396,37 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     }
   }
 
+  // Filter out operations whose method name already exists in the baseline
+  // class. The user's `@oagen-ignore-start`/`@oagen-ignore-end` blocks in
+  // the existing file preserve those method bodies; emitting them again
+  // would duplicate the symbol after the engine appends the preserved block
+  // (engine writeFiles → overwriteWithPreservedRegions appends, doesn't
+  // replace, when the block is method-level not class-level).
+  //
+  // Direct check against `apiSurface.classes[serviceClass].methods` rather
+  // than `uncoveredOperations`, which routes through `overlayLookup` that
+  // isn't always populated.
+  //
+  // Done after dedup + sort so the rendered methods keep their stable names.
+  // Imports below filter through `plans`, so they automatically narrow to
+  // the kept operations only — no orphan imports.
+  const baselineMethodNames = new Set(Object.keys(ctx.apiSurface?.classes?.[serviceClass]?.methods ?? {}));
+  const planCountBeforeFilter = plans.length;
+  if (baselineMethodNames.size > 0) {
+    plans = plans.filter((p) => !baselineMethodNames.has(p.method));
+  }
+  const filteredOut = planCountBeforeFilter - plans.length;
+
+  // Skip emitting the file altogether when every operation already exists in
+  // baseline AND the existing class is preserved via `@oagen-ignore-start`
+  // blocks. The autogen-overwrite path would otherwise write an empty class
+  // shell that the engine's region preservation would have to reconstruct.
+  if (plans.length === 0 && filteredOut > 0) {
+    return null;
+  }
+
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
-
-  // When merging into an existing class, the merger keeps baseline method
-  // bodies but may add imports from the generated code.  To avoid orphaned
-  // imports for types used only by baseline methods (whose bodies are kept
-  // intact), skip model collection for methods that already exist.
-  const baselineMethodSet = new Set<string>();
-  const baselineClass = ctx.apiSurface?.classes?.[serviceClass];
-  if (baselineClass?.methods) {
-    for (const name of Object.keys(baselineClass.methods)) {
-      baselineMethodSet.add(name);
-    }
-  }
 
   // Collect models for imports — only include models that are actually used
   // in method signatures (not all union variants from the spec)
@@ -382,7 +434,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   const requestModels = new Set<string>();
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
-  for (const { op, plan, method } of plans) {
+  for (const { op, plan } of plans) {
     // Always collect param type refs for enums — inline options interfaces
     // are generated for all methods (including baseline ones), so their
     // type dependencies must always be imported.
@@ -393,10 +445,13 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       collectParamTypeRefs(param.type, paramEnums, paramModels);
     }
 
-    // Skip response/request model imports for methods that already exist in
-    // the baseline class.  The merger keeps baseline method bodies, so their
-    // imports are already present in the existing file.
-    if (baselineMethodSet.has(method)) continue;
+    // Always collect imports for every rendered method.  Earlier versions
+    // skipped baseline methods on the assumption the AST merger would keep
+    // their existing imports — but the autogen-aware writer in
+    // `node/index.ts` overwrites previously-generated files in full so spec
+    // renames propagate. With overwrite, missing imports become real
+    // compile errors. Redundant imports are harmless (eslint --fix prunes
+    // them post-generation via `formatCommand`).
 
     if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       // For paginated operations, import the item type (e.g., Connection)
@@ -442,8 +497,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // `redirect_uris: RedirectUriInput[]`) — otherwise the wrapper emits a
   // reference to a type it never imported.
   const resolvedLookup = buildResolvedLookup(ctx);
-  for (const { op, method } of plans) {
-    if (baselineMethodSet.has(method)) continue;
+  for (const { op } of plans) {
     const resolved = lookupResolved(op, resolvedLookup);
     if (resolved) {
       for (const name of collectWrapperResponseModels(resolved)) {
@@ -543,6 +597,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     const resolved = resolveInterfaceName(name, ctx);
     if (importedSerializers.has(resolved)) continue;
     importedSerializers.add(resolved);
+
+    // If `bodyArgExpr` will fall through to passing `payload` directly
+    // (because the live SDK has the serializer file but no `serialize${T}`
+    // function), don't generate an import for a function that doesn't exist.
+    const ser = `serialize${resolved}`;
+    if (!liveSurfaceHasFunction(ser)) {
+      const sourceFile = (ctx.apiSurface?.interfaces?.[resolved] as { sourceFile?: string } | undefined)?.sourceFile;
+      const candidate = sourceFile
+        ? sourceFile.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
+        : `src/${resolveDir(modelToService.get(name))}/serializers/${fileName(name)}.serializer.ts`;
+      if (liveSurfaceHasFile(candidate)) continue;
+    }
+
     const modelDir = modelToService.get(name);
     const modelServiceDir = resolveDir(modelDir);
     const relPath =
@@ -550,7 +617,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         ? `./serializers/${fileName(name)}.serializer`
         : `../${modelServiceDir}/serializers/${fileName(name)}.serializer`;
     const existing = serializerImportsByPath.get(relPath) ?? [];
-    existing.push(`serialize${resolved}`);
+    existing.push(ser);
     serializerImportsByPath.set(relPath, existing);
   }
 
@@ -571,6 +638,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     for (const name of paramEnums) {
       if (allModels.has(name)) continue; // Already imported as a model
       if (!specEnumNames.has(name)) continue; // No file generated for this enum
+      if (isInlineEnum(name)) continue; // Inlined at usage sites — no import needed
       const enumDir = enumToService.get(name);
       const enumServiceDir = resolveDir(enumDir);
       const relPath =
@@ -1063,7 +1131,7 @@ function renderDeleteWithBodyMethod(
   let bodyExpr: string;
   if (bodyInfo?.kind === 'model') {
     requestType = resolveInterfaceName(bodyInfo.name, ctx);
-    bodyExpr = `serialize${requestType}(payload)`;
+    bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
@@ -1104,7 +1172,7 @@ function renderBodyMethod(
   let bodyExpr: string;
   if (bodyInfo?.kind === 'model') {
     requestType = resolveInterfaceName(bodyInfo.name, ctx);
-    bodyExpr = `serialize${requestType}(payload)`;
+    bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
@@ -1320,7 +1388,7 @@ function renderVoidMethod(
     if (bodyInfo?.kind === 'model') {
       const requestType = resolveInterfaceName(bodyInfo.name, ctx);
       bodyParam = `payload: ${requestType}`;
-      bodyExpr = `serialize${requestType}(payload)`;
+      bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
     } else if (bodyInfo?.kind === 'union') {
       bodyParam = `payload: ${bodyInfo.typeStr}`;
       if (bodyInfo.discriminator) {

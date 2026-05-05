@@ -188,6 +188,11 @@ export function buildKnownTypeNames(models: Model[], ctx: EmitterContext): Set<s
 
 /**
  * Create a service directory resolver bundle.
+ *
+ * When `ctx.apiSurface` is populated, the baseline `sourceFile` of an
+ * existing interface wins over the IR-derived first-reference assignment.
+ * This keeps generated imports pointing at the existing live SDK location
+ * instead of duplicating a model into a different service directory.
  */
 export function createServiceDirResolver(
   models: Model[],
@@ -200,18 +205,68 @@ export function createServiceDirResolver(
 } {
   const modelToService = assignModelsToServices(models, services);
   const serviceNameMap = buildServiceNameMap(services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+
+  // Per-name → directory override, harvested from the live SDK surface.
+  // Stored under a sentinel "" service key in modelToService so resolveDir
+  // can dispatch on it without a separate map. Implementation: model name ->
+  // baseline directory string (e.g., "user-management"). The override map is
+  // attached by tagging the model name with a directory prefix that bypasses
+  // the IR-service lookup. Concretely we keep a side map.
+  const baselineDirByModel = new Map<string, string>();
+  const recordSource = (name: string, info: { sourceFile?: string } | undefined) => {
+    const sourceFile = info?.sourceFile;
+    if (!sourceFile) return;
+    const m = sourceFile.match(/^src\/([^/]+)\//);
+    if (!m) return;
+    baselineDirByModel.set(name, m[1]);
+  };
+  // Both interfaces and type aliases can shadow IR model names — e.g.
+  // `type Role = EnvironmentRole | OrganizationRole;` is the live SDK's
+  // canonical Role definition even though the IR represents Role as a model.
+  for (const [name, info] of Object.entries(ctx.apiSurface?.interfaces ?? {})) {
+    recordSource(name, info as { sourceFile?: string });
+  }
+  for (const [name, info] of Object.entries(ctx.apiSurface?.typeAliases ?? {})) {
+    if (!baselineDirByModel.has(name)) {
+      recordSource(name, info as { sourceFile?: string });
+    }
+  }
+
+  // Override modelToService for any IR model that has a baseline sourceFile.
+  // We invent a synthetic IR-service key that maps directly to the baseline
+  // directory via serviceNameMap so resolveDir returns the correct dir.
+  for (const [modelName] of modelToService) {
+    const dir = baselineDirByModel.get(modelName);
+    if (!dir) continue;
+    const synthetic = `__baseline_dir__:${dir}`;
+    modelToService.set(modelName, synthetic);
+    if (!serviceNameMap.has(synthetic)) {
+      // resolveServiceDir is identity on already-kebab-case names, so storing
+      // the dir directly keeps round-tripping through the resolver clean.
+      serviceNameMap.set(synthetic, dir);
+    }
+  }
+
+  const resolveDir = (irService: string | undefined) => {
+    if (!irService) return 'common';
+    if (irService.startsWith('__baseline_dir__:')) return irService.slice('__baseline_dir__:'.length);
+    return resolveServiceDir(serviceNameMap.get(irService) ?? irService);
+  };
   return { modelToService, serviceNameMap, resolveDir };
 }
 
 /**
  * Check if baseline interface fields appear to contain generic type parameters.
+ *
+ * Heuristic: strip string literals first (so `'GoogleSAML'` is not mistaken
+ * for a type name), then look for any PascalCase token that isn't a known
+ * type — those indicate an unbound generic parameter like `TCustomAttributes`.
  */
 export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: Set<string>): boolean {
   for (const [, bf] of Object.entries(fields)) {
-    const fieldType = (bf as { type: string }).type;
-    const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+    const rawType = (bf as { type: string }).type;
+    const stripped = rawType.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    const typeNames = stripped.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
     if (!typeNames) continue;
     for (const tn of typeNames) {
       if (TS_BUILTINS.has(tn)) continue;
@@ -351,12 +406,23 @@ export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterConte
 
 /**
  * Check whether an IR model has fields not present in the baseline interface.
+ *
+ * When the live SDK exposes the same name as a type alias (e.g.
+ * `type Role = EnvironmentRole | OrganizationRole;`), treat it as already
+ * fully covered — generating an interface against an existing alias would
+ * collide. The alias's referenced types still get generated independently
+ * and serve as the canonical implementation.
  */
 export function modelHasNewFields(model: Model, ctx: EmitterContext): boolean {
-  if (!ctx.apiSurface?.interfaces) return true;
+  if (!ctx.apiSurface?.interfaces && !ctx.apiSurface?.typeAliases) return true;
 
   const domainName = resolveInterfaceName(model.name, ctx);
-  const baseline = ctx.apiSurface.interfaces[domainName];
+
+  if (ctx.apiSurface?.typeAliases?.[domainName]) {
+    return false;
+  }
+
+  const baseline = ctx.apiSurface?.interfaces?.[domainName];
   if (!baseline?.fields) return true;
 
   for (const field of model.fields) {

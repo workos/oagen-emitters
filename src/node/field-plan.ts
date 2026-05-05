@@ -1,7 +1,14 @@
 import type { Model, Field, EmitterContext, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
 import { mapTypeRef as tsMapTypeRef } from './type-map.js';
 import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
-import { relativeImport, buildKnownTypeNames, isBaselineGeneric, createServiceDirResolver } from './utils.js';
+import {
+  relativeImport,
+  buildKnownTypeNames,
+  isBaselineGeneric,
+  createServiceDirResolver,
+  modelHasNewFields,
+} from './utils.js';
+import { liveSurfaceHasFunction, liveSurfaceHasFile, liveSurfaceFunctionPath } from './live-surface.js';
 
 // ---------------------------------------------------------------------------
 // Guard strategy
@@ -27,6 +34,26 @@ interface BaselineInterface {
 // Expression builders
 // ---------------------------------------------------------------------------
 
+/**
+ * Decide whether a `deserialize${X}` / `serialize${X}` helper will be
+ * resolvable at compile time. A helper is callable when:
+ *   - the live SDK already exports it (live-surface knows), OR
+ *   - the emitter is producing the dep model's serializer this run, which
+ *     happens when `modelHasNewFields(dep, ctx)` says the dep needs
+ *     regeneration.
+ *
+ * When neither condition holds, expression builders fall back to passing
+ * the value through unchanged — `deserializeX(wire)` and `serializeX(model)`
+ * become `wire` / `model` respectively. Safe because elided cases imply
+ * the wire and domain shapes are identical (no IR additions).
+ */
+function helperExists(helperName: string, depModelName: string, ctx: EmitterContext): boolean {
+  if (liveSurfaceHasFunction(helperName)) return true;
+  const depModel = ctx.spec.models.find((m) => m.name === depModelName);
+  if (!depModel) return false;
+  return modelHasNewFields(depModel, ctx);
+}
+
 export function deserializeExpression(
   ref: TypeRef,
   wireExpr: string,
@@ -41,11 +68,17 @@ export function deserializeExpression(
       return wireExpr;
     case 'model': {
       const name = resolveInterfaceName(ref.name, ctx);
+      // The deserialize helper may not exist if its serializer file was
+      // elided (no baseline serializer + no new fields ⇒ no generation).
+      // Fall back to passing the wire value through — the runtime shape
+      // is identical to the domain shape in those cases.
+      if (!helperExists(`deserialize${name}`, ref.name, ctx)) return wireExpr;
       return `deserialize${name}(${wireExpr})`;
     }
     case 'array':
       if (ref.items.kind === 'model') {
         const name = resolveInterfaceName(ref.items.name, ctx);
+        if (!helperExists(`deserialize${name}`, ref.items.name, ctx)) return wireExpr;
         return `${wireExpr}.map(deserialize${name})`;
       }
       return wireExpr;
@@ -89,11 +122,13 @@ export function serializeExpression(
       return domainExpr;
     case 'model': {
       const name = resolveInterfaceName(ref.name, ctx);
+      if (!helperExists(`serialize${name}`, ref.name, ctx)) return domainExpr;
       return `serialize${name}(${domainExpr})`;
     }
     case 'array':
       if (ref.items.kind === 'model') {
         const name = resolveInterfaceName(ref.items.name, ctx);
+        if (!helperExists(`serialize${name}`, ref.items.name, ctx)) return domainExpr;
         return `${domainExpr}.map(serialize${name})`;
       }
       return domainExpr;
@@ -164,6 +199,10 @@ function renderDiscriminatorSwitch(
     const fn = `${direction}${resolved}`;
     cases.push(`case '${value}': return ${fn}(${expr} as any)`);
   }
+  // No mapping → passthrough. Without this guard, an empty `disc.mapping`
+  // emits `switch { ; default: ... }` which is invalid TypeScript syntax
+  // (the leading `;` looks like a stray statement before the first case).
+  if (cases.length === 0) return expr;
   return `(() => { switch ((${expr} as any).${disc.property}) { ${cases.join('; ')}; default: return ${expr} } })()`;
 }
 
@@ -408,8 +447,40 @@ export function planDeserializeField(
   const wire = wireFieldName(field.name);
   const wireAccess = `response.${wire}`;
   const skip = skipFormatFields.has(field.name);
-  const fallbackForNullable = field.type.kind === 'nullable' ? 'null' : 'undefined';
-  const expr = skip ? wireAccess : deserializeExpression(field.type, wireAccess, ctx, fallbackForNullable);
+
+  // Fallback selection considers both the IR field type and the baseline
+  // domain field. When baseline declares the field as `optional`
+  // (undefined-permitting) but the IR is nullable (null-only), prefer
+  // `undefined` so the deserialize output matches the baseline interface
+  // signature. Otherwise the assignment becomes
+  // `Record<...> | null → Record<...> | undefined` (TS2322).
+  const baselineDomainField = baselineDomain?.fields?.[domain];
+  const baselineDomainAcceptsNull = baselineDomainField?.type?.includes('null') ?? false;
+  let fallbackForNullable: string;
+  if (field.type.kind === 'nullable') {
+    fallbackForNullable =
+      baselineDomainField && baselineDomainField.optional && !baselineDomainAcceptsNull ? 'undefined' : 'null';
+  } else {
+    fallbackForNullable = 'undefined';
+  }
+  let expr = skip ? wireAccess : deserializeExpression(field.type, wireAccess, ctx, fallbackForNullable);
+
+  // Baseline-declared Date for an IR `string` field: the interface body
+  // uses the baseline's `Date` (line 392 in models.ts), so the serializer
+  // must convert with `new Date(...)`. The IR type doesn't carry the
+  // `format: date-time` here (the spec just said `type: string`), so
+  // `deserializeExpression` would otherwise return the raw wire access.
+  const baselineField = baselineDomain?.fields?.[domain];
+  if (
+    !skip &&
+    expr === wireAccess &&
+    baselineField?.type === 'Date' &&
+    field.type.kind === 'primitive' &&
+    field.type.type === 'string'
+  ) {
+    expr = `new Date(${wireAccess})`;
+  }
+
   const isNewField = baselineDomain && !baselineDomain.fields?.[domain];
   const effectivelyOptional = !field.required || isNewField;
 
@@ -455,8 +526,37 @@ export function planSerializeField(
   const domain = fieldName(field.name);
   const domainAccess = `model.${domain}`;
   const skip = skipFormatFields.has(field.name);
-  const fallbackForNullable = field.type.kind === 'nullable' ? 'null' : 'undefined';
-  const expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx, fallbackForNullable);
+
+  // Symmetric to `planDeserializeField`: when the baseline wire is
+  // `optional` (undefined) but the IR is nullable, fall back to
+  // `undefined` so the serialized output matches the baseline wire shape.
+  const baselineWireField = baselineResponse?.fields?.[wire];
+  const baselineWireAcceptsNull = baselineWireField?.type?.includes('null') ?? false;
+  let fallbackForNullable: string;
+  if (field.type.kind === 'nullable') {
+    fallbackForNullable =
+      baselineWireField && baselineWireField.optional && !baselineWireAcceptsNull ? 'undefined' : 'null';
+  } else {
+    fallbackForNullable = 'undefined';
+  }
+  let expr = skip ? domainAccess : serializeExpression(field.type, domainAccess, ctx, fallbackForNullable);
+
+  // Symmetric to `planDeserializeField`: when the baseline declares the
+  // domain field as `Date` but the IR carries a plain `string`, the
+  // serializer must call `.toISOString()` so the wire form gets a string
+  // back. Without this, the serializer assigns a `Date` model field into
+  // a `string` wire field — TS2322.
+  const baselineField = baselineDomain?.fields?.[domain];
+  if (
+    !skip &&
+    expr === domainAccess &&
+    baselineField?.type === 'Date' &&
+    field.type.kind === 'primitive' &&
+    field.type.type === 'string'
+  ) {
+    expr = field.required ? `${domainAccess}.toISOString()` : `${domainAccess}?.toISOString()`;
+  }
+
   const isNewSerField = baselineDomain && !baselineDomain.fields?.[domain];
   const effectivelyOptionalSer = !field.required || isNewSerField;
 
@@ -486,7 +586,19 @@ function planSerializeGuard(
 
   const shouldGuardSer = effectivelyOptionalSer || field.type.kind === 'nullable';
   if (expr !== domainAccess && needsNullGuard(field.type) && shouldGuardSer) {
-    const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
+    let fallback: string = field.type.kind === 'nullable' ? 'null' : 'undefined';
+    // If the wire side is required but the field guard would otherwise emit
+    // `undefined`, the assignment becomes `string | undefined → string`.
+    // Pick a non-undefined fallback that satisfies the wire type:
+    //   - `null` when the wire type accepts null
+    //   - the string-defaulting `defaultForType(field.type)` (e.g. `''`)
+    //     for required-string wires
+    const baselineWireField = baselineResponse?.fields?.[wire];
+    const wireRequired = baselineWireField ? !baselineWireField.optional : field.required;
+    if (fallback === 'undefined' && wireRequired) {
+      const wireAcceptsNull = baselineWireField?.type?.includes('null');
+      fallback = wireAcceptsNull ? 'null' : (defaultForType(field.type) ?? 'undefined');
+    }
     return { kind: 'null-check', fallback };
   }
 
@@ -517,7 +629,12 @@ function planSerializeGuard(
       responseBaselineField2.optional;
     const fieldEffectivelyOptional = !field.required || !!isNewSerField || !!domainResponseMismatch;
     if (fieldEffectivelyOptional) {
-      return { kind: 'coalesce', fallback: 'null' };
+      // The wire side may not accept `null` (e.g. `metadata?: Record<...>`).
+      // Fall back to `undefined` in that case so the assignment matches the
+      // baseline wire field's actual type.
+      const wireAcceptsNull = responseBaselineField2?.type?.includes('null') ?? true;
+      const fallback = wireAcceptsNull ? 'null' : 'undefined';
+      return { kind: 'coalesce', fallback };
     }
   }
 
@@ -562,7 +679,10 @@ export function buildSerializerImports(
 ): string[] {
   const lines: string[] = [];
   const interfacePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
-  lines.push(`import type { ${domainName}, ${responseName} } from '${relativeImport(serializerPath, interfacePath)}';`);
+  // Single-form baselines (`wireInterfaceName` returns the same name as
+  // `domainName`) only export one symbol — don't duplicate the import.
+  const symbols = domainName === responseName ? domainName : `${domainName}, ${responseName}`;
+  lines.push(`import type { ${symbols} } from '${relativeImport(serializerPath, interfacePath)}';`);
 
   const nestedModelRefs = new Set<string>();
   for (const field of model.fields) {
@@ -574,12 +694,71 @@ export function buildSerializerImports(
   for (const dep of nestedModelRefs) {
     const depService = sctx.modelToService.get(dep);
     const depDir = sctx.resolveDir(depService);
-    const depSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
     const depName = resolveInterfaceName(dep, sctx.ctx);
+
+    // Locate the serializer file, in priority order:
+    //   1. The actual file containing `deserialize${depName}` per
+    //      live-surface (e.g. `deserializeAuditLogSchema` lives in
+    //      `create-audit-log-schema.serializer.ts`, not in the predictable
+    //      `audit-log-schema.serializer.ts`).
+    //   2. The baseline interface's adjacent serializer file path.
+    //   3. The IR-name path — this is where the emitter writes the
+    //      serializer it's producing this run.
+    const baselineSrc = (sctx.ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
+    const baselineSerializerPath = baselineSrc
+      ? baselineSrc.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
+      : null;
+    const irNameSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
+
+    const liveDeserPath = liveSurfaceFunctionPath(`deserialize${depName}`);
+    const liveSerPath = liveSurfaceFunctionPath(`serialize${depName}`);
+    const depSerializerPath =
+      liveDeserPath ??
+      liveSerPath ??
+      (baselineSerializerPath && liveSurfaceHasFile(baselineSerializerPath)
+        ? baselineSerializerPath
+        : irNameSerializerPath);
+
     const rel = relativeImport(serializerPath, depSerializerPath);
     const canon = sctx.dedup.get(dep);
     const depSkipSerialize =
       sctx.skippedSerializeModels.has(dep) || (canon != null && sctx.skippedSerializeModels.has(canon));
+
+    // Decide whether this serializer is reachable at runtime:
+    //   - file on disk → honor what it exports (hasDeser/hasSer)
+    //   - file NOT on disk → only safe to import if the emitter is
+    //     producing the dep's serializer this run, which only happens
+    //     when `modelHasNewFields` says the dep needs regeneration.
+    //
+    // Skip the import otherwise. The serializer body falls back to a
+    // pass-through expression when it can't call the helper.
+    const hasDeser = liveSurfaceHasFunction(`deserialize${depName}`);
+    const hasSer = liveSurfaceHasFunction(`serialize${depName}`);
+    const fileExists = liveSurfaceHasFile(depSerializerPath);
+    if (fileExists && !hasDeser && !hasSer) continue;
+    if (!fileExists) {
+      const depModel = sctx.ctx.spec.models.find((m) => m.name === dep);
+      const willGenerateSerializer = depModel ? modelHasNewFields(depModel, sctx.ctx) : true;
+      if (!willGenerateSerializer) continue;
+    }
+
+    // Mixed: file exists, only one of the pair is exported. Import only
+    // what's present so we don't synthesize a missing symbol. The body
+    // emitter's `bodyArgExpr` already falls through when it sees a missing
+    // serialize function.
+    if (fileExists && depSkipSerialize) {
+      if (hasDeser) lines.push(`import { deserialize${depName} } from '${rel}';`);
+      continue;
+    }
+    if (fileExists && !hasSer) {
+      lines.push(`import { deserialize${depName} } from '${rel}';`);
+      continue;
+    }
+    if (fileExists && !hasDeser) {
+      lines.push(`import { serialize${depName} } from '${rel}';`);
+      continue;
+    }
+
     if (depSkipSerialize) {
       lines.push(`import { deserialize${depName} } from '${rel}';`);
     } else {
