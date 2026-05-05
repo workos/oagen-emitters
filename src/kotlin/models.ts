@@ -9,6 +9,36 @@ const MODELS_PACKAGE = 'com.workos.models';
 const MODELS_DIR = 'com/workos/models';
 
 /**
+ * Some specs leave string fields without `format: date-time` even though the
+ * description (or the example) makes clear they carry an ISO-8601 timestamp.
+ * Detect that here so we can promote the type to `OffsetDateTime` in the
+ * Kotlin output.
+ */
+const ISO_8601_DESCRIPTION_RE = /\bISO[-_ ]?8601\b/i;
+
+function looksLikeIso8601String(description: string | undefined): boolean {
+  if (!description) return false;
+  return ISO_8601_DESCRIPTION_RE.test(description);
+}
+
+function promoteIso8601TypeRef(type: TypeRef, description: string | undefined): TypeRef {
+  if (!looksLikeIso8601String(description)) return type;
+  const promote = (t: TypeRef): TypeRef => {
+    if (t.kind === 'primitive' && t.type === 'string' && !t.format) {
+      return { kind: 'primitive', type: 'string', format: 'date-time' };
+    }
+    if (t.kind === 'nullable') return { kind: 'nullable', inner: promote(t.inner) };
+    return t;
+  };
+  return promote(type);
+}
+
+function promoteFieldType(f: Field): Field {
+  const promoted = promoteIso8601TypeRef(f.type, f.description);
+  return promoted === f.type ? f : { ...f, type: promoted };
+}
+
+/**
  * Generate Kotlin `data class` models. Each model becomes a separate `.kt`
  * file under `com.workos.models`. Discriminated unions emit a sealed class
  * with Jackson `@JsonTypeInfo` / `@JsonSubTypes` annotations so the base type
@@ -295,7 +325,8 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
   const seen = new Set<string>();
   const lines: string[] = [];
 
-  for (const field of fields) {
+  for (const rawField of fields) {
+    const field = promoteFieldType(rawField);
     const kotlinName = propertyName(field.name);
     if (seen.has(kotlinName)) continue;
     seen.add(kotlinName);
@@ -329,7 +360,7 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
     // isEmailVerified(), etc.) for Java callers — matching the accessor
     // convention used by Stripe, AWS SDK v2, and Twilio.
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
-    if (field.deprecated) annotations.push('@Deprecated("Deprecated field")');
+    if (field.deprecated) annotations.push(buildDeprecatedAnnotation(field.description));
 
     const paramParts: string[] = [];
     if (field.description?.trim()) {
@@ -373,6 +404,38 @@ function collapseFieldEntries(rawLines: string[]): string[] {
 }
 
 /**
+ * Pull the most useful free-form deprecation hint out of a field description
+ * and lift it into the `@Deprecated(...)` message argument. Most WorkOS
+ * deprecations are written as a description that begins with "Deprecated"
+ * (e.g. "Deprecated. Use `domain_data` instead."). When the description
+ * doesn't carry a hint we fall back to a short, self-explanatory message
+ * rather than the generic "Deprecated field" placeholder.
+ */
+function deprecationMessageFromDescription(description: string | undefined): string {
+  if (!description) return 'Deprecated.';
+  const firstLine = description
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!firstLine) return 'Deprecated.';
+  // Trim trailing whitespace and collapse internal whitespace runs so the
+  // annotation argument stays on one line.
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return 'Deprecated.';
+  // Only lift the description when it actually carries a deprecation hint
+  // (e.g. "Deprecated. Use `domain_data` instead.") — many fields keep their
+  // forward-looking description verbatim, which would be misleading inside
+  // an `@Deprecated(...)` argument.
+  if (/\bdeprecat/i.test(collapsed)) return collapsed;
+  return 'Deprecated.';
+}
+
+function buildDeprecatedAnnotation(description: string | undefined): string {
+  const message = deprecationMessageFromDescription(description);
+  return `@Deprecated(${ktStringLiteral(message)})`;
+}
+
+/**
  * If the TypeRef is a literal (const) with a string, number, or boolean value,
  * return the Kotlin expression for that default. Otherwise return null.
  */
@@ -388,7 +451,8 @@ function collectImports(fields: Field[]): Set<string> {
   const imports = new Set<string>();
   if (fields.length === 0) return imports;
   imports.add('com.fasterxml.jackson.annotation.JsonProperty');
-  for (const field of fields) {
+  for (const rawField of fields) {
+    const field = promoteFieldType(rawField);
     const mapped = mapTypeRef(field.type);
     if (/\bOffsetDateTime\b/.test(mapped)) imports.add('java.time.OffsetDateTime');
     for (const enumName of collectEnumNames(field.type)) {

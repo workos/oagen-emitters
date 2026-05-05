@@ -1,5 +1,5 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
-import { className, propertyName, ktLiteral, clientFieldExpression, escapeReserved } from './naming.js';
+import { className, propertyName, ktLiteral, clientFieldExpression, escapeReserved, humanize } from './naming.js';
 import { mapTypeRef, mapTypeRefOptional } from './type-map.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
@@ -35,7 +35,11 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
 
   const lines: string[] = [];
 
-  // Build KDoc from operation description + @param docs for each wrapper param.
+  // Build KDoc: operation description + a `@param` line for *every* parameter
+  // (Dokka does not flag missing @param blocks, so coverage has to be enforced
+  // at emit time) + `@return` when there's a response model. Spec-provided
+  // descriptions are preferred; the fallback is templated from the parameter
+  // name so the SDK still compiles cleanly under failOnWarning.
   const kdocLines: string[] = [];
   const opDesc = (op.description ?? '').trim();
   const wrapperHumanName = method.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
@@ -45,29 +49,36 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     kdocLines.push(`${wrapperHumanName.charAt(0).toUpperCase()}${wrapperHumanName.slice(1)}.`);
   }
   const paramDocs: string[] = [];
+  const pushParamDoc = (kotlinName: string, sourceName: string, description: string | undefined) => {
+    const firstLine =
+      description
+        ?.split('\n')
+        .find((l) => l.trim())
+        ?.trim() ?? '';
+    const fallback = `the ${humanize(sourceName)} of the request.`;
+    const text = firstLine || fallback;
+    paramDocs.push(`@param ${kotlinName} ${escapeKdoc(text)}`);
+  };
   for (const pp of pathParams) {
-    if (pp.description?.trim()) {
-      paramDocs.push(`@param ${propertyName(pp.name)} ${escapeKdoc(pp.description.split('\n')[0].trim())}`);
-    }
+    pushParamDoc(propertyName(pp.name), pp.name, pp.description);
   }
   for (const rp of resolvedParams) {
-    const desc = rp.field?.description?.trim();
-    if (desc) {
-      paramDocs.push(`@param ${propertyName(rp.paramName)} ${escapeKdoc(desc.split('\n')[0])}`);
-    }
+    pushParamDoc(propertyName(rp.paramName), rp.paramName, rp.field?.description);
   }
+  // Trailing `requestOptions` parameter — stable canned phrasing.
+  pushParamDoc(
+    'requestOptions',
+    'request_options',
+    'per-request overrides (idempotency key, API key, headers, timeout)',
+  );
   if (responseClass) {
     paramDocs.push(`@return the ${responseClass}`);
   }
-  if (paramDocs.length > 0 || kdocLines.length > 0) {
-    lines.push('  /**');
-    for (const l of kdocLines) lines.push(`   * ${escapeKdoc(l)}`);
-    if (paramDocs.length > 0) {
-      lines.push('   *');
-      for (const p of paramDocs) lines.push(`   * ${p}`);
-    }
-    lines.push('   */');
-  }
+  lines.push('  /**');
+  for (const l of kdocLines) lines.push(`   * ${escapeKdoc(l)}`);
+  lines.push('   *');
+  for (const p of paramDocs) lines.push(`   * ${p}`);
+  lines.push('   */');
 
   lines.push('  @JvmOverloads');
 
@@ -99,6 +110,37 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
       lines.push(`${params[i]}${suffix}`);
     }
     lines.push(`  )${returnClause} {`);
+  }
+
+  // The /user_management/authenticate endpoint is union-split into one
+  // wrapper per grant_type. Every variant posts the same shape (caller
+  // params + grant_type + client_id + client_secret) to the same path with
+  // the same response model, so we route through a single `authenticate(...)`
+  // private helper instead of duplicating the request boilerplate per grant.
+  const inferred = wrapper.inferFromClient ?? [];
+  const usesStandardClientCreds = inferred.includes('client_id') && inferred.includes('client_secret');
+  if (
+    op.path === '/user_management/authenticate' &&
+    op.httpMethod.toUpperCase() === 'POST' &&
+    responseClass === 'AuthenticateResponse' &&
+    typeof wrapper.defaults?.grant_type === 'string' &&
+    usesStandardClientCreds
+  ) {
+    const grantType = wrapper.defaults.grant_type;
+    lines.push(`    return authenticate(`);
+    lines.push(`      grantType = ${ktLiteral(grantType)},`);
+    lines.push(`      requestOptions = requestOptions,`);
+    const entryLines = resolvedParams.map((rp) => {
+      const paramName = propertyName(rp.paramName);
+      return `      ${ktLiteral(rp.paramName)} to ${paramName}`;
+    });
+    for (let i = 0; i < entryLines.length; i++) {
+      const sep = i === entryLines.length - 1 ? '' : ',';
+      lines.push(`${entryLines[i]}${sep}`);
+    }
+    lines.push(`    )`);
+    lines.push('  }');
+    return lines;
   }
 
   // Build body using bodyOf() — consistent with non-wrapper methods.

@@ -42,6 +42,46 @@ import { buildKotlinPathExpression, KOTLIN_PATH_ENCODE_IMPORT } from './path-exp
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
 /**
+ * Some specs leave query params / fields typed as plain `string` even though
+ * the description (or the field name) makes clear they carry an ISO-8601
+ * timestamp. Detecting that here lets us emit `OffsetDateTime` so callers
+ * don't have to format the wire string themselves.
+ */
+const ISO_8601_DESCRIPTION_RE = /\bISO[-_ ]?8601\b/i;
+
+function looksLikeIso8601String(description: string | undefined): boolean {
+  if (!description) return false;
+  return ISO_8601_DESCRIPTION_RE.test(description);
+}
+
+/**
+ * Promote a string `TypeRef` to a `format: date-time` primitive when the
+ * accompanying description identifies it as an ISO-8601 timestamp. Leaves
+ * non-string types untouched.
+ */
+function promoteIso8601TypeRef(type: TypeRef, description: string | undefined): TypeRef {
+  if (!looksLikeIso8601String(description)) return type;
+  const promote = (t: TypeRef): TypeRef => {
+    if (t.kind === 'primitive' && t.type === 'string' && !t.format) {
+      return { kind: 'primitive', type: 'string', format: 'date-time' };
+    }
+    if (t.kind === 'nullable') return { kind: 'nullable', inner: promote(t.inner) };
+    return t;
+  };
+  return promote(type);
+}
+
+function promoteParameterType(p: Parameter): Parameter {
+  const promoted = promoteIso8601TypeRef(p.type, p.description);
+  return promoted === p.type ? p : { ...p, type: promoted };
+}
+
+function promoteFieldType(f: Field): Field {
+  const promoted = promoteIso8601TypeRef(f.type, f.description);
+  return promoted === f.type ? f : { ...f, type: promoted };
+}
+
+/**
  * Generate one API class per mount group. Methods map 1:1 to IR operations.
  * Path params, query params, and body fields are flattened into the method
  * signature so callers never need to construct an intermediate options object.
@@ -249,10 +289,12 @@ function renderMethod(
   const pathParams = sortPathParamsByTemplateOrder(op);
   const groupedParamNames = collectGroupedParamNames(op);
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  const queryParams = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
+  const queryParams = op.queryParams
+    .filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name))
+    .map(promoteParameterType);
   const bodyModel = resolveBodyModel(op, ctx);
   const bodyFields = bodyModel
-    ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name))
+    ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name)).map(promoteFieldType)
     : [];
 
   // Track imports we need
@@ -426,12 +468,13 @@ function renderMethod(
     lines.push(`      before = ${pickNamedQueryParam(sortedQuery, 'before')},`);
     lines.push(`      after = ${pickNamedQueryParam(sortedQuery, 'after')}`);
     lines.push(`    ) {`);
-    lines.push(`      val params = this`);
     for (const qp of sortedQuery.filter((p) => p.name !== 'after' && p.name !== 'before')) {
-      for (const ln of emitQueryParam(qp, '      ')) lines.push(ln);
+      for (const ln of emitQueryParam(qp, '      ', true)) lines.push(ln);
     }
     for (const group of op.parameterGroups ?? []) {
-      for (const ln of emitGroupQueryDispatch(group, groupParamNames.get(group.name)!, '      ')) lines.push(ln);
+      for (const ln of emitGroupQueryDispatch(group, groupParamNames.get(group.name)!, '      ', true)) {
+        lines.push(ln);
+      }
     }
     lines.push(`    }`);
   } else {
@@ -609,31 +652,32 @@ function buildMethodKdoc(
   }
 
   // @param lines. Use the Kotlin-visible parameter name (body collisions get
-  // renamed, e.g. slug → bodySlug).  Deprecated parameters always get a
-  // @param entry even without a description so the deprecation note is
-  // surfaced in the docs.
+  // renamed, e.g. slug → bodySlug). Every parameter gets an `@param` line —
+  // Dokka does not flag missing `@param` blocks (only fully undocumented
+  // declarations), so we have to enforce coverage at emit time. Spec-provided
+  // descriptions are preferred; missing descriptions get a templated fallback
+  // derived from the parameter name. The fallback is intentionally a little
+  // ugly — it nudges callers to add real descriptions to the spec.
   const paramDocs: string[] = [];
   const seenParamDocs = new Set<string>();
-  const pushParamDoc = (name: string, description: string | undefined, deprecated?: boolean) => {
+  const pushParamDoc = (name: string, sourceName: string, description: string | undefined, deprecated?: boolean) => {
     if (seenParamDocs.has(name)) return;
     seenParamDocs.add(name);
-    paramDocs.push(formatParamDoc(name, description, deprecated));
+    paramDocs.push(formatParamDoc(name, description, deprecated, sourceName));
   };
   for (const pp of pathParams) {
-    if (pp.description?.trim() || pp.deprecated) {
-      pushParamDoc(propertyName(pp.name), pp.description, pp.deprecated);
-    }
+    pushParamDoc(propertyName(pp.name), pp.name, pp.description, pp.deprecated);
   }
   for (const qp of queryParams) {
-    if (qp.description?.trim() || qp.deprecated) {
-      pushParamDoc(propertyName(qp.name), qp.description, qp.deprecated);
-    }
+    pushParamDoc(propertyName(qp.name), qp.name, qp.description, qp.deprecated);
   }
   for (const bf of bodyFields) {
-    if (bf.description?.trim() || bf.deprecated) {
-      pushParamDoc(bodyParamNames.get(bf.name)!, bf.description, bf.deprecated);
-    }
+    pushParamDoc(bodyParamNames.get(bf.name)!, bf.name, bf.description, bf.deprecated);
   }
+  // Always document the trailing `requestOptions` parameter with a stable,
+  // canned phrasing so generated SDKs are consistent and Dokka's coverage
+  // reporting has nothing to flag.
+  pushParamDoc('requestOptions', 'request_options', REQUEST_OPTIONS_PARAM_DESCRIPTION);
 
   const returnDoc = plan.isPaginated
     ? '@return a [com.workos.common.http.Page] of results'
@@ -658,12 +702,29 @@ function buildMethodKdoc(
   return out;
 }
 
-function formatParamDoc(kotlinName: string, description: string | undefined, deprecated?: boolean): string {
+/**
+ * Stable, canned description for the trailing `requestOptions` parameter that
+ * every generated method exposes. Kept as a constant so the same phrasing
+ * appears across resource methods, wrapper methods, and union-split helpers.
+ */
+const REQUEST_OPTIONS_PARAM_DESCRIPTION = 'per-request overrides (idempotency key, API key, headers, timeout)';
+
+function formatParamDoc(
+  kotlinName: string,
+  description: string | undefined,
+  deprecated?: boolean,
+  sourceName?: string,
+): string {
   const firstLine = description?.split('\n').find((l) => l.trim()) ?? '';
-  const text = firstLine.trim();
+  const specText = firstLine.trim();
   const deprecationNote = deprecated ? '**Deprecated.**' : '';
+  // Fall back to a templated description derived from the parameter name when
+  // the spec didn't provide one. Dokka has no `-Xdoclint:missing` analogue,
+  // so emitting a placeholder is the only way to guarantee `@param` coverage.
+  const fallback = `the ${humanize(sourceName ?? kotlinName)} of the request.`;
+  const text = specText || fallback;
   const parts = [deprecationNote, text].filter(Boolean).join(' ');
-  return `@param ${kotlinName}${parts ? ` ${escapeKdoc(parts)}` : ''}`;
+  return `@param ${kotlinName} ${escapeKdoc(parts)}`;
 }
 
 /**
@@ -684,43 +745,66 @@ function unwrapArray(t: TypeRef): TypeRef | null {
 function valueExprForQuery(type: TypeRef): string {
   const inner = type.kind === 'nullable' ? type.inner : type;
   if (inner.kind === 'enum') return 'it.value';
-  if (inner.kind === 'primitive' && inner.type === 'string') return 'it';
+  if (inner.kind === 'primitive' && inner.type === 'string') {
+    return inner.format === 'date-time' ? 'it.toString()' : 'it';
+  }
   return 'it.toString()';
 }
 
-function emitQueryParam(p: Parameter, indent: string): string[] {
+function emitQueryParam(p: Parameter, indent: string, receiverMode = false): string[] {
   const prop = propertyName(p.name);
   const rendered = queryParamToString(p.type, prop);
   const inner = p.type.kind === 'nullable' ? p.type.inner : p.type;
   const arrayItem = unwrapArray(p.type);
+  // In receiver-lambda mode (`requestPage { ... }`) the surrounding closure is
+  // an extension on `MutableList<Pair<String, String>>`, so we elide the
+  // explicit `params.` qualifier (extension functions resolve via implicit
+  // receiver) and route `+=` through `add(pair)` to keep ktlint happy.
+  const callPrefix = receiverMode ? '' : 'params.';
+  const addPair = (pair: string) => (receiverMode ? `add(${pair})` : `params += ${pair}`);
   if (arrayItem) {
     // Honor `style: form, explode: false` → comma-joined. Default (explode:true
     // or unspecified for form) → repeated keys.  `p.explode ?? true` matches
     // the OpenAPI default for query parameters when `style` is form.
     const explode = p.explode ?? true;
     const itemExpr = valueExprForQuery(arrayItem);
+    // `it` is the loop variable in the trivial mapping case — `xs.map { it }`
+    // is the identity function, so emit the collection directly when the per-
+    // item expression doesn't transform the value.
+    const isIdentity = itemExpr === 'it';
     if (!explode) {
       if (p.required) {
-        return [`${indent}params.addJoinedIfNotNull(${ktLiteral(p.name)}, ${prop}.map { ${itemExpr} })`];
+        const arg = isIdentity ? prop : `${prop}.map { ${itemExpr} }`;
+        return [`${indent}${callPrefix}addJoinedIfNotNull(${ktLiteral(p.name)}, ${arg})`];
       }
-      return [`${indent}params.addJoinedIfNotNull(${ktLiteral(p.name)}, ${prop}?.map { ${itemExpr} })`];
+      const arg = isIdentity ? prop : `${prop}?.map { ${itemExpr} }`;
+      return [`${indent}${callPrefix}addJoinedIfNotNull(${ktLiteral(p.name)}, ${arg})`];
     }
     if (p.required) {
-      return [`${indent}params.addEach(${ktLiteral(p.name)}, ${prop}.map { ${itemExpr} })`];
+      const arg = isIdentity ? prop : `${prop}.map { ${itemExpr} }`;
+      return [`${indent}${callPrefix}addEach(${ktLiteral(p.name)}, ${arg})`];
     }
-    return [`${indent}${prop}?.let { params.addEach(${ktLiteral(p.name)}, it.map { ${itemExpr} }) }`];
+    if (isIdentity) {
+      return [`${indent}${prop}?.let { ${callPrefix}addEach(${ktLiteral(p.name)}, it) }`];
+    }
+    return [`${indent}${prop}?.let { ${callPrefix}addEach(${ktLiteral(p.name)}, it.map { ${itemExpr} }) }`];
   }
-  if (p.required) return [`${indent}params += ${ktLiteral(p.name)} to ${rendered}`];
-  if (inner.kind === 'primitive' && inner.type === 'string') {
-    return [`${indent}params.addIfNotNull(${ktLiteral(p.name)}, ${prop})`];
+  if (p.required) return [`${indent}${addPair(`${ktLiteral(p.name)} to ${rendered}`)}`];
+  if (inner.kind === 'primitive' && inner.type === 'string' && inner.format !== 'date-time') {
+    return [`${indent}${callPrefix}addIfNotNull(${ktLiteral(p.name)}, ${prop})`];
   }
-  return [`${indent}${prop}?.let { params += ${ktLiteral(p.name)} to ${queryParamToString(inner, 'it')} }`];
+  return [`${indent}${prop}?.let { ${addPair(`${ktLiteral(p.name)} to ${queryParamToString(inner, 'it')}`)} }`];
 }
 
 function queryParamToString(type: TypeRef, varName: string): string {
   if (type.kind === 'enum') return `${varName}.value`;
   if (type.kind === 'nullable') return queryParamToString(type.inner, varName);
-  if (type.kind === 'primitive' && type.type === 'string') return varName;
+  // Plain `string` is already the wire type. ISO-8601 strings get promoted to
+  // `OffsetDateTime`, so we need an explicit `.toString()` to serialize them
+  // as the spec-required ISO-8601 representation.
+  if (type.kind === 'primitive' && type.type === 'string') {
+    return type.format === 'date-time' ? `${varName}.toString()` : varName;
+  }
   return `${varName}.toString()`;
 }
 
@@ -870,16 +954,21 @@ function generateSealedClass(
 }
 
 /** Emit `when` dispatch that serializes a parameter group into query params. */
-function emitGroupQueryDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
+function emitGroupQueryDispatch(
+  group: import('@workos/oagen').ParameterGroup,
+  prop: string,
+  indent: string,
+  receiverMode = false,
+): string[] {
   const sealedName = sealedGroupName(group.name);
   const lines: string[] = [];
 
   if (group.optional) {
     lines.push(`${indent}if (${prop} != null) {`);
-    emitWhenBlock(lines, group, sealedName, prop, `${indent}  `);
+    emitWhenBlock(lines, group, sealedName, prop, `${indent}  `, receiverMode);
     lines.push(`${indent}}`);
   } else {
-    emitWhenBlock(lines, group, sealedName, prop, indent);
+    emitWhenBlock(lines, group, sealedName, prop, indent, receiverMode);
   }
   return lines;
 }
@@ -920,13 +1009,15 @@ function emitWhenBlock(
   sealedName: string,
   prop: string,
   indent: string,
+  receiverMode = false,
 ): void {
   lines.push(`${indent}when (${prop}) {`);
   for (const variant of group.variants) {
     const variantName = className(variant.name);
     const entries = variant.parameters.map((p) => {
       const fieldProp = deriveShortPropertyName(p.name, group.name);
-      return `params += ${ktLiteral(p.name)} to ${prop}.${fieldProp}`;
+      const pair = `${ktLiteral(p.name)} to ${prop}.${fieldProp}`;
+      return receiverMode ? `add(${pair})` : `params += ${pair}`;
     });
     if (entries.length === 1) {
       lines.push(`${indent}  is ${sealedName}.${variantName} -> ${entries[0]}`);
