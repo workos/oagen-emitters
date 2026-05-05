@@ -7,6 +7,7 @@ import {
   emitJsonPropertyAttributes,
   setModelAliases,
   isModelAlias,
+  resolveModelName,
 } from './type-map.js';
 import {
   articleFor,
@@ -54,6 +55,17 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     }
   }
 
+  const files: GeneratedFile[] = [];
+
+  // Compute and publish model aliases so mapTypeRef rewrites references.
+  // Must run BEFORE collectRequestBodyOnlyModelNames so the body/non-body
+  // tally collapses aliased pairs onto their canonical name — otherwise a
+  // model that's only a request body in name (e.g. `AddRolePermissionDto`)
+  // but is the canonical for a field-referenced alias (e.g. `SlimRole`)
+  // would be wrongly classified as body-only and skipped from emission,
+  // leaving every alias-rewritten field reference dangling.
+  primeModelAliases(models);
+
   // Models that are referenced ONLY as an operation request body (not by any
   // response, field, or other operation type) are dead surface in .NET because
   // the wrapper generator emits a per-operation `*Options` class containing
@@ -62,11 +74,6 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // (see workos-dotnet#248 with `CreateUserApiKey` /
   // `UserManagementCreateApiKeyOptions`). Skip emission for those.
   const requestBodyOnlyNames = collectRequestBodyOnlyModelNames(ctx.spec.services, models);
-
-  const files: GeneratedFile[] = [];
-
-  // Compute and publish model aliases so mapTypeRef rewrites references.
-  primeModelAliases(models);
 
   // Build a lookup of base model field C# names → C# types for inheritance.
   // Variant models skip inherited fields and use `new` for type-divergent ones.
@@ -453,17 +460,22 @@ function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]):
   const requestBodyNames = new Set<string>();
   const otherReferences = new Set<string>();
 
+  // Resolve every reference through the alias map so structurally-identical
+  // models share a body/non-body classification. Without this, an alias being
+  // used as a field would only mark the alias name as non-body — leaving its
+  // canonical (which carries the same shape and gets emitted) wrongly tagged
+  // as body-only and skipped.
   const collect = (ref: TypeRef | undefined, into: Set<string>): void => {
     if (!ref) return;
     walkTypeRef(ref, {
-      model: (r) => into.add(r.name),
+      model: (r) => into.add(resolveModelName(r.name)),
     });
   };
 
   for (const service of services) {
     for (const op of service.operations) {
       if (op.requestBody?.kind === 'model') {
-        requestBodyNames.add(op.requestBody.name);
+        requestBodyNames.add(resolveModelName(op.requestBody.name));
       }
       collect(op.response, otherReferences);
       if (op.pagination) collect(op.pagination.itemType, otherReferences);

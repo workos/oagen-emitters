@@ -286,12 +286,10 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       overwriteExisting: true,
     });
 
-    // Ensure models/__init__.py exists even if no models are assigned to this service
-    files.push({
-      path: `src/${ctx.namespace}/${dirName}/models/__init__.py`,
-      content: '',
-      skipIfExists: true,
-    });
+    // models/__init__.py is emitted unconditionally by `models.ts` — including
+    // an empty barrel for services with no models — so we don't need a safety
+    // net here. (A `skipIfExists` safety net previously caused stale imports
+    // to survive when the underlying module was pruned.)
   }
 
   return files;
