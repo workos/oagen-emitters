@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/workos/oagen-emitters/compare/v0.8.0...v0.8.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **emitters:** repair regressions surfaced by shared-schema spec rev ([#84](https://github.com/workos/oagen-emitters/issues/84)) ([a04d317](https://github.com/workos/oagen-emitters/commit/a04d3170707adea21f19632f2a149b735be91d50))
+
 ## [0.8.0](https://github.com/workos/oagen-emitters/compare/v0.7.5...v0.8.0) (2026-05-05)
 
 
