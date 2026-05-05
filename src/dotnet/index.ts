@@ -133,8 +133,11 @@ export const dotnetEmitter: Emitter = {
         lines.push('    {');
         lines.push('        public override bool CanConvert(Type objectType) => objectType == typeof(object);');
         lines.push('');
+        // Override returns `object?` to match Newtonsoft.Json 13+'s nullable
+        // signature; `JToken.ToObject<T>` is itself `T?`, so a non-nullable
+        // override would trigger CS8603 under <Nullable>enable</Nullable>.
         lines.push(
-          '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
+          '        public override object? ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
         );
         lines.push('        {');
         lines.push('            var jObject = JObject.Load(reader);');
@@ -194,8 +197,9 @@ export const dotnetEmitter: Emitter = {
         `        public override bool CanConvert(Type objectType) => typeof(${baseClass}).IsAssignableFrom(objectType);`,
       );
       lines.push('');
+      // See first converter — `object?` matches Newtonsoft 13+ to avoid CS8603.
       lines.push(
-        '        public override object ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
+        '        public override object? ReadJson(Newtonsoft.Json.JsonReader reader, Type objectType, object? existingValue, Newtonsoft.Json.JsonSerializer serializer)',
       );
       lines.push('        {');
       lines.push('            var jObject = JObject.Load(reader);');
