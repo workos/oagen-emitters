@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/workos/oagen-emitters/compare/v0.8.1...v0.8.2) (2026-05-05)
+
+
+### Bug Fixes
+
+* **kotlin:** improve emitter output quality ([#86](https://github.com/workos/oagen-emitters/issues/86)) ([6dd9b2a](https://github.com/workos/oagen-emitters/commit/6dd9b2ad6904ebb088cba65801d4987a2af61482))
+
 ## [0.8.1](https://github.com/workos/oagen-emitters/compare/v0.8.0...v0.8.1) (2026-05-05)
 
 
