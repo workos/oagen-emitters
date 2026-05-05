@@ -26,6 +26,31 @@ import { isHandwrittenOverride } from './overrides.js';
 const TEST_PREFIX = 'src/test/kotlin/';
 
 /**
+ * Mirror the ISO-8601 hint promotion the resource/model emitters use so tests
+ * synthesize values whose Kotlin type matches the generated method signature.
+ * Kept in sync with the helpers in `resources.ts` / `models.ts`; if the
+ * detection rule changes, update all three.
+ */
+const ISO_8601_DESCRIPTION_RE = /\bISO[-_ ]?8601\b/i;
+
+function looksLikeIso8601String(description: string | undefined): boolean {
+  if (!description) return false;
+  return ISO_8601_DESCRIPTION_RE.test(description);
+}
+
+function promoteIso8601TypeRef(type: TypeRef, description: string | undefined): TypeRef {
+  if (!looksLikeIso8601String(description)) return type;
+  const promote = (t: TypeRef): TypeRef => {
+    if (t.kind === 'primitive' && t.type === 'string' && !t.format) {
+      return { kind: 'primitive', type: 'string', format: 'date-time' };
+    }
+    if (t.kind === 'nullable') return { kind: 'nullable', inner: promote(t.inner) };
+    return t;
+  };
+  return promote(type);
+}
+
+/**
  * Generate one JUnit 5 + WireMock test class per API mount group, plus a
  * cross-cutting model round-trip test.
  *
@@ -254,12 +279,13 @@ function buildOperationTest(
   }
   for (const qp of sortedQuery) {
     if (!qp.required) break;
-    const val = synthValue(qp.type, ctx, imports);
+    const promotedType = promoteIso8601TypeRef(qp.type, qp.description);
+    const val = synthValue(promotedType, ctx, imports);
     if (val === null) return null;
     argParts.push(val);
     // Best-effort wire assertion: for primitives/strings we know the synthesized
     // value so we can assert equality; otherwise just assert presence.
-    const regex = queryValueRegexFor(qp.type);
+    const regex = queryValueRegexFor(promotedType);
     if (regex !== null) requiredQueryAssertions.push({ name: qp.name, valueRegex: regex });
   }
 
@@ -283,14 +309,15 @@ function buildOperationTest(
     for (const bf of sortedBody) {
       if (sharedQueryBodyParams.has(bf.name)) continue;
       if (!bf.required) break;
-      const val = synthValue(bf.type, ctx, imports);
+      const promotedType = promoteIso8601TypeRef(bf.type, bf.description);
+      const val = synthValue(promotedType, ctx, imports);
       if (val === null) return null;
       argParts.push(val);
       // matchingJsonPath on an array/map body field fails on empty
       // synthesized collections because JsonPath returns an empty result
       // set.  Scalar fields always materialize with a concrete value, so
       // we only assert those paths.
-      if (isScalarBodyField(bf.type)) requiredBodyPaths.push(bf.name);
+      if (isScalarBodyField(promotedType)) requiredBodyPaths.push(bf.name);
     }
   }
 
@@ -464,7 +491,8 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
       argParts.push(ktStringLiteral('sample-arg'));
       continue;
     }
-    const val = synthValue(rp.field.type, ctx, imports);
+    const promotedType = promoteIso8601TypeRef(rp.field.type, rp.field.description);
+    const val = synthValue(promotedType, ctx, imports);
     if (val === null) return null;
     argParts.push(val);
   }
