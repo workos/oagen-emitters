@@ -221,15 +221,19 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
       return generateFromArrayValue(ref.inner, accessor);
     case 'union': {
       // Discriminated union: dispatch via match() on the discriminator
-      // property to call the matching variant's fromArray. Unknown values
-      // pass through as raw arrays so callers can introspect.
+      // property to call the matching variant's fromArray. An unknown
+      // discriminator value would otherwise assign a raw array to a typed
+      // property and crash later with a confusing TypeError, so throw
+      // immediately with the offending value.
       if (ref.discriminator && ref.discriminator.mapping) {
         const entries = Object.entries(ref.discriminator.mapping);
         if (entries.length > 0) {
           const arms = entries
             .map(([value, modelName]) => `'${value}' => ${className(modelName)}::fromArray(${accessor})`)
             .join(', ');
-          return `match (${accessor}['${ref.discriminator.property}'] ?? null) { ${arms}, default => ${accessor} }`;
+          const discProp = ref.discriminator.property;
+          const throwArm = `default => throw new \\UnexpectedValueException(sprintf('Unknown ${discProp}: %s', json_encode(${accessor}['${discProp}'] ?? null)))`;
+          return `match (${accessor}['${discProp}'] ?? null) { ${arms}, ${throwArm} }`;
         }
       }
       const resolved = resolveDegenerateUnion(ref);

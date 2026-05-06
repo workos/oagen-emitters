@@ -537,6 +537,10 @@ describe('generateModels', () => {
     // toArray must dispatch to the concrete instance, not emit the bare object.
     expect(file!.content).toContain("'owner' => $this->owner->toArray()");
     expect(file!.content).not.toMatch(/'owner' => \$this->owner,/);
+    // fromArray match on discriminator must throw on unknown values, not pass through raw.
+    expect(file!.content).toContain("match ($data['owner']['type'] ?? null)");
+    expect(file!.content).toContain('throw new \\UnexpectedValueException');
+    expect(file!.content).not.toMatch(/default => \$data\['owner'\]/);
   });
 
   it('throws at codegen time for heterogeneous union mixing model and scalar', () => {
