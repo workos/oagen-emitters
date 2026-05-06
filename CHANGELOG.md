@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/workos/oagen-emitters/compare/v0.9.1...v0.10.0) (2026-05-06)
+
+
+### Features
+
+* **dotnet:** honor enum default as zero variant ([#92](https://github.com/workos/oagen-emitters/issues/92)) ([3fbb5d5](https://github.com/workos/oagen-emitters/commit/3fbb5d5f53fa66f1a3b4f2cb08c069e9d2d2a1fc))
+
 ## [0.9.1](https://github.com/workos/oagen-emitters/compare/v0.9.0...v0.9.1) (2026-05-06)
 
 
