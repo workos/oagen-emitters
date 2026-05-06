@@ -23,6 +23,7 @@ import {
   clientFieldExpression,
   escapeReserved,
   humanize,
+  maybeShortenEnumParamDescription,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -38,6 +39,7 @@ import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
 import { buildKotlinPathExpression, KOTLIN_PATH_ENCODE_IMPORT } from './path-expression.js';
+import { emitSuspendVariant, SUSPEND_IMPORTS, type SuspendParam } from './suspend.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -124,6 +126,9 @@ function generateApiClass(
   imports.add('com.workos.common.http.Page');
   imports.add('com.workos.common.http.RequestConfig');
   imports.add('com.workos.common.http.RequestOptions');
+  // Every emitted method gains a `suspend` overload that delegates to the
+  // blocking version under `withContext(Dispatchers.IO)`.
+  for (const imp of SUSPEND_IMPORTS) imports.add(imp);
 
   const body: string[] = [];
   const seenMethods = new Set<string>();
@@ -223,17 +228,29 @@ function generateApiClass(
   for (const line of sealedLines) lines.push(line);
 
   const serviceDescription = resolveServiceDescription(ctx, mountName, operations);
+  // Every blocking method on this class also has a `suspend` overload — the
+  // suspend variant delegates to the blocking one via
+  // `withContext(Dispatchers.IO)` and is safe to call from any coroutine
+  // dispatcher. The service-level KDoc surfaces this so callers don't have to
+  // discover it per-method.
+  const suspendNote =
+    'Every operation on this class is available in two flavors: a blocking variant ' +
+    '(`<methodName>`) and a coroutine-aware variant (`<methodName>Suspend`). ' +
+    'The `Suspend` variants delegate to the blocking ones under `withContext(Dispatchers.IO)`, ' +
+    'so they are safe to call from any coroutine dispatcher (including `Dispatchers.Main`).';
   if (serviceDescription) {
     const docLines = serviceDescription.trim().split('\n');
-    if (docLines.length === 1) {
-      lines.push(`/** ${escapeKdoc(docLines[0].trim())} */`);
-    } else {
-      lines.push('/**');
-      for (const l of docLines) lines.push(l ? ` * ${escapeKdoc(l)}` : ' *');
-      lines.push(' */');
-    }
+    lines.push('/**');
+    for (const l of docLines) lines.push(l ? ` * ${escapeKdoc(l)}` : ' *');
+    lines.push(' *');
+    lines.push(` * ${escapeKdoc(suspendNote)}`);
+    lines.push(' */');
   } else {
-    lines.push(`/** API accessor for ${mountName}. */`);
+    lines.push('/**');
+    lines.push(` * API accessor for ${mountName}.`);
+    lines.push(' *');
+    lines.push(` * ${escapeKdoc(suspendNote)}`);
+    lines.push(' */');
   }
   // ktlint requires constructor-property parameters on their own line.
   // The property is `internal` so hand-maintained extension files in the
@@ -346,11 +363,21 @@ function renderMethod(
   const groupParamNames = assignGroupParameterNames(op, paramNames);
 
   const params: string[] = [];
-  for (const pp of pathParams) params.push(`    ${propertyName(pp.name)}: String`);
+  // Mirrors `params` but tracks the bare Kotlin parameter name so the suspend
+  // overload (emitted alongside the blocking version) can forward arguments.
+  const suspendParams: SuspendParam[] = [];
+  const pushParam = (decl: string, name: string) => {
+    params.push(decl);
+    suspendParams.push({ decl, name });
+  };
+  for (const pp of pathParams) pushParam(`    ${propertyName(pp.name)}: String`, propertyName(pp.name));
 
   const sortedQuery = [...uniqueQuery].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   for (const qp of sortedQuery) {
-    params.push(renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'));
+    pushParam(
+      renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'),
+      propertyName(qp.name),
+    );
   }
 
   // Parameter group params (sealed class types)
@@ -358,9 +385,9 @@ function renderMethod(
     const sealedName = sealedGroupName(group.name);
     const prop = groupParamNames.get(group.name)!;
     if (group.optional) {
-      params.push(`    ${prop}: ${sealedName}? = null`);
+      pushParam(`    ${prop}: ${sealedName}? = null`, prop);
     } else {
-      params.push(`    ${prop}: ${sealedName}`);
+      pushParam(`    ${prop}: ${sealedName}`, prop);
     }
   }
 
@@ -374,14 +401,17 @@ function renderMethod(
     if (isPatch && !bf.required) {
       const baseType = mapTypeRef(bf.type);
       imports.add('com.workos.common.http.PatchField');
-      params.push(`    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`);
+      pushParam(
+        `    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`,
+        bodyParamNames.get(bf.name)!,
+      );
     } else {
-      params.push(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required));
+      pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!);
     }
   }
 
   // Per-request options trailer (always optional)
-  params.push('    requestOptions: RequestOptions? = null');
+  pushParam('    requestOptions: RequestOptions? = null', 'requestOptions');
 
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
@@ -445,6 +475,7 @@ function renderMethod(
     }
     lines.push(`    )`);
     lines.push('  }');
+    appendSuspendVariantLines(lines, method, suspendParams, returnType, op.deprecated);
     return lines.join('\n');
   }
 
@@ -580,7 +611,225 @@ function renderMethod(
   }
 
   lines.push('  }');
+  appendSuspendVariantLines(lines, method, suspendParams, returnType, op.deprecated);
+
+  // Java-friendly overloads: for each variant of every sealed-class parameter
+  // group, emit an additional overload that accepts the variant's flat fields
+  // directly (no `new ResourceTarget.ById(...)` boilerplate from Java).
+  appendJavaFriendlyVariantOverloads(lines, {
+    method,
+    op,
+    canonicalParams: suspendParams,
+    groupParamNames,
+    returnType,
+    deprecated: op.deprecated,
+  });
+
   return lines.join('\n');
+}
+
+interface JavaOverloadCtx {
+  method: string;
+  op: Operation;
+  /**
+   * The exact parameter declarations of the canonical method, in order. The
+   * Java-friendly overload reuses these verbatim for non-variant params so
+   * type/nullability/default exactly match the canonical method (avoiding
+   * subtle drift like `Long?` vs `Int?` or `String?` vs `String`).
+   */
+  canonicalParams: SuspendParam[];
+  groupParamNames: Map<string, string>;
+  returnType: string;
+  deprecated: boolean | undefined;
+}
+
+/**
+ * For each variant of every sealed-class parameter group on `op`, append a
+ * Java-discoverable overload that takes the variant's flat fields directly
+ * and forwards to the canonical (sealed-class) method.
+ *
+ * Implementation scope: when an operation has multiple parameter groups, we
+ * emit overloads for each variant of each group while keeping the *other*
+ * groups' sealed-class params unchanged. This avoids combinatorial explosion
+ * for ops with several groups while still flattening the common case.
+ *
+ * Method-name derivation handles the most common variant shapes (`ById`,
+ * `ByExternalId`, etc.). Other shapes (e.g. `Plaintext`, `Imported`) are
+ * skipped with a comment so unusual unions don't compile-fail the SDK; if
+ * one becomes important we can add an explicit case here.
+ */
+function appendJavaFriendlyVariantOverloads(lines: string[], ctx: JavaOverloadCtx): void {
+  const groups = ctx.op.parameterGroups ?? [];
+  if (groups.length === 0) return;
+
+  for (const group of groups) {
+    for (const variant of group.variants) {
+      const overloadMethodName = deriveOverloadMethodName(ctx.method, variant.name);
+      if (overloadMethodName === null) {
+        // Variant shape doesn't fit a clean Java-friendly method name; skip.
+        // TODO: extend deriveOverloadMethodName for less-common shapes
+        // (e.g. password variants) once we have a need for them.
+        continue;
+      }
+      emitOneJavaOverload(lines, ctx, group, variant, overloadMethodName);
+    }
+  }
+}
+
+function deriveOverloadMethodName(baseMethod: string, variantName: string): string | null {
+  const v = className(variantName);
+  if (v === 'ById') return baseMethod;
+  if (/^By[A-Z]/.test(v)) {
+    // Don't double-stack a By-suffix: if the operation method already ends
+    // with the variant suffix (case-insensitive), reuse it as-is. This keeps
+    // names like `updateResourceByExternalId` from becoming
+    // `updateResourceByExternalIdByExternalId`.
+    if (baseMethod.toLowerCase().endsWith(v.toLowerCase())) {
+      return baseMethod;
+    }
+    return `${baseMethod}${v}`;
+  }
+  return null;
+}
+
+function emitOneJavaOverload(
+  lines: string[],
+  ctx: JavaOverloadCtx,
+  group: import('@workos/oagen').ParameterGroup,
+  variant: import('@workos/oagen').ParameterGroup['variants'][number],
+  overloadMethodName: string,
+): void {
+  const sealedName = sealedGroupName(group.name);
+  const variantClass = className(variant.name);
+  const targetGroupProp = ctx.groupParamNames.get(group.name)!;
+
+  // Reuse the canonical method's exact parameter decls. We swap out only the
+  // target group's slot (replacing the sealed param with variant fields) and
+  // leave path/query/body params untouched so types/nullability/defaults
+  // line up exactly with what the canonical method accepts.
+  type ParamSpec = { decl: string; name: string };
+  const decls: ParamSpec[] = [];
+
+  // Track names already in use so variant field names that collide with
+  // existing op params can be deterministically disambiguated.
+  const existingNames = new Set<string>();
+  for (const cp of ctx.canonicalParams) {
+    if (cp.name !== targetGroupProp) existingNames.add(cp.name);
+  }
+
+  // Compute variant field decls (with collision-aware names). For a colliding
+  // field, prefix it with the group's property name (e.g. `externalId` →
+  // `parentResourceExternalId`) so the overload signature is unambiguous and
+  // doesn't shadow the operation's own path/query/body params.
+  const variantFieldDecls: ParamSpec[] = [];
+  const variantArgPairs: { sealedField: string; localName: string }[] = [];
+  for (const p of variant.parameters) {
+    const sealedField = deriveShortPropertyName(p.name, group.name);
+    let localName = sealedField;
+    if (existingNames.has(localName)) {
+      const groupPrefix = propertyName(group.name);
+      const camel = `${groupPrefix}${localName.charAt(0).toUpperCase()}${localName.slice(1)}`;
+      localName = camel;
+    }
+    existingNames.add(localName);
+    // Variant fields are always required when their variant is selected — the
+    // sealed-class data class declares them non-nullable (see
+    // [generateSealedClass]). Mirror that here so the overload's flat
+    // parameter types match the variant-constructor argument types exactly.
+    // Also: prefer the body model's field type via [bodyFieldTypes] when the
+    // parameter-group IR has lost type fidelity. Inside this scope we don't
+    // have bodyFieldTypes; the canonical method's type rendering for variant
+    // fields hasn't been needed elsewhere, so fall back to p.type — which is
+    // correct for non-body groups (path/query) and for body groups whose
+    // types weren't degraded.
+    const decl = renderParamNamed(localName, p.type, true);
+    variantFieldDecls.push({ decl, name: localName });
+    variantArgPairs.push({ sealedField, localName });
+  }
+
+  // Walk canonical params; substitute the target group slot with the variant's
+  // flat fields, copy everything else unchanged.
+  for (const cp of ctx.canonicalParams) {
+    if (cp.name === targetGroupProp) {
+      for (const v of variantFieldDecls) decls.push(v);
+    } else {
+      decls.push({ decl: cp.decl, name: cp.name });
+    }
+  }
+
+  const returnClause = ctx.returnType === 'Unit' ? '' : `: ${ctx.returnType}`;
+  const variantArgs = variantArgPairs.map((p) => `${p.sealedField} = ${p.localName}`).join(', ');
+  const sealedConstruct = `${sealedName}.${variantClass}(${variantArgs})`;
+
+  // Build the call to the canonical method by walking canonical params again:
+  // the target group slot is set to the inline-constructed variant; everything
+  // else passes through by its canonical name.
+  const forwardArgs: string[] = [];
+  for (const cp of ctx.canonicalParams) {
+    if (cp.name === targetGroupProp) {
+      forwardArgs.push(`${cp.name} = ${sealedConstruct}`);
+    } else {
+      forwardArgs.push(`${cp.name} = ${cp.name}`);
+    }
+  }
+
+  // KDoc.
+  lines.push('');
+  lines.push('  /**');
+  lines.push(`   * Java-friendly overload — equivalent to`);
+  lines.push(`   * \`${ctx.method}(${sealedName}.${variantClass}(...))\` from Kotlin.`);
+  lines.push(`   *`);
+  lines.push(`   * Accepts the discriminating fields directly so Java callers don't`);
+  lines.push(`   * need to construct \`${sealedName}.${variantClass}\` explicitly.`);
+  lines.push('   */');
+  if (ctx.deprecated) lines.push('  @Deprecated("Deprecated operation")');
+  // Note: no `@JvmOverloads` here. The synthetic Java overloads `@JvmOverloads`
+  // generates (one per trailing optional, with the optional dropped) collide
+  // with the canonical method's `@JvmOverloads` permutations whenever the
+  // overload reuses the canonical method name (e.g. `ById` variants).
+  // Java callers pay a small ergonomic cost — they must pass `null` for
+  // optional trailing params (typically just `requestOptions`) — but the
+  // overload's main purpose (no sealed-class construction) still applies.
+
+  // Emit the function signature.
+  if (decls.length === 1) {
+    const single = decls[0].decl.replace(/^\s+/, '');
+    lines.push(`  fun ${escapeReserved(overloadMethodName)}(${single})${returnClause} = ${ctx.method}(`);
+  } else {
+    lines.push(`  fun ${escapeReserved(overloadMethodName)}(`);
+    for (let i = 0; i < decls.length; i++) {
+      const sep = i === decls.length - 1 ? '' : ',';
+      lines.push(`${decls[i].decl}${sep}`);
+    }
+    lines.push(`  )${returnClause} = ${ctx.method}(`);
+  }
+  for (let i = 0; i < forwardArgs.length; i++) {
+    const sep = i === forwardArgs.length - 1 ? '' : ',';
+    lines.push(`    ${forwardArgs[i]}${sep}`);
+  }
+  lines.push('  )');
+
+  // Emit a coroutine-friendly suspend variant of the overload too.
+  appendSuspendVariantLines(
+    lines,
+    overloadMethodName,
+    decls.map((d) => ({ decl: d.decl, name: d.name })),
+    ctx.returnType,
+    ctx.deprecated,
+  );
+}
+
+function appendSuspendVariantLines(
+  lines: string[],
+  method: string,
+  suspendParams: SuspendParam[],
+  returnType: string,
+  deprecated: boolean | undefined,
+): void {
+  lines.push('');
+  for (const ln of emitSuspendVariant({ methodName: method, params: suspendParams, returnType, deprecated })) {
+    lines.push(ln);
+  }
 }
 
 function resolveReturnType(plan: ReturnType<typeof planOperation>, imports: Set<string>, ctx?: EmitterContext): string {
@@ -660,19 +909,25 @@ function buildMethodKdoc(
   // ugly — it nudges callers to add real descriptions to the spec.
   const paramDocs: string[] = [];
   const seenParamDocs = new Set<string>();
-  const pushParamDoc = (name: string, sourceName: string, description: string | undefined, deprecated?: boolean) => {
+  const pushParamDoc = (
+    name: string,
+    sourceName: string,
+    description: string | undefined,
+    deprecated?: boolean,
+    type?: TypeRef,
+  ) => {
     if (seenParamDocs.has(name)) return;
     seenParamDocs.add(name);
-    paramDocs.push(formatParamDoc(name, description, deprecated, sourceName));
+    paramDocs.push(formatParamDoc(name, description, deprecated, sourceName, type));
   };
   for (const pp of pathParams) {
-    pushParamDoc(propertyName(pp.name), pp.name, pp.description, pp.deprecated);
+    pushParamDoc(propertyName(pp.name), pp.name, pp.description, pp.deprecated, pp.type);
   }
   for (const qp of queryParams) {
-    pushParamDoc(propertyName(qp.name), qp.name, qp.description, qp.deprecated);
+    pushParamDoc(propertyName(qp.name), qp.name, qp.description, qp.deprecated, qp.type);
   }
   for (const bf of bodyFields) {
-    pushParamDoc(bodyParamNames.get(bf.name)!, bf.name, bf.description, bf.deprecated);
+    pushParamDoc(bodyParamNames.get(bf.name)!, bf.name, bf.description, bf.deprecated, bf.type);
   }
   // Always document the trailing `requestOptions` parameter with a stable,
   // canned phrasing so generated SDKs are consistent and Dokka's coverage
@@ -714,6 +969,7 @@ function formatParamDoc(
   description: string | undefined,
   deprecated?: boolean,
   sourceName?: string,
+  type?: TypeRef,
 ): string {
   const firstLine = description?.split('\n').find((l) => l.trim()) ?? '';
   const specText = firstLine.trim();
@@ -722,7 +978,12 @@ function formatParamDoc(
   // the spec didn't provide one. Dokka has no `-Xdoclint:missing` analogue,
   // so emitting a placeholder is the only way to guarantee `@param` coverage.
   const fallback = `the ${humanize(sourceName ?? kotlinName)} of the request.`;
-  const text = specText || fallback;
+  let text = specText || fallback;
+  // For long enum-typed parameter descriptions (notably PaginationOrder),
+  // replace the verbose per-method copy with a short summary that defers to
+  // the enum's own KDoc — see [maybeShortenEnumParamDescription].
+  const shortened = maybeShortenEnumParamDescription(type, text);
+  if (shortened) text = shortened.description;
   const parts = [deprecationNote, text].filter(Boolean).join(' ');
   return `@param ${kotlinName} ${escapeKdoc(parts)}`;
 }
@@ -924,7 +1185,38 @@ function generateSealedClass(
 ): string[] {
   const lines: string[] = [];
   const sealedName = sealedGroupName(group.name);
-  lines.push(`/** Mutually exclusive ${humanize(group.name)} parameter variants. */`);
+
+  // KDoc with Kotlin + Java construction examples. Pick the first variant as
+  // a worked example so callers see the variant constructor in both languages
+  // without us having to enumerate every shape.
+  const example = group.variants[0];
+  if (example) {
+    const exampleVariant = className(example.name);
+    const exampleArgs = example.parameters
+      .map((p) => `${deriveShortPropertyName(p.name, group.name)} = "..."`)
+      .join(', ');
+    lines.push('/**');
+    lines.push(` * Mutually exclusive ${humanize(group.name)} parameter variants.`);
+    lines.push(' *');
+    lines.push(' * Usage from Kotlin:');
+    lines.push(' * ```kotlin');
+    lines.push(` * val target: ${sealedName} = ${sealedName}.${exampleVariant}(${exampleArgs})`);
+    lines.push(' * ```');
+    lines.push(' *');
+    lines.push(' * Usage from Java:');
+    lines.push(' * ```java');
+    lines.push(
+      ` * ${sealedName} target = new ${sealedName}.${exampleVariant}(${example.parameters.map(() => '"..."').join(', ')});`,
+    );
+    lines.push(' * ```');
+    lines.push(' *');
+    lines.push(
+      ` * Java callers may also use the per-variant overloads on the surrounding API class to skip variant construction entirely.`,
+    );
+    lines.push(' */');
+  } else {
+    lines.push(`/** Mutually exclusive ${humanize(group.name)} parameter variants. */`);
+  }
   lines.push(`sealed class ${sealedName} {`);
   for (let vi = 0; vi < group.variants.length; vi++) {
     const variant = group.variants[vi];

@@ -103,7 +103,7 @@ describe('kotlin/resources', () => {
       ],
     };
     const files = generateResources(services, { ...ctxFor(services), spec: spec as ApiSpec });
-    const ssoFile = files.find((file) => file.path.endsWith('/Sso.kt'));
+    const ssoFile = files.find((file) => file.path.endsWith('/SSO.kt'));
     expect(ssoFile).toBeDefined();
     expect(ssoFile!.content).toContain('fun getProfileAndToken(');
     expect(ssoFile!.content).toContain('code: String');
@@ -235,5 +235,98 @@ describe('kotlin/resources', () => {
     expect(sortOrder).toBeDefined();
     expect(sortOrder!.content).toContain('enum class SortOrder');
     expect(aliases.length).toBeLessThanOrEqual(1);
+  });
+
+  it('emits a coroutine-friendly suspend overload alongside every blocking method', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          {
+            name: 'getUser',
+            httpMethod: 'get',
+            path: '/users/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services));
+    const file = files.find((f) => f.path.endsWith('/Users.kt'))!;
+    expect(file.content).toContain('import kotlinx.coroutines.Dispatchers');
+    expect(file.content).toContain('import kotlinx.coroutines.withContext');
+    expect(file.content).toContain('@JvmName("getSuspend")');
+    expect(file.content).toMatch(/suspend fun getSuspend\([\s\S]*?withContext\(Dispatchers\.IO\)/);
+  });
+
+  it('emits Java-friendly per-variant overloads for sealed-class parameter groups', () => {
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'check',
+            httpMethod: 'post',
+            path: '/authorization/check',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CheckRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'resource_target',
+                optional: false,
+                variants: [
+                  {
+                    name: 'ById',
+                    parameters: [{ name: 'resource_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+                  },
+                  {
+                    name: 'ByExternalId',
+                    parameters: [
+                      { name: 'resource_external_id', type: { kind: 'primitive', type: 'string' }, required: true },
+                      { name: 'resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const spec = {
+      ...baseSpec,
+      services,
+      models: [
+        ...baseSpec.models,
+        {
+          name: 'CheckRequest',
+          fields: [],
+        },
+      ],
+    };
+    const files = generateResources(services, { ...ctxFor(services), spec: spec as ApiSpec });
+    const file = files.find((f) => f.path.endsWith('/Authorization.kt'))!;
+    // The canonical method still takes the sealed class.
+    expect(file.content).toMatch(/fun check\([\s\S]*?resourceTarget: ResourceTarget[\s\S]*?\)/);
+    // Java-friendly ById overload — keeps the base method name and takes the
+    // flat resource_id field.
+    expect(file.content).toMatch(/fun check\([\s\S]*?resourceId: String[\s\S]*?\) = check\(/);
+    // Java-friendly ByExternalId overload — uses the variant suffix.
+    expect(file.content).toMatch(/fun checkByExternalId\([\s\S]*?resourceExternalId: String/);
+    expect(file.content).toContain('ResourceTarget.ById(resourceId = resourceId)');
+    expect(file.content).toContain('Java-friendly overload');
+    // The sealed class itself carries Kotlin + Java construction examples.
+    expect(file.content).toContain('Usage from Kotlin:');
+    expect(file.content).toContain('Usage from Java:');
   });
 });
