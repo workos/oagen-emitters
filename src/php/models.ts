@@ -313,6 +313,26 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
     case 'union': {
       const resolved = resolveDegenerateUnion(ref);
       if (resolved) return generateToArrayValue(resolved, accessor, nullable);
+      // Polymorphic union of model variants: PHP dispatches to the concrete
+      // instance's toArray() at runtime, so a single ->toArray() call serializes
+      // any branch correctly without a match here.
+      if (ref.variants.every((v) => v.kind === 'model')) {
+        return `${accessor}${ns}->toArray()`;
+      }
+      // Heterogeneous unions involving models or enums have no uniform
+      // serialization strategy (->toArray() vs ->value vs raw scalar), so fail
+      // at codegen time rather than silently emitting a raw object that breaks
+      // the toArray contract. Pure scalar unions (e.g. string|int) fall
+      // through to the bare accessor below — that is correct.
+      if (ref.variants.some((v) => v.kind === 'model' || v.kind === 'enum')) {
+        const summary = ref.variants
+          .map((v) => (v.kind === 'model' ? `model:${v.name}` : v.kind === 'enum' ? `enum:${v.name}` : v.kind))
+          .join(' | ');
+        throw new Error(
+          `[php emitter] Cannot generate toArray for heterogeneous union: ${summary}. ` +
+            `Unions must be all-model or all-scalar; mixed and all-enum unions are not yet supported.`,
+        );
+      }
       return accessor;
     }
     case 'literal':
