@@ -303,7 +303,11 @@ function emitMethodSignature(
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     const orderType =
       orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames, true) : 'str';
-    const orderDefault = orderParam?.default != null ? pythonLiteral(orderParam.default) : 'None';
+    const orderDefaultRaw = orderParam?.default;
+    const orderDefault =
+      typeof orderDefaultRaw === 'string' || typeof orderDefaultRaw === 'number' || typeof orderDefaultRaw === 'boolean'
+        ? pythonLiteral(orderDefaultRaw)
+        : 'None';
     lines.push(`        order: Optional[${orderType}] = ${orderDefault},`);
     // Additional non-pagination query params
     for (const param of op.queryParams) {
