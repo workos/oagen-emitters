@@ -198,7 +198,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
   }
 
-  // Emit shared PaginationParams struct for list operations to embed
+  // Emit shared PaginationParams struct for list operations to embed.
+  //
+  // The Order field's type is derived from the spec rather than hardcoded:
+  // when every paginated `order` query parameter $refs the same top-level
+  // enum (typically `PaginationOrder` in the WorkOS spec), we emit the typed
+  // enum so callers get compile-time validation. Otherwise we fall back to
+  // *string. The fallback handles older specs that don't lift the enum into a
+  // named component schema.
+  const orderEnumType = detectSharedOrderEnum(ctx.spec.services);
+  const orderGoType = orderEnumType ? `*${className(orderEnumType)}` : '*string';
   lines.push('// PaginationParams contains common pagination parameters for list operations.');
   lines.push('type PaginationParams struct {');
   lines.push('\t// Before is a cursor for reverse pagination.');
@@ -207,8 +216,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   lines.push('\tAfter *string `url:"after,omitempty" json:"-"`');
   lines.push('\t// Limit is the maximum number of items to return per page.');
   lines.push('\tLimit *int `url:"limit,omitempty" json:"-"`');
-  lines.push('\t// Order is the sort order for results (asc or desc).');
-  lines.push('\tOrder *string `url:"order,omitempty" json:"-"`');
+  lines.push('\t// Order is the sort order for results.');
+  lines.push(`\tOrder ${orderGoType} \`url:"order,omitempty" json:"-"\``);
   lines.push('}');
   lines.push('');
 
@@ -309,6 +318,42 @@ function humanize(name: string): string {
 
 function lowerFirst(s: string): string {
   return lowerFirstForDoc(s);
+}
+
+/**
+ * If every paginated list operation's `order` query parameter $refs the same
+ * top-level enum, return that enum's IR name. Otherwise return null. When
+ * the spec is consistent this lifts `PaginationParams.Order` from `*string`
+ * to `*PaginationOrder` (or whatever the spec calls it), giving callers
+ * compile-time validation.
+ *
+ * We require strict consistency: if any operation uses a primitive string for
+ * `order`, or two operations reference different enums, we conservatively
+ * stay on `*string` so the shared struct doesn't lie about its accepted
+ * values.
+ */
+function detectSharedOrderEnum(services: Service[]): string | null {
+  let candidate: string | null = null;
+  let sawAny = false;
+  for (const service of services) {
+    for (const op of service.operations) {
+      if (!op.pagination) continue;
+      const orderParam = op.queryParams.find((p) => p.name === 'order');
+      if (!orderParam) continue;
+      sawAny = true;
+      const enumName = unwrapEnumName(orderParam.type);
+      if (!enumName) return null;
+      if (candidate === null) candidate = enumName;
+      else if (candidate !== enumName) return null;
+    }
+  }
+  return sawAny ? candidate : null;
+}
+
+function unwrapEnumName(ref: TypeRef): string | null {
+  if (ref.kind === 'enum') return ref.name;
+  if (ref.kind === 'nullable') return unwrapEnumName(ref.inner);
+  return null;
 }
 
 /**

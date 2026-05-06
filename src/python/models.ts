@@ -1,8 +1,9 @@
-import type { Model, Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
+import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
-import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
+import { collectGeneratedEnumSymbolsByDir } from './enums.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -11,8 +12,19 @@ import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
-  const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+  // Tests sometimes pass models that aren't in ctx.spec.models, so synthesize
+  // a spec view with the passed-in models to keep the placement logic accurate.
+  const placementSpec = models === ctx.spec.models ? ctx.spec : { ...ctx.spec, models };
+  const placement = computeSchemaPlacement(placementSpec, ctx);
+  const {
+    modelToService,
+    enumToService,
+    originalModelToService,
+    originalEnumToService,
+    relocatedModels,
+    relocatedEnums,
+    modelAliases: aliasOf,
+  } = placement;
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
@@ -21,32 +33,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Overrides fileName() for symbols that live in a differently-named file.
   // Used for variant type aliases (e.g. EventSchemaVariant → event_schema).
   const symbolToFile = new Map<string, string>();
-  const modelUsage = collectModelUsage(ctx.spec);
-
-  // Build recursive structural hashes for deduplication.
-  // Model/enum references are resolved bottom-up so structurally-identical
-  // model trees (e.g. event context/actor sub-models) get the same hash.
-  const recursiveHashes = buildRecursiveHashMap(models, ctx.spec.enums);
-  const hashGroups = new Map<string, string[]>(); // hash -> model names
-  for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
-    const hash = recursiveHashes.get(model.name) ?? '';
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(model.name);
-  }
-
-  // For each group of identical models, pick canonical (alphabetically first)
-  const aliasOf = new Map<string, string>(); // alias name -> canonical name
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort((a, b) => compareAliasPriority(a, b, modelUsage));
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      if (canAliasModels(canonical, sorted[i], modelUsage)) {
-        aliasOf.set(sorted[i], canonical);
-      }
-    }
-  }
+  // Track each emitted symbol's natural (pre-relocation) service so we can
+  // re-export relocated symbols from their original service barrel for BC.
+  const symbolToOriginalService = new Map<string, string>();
 
   // Track emitted file paths to prevent duplicates when synthetic models from
   // oneOf enrichment collide with existing IR models in snake_case.
@@ -179,6 +168,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       symbolToFile.set(variantTypeName, fileName(model.name));
       emittedModelSymbolsByDir.get(dirName)!.push(unknownClassName);
       symbolToFile.set(unknownClassName, fileName(model.name));
+      const dispatcherNatural = originalModelToService.get(model.name);
+      if (dispatcherNatural) {
+        symbolToOriginalService.set(model.name, dispatcherNatural);
+        symbolToOriginalService.set(variantTypeName, dispatcherNatural);
+        symbolToOriginalService.set(unknownClassName, dispatcherNatural);
+      }
       continue;
     }
 
@@ -214,6 +209,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       });
       if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
       emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+      const aliasNatural = originalModelToService.get(model.name);
+      if (aliasNatural) symbolToOriginalService.set(model.name, aliasNatural);
       continue;
     }
 
@@ -350,12 +347,22 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${modelClassName}":`);
     lines.push(`        """Deserialize from a dictionary."""`);
     lines.push('        try:');
-    lines.push('            return cls(');
+
+    const preludeLines: string[] = [];
+    const fieldAssignmentLines: string[] = [];
 
     for (const field of [...requiredFields, ...optionalFields]) {
       const pyFieldName = fieldName(field.name);
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
+
+      const discPrelude = renderDiscriminatedUnionPrelude(field, pyFieldName, wireKey, modelClassName, isRequired);
+      if (discPrelude) {
+        preludeLines.push(...discPrelude.prelude);
+        fieldAssignmentLines.push(`                ${pyFieldName}=${discPrelude.expr},`);
+        continue;
+      }
+
       let accessor: string;
       if (field.type.kind === 'literal' && isRequired) {
         // Required literal fields have a statically known value; use .get() with a default
@@ -369,9 +376,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const deserRequired = isRequired && field.type.kind !== 'nullable';
       const walrusVar = `_v_${pyFieldName}`;
       const deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
-      lines.push(`                ${pyFieldName}=${deserExpr},`);
+      fieldAssignmentLines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
+    for (const preludeLine of preludeLines) lines.push(preludeLine);
+    lines.push('            return cls(');
+    for (const assignment of fieldAssignmentLines) lines.push(assignment);
     lines.push('            )');
     lines.push('        except (KeyError, ValueError) as e:');
     lines.push(`            _raise_deserialize_error("${modelClassName}", e)`);
@@ -418,15 +428,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     });
     if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
     emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+    const regularNatural = originalModelToService.get(model.name);
+    if (regularNatural) symbolToOriginalService.set(model.name, regularNatural);
   }
 
   // Generate __init__.py barrel files for each models/ directory
-  // Include both models and enums
-  const symbolsByDir = new Map<string, string[]>();
+  // Include both models and enums.
+  // A direct symbol lives in the file at `dirPath/<file>.py`. A re-exported
+  // symbol was relocated to common/ but is being mirrored from its natural
+  // service barrel for backwards compatibility.
+  type BarrelSymbol = { name: string; reExport?: { fromDir: string; file: string } };
+  const symbolsByDir = new Map<string, BarrelSymbol[]>();
   for (const [dirName, names] of emittedModelSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(...names);
+    for (const name of names) symbolsByDir.get(key)!.push({ name });
   }
 
   // Also include enums in the barrels using the enum emitter's actual output placement.
@@ -436,7 +452,37 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const [dirName, names] of enumSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(...names);
+    for (const name of names) symbolsByDir.get(key)!.push({ name });
+  }
+
+  // Backwards-compat re-exports: every relocated model is also re-exported
+  // from its pre-relocation service barrel so existing
+  // `from workos.<service>.models import X` imports keep working.
+  const commonDirName = 'common';
+  const addReExport = (naturalService: string | undefined, name: string, sourceFile: string): void => {
+    if (!naturalService) return;
+    const naturalDir = mountDirMap.get(naturalService) ?? naturalService;
+    if (naturalDir === commonDirName) return;
+    const key = `src/${ctx.namespace}/${naturalDir}/models`;
+    if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
+    symbolsByDir.get(key)!.push({ name, reExport: { fromDir: commonDirName, file: sourceFile } });
+  };
+
+  for (const symbol of symbolToOriginalService.keys()) {
+    // Only re-export symbols that ended up relocated (i.e. their owning model is in relocatedModels)
+    // or whose dispatcher parent is relocated.
+    const naturalService = symbolToOriginalService.get(symbol)!;
+    // Find what file the symbol lives in (in common/)
+    const file = symbolToFile.get(symbol) ?? fileName(symbol);
+    // Only re-export if it actually got relocated — that is, if its primary
+    // model name (or the parent it shares a file with) is in relocatedModels.
+    const primaryName = file === fileName(symbol) ? symbol : reverseLookupModelByFile(file, ctx);
+    if (primaryName && !relocatedModels.has(primaryName)) continue;
+    addReExport(naturalService, symbol, file);
+  }
+  for (const enumName of relocatedEnums) {
+    const naturalService = originalEnumToService.get(enumName);
+    addReExport(naturalService, enumName, fileName(enumName));
   }
 
   // Build set of service directory model paths — these get their parent __init__.py
@@ -465,13 +511,28 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
-  for (const [dirPath, names] of symbolsByDir) {
+  for (const [dirPath, symbols] of symbolsByDir) {
+    // Deduplicate by symbol name (a direct emission always wins over a stale
+    // re-export with the same name).
+    const seen = new Map<string, BarrelSymbol>();
+    for (const sym of symbols) {
+      const existing = seen.get(sym.name);
+      if (!existing || (existing.reExport && !sym.reExport)) seen.set(sym.name, sym);
+    }
+    const uniqueSymbols = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+
     // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
-    const uniqueNames = [...new Set(names)].sort();
     const importLines: string[] = [];
-    for (const name of uniqueNames) {
-      const fileNameForSymbol = symbolToFile.get(name) ?? fileName(name);
-      importLines.push(`from .${fileNameForSymbol} import ${className(name)} as ${className(name)}`);
+    for (const sym of uniqueSymbols) {
+      const cls = className(sym.name);
+      if (sym.reExport) {
+        importLines.push(
+          `from ${ctx.namespace}.${dirToModule(sym.reExport.fromDir)}.models.${sym.reExport.file} import ${cls} as ${cls}`,
+        );
+      } else {
+        const fileNameForSymbol = symbolToFile.get(sym.name) ?? fileName(sym.name);
+        importLines.push(`from .${fileNameForSymbol} import ${cls} as ${cls}`);
+      }
     }
     const imports = importLines.join('\n');
     files.push({
@@ -486,9 +547,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // which includes both the resource class re-export and model star import.
     if (!serviceDirModelPaths.has(dirPath)) {
       const parentDir = dirPath.replace(/\/models$/, '');
-      const reExports = [...new Set(names)]
-        .sort()
-        .map((name) => `from .models import ${className(name)} as ${className(name)}`)
+      const reExports = uniqueSymbols
+        .map((sym) => `from .models import ${className(sym.name)} as ${className(sym.name)}`)
         .join('\n');
       files.push({
         path: `${parentDir}/__init__.py`,
@@ -500,6 +560,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   return files;
+}
+
+/**
+ * Given a snake_case file name, return the IR model name that owns it.
+ * Used to attribute dispatcher children (FooVariant, FooUnknown) to their
+ * parent model when computing relocation re-exports.
+ */
+function reverseLookupModelByFile(file: string, ctx: EmitterContext): string | undefined {
+  for (const m of ctx.spec.models) {
+    if (fileName(m.name) === file) return m.name;
+  }
+  return undefined;
 }
 
 function collectTypingImports(ref: any, imports: Set<string>): void {
@@ -579,73 +651,6 @@ function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
   return referencedEnums;
 }
 
-function collectModelUsage(spec: EmitterContext['spec']): {
-  requestOnly: Set<string>;
-  response: Set<string>;
-  mixed: Set<string>;
-} {
-  const request = new Set<string>();
-  const response = new Set<string>();
-
-  for (const service of spec.services) {
-    for (const op of service.operations) {
-      const plan = planOperation(op);
-      if (plan.responseModelName) {
-        response.add(plan.responseModelName);
-      }
-      if (op.pagination?.itemType.kind === 'model') {
-        response.add(op.pagination.itemType.name);
-      }
-      if (op.requestBody?.kind === 'model') {
-        request.add(op.requestBody.name);
-      }
-      if (op.requestBody?.kind === 'union') {
-        for (const variant of op.requestBody.variants ?? []) {
-          if (variant.kind === 'model') request.add(variant.name);
-        }
-      }
-    }
-  }
-
-  const mixed = new Set<string>();
-  for (const name of request) {
-    if (response.has(name)) mixed.add(name);
-  }
-
-  const requestOnly = new Set([...request].filter((name) => !mixed.has(name)));
-  const responseOnly = new Set([...response].filter((name) => !mixed.has(name)));
-
-  return { requestOnly, response: responseOnly, mixed };
-}
-
-function compareAliasPriority(left: string, right: string, usage: ReturnType<typeof collectModelUsage>): number {
-  const score = (name: string): number => {
-    if (usage.response.has(name)) return 0;
-    if (usage.mixed.has(name)) return 1;
-    if (usage.requestOnly.has(name)) return 2;
-    return 3;
-  };
-
-  const diff = score(left) - score(right);
-  if (diff !== 0) return diff;
-  return left.localeCompare(right);
-}
-
-function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
-  // Don't alias when both models produce the same file name — the TypeAlias
-  // file would import from itself (e.g., FooBar aliased to Foo_bar).
-  if (fileName(canonical) === fileName(alias)) return false;
-  // Don't alias across request/response boundaries — a request-only model
-  // and a response-only model may look identical today but evolve independently.
-  if (
-    (usage.response.has(canonical) && usage.requestOnly.has(alias)) ||
-    (usage.response.has(alias) && usage.requestOnly.has(canonical))
-  ) {
-    return false;
-  }
-  return true;
-}
-
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
   void modelName;
   void ctx;
@@ -681,6 +686,87 @@ function isDateTimeType(ref: any): boolean {
     return isDateTimeType(ref.inner);
   }
   return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
+}
+
+/**
+ * If `field` is a discriminated-union (or nullable-wrapped discriminated-union)
+ * field, return prelude statements that perform strict dispatch and an
+ * expression for the `cls(...)` call. Returns null otherwise.
+ *
+ * Strict dispatch means: an unknown discriminator value raises ValueError
+ * naming the parent class, field, observed value, and valid options. The
+ * caller's `try/except` block converts that into `_raise_deserialize_error`.
+ */
+function renderDiscriminatedUnionPrelude(
+  field: any,
+  pyFieldName: string,
+  wireKey: string,
+  parentClassName: string,
+  isRequired: boolean,
+): { prelude: string[]; expr: string } | null {
+  let unionRef: any = null;
+  let nullable = false;
+  if (field.type.kind === 'union' && field.type.discriminator?.mapping) {
+    unionRef = field.type;
+  } else if (
+    field.type.kind === 'nullable' &&
+    field.type.inner.kind === 'union' &&
+    field.type.inner.discriminator?.mapping
+  ) {
+    unionRef = field.type.inner;
+    nullable = true;
+  }
+  if (!unionRef) return null;
+
+  const mapping = unionRef.discriminator.mapping as Record<string, string>;
+  const entries = Object.entries(mapping);
+  if (entries.length === 0) return null;
+
+  const discProp = unionRef.discriminator.property as string;
+  const rawVar = `_${pyFieldName}_raw`;
+  const dataVar = `_${pyFieldName}_data`;
+  const typeVar = `_${pyFieldName}_disc`;
+  const mapVar = `_${pyFieldName}_disc_map`;
+  const clsVar = `_${pyFieldName}_cls`;
+  const valueVar = `_${pyFieldName}_value`;
+  const indent = '            ';
+
+  const dispatchBlock = (innerIndent: string): string[] => {
+    const lines: string[] = [];
+    lines.push(`${innerIndent}${dataVar} = cast(Dict[str, Any], ${rawVar})`);
+    lines.push(`${innerIndent}${typeVar} = cast(str, ${dataVar}.get("${discProp}"))`);
+    lines.push(`${innerIndent}${mapVar}: Dict[str, Any] = {`);
+    for (const [value, variantModelName] of entries) {
+      lines.push(`${innerIndent}    "${value}": ${className(variantModelName)},`);
+    }
+    lines.push(`${innerIndent}}`);
+    lines.push(`${innerIndent}${clsVar} = ${mapVar}.get(${typeVar})`);
+    lines.push(`${innerIndent}if ${clsVar} is None:`);
+    lines.push(`${innerIndent}    raise ValueError(`);
+    lines.push(
+      `${innerIndent}        f"Unknown discriminator '${discProp}' for ${parentClassName}.${pyFieldName}: {${typeVar}!r}. "`,
+    );
+    lines.push(`${innerIndent}        f"Expected one of {sorted(${mapVar})}."`);
+    lines.push(`${innerIndent}    )`);
+    return lines;
+  };
+
+  const prelude: string[] = [];
+  if (isRequired && !nullable) {
+    prelude.push(`${indent}${rawVar} = data["${wireKey}"]`);
+    prelude.push(...dispatchBlock(indent));
+    return { prelude, expr: `${clsVar}.from_dict(${dataVar})` };
+  }
+
+  // Optional or nullable: handle missing/None explicitly.
+  const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+  prelude.push(`${indent}${rawVar} = ${accessor}`);
+  prelude.push(`${indent}if ${rawVar} is None:`);
+  prelude.push(`${indent}    ${valueVar} = None`);
+  prelude.push(`${indent}else:`);
+  prelude.push(...dispatchBlock(indent + '    '));
+  prelude.push(`${indent}    ${valueVar} = ${clsVar}.from_dict(${dataVar})`);
+  return { prelude, expr: valueVar };
 }
 
 function deserializeField(ref: any, accessor: string, isRequired: boolean, walrusVar: string = '_v'): string {
@@ -726,28 +812,10 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, walru
     case 'nullable':
       return deserializeField(ref.inner, accessor, false, walrusVar);
     case 'union': {
+      // Discriminated unions are handled by `renderDiscriminatedUnionPrelude`
+      // before deserializeField is called, so they never reach this branch.
       const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
       const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))] as string[];
-      // Discriminated union: dispatch on the discriminator property to call
-      // the matching variant's from_dict. Unknown discriminator values fall
-      // back to the raw payload so callers can introspect.
-      if (ref.discriminator && ref.discriminator.mapping) {
-        const entries = Object.entries(ref.discriminator.mapping as Record<string, string>);
-        if (entries.length > 0) {
-          const dispatchMap = entries.map(([value, modelName]) => `"${value}": ${className(modelName)}`).join(', ');
-          const dataExpr = isRequired ? accessor : walrusVar;
-          const dataCast = `cast(Dict[str, Any], ${dataExpr})`;
-          // The dispatch dict has `str` keys, so pyright (strict) rejects the
-          // raw `Any | None` returned by `.get(prop)` even though `dict.get`
-          // accepts any hashable. Cast through `str` to satisfy the parameter
-          // type — runtime semantics are unchanged because a missing/`None`
-          // discriminator simply misses the dispatch and falls through.
-          const lookupExpr = `{${dispatchMap}}.get(cast(str, ${dataCast}.get("${ref.discriminator.property}")))`;
-          const branch = `(_disc.from_dict(${dataCast}) if (_disc := ${lookupExpr}) is not None else ${dataExpr})`;
-          if (isRequired) return branch;
-          return `(${branch}) if (${walrusVar} := ${accessor}) is not None else None`;
-        }
-      }
       if (uniqueModels.length === 1) {
         return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, walrusVar);
       }
@@ -783,100 +851,17 @@ function serializeField(ref: any, accessor: string): string {
       if (uniqueModels.length === 1) {
         return `${accessor}.to_dict()`;
       }
-      // Discriminated union: deserialize produced a dataclass instance for
-      // known discriminator values and the raw dict for unknowns. Round-trip
-      // both — call `.to_dict()` if it exists, otherwise pass through.
+      // Discriminated union: from_dict always produces a concrete dataclass
+      // instance (unknown discriminators raise instead of falling back to a
+      // raw dict), so the serialized field is unconditionally `.to_dict()`-able.
       if (ref.discriminator && ref.discriminator.mapping && modelVariants.length > 0) {
-        return `${accessor}.to_dict() if hasattr(${accessor}, "to_dict") else ${accessor}`;
+        return `${accessor}.to_dict()`;
       }
       return accessor;
     }
     default:
       return accessor;
   }
-}
-
-/**
- * Build recursive structural hashes for all models.
- *
- * Model references are resolved to their own structural hash (bottom-up) and
- * enum references are resolved to their value-set hash.  This means
- * structurally-identical model *trees* — like the dozens of per-event Context /
- * ContextActor / ContextGoogleAnalyticsSession sub-models in the spec — get
- * the same hash even though their IR names differ.
- */
-function buildRecursiveHashMap(models: Model[], enums: Enum[]): Map<string, string> {
-  const modelByName = new Map(models.map((m) => [m.name, m]));
-  const hashCache = new Map<string, string>();
-  const visiting = new Set<string>(); // cycle guard
-
-  // Pre-compute enum value hashes so identically-valued enums hash the same.
-  const enumVH = new Map<string, string>();
-  for (const e of enums) {
-    enumVH.set(
-      e.name,
-      [...e.values]
-        .map((v) => String(v.value))
-        .sort()
-        .join('|'),
-    );
-  }
-
-  function modelHash(name: string): string {
-    const cached = hashCache.get(name);
-    if (cached != null) return cached;
-    if (visiting.has(name)) return `m:${name}`; // cycle — fall back to name
-    visiting.add(name);
-
-    const model = modelByName.get(name);
-    if (!model) {
-      visiting.delete(name);
-      return `m:${name}`; // unknown model
-    }
-
-    const hash = [...model.fields]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((f) => `${f.name}:${deepTypeHash(f.type)}:${f.required}`)
-      .join('|');
-
-    visiting.delete(name);
-    hashCache.set(name, hash);
-    return hash;
-  }
-
-  function deepTypeHash(ref: any): string {
-    switch (ref.kind) {
-      case 'primitive':
-        return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
-      case 'model':
-        return `m:{${modelHash(ref.name)}}`;
-      case 'enum': {
-        const vh = enumVH.get(ref.name);
-        return vh != null ? `e:{${vh}}` : `e:${ref.name}`;
-      }
-      case 'array':
-        return `a:${deepTypeHash(ref.items)}`;
-      case 'nullable':
-        return `n:${deepTypeHash(ref.inner)}`;
-      case 'union':
-        return `u:${(ref.variants ?? [])
-          .map((v: any) => deepTypeHash(v))
-          .sort()
-          .join(',')}`;
-      case 'map':
-        return `d:${deepTypeHash(ref.valueType)}`;
-      case 'literal':
-        return `l:${String(ref.value)}`;
-      default:
-        return 'unknown';
-    }
-  }
-
-  for (const model of models) {
-    modelHash(model.name);
-  }
-
-  return hashCache;
 }
 
 // Import and re-export shared model detection utilities

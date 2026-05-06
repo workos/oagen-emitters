@@ -122,6 +122,101 @@ describe('generateResources', () => {
     expect(result[0].content).toContain('Organization::fromArray($response)');
   });
 
+  it('reads the order param default from the spec rather than hardcoding desc', () => {
+    const orderEnum = {
+      name: 'PaginationOrder',
+      values: [
+        { name: 'desc', value: 'desc' },
+        { name: 'asc', value: 'asc' },
+      ],
+    };
+    const specWithOrder: ApiSpec = {
+      ...emptySpec,
+      enums: [orderEnum],
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              name: 'listOrganizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                {
+                  name: 'order',
+                  type: { kind: 'enum', name: 'PaginationOrder' },
+                  required: false,
+                  default: 'desc',
+                },
+              ],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const content = generateResources(specWithOrder.services, { ...ctx, spec: specWithOrder })[0].content;
+    // With a spec default, the param is non-nullable and defaults to the enum case.
+    expect(content).toMatch(/PaginationOrder \$order = .*PaginationOrder::Desc/);
+  });
+
+  it('emits ?order = null when the spec carries no default for `order`', () => {
+    const orderEnum = {
+      name: 'PaginationOrder',
+      values: [
+        { name: 'desc', value: 'desc' },
+        { name: 'asc', value: 'asc' },
+      ],
+    };
+    const specNoDefault: ApiSpec = {
+      ...emptySpec,
+      enums: [orderEnum],
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              name: 'listOrganizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'order', type: { kind: 'enum', name: 'PaginationOrder' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const content = generateResources(specNoDefault.services, { ...ctx, spec: specNoDefault })[0].content;
+    expect(content).toMatch(/\?\\WorkOS\\Resource\\PaginationOrder \$order = null/);
+    expect(content).not.toMatch(/PaginationOrder::Desc/);
+  });
+
   it('generates paginated list method', () => {
     const result = generateResources(services, ctx);
 

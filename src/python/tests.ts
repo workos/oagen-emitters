@@ -8,7 +8,7 @@ import type {
   Model,
   ResolvedOperation,
 } from '@workos/oagen';
-import { planOperation, toSnakeCase, assignModelsToServices } from '@workos/oagen';
+import { planOperation, toSnakeCase } from '@workos/oagen';
 import {
   className,
   fileName,
@@ -22,7 +22,6 @@ import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
-import { assignEnumsToServices } from './enums.js';
 import {
   groupByMount,
   buildResolvedLookup,
@@ -32,6 +31,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Resolve the Python class name to use for isinstance checks on paginated items.
@@ -227,15 +227,14 @@ function generateServiceTest(
   });
 
   // Group imports by their actual service directory (models may live in different services)
-  const modelToServiceMap = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
+  const placement = computeSchemaPlacement(spec, ctx);
+  const modelToServiceMap = placement.modelToService;
+  const enumToServiceMap = placement.enumToService;
   const mountDirMap = buildMountDirMap(ctx);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);
     return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';
   };
-
-  // Group enum imports by service directory
-  const enumToServiceMap = assignEnumsToServices(spec.enums, spec.services);
   const resolveEnumDir = (enumName: string) => {
     const svc = enumToServiceMap.get(enumName);
     return svc ? (mountDirMap.get(svc) ?? 'common') : 'common';
@@ -1402,7 +1401,10 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   );
   if (models.length === 0) return null;
 
-  const modelToService = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
+  // The round-trip test imports models from their *natural* (pre-relocation)
+  // service so existing callers keep working — those imports resolve via the
+  // BC re-exports that the model emitter writes into each service barrel.
+  const modelToService = computeSchemaPlacement(spec, ctx).originalModelToService;
   const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';

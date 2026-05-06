@@ -293,7 +293,10 @@ function emitMethod(args: {
     const n = safeParamName(q.name);
     if (seenParamNames.has(n)) continue;
     seenParamNames.add(n);
-    const defaultVal = q.name === 'order' ? rubyStringLit('desc') : 'nil';
+    // Spec is the source of truth for defaults. If the OpenAPI parameter has
+    // a `default`, surface it in the Ruby keyword arg signature; otherwise
+    // default to nil so the param is omitted from the request unless set.
+    const defaultVal = q.default != null ? rubyDefaultLiteral(q.default) : 'nil';
     sigParts.push(`${n}: ${defaultVal}`);
   }
 
@@ -881,6 +884,15 @@ void methodName;
 /** Render a Ruby single-quoted string literal, escaping embedded quotes and backslashes. */
 function rubyStringLit(s: string): string {
   return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/** Render an arbitrary spec-default value as a Ruby literal for a method-arg default. */
+function rubyDefaultLiteral(value: unknown): string {
+  if (typeof value === 'string') return rubyStringLit(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'nil';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value === null) return 'nil';
+  return 'nil';
 }
 
 /**

@@ -12,14 +12,7 @@ import type {
 
 /** Extend Parameter with `explode` until @workos/oagen publishes the field. */
 type ParameterExt = Parameter & { explode?: boolean };
-import {
-  planOperation,
-  toPascalCase,
-  toSnakeCase,
-  collectModelRefs,
-  collectEnumRefs,
-  assignModelsToServices,
-} from '@workos/oagen';
+import { planOperation, toPascalCase, toSnakeCase, collectModelRefs, collectEnumRefs } from '@workos/oagen';
 import { mapTypeRefUnquoted } from './type-map.js';
 import {
   className,
@@ -49,6 +42,7 @@ import {
   clientFieldExpression,
 } from './wrappers.js';
 import { buildPythonPathExpression } from './path-expression.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -293,11 +287,20 @@ function emitMethodSignature(
     lines.push('        limit: Optional[int] = None,');
     lines.push('        before: Optional[str] = None,');
     lines.push('        after: Optional[str] = None,');
-    // Use typed enum for order param if the spec provides one, otherwise fall back to str
+    // Use typed enum for order param if the spec provides one, otherwise fall
+    // back to str. The default value comes from the spec's `default:` field;
+    // when the spec drops the default, we surface that as `None` rather than
+    // silently restoring "desc" client-side (which would mask a server-side
+    // behavior change from the caller).
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     const orderType =
       orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames, true) : 'str';
-    lines.push(`        order: Optional[${orderType}] = "desc",`);
+    const orderDefaultRaw = orderParam?.default;
+    const orderDefault =
+      typeof orderDefaultRaw === 'string' || typeof orderDefaultRaw === 'number' || typeof orderDefaultRaw === 'boolean'
+        ? pythonLiteral(orderDefaultRaw)
+        : 'None';
+    lines.push(`        order: Optional[${orderType}] = ${orderDefault},`);
     // Additional non-pagination query params
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;
@@ -1127,7 +1130,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const actualModelImports = [...modelImports];
 
     // Split imports into same-service and cross-service (using mount-based dirs)
-    const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services, ctx.modelHints);
+    const placement = computeSchemaPlacement(ctx.spec, ctx);
+    const modelToServiceMap = new Map(placement.modelToService);
     // Discriminator variant type aliases (e.g. EventSchemaVariant) live in the same
     // service as their dispatcher model, so ensure they resolve to the same directory.
     for (const model of ctx.spec.models) {
@@ -1167,30 +1171,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
     }
 
-    // Enum imports — same-service vs cross-service
-    const enumToServiceMap = new Map<string, string>();
-    for (const e of ctx.spec.enums) {
-      // Find which service uses this enum by walking full type trees
-      for (const svc of ctx.spec.services) {
-        for (const op of svc.operations) {
-          const refs = new Set<string>();
-          // Walk all type refs (including nested nullable/array/union) to find enums
-          const allTypeRefs = [
-            op.response,
-            ...(op.requestBody ? [op.requestBody] : []),
-            ...op.pathParams.map((p) => p.type),
-            ...op.queryParams.map((p) => p.type),
-            ...op.headerParams.map((p) => p.type),
-          ];
-          for (const typeRef of allTypeRefs) {
-            for (const ref of collectEnumRefs(typeRef)) refs.add(ref);
-          }
-          if (refs.has(e.name) && !enumToServiceMap.has(e.name)) {
-            enumToServiceMap.set(e.name, svc.name);
-          }
-        }
-      }
-    }
+    // Enum imports — same-service vs cross-service. Shared enums (referenced
+    // by 2+ services) are intentionally absent from this map so they resolve
+    // to common/ via the resolveDir() fallback below.
+    const enumToServiceMap = placement.enumToService;
 
     const localEnums: string[] = [];
     const crossServiceEnums = new Map<string, string[]>();
