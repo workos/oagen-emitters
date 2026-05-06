@@ -347,12 +347,22 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${modelClassName}":`);
     lines.push(`        """Deserialize from a dictionary."""`);
     lines.push('        try:');
-    lines.push('            return cls(');
+
+    const preludeLines: string[] = [];
+    const fieldAssignmentLines: string[] = [];
 
     for (const field of [...requiredFields, ...optionalFields]) {
       const pyFieldName = fieldName(field.name);
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
+
+      const discPrelude = renderDiscriminatedUnionPrelude(field, pyFieldName, wireKey, modelClassName, isRequired);
+      if (discPrelude) {
+        preludeLines.push(...discPrelude.prelude);
+        fieldAssignmentLines.push(`                ${pyFieldName}=${discPrelude.expr},`);
+        continue;
+      }
+
       let accessor: string;
       if (field.type.kind === 'literal' && isRequired) {
         // Required literal fields have a statically known value; use .get() with a default
@@ -366,9 +376,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const deserRequired = isRequired && field.type.kind !== 'nullable';
       const walrusVar = `_v_${pyFieldName}`;
       const deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
-      lines.push(`                ${pyFieldName}=${deserExpr},`);
+      fieldAssignmentLines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
+    for (const preludeLine of preludeLines) lines.push(preludeLine);
+    lines.push('            return cls(');
+    for (const assignment of fieldAssignmentLines) lines.push(assignment);
     lines.push('            )');
     lines.push('        except (KeyError, ValueError) as e:');
     lines.push(`            _raise_deserialize_error("${modelClassName}", e)`);
@@ -675,6 +688,87 @@ function isDateTimeType(ref: any): boolean {
   return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
 }
 
+/**
+ * If `field` is a discriminated-union (or nullable-wrapped discriminated-union)
+ * field, return prelude statements that perform strict dispatch and an
+ * expression for the `cls(...)` call. Returns null otherwise.
+ *
+ * Strict dispatch means: an unknown discriminator value raises ValueError
+ * naming the parent class, field, observed value, and valid options. The
+ * caller's `try/except` block converts that into `_raise_deserialize_error`.
+ */
+function renderDiscriminatedUnionPrelude(
+  field: any,
+  pyFieldName: string,
+  wireKey: string,
+  parentClassName: string,
+  isRequired: boolean,
+): { prelude: string[]; expr: string } | null {
+  let unionRef: any = null;
+  let nullable = false;
+  if (field.type.kind === 'union' && field.type.discriminator?.mapping) {
+    unionRef = field.type;
+  } else if (
+    field.type.kind === 'nullable' &&
+    field.type.inner.kind === 'union' &&
+    field.type.inner.discriminator?.mapping
+  ) {
+    unionRef = field.type.inner;
+    nullable = true;
+  }
+  if (!unionRef) return null;
+
+  const mapping = unionRef.discriminator.mapping as Record<string, string>;
+  const entries = Object.entries(mapping);
+  if (entries.length === 0) return null;
+
+  const discProp = unionRef.discriminator.property as string;
+  const rawVar = `_${pyFieldName}_raw`;
+  const dataVar = `_${pyFieldName}_data`;
+  const typeVar = `_${pyFieldName}_disc`;
+  const mapVar = `_${pyFieldName}_disc_map`;
+  const clsVar = `_${pyFieldName}_cls`;
+  const valueVar = `_${pyFieldName}_value`;
+  const indent = '            ';
+
+  const dispatchBlock = (innerIndent: string): string[] => {
+    const lines: string[] = [];
+    lines.push(`${innerIndent}${dataVar} = cast(Dict[str, Any], ${rawVar})`);
+    lines.push(`${innerIndent}${typeVar} = cast(str, ${dataVar}.get("${discProp}"))`);
+    lines.push(`${innerIndent}${mapVar}: Dict[str, Any] = {`);
+    for (const [value, variantModelName] of entries) {
+      lines.push(`${innerIndent}    "${value}": ${className(variantModelName)},`);
+    }
+    lines.push(`${innerIndent}}`);
+    lines.push(`${innerIndent}${clsVar} = ${mapVar}.get(${typeVar})`);
+    lines.push(`${innerIndent}if ${clsVar} is None:`);
+    lines.push(`${innerIndent}    raise ValueError(`);
+    lines.push(
+      `${innerIndent}        f"Unknown discriminator '${discProp}' for ${parentClassName}.${pyFieldName}: {${typeVar}!r}. "`,
+    );
+    lines.push(`${innerIndent}        f"Expected one of {sorted(${mapVar})}."`);
+    lines.push(`${innerIndent}    )`);
+    return lines;
+  };
+
+  const prelude: string[] = [];
+  if (isRequired && !nullable) {
+    prelude.push(`${indent}${rawVar} = data["${wireKey}"]`);
+    prelude.push(...dispatchBlock(indent));
+    return { prelude, expr: `${clsVar}.from_dict(${dataVar})` };
+  }
+
+  // Optional or nullable: handle missing/None explicitly.
+  const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+  prelude.push(`${indent}${rawVar} = ${accessor}`);
+  prelude.push(`${indent}if ${rawVar} is None:`);
+  prelude.push(`${indent}    ${valueVar} = None`);
+  prelude.push(`${indent}else:`);
+  prelude.push(...dispatchBlock(indent + '    '));
+  prelude.push(`${indent}    ${valueVar} = ${clsVar}.from_dict(${dataVar})`);
+  return { prelude, expr: valueVar };
+}
+
 function deserializeField(ref: any, accessor: string, isRequired: boolean, walrusVar: string = '_v'): string {
   if (isDateTimeType(ref)) {
     if (isRequired) {
@@ -718,28 +812,10 @@ function deserializeField(ref: any, accessor: string, isRequired: boolean, walru
     case 'nullable':
       return deserializeField(ref.inner, accessor, false, walrusVar);
     case 'union': {
+      // Discriminated unions are handled by `renderDiscriminatedUnionPrelude`
+      // before deserializeField is called, so they never reach this branch.
       const modelVariants = (ref.variants ?? []).filter((v: any) => v.kind === 'model');
       const uniqueModels = [...new Set(modelVariants.map((v: any) => v.name))] as string[];
-      // Discriminated union: dispatch on the discriminator property to call
-      // the matching variant's from_dict. Unknown discriminator values fall
-      // back to the raw payload so callers can introspect.
-      if (ref.discriminator && ref.discriminator.mapping) {
-        const entries = Object.entries(ref.discriminator.mapping as Record<string, string>);
-        if (entries.length > 0) {
-          const dispatchMap = entries.map(([value, modelName]) => `"${value}": ${className(modelName)}`).join(', ');
-          const dataExpr = isRequired ? accessor : walrusVar;
-          const dataCast = `cast(Dict[str, Any], ${dataExpr})`;
-          // The dispatch dict has `str` keys, so pyright (strict) rejects the
-          // raw `Any | None` returned by `.get(prop)` even though `dict.get`
-          // accepts any hashable. Cast through `str` to satisfy the parameter
-          // type — runtime semantics are unchanged because a missing/`None`
-          // discriminator simply misses the dispatch and falls through.
-          const lookupExpr = `{${dispatchMap}}.get(cast(str, ${dataCast}.get("${ref.discriminator.property}")))`;
-          const branch = `(_disc.from_dict(${dataCast}) if (_disc := ${lookupExpr}) is not None else ${dataExpr})`;
-          if (isRequired) return branch;
-          return `(${branch}) if (${walrusVar} := ${accessor}) is not None else None`;
-        }
-      }
       if (uniqueModels.length === 1) {
         return deserializeField({ kind: 'model', name: uniqueModels[0] }, accessor, isRequired, walrusVar);
       }
@@ -775,11 +851,11 @@ function serializeField(ref: any, accessor: string): string {
       if (uniqueModels.length === 1) {
         return `${accessor}.to_dict()`;
       }
-      // Discriminated union: deserialize produced a dataclass instance for
-      // known discriminator values and the raw dict for unknowns. Round-trip
-      // both — call `.to_dict()` if it exists, otherwise pass through.
+      // Discriminated union: from_dict always produces a concrete dataclass
+      // instance (unknown discriminators raise instead of falling back to a
+      // raw dict), so the serialized field is unconditionally `.to_dict()`-able.
       if (ref.discriminator && ref.discriminator.mapping && modelVariants.length > 0) {
-        return `${accessor}.to_dict() if hasattr(${accessor}, "to_dict") else ${accessor}`;
+        return `${accessor}.to_dict()`;
       }
       return accessor;
     }

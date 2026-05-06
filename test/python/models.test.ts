@@ -709,6 +709,86 @@ describe('generateModels', () => {
     expect(barrel!.content).toContain('EventSchemaVariant');
   });
 
+  it('emits strict dispatch (no raw-dict fallback, no hasattr) for fields typed as a discriminated union', () => {
+    const service: Service = {
+      name: 'ApiKeys',
+      operations: [
+        {
+          name: 'getApiKey',
+          httpMethod: 'get',
+          path: '/api_keys/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ApiKeyCreatedData' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ApiKeyCreatedData',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'owner',
+            type: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'ApiKeyCreatedDataOwner' },
+                { kind: 'model', name: 'UserApiKeyCreatedDataOwner' },
+              ],
+              discriminator: {
+                property: 'type',
+                mapping: {
+                  organization: 'ApiKeyCreatedDataOwner',
+                  user: 'UserApiKeyCreatedDataOwner',
+                },
+              },
+            },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ApiKeyCreatedDataOwner',
+        fields: [
+          { name: 'type', type: { kind: 'literal', value: 'organization' }, required: true },
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'UserApiKeyCreatedDataOwner',
+        fields: [
+          { name: 'type', type: { kind: 'literal', value: 'user' }, required: true },
+          { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+
+    const parent = files.find((f) => f.path.endsWith('api_key_created_data.py'))!;
+    expect(parent).toBeDefined();
+
+    // from_dict performs strict dispatch and raises on unknown discriminator
+    expect(parent.content).toContain('"Unknown discriminator');
+    expect(parent.content).toContain('ApiKeyCreatedData.owner');
+    expect(parent.content).toContain('Expected one of {sorted(');
+    // Old lax fallback patterns are gone
+    expect(parent.content).not.toContain('else data["owner"]');
+    expect(parent.content).not.toContain('else data[');
+
+    // to_dict no longer needs the hasattr workaround
+    expect(parent.content).not.toContain('hasattr');
+    expect(parent.content).toContain('result["owner"] = self.owner.to_dict()');
+  });
+
   it('deduplicates models with recursively identical sub-model references', () => {
     const service: Service = {
       name: 'Events',
