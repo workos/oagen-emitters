@@ -256,10 +256,125 @@ describe('go/models', () => {
       	After *string \`url:"after,omitempty" json:"-"\`
       	// Limit is the maximum number of items to return per page.
       	Limit *int \`url:"limit,omitempty" json:"-"\`
-      	// Order is the sort order for results (asc or desc).
+      	// Order is the sort order for results.
       	Order *string \`url:"order,omitempty" json:"-"\`
       }
       "
     `);
+  });
+
+  it('types PaginationParams.Order with the spec enum when every list op shares the same enum', () => {
+    const specWithSharedEnum: ApiSpec = {
+      ...emptySpec,
+      enums: [
+        {
+          name: 'PaginationOrder',
+          values: [
+            { name: 'normal', value: 'normal' },
+            { name: 'desc', value: 'desc' },
+            { name: 'asc', value: 'asc' },
+          ],
+        },
+      ],
+      services: [
+        {
+          name: 'Connections',
+          operations: [
+            {
+              name: 'listConnections',
+              httpMethod: 'get',
+              path: '/connections',
+              pathParams: [],
+              queryParams: [
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'order', type: { kind: 'enum', name: 'PaginationOrder' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+              errors: [],
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const ctxTyped: EmitterContext = { namespace: 'workos', namespacePascal: 'WorkOS', spec: specWithSharedEnum };
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    const content = generateModels(models, ctxTyped)[0].content;
+    expect(content).toContain('Order *PaginationOrder `url:"order,omitempty" json:"-"`');
+    expect(content).not.toContain('Order *string `url:"order,omitempty"');
+  });
+
+  it('falls back to *string when not every list op uses the same Order enum', () => {
+    const specMixed: ApiSpec = {
+      ...emptySpec,
+      services: [
+        {
+          name: 'Connections',
+          operations: [
+            {
+              name: 'listConnections',
+              httpMethod: 'get',
+              path: '/connections',
+              pathParams: [],
+              queryParams: [
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'order', type: { kind: 'enum', name: 'PaginationOrder' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+              errors: [],
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              injectIdempotencyKey: false,
+            },
+            {
+              name: 'listOrganizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'order', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+              errors: [],
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const ctxMixed: EmitterContext = { namespace: 'workos', namespacePascal: 'WorkOS', spec: specMixed };
+    const models: Model[] = [
+      { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const content = generateModels(models, ctxMixed)[0].content;
+    expect(content).toContain('Order *string `url:"order,omitempty" json:"-"`');
   });
 });
