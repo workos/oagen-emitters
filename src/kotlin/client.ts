@@ -12,32 +12,38 @@ const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
  * contains a `WorkOS` class stub with only these properties — the oagen
  * merger deep-merges them into the existing hand-written `WorkOS.kt`.
  *
- * Accessors use fully-qualified type names so the merger doesn't need to
- * inject imports into the hand-written file.
+ * Each referenced service class is hoisted into a top-level `import` so the
+ * accessor bodies use the short class name. The live `WorkOS.kt` is marked
+ * `@oagen-ignore-file` and won't be regenerated, but the emitter still emits
+ * the cleaner shape so future regenerations don't reintroduce the FQN noise.
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const targets = deduplicateByMount(spec.services, ctx);
   if (targets.length === 0) return [];
 
+  const imports = new Set<string>();
   const accessorLines: string[] = [];
   for (const mount of targets) {
     const apiCls = apiClassName(mount);
     const fqn = `com.workos.${packageSegment(mount)}.${apiCls}`;
+    imports.add(fqn);
     const prop = servicePropertyName(mount);
     accessorLines.push('');
-    accessorLines.push(`  /** Lazily-constructed [${fqn}] accessor for this [WorkOS] client. */`);
-    accessorLines.push(`  val ${prop}: ${fqn}`);
+    accessorLines.push(`  /** Lazily-constructed [${apiCls}] accessor for this [WorkOS] client. */`);
+    accessorLines.push(`  val ${prop}: ${apiCls}`);
     accessorLines.push('    get() =');
     accessorLines.push('      service(');
-    accessorLines.push(`        ${fqn}::class`);
+    accessorLines.push(`        ${apiCls}::class`);
     accessorLines.push('      ) {');
-    accessorLines.push(`        ${fqn}(this)`);
+    accessorLines.push(`        ${apiCls}(this)`);
     accessorLines.push('      }');
   }
 
   const lines: string[] = [];
   lines.push('package com.workos');
   lines.push('');
+  for (const imp of [...imports].sort()) lines.push(`import ${imp}`);
+  if (imports.size > 0) lines.push('');
   lines.push('open class WorkOS {');
   for (const line of accessorLines) lines.push(line);
   lines.push('}');

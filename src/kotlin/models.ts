@@ -204,6 +204,12 @@ function emitDataClass(model: Model): GeneratedFile {
     for (let i = 0; i < rendered.length; i++) {
       const suffix = i === rendered.length - 1 ? '' : ',';
       lines.push(`${rendered[i]}${suffix}`);
+      // Visually separate properties: KDoc + annotations for the next field
+      // get their own paragraph. Kotlin requires the comma to come *before*
+      // the blank line; we already appended it above.
+      if (i < rendered.length - 1) {
+        lines.push('');
+      }
     }
 
     lines.push(`)${implClause}`);
@@ -227,7 +233,32 @@ function emitSealedUnion(
   lines.push('import com.fasterxml.jackson.annotation.JsonSubTypes');
   lines.push('import com.fasterxml.jackson.annotation.JsonTypeInfo');
   lines.push('');
-  appendKdoc(lines, `Discriminated union over ${typeName} variants. Selected by \`${disc.property}\`.`, 0);
+  // KDoc with worked Kotlin + Java consumption examples. These unions are
+  // returned by Jackson; callers branch on the concrete subtype to access
+  // variant-specific data.
+  const exampleVariantWire = Object.keys(disc.mapping)[0];
+  const exampleVariantType = exampleVariantWire ? className(disc.mapping[exampleVariantWire]) : null;
+  lines.push('/**');
+  lines.push(` * Discriminated union over ${typeName} variants. Selected by \`${disc.property}\`.`);
+  if (exampleVariantType) {
+    lines.push(' *');
+    lines.push(' * Usage from Kotlin:');
+    lines.push(' * ```kotlin');
+    lines.push(` * when (val v: ${typeName} = receivedFromApi()) {`);
+    lines.push(` *   is ${exampleVariantType} -> handle(v)`);
+    lines.push(' *   else -> handleOther(v)');
+    lines.push(' * }');
+    lines.push(' * ```');
+    lines.push(' *');
+    lines.push(' * Usage from Java:');
+    lines.push(' * ```java');
+    lines.push(` * ${typeName} v = receivedFromApi();`);
+    lines.push(` * if (v instanceof ${exampleVariantType}) {`);
+    lines.push(` *     handle((${exampleVariantType}) v);`);
+    lines.push(' * }');
+    lines.push(' * ```');
+  }
+  lines.push(' */');
   lines.push('@JsonTypeInfo(');
   lines.push('  use = JsonTypeInfo.Id.NAME,');
   lines.push('  include = JsonTypeInfo.As.EXISTING_PROPERTY,');

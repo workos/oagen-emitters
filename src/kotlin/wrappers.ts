@@ -1,9 +1,18 @@
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
-import { className, propertyName, ktLiteral, clientFieldExpression, escapeReserved, humanize } from './naming.js';
+import {
+  className,
+  propertyName,
+  ktLiteral,
+  clientFieldExpression,
+  escapeReserved,
+  humanize,
+  maybeShortenEnumParamDescription,
+} from './naming.js';
 import { mapTypeRef, mapTypeRefOptional } from './type-map.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
 import { buildKotlinPathExpression } from './path-expression.js';
+import { emitSuspendVariant, type SuspendParam } from './suspend.js';
 
 /**
  * Emit Kotlin wrapper methods for a union-split operation. Each wrapper
@@ -49,21 +58,28 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     kdocLines.push(`${wrapperHumanName.charAt(0).toUpperCase()}${wrapperHumanName.slice(1)}.`);
   }
   const paramDocs: string[] = [];
-  const pushParamDoc = (kotlinName: string, sourceName: string, description: string | undefined) => {
+  const pushParamDoc = (
+    kotlinName: string,
+    sourceName: string,
+    description: string | undefined,
+    type?: import('@workos/oagen').TypeRef,
+  ) => {
     const firstLine =
       description
         ?.split('\n')
         .find((l) => l.trim())
         ?.trim() ?? '';
     const fallback = `the ${humanize(sourceName)} of the request.`;
-    const text = firstLine || fallback;
+    let text = firstLine || fallback;
+    const shortened = maybeShortenEnumParamDescription(type, text);
+    if (shortened) text = shortened.description;
     paramDocs.push(`@param ${kotlinName} ${escapeKdoc(text)}`);
   };
   for (const pp of pathParams) {
-    pushParamDoc(propertyName(pp.name), pp.name, pp.description);
+    pushParamDoc(propertyName(pp.name), pp.name, pp.description, pp.type);
   }
   for (const rp of resolvedParams) {
-    pushParamDoc(propertyName(rp.paramName), rp.paramName, rp.field?.description);
+    pushParamDoc(propertyName(rp.paramName), rp.paramName, rp.field?.description, rp.field?.type);
   }
   // Trailing `requestOptions` parameter — stable canned phrasing.
   pushParamDoc(
@@ -82,9 +98,17 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
 
   lines.push('  @JvmOverloads');
 
-  // Build the method parameter list: path params, wrapper params, requestOptions
+  // Build the method parameter list: path params, wrapper params, requestOptions.
+  // `suspendParams` mirrors `params` but tracks the bare parameter name so the
+  // suspend overload (emitted at the end of this function) can forward each
+  // argument to the blocking implementation.
   const params: string[] = [];
-  for (const pp of pathParams) params.push(`    ${propertyName(pp.name)}: String`);
+  const suspendParams: SuspendParam[] = [];
+  for (const pp of pathParams) {
+    const decl = `    ${propertyName(pp.name)}: String`;
+    params.push(decl);
+    suspendParams.push({ decl, name: propertyName(pp.name) });
+  }
   for (const rp of resolvedParams) {
     const paramName = propertyName(rp.paramName);
     const kotlinType = rp.field
@@ -95,9 +119,12 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
         ? 'String?'
         : 'String';
     const trailer = rp.isOptional ? ' = null' : '';
-    params.push(`    ${paramName}: ${kotlinType}${trailer}`);
+    const decl = `    ${paramName}: ${kotlinType}${trailer}`;
+    params.push(decl);
+    suspendParams.push({ decl, name: paramName });
   }
   params.push('    requestOptions: RequestOptions? = null');
+  suspendParams.push({ decl: '    requestOptions: RequestOptions? = null', name: 'requestOptions' });
 
   const returnClause = responseClass ? `: ${responseClass}` : '';
   if (params.length === 1) {
@@ -140,6 +167,7 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     }
     lines.push(`    )`);
     lines.push('  }');
+    appendSuspendVariant(lines, method, suspendParams, responseClass ?? 'Unit');
     return lines;
   }
 
@@ -191,7 +219,20 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
   }
 
   lines.push('  }');
+  appendSuspendVariant(lines, method, suspendParams, responseClass ?? 'Unit');
   return lines;
+}
+
+function appendSuspendVariant(
+  lines: string[],
+  method: string,
+  suspendParams: SuspendParam[],
+  returnType: string,
+): void {
+  lines.push('');
+  for (const ln of emitSuspendVariant({ methodName: method, params: suspendParams, returnType })) {
+    lines.push(ln);
+  }
 }
 
 function escapeKdoc(s: string): string {
