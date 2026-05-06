@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/workos/oagen-emitters/compare/v0.8.2...v0.9.0) (2026-05-06)
+
+
+### Features
+
+* **kotlin:** improve emitter output for SDK review feedback ([#90](https://github.com/workos/oagen-emitters/issues/90)) ([14180eb](https://github.com/workos/oagen-emitters/commit/14180eb7919a89a9b08406bc6bc06a35df887e65))
+
+
+### Bug Fixes
+
+* **kotlin:** make ktlintFormat actually run after generation ([#88](https://github.com/workos/oagen-emitters/issues/88)) ([6082a45](https://github.com/workos/oagen-emitters/commit/6082a45ab2b247bbf4630cd0acc6dba5238f5d26))
+
 ## [0.8.2](https://github.com/workos/oagen-emitters/compare/v0.8.1...v0.8.2) (2026-05-05)
 
 
