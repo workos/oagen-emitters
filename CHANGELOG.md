@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/workos/oagen-emitters/compare/v0.9.0...v0.9.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* oagen bump ([1ab0a55](https://github.com/workos/oagen-emitters/commit/1ab0a551ca567b09dec22cd3f75adda33d2cb550))
+
 ## [0.9.0](https://github.com/workos/oagen-emitters/compare/v0.8.2...v0.9.0) (2026-05-06)
 
 
