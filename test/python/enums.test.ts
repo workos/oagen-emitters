@@ -110,6 +110,97 @@ describe('generateEnums', () => {
     expect(files[0].path).toBe('src/workos/organizations/models/org_status.py');
   });
 
+  it('places enum in common/ when referenced by 2+ services', () => {
+    const makeService = (name: string, opName: string): Service => ({
+      name,
+      operations: [
+        {
+          name: opName,
+          httpMethod: 'get',
+          path: `/${name.toLowerCase()}`,
+          pathParams: [],
+          queryParams: [
+            {
+              name: 'order',
+              type: { kind: 'enum', name: 'PaginationOrder' },
+              required: false,
+            },
+          ],
+          headerParams: [],
+          response: { kind: 'primitive', type: 'unknown' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    });
+
+    const enums: Enum[] = [
+      {
+        name: 'PaginationOrder',
+        values: [
+          { name: 'NORMAL', value: 'normal' },
+          { name: 'DESC', value: 'desc' },
+          { name: 'ASC', value: 'asc' },
+        ],
+      },
+    ];
+
+    // Authorization comes alphabetically first; without the shared rule the
+    // enum would land under authorization/. Two services referencing it must
+    // route it to common/ instead.
+    const services = [makeService('Authorization', 'listAuthz'), makeService('Organizations', 'listOrgs')];
+
+    const files = generateEnums(enums, {
+      ...ctx,
+      spec: { ...emptySpec, services },
+    });
+
+    const enumFile = files.find((f) => f.path.endsWith('pagination_order.py'));
+    expect(enumFile).toBeDefined();
+    expect(enumFile!.path).toBe('src/workos/common/models/pagination_order.py');
+    // No service-local copy should exist.
+    expect(files.find((f) => f.path === 'src/workos/authorization/models/pagination_order.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/workos/organizations/models/pagination_order.py')).toBeUndefined();
+  });
+
+  it('keeps enum in service dir when only one service references it', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'listOrgs',
+          httpMethod: 'get',
+          path: '/orgs',
+          pathParams: [],
+          queryParams: [
+            {
+              name: 'order',
+              type: { kind: 'enum', name: 'OnlyOrgsOrder' },
+              required: false,
+            },
+          ],
+          headerParams: [],
+          response: { kind: 'primitive', type: 'unknown' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const enums: Enum[] = [
+      {
+        name: 'OnlyOrgsOrder',
+        values: [{ name: 'ASC', value: 'asc' }],
+      },
+    ];
+
+    const files = generateEnums(enums, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service] },
+    });
+    expect(files[0].path).toBe('src/workos/organizations/models/only_orgs_order.py');
+  });
+
   it('deduplicates values that produce the same string', () => {
     const enums: Enum[] = [
       {

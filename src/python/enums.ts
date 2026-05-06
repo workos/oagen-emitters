@@ -312,25 +312,39 @@ function enumValueHash(enumDef: Enum): string {
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {
-  const enumToService = new Map<string, string>();
+  const enumToServices = new Map<string, Set<string>>();
   const enumNames = new Set(enums.map((e) => e.name));
 
   for (const service of services) {
+    const serviceRefs = new Set<string>();
+    const collect = (ref: any) => {
+      walkTypeRef(ref, { enum: (r: any) => serviceRefs.add(r.name) });
+    };
     for (const op of service.operations) {
-      const refs = new Set<string>();
-      const collect = (ref: any) => {
-        walkTypeRef(ref, { enum: (r: any) => refs.add(r.name) });
-      };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
       for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
         collect(p.type);
       }
-      for (const name of refs) {
-        if (enumNames.has(name) && !enumToService.has(name)) {
-          enumToService.set(name, service.name);
-        }
+    }
+    for (const name of serviceRefs) {
+      if (!enumNames.has(name)) continue;
+      let bucket = enumToServices.get(name);
+      if (!bucket) {
+        bucket = new Set();
+        enumToServices.set(name, bucket);
       }
+      bucket.add(service.name);
+    }
+  }
+
+  // Enums referenced by exactly one service are owned by that service. Enums
+  // referenced by 2+ services are shared and intentionally left unassigned so
+  // downstream resolveDir() falls back to 'common/'.
+  const enumToService = new Map<string, string>();
+  for (const [name, owners] of enumToServices) {
+    if (owners.size === 1) {
+      enumToService.set(name, [...owners][0]);
     }
   }
 

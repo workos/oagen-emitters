@@ -3,6 +3,7 @@ import { assignModelsToServices, collectFieldDependencies, planOperation, walkTy
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
+import { findSharedSchemas } from './shared-schemas.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -13,6 +14,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
   const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+  // Models referenced (transitively) by 2+ services are shared; route them to
+  // common/ rather than the first alphabetical service that happens to use them.
+  // assignModelsToServices uses first-wins, so we strip shared assignments here.
+  // Hinted models bypass the shared rule (an explicit pin always wins).
+  const hintedNames = new Set(Object.keys(ctx.modelHints ?? {}));
+  const { models: sharedModelNames } = findSharedSchemas(ctx.spec);
+  for (const name of sharedModelNames) {
+    if (!hintedNames.has(name)) modelToService.delete(name);
+  }
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';

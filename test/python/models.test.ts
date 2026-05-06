@@ -812,4 +812,149 @@ describe('generateModels', () => {
     expect(contextBFile.content).toContain('TypeAlias');
     expect(contextBFile.content).not.toContain('@dataclass');
   });
+
+  it('places a model in common/ when referenced by 2+ services', () => {
+    const sharedModel: Model = {
+      name: 'PageInfo',
+      fields: [
+        { name: 'page_number', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'page_size', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    };
+    const orgsService: Service = {
+      name: 'Authorization',
+      operations: [
+        {
+          name: 'listAuthz',
+          httpMethod: 'get',
+          path: '/authz',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'PageInfo' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const usersService: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'listOrgs',
+          httpMethod: 'get',
+          path: '/orgs',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'PageInfo' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const models: Model[] = [sharedModel];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [orgsService, usersService], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const sharedFile = files.find((f) => f.path.endsWith('/page_info.py'));
+    expect(sharedFile).toBeDefined();
+    expect(sharedFile!.path).toBe('src/workos/common/models/page_info.py');
+    // No service-local copy of the shared model.
+    expect(files.find((f) => f.path === 'src/workos/authorization/models/page_info.py')).toBeUndefined();
+    expect(files.find((f) => f.path === 'src/workos/organizations/models/page_info.py')).toBeUndefined();
+    // common/__init__.py and common/models/__init__.py both re-export PageInfo.
+    const commonInit = files.find((f) => f.path === 'src/workos/common/__init__.py');
+    expect(commonInit).toBeDefined();
+    expect(commonInit!.content).toContain('from .models import PageInfo as PageInfo');
+    const commonModelsInit = files.find((f) => f.path === 'src/workos/common/models/__init__.py');
+    expect(commonModelsInit).toBeDefined();
+    expect(commonModelsInit!.content).toContain('from .page_info import PageInfo as PageInfo');
+  });
+
+  it('keeps a model in service dir when only one service references it', () => {
+    const onlyModel: Model = {
+      name: 'OnlyOrg',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'getOrg',
+          httpMethod: 'get',
+          path: '/orgs/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'OnlyOrg' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models: [onlyModel] },
+    };
+
+    const files = generateModels([onlyModel], ctxWithServices);
+    const file = files.find((f) => f.path.endsWith('/only_org.py'));
+    expect(file!.path).toBe('src/workos/organizations/models/only_org.py');
+  });
+
+  it('respects modelHints over the shared rule', () => {
+    const sharedModel: Model = {
+      name: 'PinnedThing',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const a: Service = {
+      name: 'Authorization',
+      operations: [
+        {
+          name: 'a',
+          httpMethod: 'get',
+          path: '/a',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'PinnedThing' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const b: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'b',
+          httpMethod: 'get',
+          path: '/b',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'PinnedThing' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    // PinnedThing is referenced by 2 services but explicitly pinned to Authorization.
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [a, b], models: [sharedModel] },
+      modelHints: { PinnedThing: 'Authorization' },
+    };
+
+    const files = generateModels([sharedModel], ctxWithServices);
+    expect(files.find((f) => f.path === 'src/workos/authorization/models/pinned_thing.py')).toBeDefined();
+    expect(files.find((f) => f.path === 'src/workos/common/models/pinned_thing.py')).toBeUndefined();
+  });
 });

@@ -32,6 +32,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
+import { findSharedSchemas } from './shared-schemas.js';
 
 /**
  * Resolve the Python class name to use for isinstance checks on paginated items.
@@ -228,6 +229,13 @@ function generateServiceTest(
 
   // Group imports by their actual service directory (models may live in different services)
   const modelToServiceMap = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
+  // Models referenced by 2+ services are shared and emitted under common/.
+  // Strip their assignments here so resolveModelDir() falls back to 'common'.
+  const hintedModels = new Set(Object.keys(ctx.modelHints ?? {}));
+  const { models: sharedModels } = findSharedSchemas(spec);
+  for (const name of sharedModels) {
+    if (!hintedModels.has(name)) modelToServiceMap.delete(name);
+  }
   const mountDirMap = buildMountDirMap(ctx);
   const resolveModelDir = (modelName: string) => {
     const svc = modelToServiceMap.get(modelName);

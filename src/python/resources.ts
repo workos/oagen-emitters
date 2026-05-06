@@ -49,6 +49,8 @@ import {
   clientFieldExpression,
 } from './wrappers.js';
 import { buildPythonPathExpression } from './path-expression.js';
+import { assignEnumsToServices } from './enums.js';
+import { findSharedSchemas } from './shared-schemas.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -1133,6 +1135,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
     // Split imports into same-service and cross-service (using mount-based dirs)
     const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services, ctx.modelHints);
+    // Models referenced by 2+ services are shared and emitted under common/.
+    // Strip their assignments here so resolveModelDir() falls back to 'common'.
+    // Hinted models bypass the shared rule.
+    const hintedModels = new Set(Object.keys(ctx.modelHints ?? {}));
+    const { models: sharedModels } = findSharedSchemas(ctx.spec);
+    for (const name of sharedModels) {
+      if (!hintedModels.has(name)) modelToServiceMap.delete(name);
+    }
     // Discriminator variant type aliases (e.g. EventSchemaVariant) live in the same
     // service as their dispatcher model, so ensure they resolve to the same directory.
     for (const model of ctx.spec.models) {
@@ -1172,30 +1182,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       }
     }
 
-    // Enum imports — same-service vs cross-service
-    const enumToServiceMap = new Map<string, string>();
-    for (const e of ctx.spec.enums) {
-      // Find which service uses this enum by walking full type trees
-      for (const svc of ctx.spec.services) {
-        for (const op of svc.operations) {
-          const refs = new Set<string>();
-          // Walk all type refs (including nested nullable/array/union) to find enums
-          const allTypeRefs = [
-            op.response,
-            ...(op.requestBody ? [op.requestBody] : []),
-            ...op.pathParams.map((p) => p.type),
-            ...op.queryParams.map((p) => p.type),
-            ...op.headerParams.map((p) => p.type),
-          ];
-          for (const typeRef of allTypeRefs) {
-            for (const ref of collectEnumRefs(typeRef)) refs.add(ref);
-          }
-          if (refs.has(e.name) && !enumToServiceMap.has(e.name)) {
-            enumToServiceMap.set(e.name, svc.name);
-          }
-        }
-      }
-    }
+    // Enum imports — same-service vs cross-service. Shared enums (referenced
+    // by 2+ services) are intentionally absent from this map so they resolve
+    // to common/ via the resolveDir() fallback below.
+    const enumToServiceMap = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
 
     const localEnums: string[] = [];
     const crossServiceEnums = new Map<string, string[]>();
