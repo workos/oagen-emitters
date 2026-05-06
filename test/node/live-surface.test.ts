@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { buildLiveSurface, emptyLiveSurface, pathExists, shouldSkipPath } from '../../src/node/live-surface.js';
 
@@ -105,6 +106,11 @@ beforeAll(() => {
     path.join(src, 'organizations', 'organizations.spec.ts'),
     ["import { Organizations } from './organizations.js';", "describe('x', () => { it('y', () => {}) })"].join('\n'),
   );
+
+  execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+  execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+  fs.mkdirSync(path.join(src, 'connect'), { recursive: true });
+  fs.writeFileSync(path.join(src, 'connect', 'connect.ts'), 'export class Connect {}');
 });
 
 afterAll(() => {
@@ -129,6 +135,17 @@ describe('buildLiveSurface', () => {
     expect(surface.files.has('src/organizations/organizations.ts')).toBe(true);
     expect(surface.files.has('src/organizations/interfaces/organization.interface.ts')).toBe(true);
     expect(surface.files.has('src/webhooks/webhooks.ts')).toBe(true);
+  });
+
+  it('distinguishes git-tracked baseline files from untracked junk', () => {
+    const surface = buildLiveSurface(tmpRoot);
+    expect(surface.trackedFiles.has('src/organizations/organizations.ts')).toBe(true);
+    expect(surface.trackedFiles.has('src/connect/connect.ts')).toBe(false);
+  });
+
+  it('does not parse declarations from untracked files when git baseline exists', () => {
+    const surface = buildLiveSurface(tmpRoot);
+    expect(surface.classes.has('Connect')).toBe(false);
   });
 
   it('detects @oagen-ignore-file markers', () => {

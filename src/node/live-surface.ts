@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 /**
  * Snapshot of the live target SDK gathered by walking `--output` once.
@@ -14,6 +15,15 @@ export interface LiveSurface {
   rootDir: string;
   /** Set of file paths (relative to rootDir, POSIX separators) that exist on disk. */
   files: Set<string>;
+  /**
+   * Git-tracked paths under the SDK root.
+   *
+   * When non-empty, this is the canonical baseline surface for "existing SDK"
+   * decisions. It excludes prior bad generations that left untracked files in
+   * the tree, which lets the emitter stop re-emitting that junk so manifest
+   * pruning can clean it up on the next run.
+   */
+  trackedFiles: Set<string>;
   /** Files marked `@oagen-ignore-file`: never emit on top of these. */
   protectedFiles: Set<string>;
   /**
@@ -62,6 +72,7 @@ export function buildLiveSurface(rootDir: string): LiveSurface {
   const surface: LiveSurface = {
     rootDir,
     files: new Set(),
+    trackedFiles: loadGitTrackedFiles(rootDir),
     protectedFiles: new Set(),
     autogenFiles: new Set(),
     classes: new Map(),
@@ -80,6 +91,7 @@ export function buildLiveSurface(rootDir: string): LiveSurface {
     surface.files.add(rel);
     if (rel.endsWith('.spec.ts') || rel.endsWith('.test.ts')) continue;
     if (!rel.endsWith('.ts')) continue;
+    if (surface.trackedFiles.size > 0 && !surface.trackedFiles.has(rel)) continue;
 
     let text: string;
     try {
@@ -120,12 +132,25 @@ export function liveSurfaceFunctionPath(name: string): string | undefined {
 export function liveSurfaceHasFile(relPath: string): boolean {
   return activeSurface?.files.has(relPath) ?? false;
 }
+export function liveSurfaceHasManagedFile(relPath: string): boolean {
+  const surface = activeSurface;
+  if (!surface) return false;
+  const managedPaths = surface.trackedFiles.size > 0 ? surface.trackedFiles : surface.files;
+  return managedPaths.has(relPath);
+}
+export function liveSurfaceHasExistingSdk(): boolean {
+  const surface = activeSurface;
+  if (!surface) return false;
+  const managedPaths = surface.trackedFiles.size > 0 ? surface.trackedFiles : surface.files;
+  return managedPaths.size > 0;
+}
 
 /** Empty surface — used as a default when no outputDir is available. */
 export function emptyLiveSurface(): LiveSurface {
   return {
     rootDir: '',
     files: new Set(),
+    trackedFiles: new Set(),
     protectedFiles: new Set(),
     autogenFiles: new Set(),
     classes: new Map(),
@@ -170,6 +195,24 @@ function* walk(dir: string): Generator<string> {
 
 function toPosix(p: string): string {
   return p.split(path.sep).join('/');
+}
+
+function loadGitTrackedFiles(rootDir: string): Set<string> {
+  try {
+    const stdout = execFileSync('git', ['-C', rootDir, 'ls-files', '--', 'src'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return new Set(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map(toPosix),
+    );
+  } catch {
+    return new Set();
+  }
 }
 
 function isProtected(text: string): boolean {

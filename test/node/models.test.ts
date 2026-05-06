@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels, generateSerializers } from '../../src/node/models.js';
+import { nodeEmitter } from '../../src/node/index.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -224,6 +229,43 @@ describe('generateModels', () => {
     const result = generateModels(models, ctxWithModels);
 
     expect(result[0].content).toContain('export interface DirectoryUser<TCustom = Record<string, any>>');
+  });
+
+  it('does not emit brand-new files into an existing git-tracked SDK', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-emitter-live-'));
+    try {
+      const ifaceDir = path.join(tmpRoot, 'src', 'organizations', 'interfaces');
+      fs.mkdirSync(ifaceDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ifaceDir, 'organization.interface.ts'),
+        ['export interface Organization {', '  id: string;', '}'].join('\n'),
+      );
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'Organization',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'domain', type: { kind: 'model', name: 'OrganizationDomain' }, required: false },
+          ],
+        },
+        {
+          name: 'OrganizationDomain',
+          fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ];
+
+      const spec = makeSpec(models);
+      const files = nodeEmitter.generateModels(models, { ...ctx, spec, outputDir: tmpRoot });
+
+      expect(files).toHaveLength(0);
+      expect(files.some((f) => f.path.includes('organization-domain.interface.ts'))).toBe(false);
+      expect(files.some((f) => f.path.includes('/serializers/'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

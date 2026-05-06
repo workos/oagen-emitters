@@ -28,6 +28,7 @@ import {
   emitSerializerBody,
   hasDateTimeConversion,
 } from './field-plan.js';
+import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile } from './live-surface.js';
 
 // ---------------------------------------------------------------------------
 // Shared context
@@ -75,6 +76,48 @@ function enrichGenericDefaultsFromBaseline(
   }
 }
 
+function projectModelToManagedSurface(model: Model, shared: SharedModelContext, ctx: EmitterContext): Model {
+  if (!ctx.outputDir && !ctx.targetDir) return model;
+  if (!liveSurfaceHasExistingSdk()) return model;
+  const fields = model.fields.filter((field) => isSupportedFieldType(field.type, model.name, shared, ctx));
+  return fields.length === model.fields.length ? model : { ...model, fields };
+}
+
+function isSupportedFieldType(
+  ref: TypeRef,
+  ownerModelName: string,
+  shared: SharedModelContext,
+  ctx: EmitterContext,
+): boolean {
+  switch (ref.kind) {
+    case 'primitive':
+    case 'literal':
+    case 'map':
+      return true;
+    case 'model': {
+      if (ref.name === ownerModelName) return true;
+      const resolvedName = resolveInterfaceName(ref.name, ctx);
+      if (ctx.apiSurface?.interfaces?.[resolvedName] || ctx.apiSurface?.typeAliases?.[resolvedName]) return true;
+      const relPath = `src/${shared.resolveDir(shared.modelToService.get(ref.name))}/interfaces/${fileName(ref.name)}.interface.ts`;
+      return liveSurfaceHasManagedFile(relPath);
+    }
+    case 'enum': {
+      if (ctx.apiSurface?.enums?.[ref.name] || ctx.apiSurface?.typeAliases?.[ref.name]) return true;
+      const enumService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services).get(ref.name);
+      const relPath = `src/${shared.resolveDir(enumService)}/interfaces/${fileName(ref.name)}.interface.ts`;
+      return liveSurfaceHasManagedFile(relPath);
+    }
+    case 'array':
+      return isSupportedFieldType(ref.items, ownerModelName, shared, ctx);
+    case 'nullable':
+      return isSupportedFieldType(ref.inner, ownerModelName, shared, ctx);
+    case 'union':
+      return ref.variants.every((variant) => isSupportedFieldType(variant, ownerModelName, shared, ctx));
+    default:
+      return true;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Interface generation
 // ---------------------------------------------------------------------------
@@ -93,11 +136,16 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   const wireTypeRefOpts = { genericDefaults };
   const files: GeneratedFile[] = [];
   const dedup = sharedDedup;
+  const projectedModels = models.map((model) =>
+    projectModelToManagedSurface(model, { modelToService, resolveDir, dedup, genericDefaults }, ctx),
+  );
+  const projectedByName = new Map(projectedModels.map((model) => [model.name, model]));
 
   const reachableModels = computeNonEventReachable(ctx.spec.services, models);
 
   const forceGenerate = new Set<string>();
-  for (const model of models) {
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (!modelHasNewFields(model, ctx)) continue;
     const service = modelToService.get(model.name);
@@ -115,7 +163,8 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     }
   }
 
-  for (const model of models) {
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
@@ -563,6 +612,10 @@ export function generateSerializers(
   const { modelToService, resolveDir, dedup } = shared ?? buildSharedContext(models, ctx);
   const files: GeneratedFile[] = [];
   const skippedSerializeModels = new Set<string>();
+  const projectedModels = models.map((model) =>
+    projectModelToManagedSurface(model, { modelToService, resolveDir, dedup, genericDefaults: new Map() }, ctx),
+  );
+  const projectedByName = new Map(projectedModels.map((model) => [model.name, model]));
 
   const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
 
@@ -572,7 +625,8 @@ export function generateSerializers(
   // a missing function would leave the SDK unable to compile.
   const liveRoot = ctx.targetDir ?? ctx.outputDir;
   if (liveRoot) {
-    for (const model of models) {
+    for (const originalModel of models) {
+      const model = projectedByName.get(originalModel.name) ?? originalModel;
       if (!serializerReachable.has(model.name)) continue;
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
@@ -596,7 +650,8 @@ export function generateSerializers(
   }
 
   const forceGenerateSerializer = new Set<string>();
-  for (const model of models) {
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
     if (!modelHasNewFields(model, ctx)) continue;
     const service = modelToService.get(model.name);
@@ -614,7 +669,8 @@ export function generateSerializers(
   }
 
   const eligibleModels: Model[] = [];
-  for (const model of models) {
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
