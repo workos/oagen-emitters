@@ -293,11 +293,16 @@ function emitMethodSignature(
     lines.push('        limit: Optional[int] = None,');
     lines.push('        before: Optional[str] = None,');
     lines.push('        after: Optional[str] = None,');
-    // Use typed enum for order param if the spec provides one, otherwise fall back to str
+    // Use typed enum for order param if the spec provides one, otherwise fall
+    // back to str. The default value comes from the spec's `default:` field;
+    // when the spec drops the default, we surface that as `None` rather than
+    // silently restoring "desc" client-side (which would mask a server-side
+    // behavior change from the caller).
     const orderParam = op.queryParams.find((p) => p.name === 'order');
     const orderType =
       orderParam && orderParam.type.kind === 'enum' ? mapTypeRefUnquoted(orderParam.type, specEnumNames, true) : 'str';
-    lines.push(`        order: Optional[${orderType}] = "desc",`);
+    const orderDefault = orderParam?.default != null ? pythonLiteral(orderParam.default) : 'None';
+    lines.push(`        order: Optional[${orderType}] = ${orderDefault},`);
     // Additional non-pagination query params
     for (const param of op.queryParams) {
       if (['limit', 'before', 'after', 'order'].includes(param.name)) continue;

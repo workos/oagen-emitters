@@ -301,9 +301,10 @@ function generateMethod(
     const phpName = fieldName(q.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
-    // order params with enum defaults are non-nullable (they default to Desc, not null)
-    const isNonNullableOrder = q.name === 'order' && q.type.kind === 'enum';
-    const nullSuffix = !q.required && !isNonNullableOrder && !docType.endsWith('|null') ? '|null' : '';
+    // Spec-defaulted enum params are non-nullable (the signature default is the
+    // enum case, never null). Without a spec default, the param is nullable.
+    const hasEnumDefault = q.default != null && q.type.kind === 'enum';
+    const nullSuffix = !q.required && !hasEnumDefault && !docType.endsWith('|null') ? '|null' : '';
     const prefix = q.deprecated ? '(deprecated) ' : '';
     let desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
     if (q.default != null) desc += ` Defaults to ${JSON.stringify(q.default)}.`;
@@ -682,16 +683,14 @@ function buildMethodParams(
     usedNames.add(phpName);
     if (q.required) {
       required.push(`${phpType} $${phpName}`);
-    } else if (q.name === 'order') {
-      // Hardcode order default to desc for pagination consistency
-      if (q.type.kind === 'enum') {
-        const enumType = mapTypeRef(q.type, { qualified: true });
-        const caseName = toPascalCase('desc');
-        optional.push(`${enumType} $${phpName} = ${enumType}::${caseName}`);
-      } else {
-        const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
-        optional.push(`${nullableType} $${phpName} = 'desc'`);
-      }
+    } else if (q.default != null && q.type.kind === 'enum') {
+      // Spec-provided default for an enum-typed param: emit a non-nullable
+      // typed default (e.g. PaginationOrder $order = PaginationOrder::Desc).
+      // Only enums are safe to default this way — primitives stay nullable so
+      // callers can distinguish "unset" from "explicit value".
+      const enumType = mapTypeRef(q.type, { qualified: true });
+      const caseName = toPascalCase(String(q.default));
+      optional.push(`${enumType} $${phpName} = ${enumType}::${caseName}`);
     } else {
       const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
       optional.push(`${nullableType} $${phpName} = null`);
@@ -756,9 +755,10 @@ function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
     .map((q) => {
       const phpName = fieldName(q.name);
       if (isEnumType(q.type)) {
-        // order params with enum defaults are non-nullable (default to Desc, not null)
-        const isNonNullableOrder = q.name === 'order' && q.type.kind === 'enum';
-        const nullsafe = q.required || isNonNullableOrder ? '' : '?';
+        // Mirrors the signature: enum params with a spec default are
+        // non-nullable, so we can dereference ->value without the nullsafe op.
+        const hasEnumDefault = q.default != null && q.type.kind === 'enum';
+        const nullsafe = q.required || hasEnumDefault ? '' : '?';
         return `'${q.name}' => $${phpName}${nullsafe}->value,`;
       }
       return `'${q.name}' => $${phpName},`;
