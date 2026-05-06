@@ -1,6 +1,7 @@
-import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
+import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -21,14 +22,18 @@ function humanizeClassName(name: string): string {
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
-  const enumToService = assignEnumsToServices(enums, ctx.spec.services);
+  // Tests sometimes pass enums that aren't in ctx.spec.enums, so synthesize a
+  // spec view with the passed-in enums to keep the placement logic accurate.
+  const placementSpec = enums === ctx.spec.enums ? ctx.spec : { ...ctx.spec, enums };
+  const placement = computeSchemaPlacement(placementSpec, ctx);
+  const enumToService = placement.enumToService;
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
   const compatAliases = collectCompatEnumAliases(enums, ctx);
 
-  const aliasOf = collectEnumAliasOf(enums);
+  const aliasOf = placement.enumAliases;
 
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
@@ -260,31 +265,9 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
   return aliases;
 }
 
-function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
-  const hashGroups = new Map<string, string[]>();
-  for (const enumDef of enums) {
-    const hash = [...enumDef.values]
-      .map((v) => String(v.value))
-      .sort()
-      .join('|');
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef.name);
-  }
-
-  const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
-    }
-  }
-  return aliasOf;
-}
-
 export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {
-  const enumToService = assignEnumsToServices(enums, ctx.spec.services);
+  const placementSpec = enums === ctx.spec.enums ? ctx.spec : { ...ctx.spec, enums };
+  const enumToService = computeSchemaPlacement(placementSpec, ctx).enumToService;
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
@@ -309,44 +292,4 @@ function enumValueHash(enumDef: Enum): string {
     .map((value) => String(value.value))
     .sort()
     .join('|');
-}
-
-export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {
-  const enumToServices = new Map<string, Set<string>>();
-  const enumNames = new Set(enums.map((e) => e.name));
-
-  for (const service of services) {
-    const serviceRefs = new Set<string>();
-    const collect = (ref: any) => {
-      walkTypeRef(ref, { enum: (r: any) => serviceRefs.add(r.name) });
-    };
-    for (const op of service.operations) {
-      if (op.requestBody) collect(op.requestBody);
-      collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
-        collect(p.type);
-      }
-    }
-    for (const name of serviceRefs) {
-      if (!enumNames.has(name)) continue;
-      let bucket = enumToServices.get(name);
-      if (!bucket) {
-        bucket = new Set();
-        enumToServices.set(name, bucket);
-      }
-      bucket.add(service.name);
-    }
-  }
-
-  // Enums referenced by exactly one service are owned by that service. Enums
-  // referenced by 2+ services are shared and intentionally left unassigned so
-  // downstream resolveDir() falls back to 'common/'.
-  const enumToService = new Map<string, string>();
-  for (const [name, owners] of enumToServices) {
-    if (owners.size === 1) {
-      enumToService.set(name, [...owners][0]);
-    }
-  }
-
-  return enumToService;
 }

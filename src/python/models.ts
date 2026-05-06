@@ -1,9 +1,9 @@
-import type { Model, Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
+import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
+import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
-import { assignEnumsToServices, collectGeneratedEnumSymbolsByDir } from './enums.js';
-import { findSharedSchemas } from './shared-schemas.js';
+import { collectGeneratedEnumSymbolsByDir } from './enums.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -12,17 +12,19 @@ import { findSharedSchemas } from './shared-schemas.js';
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
-  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
-  const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
-  // Models referenced (transitively) by 2+ services are shared; route them to
-  // common/ rather than the first alphabetical service that happens to use them.
-  // assignModelsToServices uses first-wins, so we strip shared assignments here.
-  // Hinted models bypass the shared rule (an explicit pin always wins).
-  const hintedNames = new Set(Object.keys(ctx.modelHints ?? {}));
-  const { models: sharedModelNames } = findSharedSchemas(ctx.spec);
-  for (const name of sharedModelNames) {
-    if (!hintedNames.has(name)) modelToService.delete(name);
-  }
+  // Tests sometimes pass models that aren't in ctx.spec.models, so synthesize
+  // a spec view with the passed-in models to keep the placement logic accurate.
+  const placementSpec = models === ctx.spec.models ? ctx.spec : { ...ctx.spec, models };
+  const placement = computeSchemaPlacement(placementSpec, ctx);
+  const {
+    modelToService,
+    enumToService,
+    originalModelToService,
+    originalEnumToService,
+    relocatedModels,
+    relocatedEnums,
+    modelAliases: aliasOf,
+  } = placement;
   const mountDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
@@ -31,32 +33,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Overrides fileName() for symbols that live in a differently-named file.
   // Used for variant type aliases (e.g. EventSchemaVariant → event_schema).
   const symbolToFile = new Map<string, string>();
-  const modelUsage = collectModelUsage(ctx.spec);
-
-  // Build recursive structural hashes for deduplication.
-  // Model/enum references are resolved bottom-up so structurally-identical
-  // model trees (e.g. event context/actor sub-models) get the same hash.
-  const recursiveHashes = buildRecursiveHashMap(models, ctx.spec.enums);
-  const hashGroups = new Map<string, string[]>(); // hash -> model names
-  for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
-    const hash = recursiveHashes.get(model.name) ?? '';
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(model.name);
-  }
-
-  // For each group of identical models, pick canonical (alphabetically first)
-  const aliasOf = new Map<string, string>(); // alias name -> canonical name
-  for (const [, names] of hashGroups) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort((a, b) => compareAliasPriority(a, b, modelUsage));
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      if (canAliasModels(canonical, sorted[i], modelUsage)) {
-        aliasOf.set(sorted[i], canonical);
-      }
-    }
-  }
+  // Track each emitted symbol's natural (pre-relocation) service so we can
+  // re-export relocated symbols from their original service barrel for BC.
+  const symbolToOriginalService = new Map<string, string>();
 
   // Track emitted file paths to prevent duplicates when synthetic models from
   // oneOf enrichment collide with existing IR models in snake_case.
@@ -189,6 +168,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       symbolToFile.set(variantTypeName, fileName(model.name));
       emittedModelSymbolsByDir.get(dirName)!.push(unknownClassName);
       symbolToFile.set(unknownClassName, fileName(model.name));
+      const dispatcherNatural = originalModelToService.get(model.name);
+      if (dispatcherNatural) {
+        symbolToOriginalService.set(model.name, dispatcherNatural);
+        symbolToOriginalService.set(variantTypeName, dispatcherNatural);
+        symbolToOriginalService.set(unknownClassName, dispatcherNatural);
+      }
       continue;
     }
 
@@ -224,6 +209,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       });
       if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
       emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+      const aliasNatural = originalModelToService.get(model.name);
+      if (aliasNatural) symbolToOriginalService.set(model.name, aliasNatural);
       continue;
     }
 
@@ -428,15 +415,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     });
     if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
     emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+    const regularNatural = originalModelToService.get(model.name);
+    if (regularNatural) symbolToOriginalService.set(model.name, regularNatural);
   }
 
   // Generate __init__.py barrel files for each models/ directory
-  // Include both models and enums
-  const symbolsByDir = new Map<string, string[]>();
+  // Include both models and enums.
+  // A direct symbol lives in the file at `dirPath/<file>.py`. A re-exported
+  // symbol was relocated to common/ but is being mirrored from its natural
+  // service barrel for backwards compatibility.
+  type BarrelSymbol = { name: string; reExport?: { fromDir: string; file: string } };
+  const symbolsByDir = new Map<string, BarrelSymbol[]>();
   for (const [dirName, names] of emittedModelSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(...names);
+    for (const name of names) symbolsByDir.get(key)!.push({ name });
   }
 
   // Also include enums in the barrels using the enum emitter's actual output placement.
@@ -446,7 +439,37 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const [dirName, names] of enumSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    symbolsByDir.get(key)!.push(...names);
+    for (const name of names) symbolsByDir.get(key)!.push({ name });
+  }
+
+  // Backwards-compat re-exports: every relocated model is also re-exported
+  // from its pre-relocation service barrel so existing
+  // `from workos.<service>.models import X` imports keep working.
+  const commonDirName = 'common';
+  const addReExport = (naturalService: string | undefined, name: string, sourceFile: string): void => {
+    if (!naturalService) return;
+    const naturalDir = mountDirMap.get(naturalService) ?? naturalService;
+    if (naturalDir === commonDirName) return;
+    const key = `src/${ctx.namespace}/${naturalDir}/models`;
+    if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
+    symbolsByDir.get(key)!.push({ name, reExport: { fromDir: commonDirName, file: sourceFile } });
+  };
+
+  for (const symbol of symbolToOriginalService.keys()) {
+    // Only re-export symbols that ended up relocated (i.e. their owning model is in relocatedModels)
+    // or whose dispatcher parent is relocated.
+    const naturalService = symbolToOriginalService.get(symbol)!;
+    // Find what file the symbol lives in (in common/)
+    const file = symbolToFile.get(symbol) ?? fileName(symbol);
+    // Only re-export if it actually got relocated — that is, if its primary
+    // model name (or the parent it shares a file with) is in relocatedModels.
+    const primaryName = file === fileName(symbol) ? symbol : reverseLookupModelByFile(file, ctx);
+    if (primaryName && !relocatedModels.has(primaryName)) continue;
+    addReExport(naturalService, symbol, file);
+  }
+  for (const enumName of relocatedEnums) {
+    const naturalService = originalEnumToService.get(enumName);
+    addReExport(naturalService, enumName, fileName(enumName));
   }
 
   // Build set of service directory model paths — these get their parent __init__.py
@@ -475,13 +498,28 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
-  for (const [dirPath, names] of symbolsByDir) {
+  for (const [dirPath, symbols] of symbolsByDir) {
+    // Deduplicate by symbol name (a direct emission always wins over a stale
+    // re-export with the same name).
+    const seen = new Map<string, BarrelSymbol>();
+    for (const sym of symbols) {
+      const existing = seen.get(sym.name);
+      if (!existing || (existing.reExport && !sym.reExport)) seen.set(sym.name, sym);
+    }
+    const uniqueSymbols = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+
     // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
-    const uniqueNames = [...new Set(names)].sort();
     const importLines: string[] = [];
-    for (const name of uniqueNames) {
-      const fileNameForSymbol = symbolToFile.get(name) ?? fileName(name);
-      importLines.push(`from .${fileNameForSymbol} import ${className(name)} as ${className(name)}`);
+    for (const sym of uniqueSymbols) {
+      const cls = className(sym.name);
+      if (sym.reExport) {
+        importLines.push(
+          `from ${ctx.namespace}.${dirToModule(sym.reExport.fromDir)}.models.${sym.reExport.file} import ${cls} as ${cls}`,
+        );
+      } else {
+        const fileNameForSymbol = symbolToFile.get(sym.name) ?? fileName(sym.name);
+        importLines.push(`from .${fileNameForSymbol} import ${cls} as ${cls}`);
+      }
     }
     const imports = importLines.join('\n');
     files.push({
@@ -496,9 +534,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // which includes both the resource class re-export and model star import.
     if (!serviceDirModelPaths.has(dirPath)) {
       const parentDir = dirPath.replace(/\/models$/, '');
-      const reExports = [...new Set(names)]
-        .sort()
-        .map((name) => `from .models import ${className(name)} as ${className(name)}`)
+      const reExports = uniqueSymbols
+        .map((sym) => `from .models import ${className(sym.name)} as ${className(sym.name)}`)
         .join('\n');
       files.push({
         path: `${parentDir}/__init__.py`,
@@ -510,6 +547,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   return files;
+}
+
+/**
+ * Given a snake_case file name, return the IR model name that owns it.
+ * Used to attribute dispatcher children (FooVariant, FooUnknown) to their
+ * parent model when computing relocation re-exports.
+ */
+function reverseLookupModelByFile(file: string, ctx: EmitterContext): string | undefined {
+  for (const m of ctx.spec.models) {
+    if (fileName(m.name) === file) return m.name;
+  }
+  return undefined;
 }
 
 function collectTypingImports(ref: any, imports: Set<string>): void {
@@ -587,73 +636,6 @@ function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
   }
 
   return referencedEnums;
-}
-
-function collectModelUsage(spec: EmitterContext['spec']): {
-  requestOnly: Set<string>;
-  response: Set<string>;
-  mixed: Set<string>;
-} {
-  const request = new Set<string>();
-  const response = new Set<string>();
-
-  for (const service of spec.services) {
-    for (const op of service.operations) {
-      const plan = planOperation(op);
-      if (plan.responseModelName) {
-        response.add(plan.responseModelName);
-      }
-      if (op.pagination?.itemType.kind === 'model') {
-        response.add(op.pagination.itemType.name);
-      }
-      if (op.requestBody?.kind === 'model') {
-        request.add(op.requestBody.name);
-      }
-      if (op.requestBody?.kind === 'union') {
-        for (const variant of op.requestBody.variants ?? []) {
-          if (variant.kind === 'model') request.add(variant.name);
-        }
-      }
-    }
-  }
-
-  const mixed = new Set<string>();
-  for (const name of request) {
-    if (response.has(name)) mixed.add(name);
-  }
-
-  const requestOnly = new Set([...request].filter((name) => !mixed.has(name)));
-  const responseOnly = new Set([...response].filter((name) => !mixed.has(name)));
-
-  return { requestOnly, response: responseOnly, mixed };
-}
-
-function compareAliasPriority(left: string, right: string, usage: ReturnType<typeof collectModelUsage>): number {
-  const score = (name: string): number => {
-    if (usage.response.has(name)) return 0;
-    if (usage.mixed.has(name)) return 1;
-    if (usage.requestOnly.has(name)) return 2;
-    return 3;
-  };
-
-  const diff = score(left) - score(right);
-  if (diff !== 0) return diff;
-  return left.localeCompare(right);
-}
-
-function canAliasModels(canonical: string, alias: string, usage: ReturnType<typeof collectModelUsage>): boolean {
-  // Don't alias when both models produce the same file name — the TypeAlias
-  // file would import from itself (e.g., FooBar aliased to Foo_bar).
-  if (fileName(canonical) === fileName(alias)) return false;
-  // Don't alias across request/response boundaries — a request-only model
-  // and a response-only model may look identical today but evolve independently.
-  if (
-    (usage.response.has(canonical) && usage.requestOnly.has(alias)) ||
-    (usage.response.has(alias) && usage.requestOnly.has(canonical))
-  ) {
-    return false;
-  }
-  return true;
 }
 
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
@@ -804,89 +786,6 @@ function serializeField(ref: any, accessor: string): string {
     default:
       return accessor;
   }
-}
-
-/**
- * Build recursive structural hashes for all models.
- *
- * Model references are resolved to their own structural hash (bottom-up) and
- * enum references are resolved to their value-set hash.  This means
- * structurally-identical model *trees* — like the dozens of per-event Context /
- * ContextActor / ContextGoogleAnalyticsSession sub-models in the spec — get
- * the same hash even though their IR names differ.
- */
-function buildRecursiveHashMap(models: Model[], enums: Enum[]): Map<string, string> {
-  const modelByName = new Map(models.map((m) => [m.name, m]));
-  const hashCache = new Map<string, string>();
-  const visiting = new Set<string>(); // cycle guard
-
-  // Pre-compute enum value hashes so identically-valued enums hash the same.
-  const enumVH = new Map<string, string>();
-  for (const e of enums) {
-    enumVH.set(
-      e.name,
-      [...e.values]
-        .map((v) => String(v.value))
-        .sort()
-        .join('|'),
-    );
-  }
-
-  function modelHash(name: string): string {
-    const cached = hashCache.get(name);
-    if (cached != null) return cached;
-    if (visiting.has(name)) return `m:${name}`; // cycle — fall back to name
-    visiting.add(name);
-
-    const model = modelByName.get(name);
-    if (!model) {
-      visiting.delete(name);
-      return `m:${name}`; // unknown model
-    }
-
-    const hash = [...model.fields]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((f) => `${f.name}:${deepTypeHash(f.type)}:${f.required}`)
-      .join('|');
-
-    visiting.delete(name);
-    hashCache.set(name, hash);
-    return hash;
-  }
-
-  function deepTypeHash(ref: any): string {
-    switch (ref.kind) {
-      case 'primitive':
-        return `p:${ref.type}${ref.format ? `:${ref.format}` : ''}`;
-      case 'model':
-        return `m:{${modelHash(ref.name)}}`;
-      case 'enum': {
-        const vh = enumVH.get(ref.name);
-        return vh != null ? `e:{${vh}}` : `e:${ref.name}`;
-      }
-      case 'array':
-        return `a:${deepTypeHash(ref.items)}`;
-      case 'nullable':
-        return `n:${deepTypeHash(ref.inner)}`;
-      case 'union':
-        return `u:${(ref.variants ?? [])
-          .map((v: any) => deepTypeHash(v))
-          .sort()
-          .join(',')}`;
-      case 'map':
-        return `d:${deepTypeHash(ref.valueType)}`;
-      case 'literal':
-        return `l:${String(ref.value)}`;
-      default:
-        return 'unknown';
-    }
-  }
-
-  for (const model of models) {
-    modelHash(model.name);
-  }
-
-  return hashCache;
 }
 
 // Import and re-export shared model detection utilities

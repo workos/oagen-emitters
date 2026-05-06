@@ -12,14 +12,7 @@ import type {
 
 /** Extend Parameter with `explode` until @workos/oagen publishes the field. */
 type ParameterExt = Parameter & { explode?: boolean };
-import {
-  planOperation,
-  toPascalCase,
-  toSnakeCase,
-  collectModelRefs,
-  collectEnumRefs,
-  assignModelsToServices,
-} from '@workos/oagen';
+import { planOperation, toPascalCase, toSnakeCase, collectModelRefs, collectEnumRefs } from '@workos/oagen';
 import { mapTypeRefUnquoted } from './type-map.js';
 import {
   className,
@@ -49,8 +42,7 @@ import {
   clientFieldExpression,
 } from './wrappers.js';
 import { buildPythonPathExpression } from './path-expression.js';
-import { assignEnumsToServices } from './enums.js';
-import { findSharedSchemas } from './shared-schemas.js';
+import { computeSchemaPlacement } from './shared-schemas.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -1138,15 +1130,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const actualModelImports = [...modelImports];
 
     // Split imports into same-service and cross-service (using mount-based dirs)
-    const modelToServiceMap = assignModelsToServices(ctx.spec.models, ctx.spec.services, ctx.modelHints);
-    // Models referenced by 2+ services are shared and emitted under common/.
-    // Strip their assignments here so resolveModelDir() falls back to 'common'.
-    // Hinted models bypass the shared rule.
-    const hintedModels = new Set(Object.keys(ctx.modelHints ?? {}));
-    const { models: sharedModels } = findSharedSchemas(ctx.spec);
-    for (const name of sharedModels) {
-      if (!hintedModels.has(name)) modelToServiceMap.delete(name);
-    }
+    const placement = computeSchemaPlacement(ctx.spec, ctx);
+    const modelToServiceMap = new Map(placement.modelToService);
     // Discriminator variant type aliases (e.g. EventSchemaVariant) live in the same
     // service as their dispatcher model, so ensure they resolve to the same directory.
     for (const model of ctx.spec.models) {
@@ -1189,7 +1174,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // Enum imports — same-service vs cross-service. Shared enums (referenced
     // by 2+ services) are intentionally absent from this map so they resolve
     // to common/ via the resolveDir() fallback below.
-    const enumToServiceMap = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+    const enumToServiceMap = placement.enumToService;
 
     const localEnums: string[] = [];
     const crossServiceEnums = new Map<string, string[]>();
