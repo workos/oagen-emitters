@@ -93,15 +93,17 @@ export const kotlinEmitter: Emitter = {
   },
 
   formatCommand(targetDir: string): FormatCommand | null {
-    // ktlint enforces a 140-char max line length that cannot be auto-corrected
-    // by the Gradle plugin alone, but `./gradlew ktlintFormat` fixes most
-    // violations (trailing whitespace, import ordering, etc.) across all
-    // generated files. The file list appended by oagen is ignored — Gradle
-    // reformats the whole source set.
+    // `./gradlew ktlintFormat` fixes whitespace, import ordering, and most
+    // wrapping/line-length violations across the whole source set. The file
+    // list appended by oagen is ignored — Gradle reformats every Kotlin
+    // file. oagen's writer already runs the spawned process with
+    // `cwd: targetDir`, so we don't `cd` again (an additional `cd` re-resolves
+    // a relative `targetDir` against itself and silently lands in a missing
+    // directory, which is what was causing this command to no-op in practice).
     if (!fs.existsSync(path.join(targetDir, 'gradlew'))) return null;
     return {
       cmd: 'bash',
-      args: ['-c', `cd ${JSON.stringify(targetDir)} && ./gradlew ktlintFormat --quiet 2>/dev/null; true`, '--'],
+      args: ['-c', './gradlew ktlintFormat --quiet >/dev/null 2>&1; true'],
     };
   },
 };

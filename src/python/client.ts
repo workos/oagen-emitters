@@ -270,8 +270,13 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const ops = mountGroups.get(mountTarget)?.operations ?? service.operations;
     const groupClassNames = collectParameterGroupClassNames(ops);
 
+    // Use `X as X` re-export form (PEP 484) so pyright recognizes these as
+    // public re-exports. Otherwise consumers importing
+    // `from workos.user_management import RoleSingle` get a private-import
+    // warning under strict mode. Models barrel uses the same convention.
     const resourceImports = [resolvedName, `Async${resolvedName}`, ...groupClassNames];
-    lines.push(`from ._resource import ${resourceImports.join(', ')}`);
+    const aliasedImports = resourceImports.map((n) => `${n} as ${n}`);
+    lines.push(`from ._resource import ${aliasedImports.join(', ')}`);
     lines.push('from .models import *');
 
     files.push({
@@ -281,12 +286,10 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       overwriteExisting: true,
     });
 
-    // Ensure models/__init__.py exists even if no models are assigned to this service
-    files.push({
-      path: `src/${ctx.namespace}/${dirName}/models/__init__.py`,
-      content: '',
-      skipIfExists: true,
-    });
+    // models/__init__.py is emitted unconditionally by `models.ts` — including
+    // an empty barrel for services with no models — so we don't need a safety
+    // net here. (A `skipIfExists` safety net previously caused stale imports
+    // to survive when the underlying module was pruned.)
   }
 
   return files;

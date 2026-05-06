@@ -118,7 +118,7 @@ describe('generateResources', () => {
 
     expect(result[0].content).toContain('public function getOrganization(');
     expect(result[0].content).toContain('string $id');
-    expect(result[0].content).toContain('"organizations/{$id}"');
+    expect(result[0].content).toContain("'organizations/' . rawurlencode($id)");
     expect(result[0].content).toContain('Organization::fromArray($response)');
   });
 

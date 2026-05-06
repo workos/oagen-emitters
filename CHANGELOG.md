@@ -1,5 +1,99 @@
 # Changelog
 
+## [0.9.1](https://github.com/workos/oagen-emitters/compare/v0.9.0...v0.9.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* oagen bump ([1ab0a55](https://github.com/workos/oagen-emitters/commit/1ab0a551ca567b09dec22cd3f75adda33d2cb550))
+
+## [0.9.0](https://github.com/workos/oagen-emitters/compare/v0.8.2...v0.9.0) (2026-05-06)
+
+
+### Features
+
+* **kotlin:** improve emitter output for SDK review feedback ([#90](https://github.com/workos/oagen-emitters/issues/90)) ([14180eb](https://github.com/workos/oagen-emitters/commit/14180eb7919a89a9b08406bc6bc06a35df887e65))
+
+
+### Bug Fixes
+
+* **kotlin:** make ktlintFormat actually run after generation ([#88](https://github.com/workos/oagen-emitters/issues/88)) ([6082a45](https://github.com/workos/oagen-emitters/commit/6082a45ab2b247bbf4630cd0acc6dba5238f5d26))
+
+## [0.8.2](https://github.com/workos/oagen-emitters/compare/v0.8.1...v0.8.2) (2026-05-05)
+
+
+### Bug Fixes
+
+* **kotlin:** improve emitter output quality ([#86](https://github.com/workos/oagen-emitters/issues/86)) ([6dd9b2a](https://github.com/workos/oagen-emitters/commit/6dd9b2ad6904ebb088cba65801d4987a2af61482))
+
+## [0.8.1](https://github.com/workos/oagen-emitters/compare/v0.8.0...v0.8.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **emitters:** repair regressions surfaced by shared-schema spec rev ([#84](https://github.com/workos/oagen-emitters/issues/84)) ([a04d317](https://github.com/workos/oagen-emitters/commit/a04d3170707adea21f19632f2a149b735be91d50))
+
+## [0.8.0](https://github.com/workos/oagen-emitters/compare/v0.7.5...v0.8.0) (2026-05-05)
+
+
+### Features
+
+* **emitters:** dispatch field-level discriminated unions and drop dead request bodies ([#81](https://github.com/workos/oagen-emitters/issues/81)) ([4d38d24](https://github.com/workos/oagen-emitters/commit/4d38d249dcc7079e2a61d8faeabb681d6798618f))
+
+
+### Bug Fixes
+
+* **go:** stop SSO auth code leaking into request URL ([#83](https://github.com/workos/oagen-emitters/issues/83)) ([bc520e6](https://github.com/workos/oagen-emitters/commit/bc520e6a3d966abdf785262e5c49736b5e105b92))
+
+## [0.7.5](https://github.com/workos/oagen-emitters/compare/v0.7.4...v0.7.5) (2026-05-03)
+
+
+### Bug Fixes
+
+* bump deps ([#79](https://github.com/workos/oagen-emitters/issues/79)) ([00ddbf7](https://github.com/workos/oagen-emitters/commit/00ddbf70e94323370b0915da0f877f332f82d146))
+
+## [0.7.4](https://github.com/workos/oagen-emitters/compare/v0.7.3...v0.7.4) (2026-05-02)
+
+
+### Bug Fixes
+
+* update dep ([e6145b6](https://github.com/workos/oagen-emitters/commit/e6145b694b9cacaa086234ba97b48c6e4108c084))
+
+## [0.7.3](https://github.com/workos/oagen-emitters/compare/v0.7.2...v0.7.3) (2026-05-02)
+
+
+### Bug Fixes
+
+* url-encode path parameters in php/node/python/kotlin emitters ([#75](https://github.com/workos/oagen-emitters/issues/75)) ([34c08fc](https://github.com/workos/oagen-emitters/commit/34c08fc10510db53f1f989edab5b4d0cead15aa9))
+
+## [0.7.2](https://github.com/workos/oagen-emitters/compare/v0.7.1...v0.7.2) (2026-05-01)
+
+
+### Bug Fixes
+
+* **php:** wrap degenerate-union models in fromArray/toArray ([#72](https://github.com/workos/oagen-emitters/issues/72)) ([053d34a](https://github.com/workos/oagen-emitters/commit/053d34adcbbecbed6793c54c4fd48a03aef97f21))
+
+## [0.7.1](https://github.com/workos/oagen-emitters/compare/v0.7.0...v0.7.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **python:** use explicit re-export form in service __init__.py ([#70](https://github.com/workos/oagen-emitters/issues/70)) ([5fcbb83](https://github.com/workos/oagen-emitters/commit/5fcbb83cc2c87278df2b6f055ccdcaa6efb97ad4))
+
+## [0.7.0](https://github.com/workos/oagen-emitters/compare/v0.6.8...v0.7.0) (2026-04-30)
+
+
+### Features
+
+* thread modelHints through assignModelsToServices call sites ([#68](https://github.com/workos/oagen-emitters/issues/68)) ([1ad5acd](https://github.com/workos/oagen-emitters/commit/1ad5acdda7eeb6a0f24bdd26c6144a76e82157f2))
+
+## [0.6.8](https://github.com/workos/oagen-emitters/compare/v0.6.7...v0.6.8) (2026-04-30)
+
+
+### Bug Fixes
+
+* **ruby:** emit typed variant classes for parameter groups ([#66](https://github.com/workos/oagen-emitters/issues/66)) ([7699417](https://github.com/workos/oagen-emitters/commit/7699417e27da719487bdaf3c74bee0a759c77705))
+
 ## [0.6.7](https://github.com/workos/oagen-emitters/compare/v0.6.6...v0.6.7) (2026-04-28)
 
 

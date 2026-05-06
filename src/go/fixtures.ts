@@ -46,7 +46,12 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
     });
   }
 
-  // Generate list fixtures for paginated responses
+  // Generate list fixtures for paginated responses. Multiple operations may
+  // share the same item model (e.g. several role-assignment list endpoints all
+  // returning UserRoleAssignmentList) — emit each fixture path once so the
+  // content-dedup pass below doesn't see N copies of the same path and drop
+  // the file entirely.
+  const seenListPaths = new Set<string>();
   for (const service of spec.services) {
     for (const op of service.operations) {
       if (op.pagination) {
@@ -55,6 +60,9 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
           const unwrapped = unwrapListModel(itemModel, modelMap);
           if (unwrapped) itemModel = unwrapped;
           if (itemModel.fields.length === 0) continue;
+          const path = `testdata/list_${fileName(itemModel.name)}.json`;
+          if (seenListPaths.has(path)) continue;
+          seenListPaths.add(path);
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],
@@ -64,7 +72,7 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
             },
           };
           files.push({
-            path: `testdata/list_${fileName(itemModel.name)}.json`,
+            path,
             content: JSON.stringify(listFixture, null, 2),
           });
         }

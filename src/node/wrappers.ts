@@ -3,6 +3,7 @@ import { toCamelCase } from '@workos/oagen';
 import { fieldName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import { mapTypeRef } from './type-map.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
+import { buildNodePathExpression } from './path-expression.js';
 
 /**
  * Generate TypeScript wrapper method lines for union split operations.
@@ -139,8 +140,7 @@ function emitWrapperMethod(
 }
 
 function buildPathStr(op: { path: string; pathParams: Array<{ name: string }> }): string {
-  const interpolated = op.path.replace(/\{(\w+)\}/g, (_, p) => `\${${fieldName(p)}}`);
-  return interpolated.includes('${') ? `\`${interpolated}\`` : `'${op.path}'`;
+  return buildNodePathExpression(op.path);
 }
 
 function tsLiteral(value: string | number | boolean): string {

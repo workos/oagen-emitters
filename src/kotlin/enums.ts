@@ -143,15 +143,26 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
       members.push(`  ${memberName}(${ktStringLiteral(wire)})`);
     }
 
+    // Track whether we are currently in a doc block leading up to the next
+    // enum value declaration. When the upcoming case has KDoc, insert a blank
+    // line before the doc comment for visual separation (skip for the very
+    // first case so we don't open the block with a blank).
+    let firstValueEmitted = false;
     for (let i = 0; i < members.length; i++) {
       const isLast = i === members.length - 1;
       const line = members[i];
       const trimmedStart = line.trimStart();
-      if (trimmedStart.startsWith('/**') || trimmedStart.startsWith('@')) {
+      const isDocStart = trimmedStart.startsWith('/**');
+      const isAnnotation = trimmedStart.startsWith('@');
+      if (isDocStart && firstValueEmitted) {
+        lines.push('');
+      }
+      if (isDocStart || isAnnotation) {
         lines.push(line);
         continue;
       }
       lines.push(isLast ? line : `${line},`);
+      firstValueEmitted = true;
     }
 
     lines.push('}');

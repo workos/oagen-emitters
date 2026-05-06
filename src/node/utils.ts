@@ -203,7 +203,7 @@ export function createServiceDirResolver(
   serviceNameMap: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
 } {
-  const modelToService = assignModelsToServices(models, services);
+  const modelToService = assignModelsToServices(models, services, ctx.modelHints);
   const serviceNameMap = buildServiceNameMap(services, ctx);
 
   // Per-name → directory override, harvested from the live SDK surface.

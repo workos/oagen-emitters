@@ -95,10 +95,17 @@ function joinUnionVariants(ref: UnionType, variants: string[]): string {
     return variants[0] ?? 'Any';
   }
   const unique = [...new Set(variants)];
-  if (unique.length === 1) return unique[0];
 
+  // Register discriminated unions BEFORE the single-unique collapse so we
+  // don't lose the dispatcher when every variant aliases to the same canonical
+  // type. The base type used at the call site is the IR variant name, which
+  // matches how the dispatcher infrastructure looks up registered unions.
   if (ref.discriminator && ref.discriminator.mapping) {
-    const baseName = unique[0];
+    const irVariantNames = ref.variants
+      .filter((v) => v.kind === 'model')
+      .map((v) => (v.kind === 'model' ? v.name : ''))
+      .filter(Boolean);
+    const baseName = irVariantNames[0] ?? unique[0];
     discriminatedUnions.set(baseName, {
       property: ref.discriminator.property,
       mapping: ref.discriminator.mapping,
@@ -107,6 +114,8 @@ function joinUnionVariants(ref: UnionType, variants: string[]): string {
     // Use the base sealed type; Jackson @JsonTypeInfo handles variant selection.
     return baseName;
   }
+
+  if (unique.length === 1) return unique[0];
 
   // Non-discriminated unions fall back to the Kotlin top type. A generic
   // AnyOf<> is planned for a future phase if emitter tests prove it necessary.

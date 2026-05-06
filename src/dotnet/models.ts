@@ -1,4 +1,5 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef } from '@workos/oagen';
+import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
+import { walkTypeRef } from '@workos/oagen';
 import {
   mapTypeRef,
   isValueTypeRef,
@@ -6,6 +7,7 @@ import {
   emitJsonPropertyAttributes,
   setModelAliases,
   isModelAlias,
+  resolveModelName,
 } from './type-map.js';
 import {
   articleFor,
@@ -56,7 +58,22 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   const files: GeneratedFile[] = [];
 
   // Compute and publish model aliases so mapTypeRef rewrites references.
+  // Must run BEFORE collectRequestBodyOnlyModelNames so the body/non-body
+  // tally collapses aliased pairs onto their canonical name — otherwise a
+  // model that's only a request body in name (e.g. `AddRolePermissionDto`)
+  // but is the canonical for a field-referenced alias (e.g. `SlimRole`)
+  // would be wrongly classified as body-only and skipped from emission,
+  // leaving every alias-rewritten field reference dangling.
   primeModelAliases(models);
+
+  // Models that are referenced ONLY as an operation request body (not by any
+  // response, field, or other operation type) are dead surface in .NET because
+  // the wrapper generator emits a per-operation `*Options` class containing
+  // the same fields. The method signature consumes the Options class — the
+  // named entity is never instantiated by callers and just clutters the SDK
+  // (see workos-dotnet#248 with `CreateUserApiKey` /
+  // `UserManagementCreateApiKeyOptions`). Skip emission for those.
+  const requestBodyOnlyNames = collectRequestBodyOnlyModelNames(ctx.spec.services, models);
 
   // Build a lookup of base model field C# names → C# types for inheritance.
   // Variant models skip inherited fields and use `new` for type-divergent ones.
@@ -75,6 +92,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
 
   for (const model of models) {
     if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (requestBodyOnlyNames.has(model.name)) continue;
 
     const csClassName = modelClassName(model.name);
 
@@ -217,6 +235,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
 
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
       lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
+      // Discriminated-union-typed field: attach the variant-dispatching converter
+      // so Newtonsoft picks the right subtype on deserialization. The converter
+      // name is keyed off the first IR variant model name (matches how
+      // `joinUnionVariants` registered it in `discriminatedUnions`).
+      const discriminatedUnionConverter = discriminatedUnionConverterName(field.type);
+      if (discriminatedUnionConverter) {
+        lines.push(`        [Newtonsoft.Json.JsonConverter(typeof(${discriminatedUnionConverter}))]`);
+      }
       const newMod = useNewModifier ? 'new ' : '';
       lines.push(`        public ${newMod}${csType} ${csFieldName} { get; ${setterModifier}set; }${initializer}`);
 
@@ -287,6 +313,24 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   }
 
   return files;
+}
+
+/**
+ * Compute the name of the discriminator converter class for a field whose
+ * type is a discriminated union, mirroring the keying used in
+ * `joinUnionVariants` (first IR model variant name + "DiscriminatorConverter").
+ * Returns null when the type isn't a discriminated union with a populated
+ * mapping. Also walks through `nullable` so an optional discriminated field
+ * still gets the converter applied.
+ */
+function discriminatedUnionConverterName(ref: TypeRef): string | null {
+  const inner = ref.kind === 'nullable' ? ref.inner : ref;
+  if (inner.kind !== 'union') return null;
+  if (!inner.discriminator || !inner.discriminator.mapping) return null;
+  if (Object.keys(inner.discriminator.mapping).length === 0) return null;
+  const firstModel = inner.variants.find((v) => v.kind === 'model');
+  if (!firstModel || firstModel.kind !== 'model') return null;
+  return `${modelClassName(firstModel.name)}DiscriminatorConverter`;
 }
 
 /**
@@ -402,4 +446,60 @@ function structuralHash(model: Model, aliasOf: Map<string, string> = new Map()):
     .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type, aliasOf))}:${f.required}`)
     .sort()
     .join('|');
+}
+
+/**
+ * Names of models referenced **only** as a named operation request body —
+ * i.e. never appearing in a response, an error, a paginated item type, or as
+ * a field type on another model. The .NET wrapper generator emits a
+ * per-operation `*Options` class containing the same fields, so the named
+ * entity is never instantiated by callers and just clutters the SDK
+ * (workos-dotnet#248: `CreateUserApiKey` vs `UserManagementCreateApiKeyOptions`).
+ */
+function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]): Set<string> {
+  const requestBodyNames = new Set<string>();
+  const otherReferences = new Set<string>();
+
+  // Resolve every reference through the alias map so structurally-identical
+  // models share a body/non-body classification. Without this, an alias being
+  // used as a field would only mark the alias name as non-body — leaving its
+  // canonical (which carries the same shape and gets emitted) wrongly tagged
+  // as body-only and skipped.
+  const collect = (ref: TypeRef | undefined, into: Set<string>): void => {
+    if (!ref) return;
+    walkTypeRef(ref, {
+      model: (r) => into.add(resolveModelName(r.name)),
+    });
+  };
+
+  for (const service of services) {
+    for (const op of service.operations) {
+      if (op.requestBody?.kind === 'model') {
+        requestBodyNames.add(resolveModelName(op.requestBody.name));
+      }
+      collect(op.response, otherReferences);
+      if (op.pagination) collect(op.pagination.itemType, otherReferences);
+      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+        collect(p.type, otherReferences);
+      }
+      if (op.successResponses) {
+        for (const sr of op.successResponses) collect(sr.type, otherReferences);
+      }
+      for (const err of op.errors) {
+        if (err.type) collect(err.type, otherReferences);
+      }
+    }
+  }
+
+  for (const model of models) {
+    for (const field of model.fields) {
+      collect(field.type, otherReferences);
+    }
+  }
+
+  const result = new Set<string>();
+  for (const name of requestBodyNames) {
+    if (!otherReferences.has(name)) result.add(name);
+  }
+  return result;
 }

@@ -220,9 +220,45 @@ describe('go/resources', () => {
     const files = generateResources(services, makeCtx(spec));
     const content = files[0].content;
     expect(content).toContain('type UsersCreateParams struct {');
-    expect(content).toContain('Email string `json:"email"`');
+    expect(content).toContain('Email string `json:"email" url:"-"`');
     expect(content).toContain('Notify *bool `url:"notify,omitempty" json:"-"`');
     expect(content).toContain('request(ctx, "POST", "/users", params, params, &result, opts)');
+  });
+
+  it('does not emit url tag for body fields shadowed by a same-named query param', () => {
+    // Spec quirk: an operation lists the same field name in both `parameters`
+    // (in: query) and `requestBody`. The body field must not also leak into
+    // the URL query string (e.g. /sso/token's `code` carries an auth code).
+    const services: Service[] = [
+      {
+        name: 'Sso',
+        operations: [
+          makeOp({
+            name: 'getProfileAndToken',
+            httpMethod: 'post',
+            path: '/sso/token',
+            requestBody: { kind: 'model', name: 'TokenQueryDto' },
+            queryParams: [
+              {
+                name: 'code',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'TokenQueryDto',
+        fields: [{ name: 'code', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ]);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+    expect(content).toContain('Code string `json:"code" url:"-"`');
+    expect(content).not.toContain('json:"code" url:"code"');
   });
 
   it('emits Deprecated comment for deprecated body field in params struct', () => {

@@ -14,6 +14,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
+import { buildPhpPathExpression } from './path-expression.js';
 
 /**
  * Resolve the resource class name for a service (used by client.ts).
@@ -734,19 +735,11 @@ function buildBodyParamMap(op: Operation, bodyModel: Model | null): Map<string, 
 }
 
 function buildPathString(op: Operation): string {
-  let path = op.path.startsWith('/') ? op.path.slice(1) : op.path;
-  if (op.pathParams.length === 0) {
-    return `'${path}'`;
-  }
-  // Build a map of param name → PHP expression (with ->value for enum types)
-  const paramExprs = new Map<string, string>();
+  const valueAccessor = new Set<string>();
   for (const p of op.pathParams) {
-    const phpName = fieldName(p.name);
-    const isEnum = p.type.kind === 'enum' || p.type.kind === 'model';
-    paramExprs.set(p.name, isEnum ? `{$${phpName}->value}` : `{$${phpName}}`);
+    if (p.type.kind === 'enum' || p.type.kind === 'model') valueAccessor.add(p.name);
   }
-  path = path.replace(/\{([^}]+)\}/g, (_match, param) => paramExprs.get(param) ?? `{$${fieldName(param)}}`);
-  return `"${path}"`;
+  return buildPhpPathExpression(op.path, { valueAccessorParams: valueAccessor });
 }
 
 function isEnumType(ref: import('@workos/oagen').TypeRef): boolean {

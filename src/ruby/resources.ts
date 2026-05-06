@@ -1,6 +1,14 @@
 import type { Service, EmitterContext, GeneratedFile, Operation, TypeRef, Parameter, Model } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { className, fieldName, fileName, methodName, safeParamName, resolveMethodName } from './naming.js';
+import {
+  className,
+  fieldName,
+  fileName,
+  methodName,
+  safeParamName,
+  resolveMethodName,
+  scopedGroupVariantClassName,
+} from './naming.js';
 import { mapTypeRefForYard } from './type-map.js';
 import {
   buildResolvedLookup,
@@ -13,6 +21,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel } from '../shared/model-utils.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
+import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantClass } from './parameter-groups.js';
 
 /**
  * Generate Ruby resource (service) classes from IR services.
@@ -34,6 +43,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   for (const m of ctx.spec.models as Model[]) {
     if (isListWrapperModel(m)) listWrapperModels.set(m.name, m);
   }
+
+  // Resolve groupName -> owner mountTarget once per generation pass; every
+  // dispatcher and YARD `@param` reference resolves variant classes through
+  // this map so cross-resource references stay consistent.
+  const groupOwners = buildGroupOwnerMap(ctx);
 
   for (const [mountTarget, group] of groups) {
     const cls = className(mountTarget);
@@ -88,6 +102,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         modelByName,
         listWrapperModels,
         requires,
+        groupOwners,
       });
       methodBodies.push(body);
 
@@ -121,6 +136,18 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     }
     lines.push('module WorkOS');
     lines.push(`  class ${cls}`);
+
+    // Inline parameter-group variant classes owned by this mount target.
+    // Zeitwerk's `loader.collapse` flattens `lib/workos/<service>/` so files
+    // there can't define `WorkOS::<Service>::*` constants — variants must
+    // live inside the service's own file. Matches Python's per-resource
+    // dataclass layout.
+    const variants = collectVariantsForMountTarget(ctx, ctx.spec.models as Model[], mountTarget);
+    for (const v of variants) {
+      for (const line of emitInlineVariantClass(v)) lines.push(line);
+      lines.push('');
+    }
+
     lines.push('    def initialize(client)');
     lines.push('      @client = client');
     lines.push('    end');
@@ -154,6 +181,7 @@ function emitMethod(args: {
   modelByName: Map<string, Model>;
   listWrapperModels: Map<string, Model>;
   requires: Set<string>;
+  groupOwners: Map<string, string>;
 }): string {
   const {
     op,
@@ -166,8 +194,18 @@ function emitMethod(args: {
     modelByName,
     listWrapperModels,
     requires,
+    groupOwners,
   } = args;
   void enumNames;
+
+  /** Fully-qualified Ruby constant for a variant (e.g. WorkOS::UserManagement::PasswordPlaintext). */
+  const variantClassRef = (group: { name: string }, variantName: string): string => {
+    const owner = groupOwners.get(group.name);
+    if (!owner) {
+      throw new Error(`No owner mount target found for parameter group '${group.name}'`);
+    }
+    return scopedGroupVariantClassName(owner, group.name, variantName);
+  };
 
   const plan = planOperation(op);
   const lines: string[] = [];
@@ -177,8 +215,11 @@ function emitMethod(args: {
   const groupedParamNames = collectGroupedParamNames(op);
   const queryParams = (op.queryParams ?? []).filter((q) => !groupedParamNames.has(q.name));
 
-  // Request body params: if body is a model, expand its fields.
-  const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName);
+  // Request body params: if body is a model, expand its fields. Drop any field
+  // whose name is also a parameter-group name — those are dispatched by the
+  // group kwarg below, so emitting them as flat kwargs would shadow the group
+  // and cause `String#[Symbol]` TypeErrors when the dispatcher reads `:type`.
+  const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName).filter((f) => !groupedParamNames.has(f.name));
 
   // Detect path/body name collisions and build a rename map for body fields.
   // When a body field's snake_case name matches a path param, prefix with "body_"
@@ -269,7 +310,16 @@ function emitMethod(args: {
   sigParts.push('request_options: {}');
 
   // YARD docs.
-  const doc = buildYardDoc(op, pathParams, queryParams, bodyFields, hiddenParams, bodyFieldRenames, listWrapperModels);
+  const doc = buildYardDoc(
+    op,
+    pathParams,
+    queryParams,
+    bodyFields,
+    hiddenParams,
+    bodyFieldRenames,
+    listWrapperModels,
+    variantClassRef,
+  );
   for (const line of doc) lines.push(`    ${line}`);
 
   // Signature.
@@ -309,30 +359,41 @@ function emitMethod(args: {
   const groupsGoToQuery = hasGroups && !hasBodyMethod;
   const hasQuery = qEntries.length > 0 || groupsGoToQuery;
   if (hasQuery) {
+    // Skip `.compact` when no entry can be nil — required kwargs are always
+    // passed (Ruby raises ArgumentError otherwise), so the literal has no nil
+    // values to drop. Group dispatch happens after the literal is built and
+    // doesn't contribute potentially-nil entries either.
+    const queryHasNilable = qEntries.some((q) => !q.required);
+    const queryCompact = queryHasNilable ? '.compact' : '';
     lines.push('      params = {');
     for (let i = 0; i < qEntries.length; i++) {
       const q = qEntries[i];
       const sep = i === qEntries.length - 1 && !groupsGoToQuery ? '' : ',';
       lines.push(`        ${rubyStringLit(q.name)} => ${safeParamName(q.name)}${sep}`);
     }
-    lines.push('      }.compact');
+    lines.push(`      }${queryCompact}`);
 
     if (groupsGoToQuery) {
-      // Parameter group dispatch: merge grouped params into the query hash
+      // Parameter group dispatch: callers pass a typed variant class instance
+      // (e.g. `WorkOS::ParentResourceById`); we pattern-match on its class
+      // and forward its readers into the query hash.
       for (const group of op.parameterGroups ?? []) {
         const prop = fieldName(group.name);
         if (group.optional) {
           lines.push(`      if ${prop}`);
-          lines.push(`        case ${prop}[:type]`);
+          lines.push(`        case ${prop}`);
         } else {
-          lines.push(`      case ${prop}[:type]`);
+          lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          const variantClass = variantClassRef(group, variant.name);
+          lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
+        lines.push(`      else`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop, variantClassRef)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -341,8 +402,12 @@ function emitMethod(args: {
     }
   }
 
-  // Request body
-  const hasBody = bodyFields.length > 0 && !['get', 'head'].includes(method_http);
+  // Request body. Emit when there are non-group body fields OR a parameter
+  // group dispatches into the body — the latter case matters when an
+  // operation's body is exclusively managed by a group (e.g.
+  // update_organization_membership's `role`), where filtering the group's
+  // leaves leaves bodyFields empty but the request still needs a payload.
+  const hasBody = (bodyFields.length > 0 && !['get', 'head'].includes(method_http)) || (hasGroups && hasBodyMethod);
 
   if (hasBody) {
     const bodyEntries: string[] = [];
@@ -355,35 +420,44 @@ function emitMethod(args: {
       const optKey = fc === 'client_secret' ? 'api_key' : fc;
       bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || @client.${clientProp})`);
     }
+    // Track whether any literal entry can be nil — defaults/inferFromClient
+    // resolve to non-nil values, so only optional body kwargs are nilable.
+    let bodyHasNilable = false;
     for (const f of bodyFields) {
       if (hiddenParams.has(f.name)) continue;
       bodyEntries.push(`${rubyStringLit(f.name)} => ${bodyKwargName(f.name)}`);
+      if (!f.required) bodyHasNilable = true;
     }
+    const bodyCompact = bodyHasNilable ? '.compact' : '';
     lines.push('      body = {');
     for (let i = 0; i < bodyEntries.length; i++) {
       const sep = i === bodyEntries.length - 1 ? '' : ',';
       lines.push(`        ${bodyEntries[i]}${sep}`);
     }
-    lines.push('      }.compact');
+    lines.push(`      }${bodyCompact}`);
 
     // Parameter group dispatch into body for POST/PUT/PATCH so sensitive
     // fields (passwords, role slugs) never leak into the URL query string.
     // DELETE groups are already handled via query above (groupsGoToQuery).
+    // Callers pass a typed variant class instance and we pattern-match on it.
     if (hasGroups && hasBodyMethod) {
       for (const group of op.parameterGroups ?? []) {
         const prop = fieldName(group.name);
         if (group.optional) {
           lines.push(`      if ${prop}`);
-          lines.push(`        case ${prop}[:type]`);
+          lines.push(`        case ${prop}`);
         } else {
-          lines.push(`      case ${prop}[:type]`);
+          lines.push(`      case ${prop}`);
         }
         for (const variant of group.variants) {
-          lines.push(`      when ${rubyStringLit(variant.name)}`);
+          const variantClass = variantClassRef(group, variant.name);
+          lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}[:${fieldName(p.name)}]`);
+            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
           }
         }
+        lines.push(`      else`);
+        lines.push(`        raise ArgumentError, ${dispatchErrorLiteral(group, prop, variantClassRef)}`);
         lines.push('      end');
         if (group.optional) {
           lines.push('      end');
@@ -719,8 +793,9 @@ function buildYardDoc(
   queryParams: Parameter[],
   bodyFields: { name: string; required: boolean; type: TypeRef; description?: string; deprecated?: boolean }[],
   hiddenParams: Set<string>,
-  bodyFieldRenames?: Map<string, string>,
-  listWrapperModels?: Map<string, Model>,
+  bodyFieldRenames: Map<string, string> | undefined,
+  listWrapperModels: Map<string, Model> | undefined,
+  variantClassRef: (group: { name: string }, variantName: string) => string,
 ): string[] {
   const lines: string[] = [];
   const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -764,6 +839,16 @@ function buildYardDoc(
     const deprecatedPrefix = q.deprecated ? '(deprecated) ' : '';
     lines.push(`# @param ${n} [${type}${suffix}] ${deprecatedPrefix}${oneLine(q.description)}`.trim());
   }
+  // Parameter group kwargs: the type bracket lists the variant classes the
+  // caller may pass; no extra prose needed since YARD already renders them.
+  for (const group of op.parameterGroups ?? []) {
+    const n = fieldName(group.name);
+    if (emittedParamNames.has(n)) continue;
+    emittedParamNames.add(n);
+    const variantTypes = group.variants.map((v) => variantClassRef(group, v.name)).join(', ');
+    const suffix = group.optional ? ', nil' : '';
+    lines.push(`# @param ${n} [${variantTypes}${suffix}] Identifies the ${group.name.replace(/_/g, ' ')}.`);
+  }
   lines.push(`# @param request_options [Hash] (see WorkOS::Types::RequestOptions)`);
 
   // Return type: void for unknown-primitive, ListStruct for list wrappers and
@@ -796,4 +881,18 @@ void methodName;
 /** Render a Ruby single-quoted string literal, escaping embedded quotes and backslashes. */
 function rubyStringLit(s: string): string {
   return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * Build a Ruby double-quoted string expression for the `else raise ArgumentError`
+ * arm of a parameter-group dispatcher. Lists the expected variant classes and
+ * interpolates the actual class of the value the caller passed.
+ */
+function dispatchErrorLiteral(
+  group: { name: string; variants: { name: string }[] },
+  prop: string,
+  variantClassRef: (group: { name: string }, variantName: string) => string,
+): string {
+  const expected = group.variants.map((v) => variantClassRef(group, v.name)).join(', ');
+  return `"expected ${prop} to be one of: ${expected}, got #{${prop}.class}"`;
 }

@@ -1,16 +1,36 @@
-import type { Operation, Service, EmitterContext } from '@workos/oagen';
+import type { Operation, Service, EmitterContext, TypeRef } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix } from '../shared/naming-utils.js';
 
+/**
+ * Acronyms that should appear fully uppercase in PascalCase identifiers.
+ * `toPascalCase` would otherwise titlecase them (e.g. `Sso`, `Pkce`, `Mfa`).
+ * Both [className] and [apiClassName] consult this list so model and service
+ * class names stay consistent (e.g. `SsoConnection` -> `SSOConnection`).
+ */
+const PASCAL_ACRONYMS = ['SSO', 'PKCE', 'MFA'];
+
+function uppercaseAcronyms(pascal: string): string {
+  let result = pascal;
+  for (const acronym of PASCAL_ACRONYMS) {
+    // Match the titlecased form (e.g. `Sso`) at any position where it stands
+    // as a complete word (followed by an uppercase letter, digit, or end).
+    const titled = acronym.charAt(0) + acronym.slice(1).toLowerCase();
+    const re = new RegExp(`${titled}(?=[A-Z0-9]|$)`, 'g');
+    result = result.replace(re, acronym);
+  }
+  return result;
+}
+
 /** PascalCase class/type name. */
 export function className(name: string): string {
-  return toPascalCase(stripUrnPrefix(name));
+  return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
 }
 
 /** PascalCase file name (matches the primary class). */
 export function fileName(name: string): string {
-  return toPascalCase(stripUrnPrefix(name));
+  return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
 }
 
 /** snake_case file name for fixtures/test data. */
@@ -50,7 +70,6 @@ export function packageSegment(name: string): string {
 
 /** Kotlin service class name for a mount group (e.g., `Organizations`). */
 export function apiClassName(name: string): string {
-  if (className(name) === 'SSO') return 'Sso';
   return className(name);
 }
 
@@ -226,4 +245,39 @@ export function humanize(name: string): string {
     .replace(/_/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase();
+}
+
+/**
+ * If the parameter is typed as an enum and its description is long enough
+ * that repeating it across every method's KDoc adds noise, return a short
+ * description that defers to the enum's own KDoc with a `See [EnumName].`
+ * reference. Otherwise return null and the caller keeps the spec text.
+ *
+ * Currently only `PaginationOrder` is shortened — the SSO/MFA/etc. enums
+ * have brief descriptions already. Generalize when other long-description
+ * enums appear in the spec.
+ */
+const LONG_ENUM_DESC_THRESHOLD = 120;
+
+export function maybeShortenEnumParamDescription(
+  type: TypeRef | undefined,
+  description: string | undefined,
+): { description: string; enumRef: string } | null {
+  if (!type || !description) return null;
+  const enumName = extractEnumName(type);
+  if (!enumName) return null;
+  if (description.length <= LONG_ENUM_DESC_THRESHOLD) return null;
+  // Only special-case PaginationOrder for now; other enums keep their
+  // descriptions verbatim so we don't over-trim until a pattern emerges.
+  if (className(enumName) !== 'PaginationOrder') return null;
+  return {
+    description: `the order to return records in. See [${className(enumName)}].`,
+    enumRef: className(enumName),
+  };
+}
+
+function extractEnumName(type: TypeRef): string | null {
+  if (type.kind === 'enum') return type.name;
+  if (type.kind === 'nullable') return extractEnumName(type.inner);
+  return null;
 }
