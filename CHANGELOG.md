@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/workos/oagen-emitters/compare/v0.10.0...v0.11.0) (2026-05-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* code that previously caught a TypeError from a typed property assignment, or that read $data passthrough from an unmatched union variant, will instead need to handle \UnexpectedValueException at the fromArray() call site. Every generated PHP SDK with a discriminated union model is affected.
+
+### Bug Fixes
+
+* surface schema/SDK drift across PHP, Python, Go, Ruby emitters ([#94](https://github.com/workos/oagen-emitters/issues/94)) ([558c55c](https://github.com/workos/oagen-emitters/commit/558c55cc851e16f27a6a2e7eb577442557827be7))
+
+
+### Miscellaneous Chores
+
+* release as 0.11.0 ([a448006](https://github.com/workos/oagen-emitters/commit/a448006a0a20674bd91971de1f4b56e81ffcb76d))
+
 ## [0.10.0](https://github.com/workos/oagen-emitters/compare/v0.9.1...v0.10.0) (2026-05-06)
 
 
