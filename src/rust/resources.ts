@@ -97,8 +97,18 @@ function renderMountGroup(
     if (seenMethods.has(m)) continue;
     seenMethods.add(m);
     const paramsType = `${typeName(resolved.methodName)}Params`;
-    paramsStructs.push(renderParamsStruct(paramsType, op, resolved, registry));
-    methods.push(renderMethod(op, resolved, paramsType, m));
+    const emptyParams = isEmptyParams(op, resolved);
+    if (!emptyParams) {
+      paramsStructs.push(renderParamsStruct(paramsType, op, resolved, registry));
+    }
+    methods.push(renderMethod(op, resolved, paramsType, m, emptyParams));
+
+    // For paginated list endpoints, also emit `<method>_auto_paging` returning
+    // `impl Stream<Item = Result<T, Error>>`. Detected by:
+    //   - response is a model with both `data: Vec<T>` and `list_metadata`
+    //   - the params struct has an `after` cursor field
+    const autoPaging = renderAutoPagingMethod(op, resolved, paramsType, m, ctx);
+    if (autoPaging) methods.push(autoPaging);
   }
 
   for (const s of paramsStructs) {
@@ -119,8 +129,9 @@ function renderMountGroup(
 function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOperation, registry: UnionRegistry): string {
   const bodyRequired = isBodyRequired(op);
   const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
-  const derives = bodyRequired ? 'Debug, Clone, Serialize' : 'Debug, Clone, Default, Serialize';
 
+  type FieldInfo = { fname: string; rust: string; required: boolean; doc?: string };
+  const fields: FieldInfo[] = [];
   const fieldLines: string[] = [];
   const seen = new Set<string>();
   const emitField = (p: Parameter) => {
@@ -130,6 +141,15 @@ function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOpera
     seen.add(fname);
     let rust = mapTypeRef(p.type, { hint: `${name}${typeName(p.name)}`, registry });
     if (!p.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
+    // Field-level documentation derived from the spec.
+    const desc = p.description?.trim();
+    if (desc) {
+      for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);
+    }
+    if (p.required && !rust.startsWith('Option<')) {
+      if (desc) fieldLines.push('    ///');
+      fieldLines.push('    /// Required.');
+    }
     if (rust.startsWith('Option<')) {
       fieldLines.push('    #[serde(skip_serializing_if = "Option::is_none")]');
     }
@@ -138,6 +158,7 @@ function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOpera
     }
     if (p.deprecated) fieldLines.push('    #[deprecated]');
     fieldLines.push(`    pub ${fname}: ${rust},`);
+    fields.push({ fname, rust, required: !!p.required && !rust.startsWith('Option<') });
   };
 
   for (const p of op.queryParams) emitField(p);
@@ -148,36 +169,117 @@ function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOpera
     if (!bodyRequired && !bodyType.startsWith('Option<')) {
       bodyType = makeOptional(bodyType);
     }
+    fieldLines.push('    /// Request body sent with this call.');
+    if (bodyRequired) fieldLines.push('    ///');
+    if (bodyRequired) fieldLines.push('    /// Required.');
     fieldLines.push('    #[serde(skip)]');
     fieldLines.push(`    pub body: ${bodyType},`);
+    fields.push({ fname: 'body', rust: bodyType, required: bodyRequired });
   }
 
+  // Default-derive only when every field is optional (so Default can't
+  // construct a "valid" value with empty strings for required fields).
+  const requiredFields = fields.filter((f) => f.required);
+  const allOptional = fields.length === 0 || requiredFields.length === 0;
+  const derives = allOptional ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
+
+  const out: string[] = [];
   if (fieldLines.length === 0) {
-    return [`#[derive(${derives})]`, `pub struct ${name} {}`].join('\n');
+    out.push(`#[derive(${derives})]`, `pub struct ${name} {}`);
+  } else {
+    out.push(`#[derive(${derives})]`, `pub struct ${name} {`, ...fieldLines, '}');
   }
 
-  return [`#[derive(${derives})]`, `pub struct ${name} {`, ...fieldLines, '}'].join('\n');
+  // Generate `new(...)` constructor when there is at least one required field
+  // but at least one optional field — gives callers a clear ergonomic entry
+  // point without forcing them to spell out optional fields.
+  if (requiredFields.length > 0) {
+    const ctorArgs = requiredFields.map((f) => `${f.fname}: ${ctorParamType(f.rust)}`).join(', ');
+    const initLines: string[] = [];
+    for (const f of fields) {
+      if (f.required) {
+        const value = ctorParamConvert(f.rust, f.fname);
+        // Use field-init shorthand when the parameter and field names match.
+        initLines.push(value === f.fname ? `            ${f.fname},` : `            ${f.fname}: ${value},`);
+      } else {
+        initLines.push(`            ${f.fname}: Default::default(),`);
+      }
+    }
+    out.push('');
+    out.push(`impl ${name} {`);
+    out.push(`    /// Construct a new \`${name}\` with the required fields set.`);
+    out.push('    #[allow(deprecated)]');
+    out.push(`    pub fn new(${ctorArgs}) -> Self {`);
+    out.push('        Self {');
+    out.push(...initLines);
+    out.push('        }');
+    out.push('    }');
+    out.push('}');
+  }
+
+  return out.join('\n');
 }
 
-function renderMethod(op: Operation, resolved: ResolvedOperation, paramsType: string, method: string): string {
+/** Constructor parameter type — accept `impl Into<String>` for ergonomic strings. */
+function ctorParamType(rust: string): string {
+  if (rust === 'String') return 'impl Into<String>';
+  return rust;
+}
+
+function ctorParamConvert(rust: string, name: string): string {
+  if (rust === 'String') return `${name}.into()`;
+  return name;
+}
+
+function renderMethod(
+  op: Operation,
+  resolved: ResolvedOperation,
+  paramsType: string,
+  method: string,
+  emptyParams: boolean,
+): string {
   const plan = planOperation(op);
   const segments = parsePathTemplate(op.path);
   const pathArgList = op.pathParams.map((p) => `${methodName(p.name)}: &str`);
+  const pathArgNames = op.pathParams.map((p) => methodName(p.name));
 
   const returnType = renderResponseType(op);
   const bodyRequired = isBodyRequired(op);
 
   const sig: string[] = [];
+
+  // Convenience method — no per-request options. Delegates to `_with_options`.
   for (const line of methodDocLines(op)) sig.push(`    ${line}`);
   if (op.deprecated) sig.push('    #[deprecated]');
-
-  const argsAll = ['&self', ...pathArgList, `params: ${paramsType}`];
-  const singleLineSig = `    pub async fn ${method}(${argsAll.join(', ')}) -> Result<${returnType}, Error> {`;
-  if (singleLineSig.length <= 100) {
-    sig.push(singleLineSig);
+  const argsConvenience = ['&self', ...pathArgList, ...(emptyParams ? [] : [`params: ${paramsType}`])];
+  const convenienceSig = `    pub async fn ${method}(${argsConvenience.join(', ')}) -> Result<${returnType}, Error> {`;
+  if (convenienceSig.length <= 100) {
+    sig.push(convenienceSig);
   } else {
     sig.push(`    pub async fn ${method}(`);
-    for (const arg of argsAll) sig.push(`        ${arg},`);
+    for (const arg of argsConvenience) sig.push(`        ${arg},`);
+    sig.push(`    ) -> Result<${returnType}, Error> {`);
+  }
+  const delegateArgs = [...pathArgNames, ...(emptyParams ? [] : ['params']), 'None'].join(', ');
+  sig.push(`        self.${method}_with_options(${delegateArgs}).await`);
+  sig.push('    }');
+  sig.push('');
+
+  // `_with_options` variant — per-request idempotency keys, custom headers, etc.
+  sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
+  if (op.deprecated) sig.push('    #[deprecated]');
+  const argsOpts = [
+    '&self',
+    ...pathArgList,
+    ...(emptyParams ? [] : [`params: ${paramsType}`]),
+    'options: Option<&crate::RequestOptions>',
+  ];
+  const optsSig = `    pub async fn ${method}_with_options(${argsOpts.join(', ')}) -> Result<${returnType}, Error> {`;
+  if (optsSig.length <= 100) {
+    sig.push(optsSig);
+  } else {
+    sig.push(`    pub async fn ${method}_with_options(`);
+    for (const arg of argsOpts) sig.push(`        ${arg},`);
     sig.push(`    ) -> Result<${returnType}, Error> {`);
   }
 
@@ -201,22 +303,117 @@ function renderMethod(op: Operation, resolved: ResolvedOperation, paramsType: st
 
   sig.push(`        let method = http::Method::${op.httpMethod.toUpperCase()};`);
 
+  // For empty-params endpoints, pass `&()` as the (empty) query — `()`
+  // serialises to nothing under serde, matching the previous empty-struct
+  // behaviour without surfacing the struct in the public API.
+  const queryRef = emptyParams ? '&()' : '&params';
+
   if (op.requestBody) {
     sig.push('        self.client');
     if (bodyRequired) {
-      sig.push('            .request_with_body(method, &path, &params, Some(&params.body))');
+      sig.push(`            .request_with_body_opts(method, &path, ${queryRef}, Some(&params.body), options)`);
     } else {
-      sig.push('            .request_with_body(method, &path, &params, params.body.as_ref())');
+      sig.push(`            .request_with_body_opts(method, &path, ${queryRef}, params.body.as_ref(), options)`);
     }
     sig.push('            .await');
   } else {
-    sig.push('        self.client.request_with_query(method, &path, &params).await');
+    sig.push('        self.client');
+    sig.push(`            .request_with_query_opts(method, &path, ${queryRef}, options)`);
+    sig.push('            .await');
   }
 
   sig.push('    }');
 
   void plan;
   void resolved;
+  return sig.join('\n');
+}
+
+/**
+ * Generate a `<method>_auto_paging` helper for paginated list endpoints.
+ * Returns null when the operation isn't a recognised list endpoint (response
+ * model lacks both `data: Vec<T>` and `list_metadata`, or the params struct
+ * has no `after` cursor).
+ */
+function renderAutoPagingMethod(
+  op: Operation,
+  _resolved: ResolvedOperation,
+  paramsType: string,
+  method: string,
+  ctx: EmitterContext,
+): string | null {
+  if (!op.response || op.response.kind !== 'model') return null;
+  const responseModel = ctx.spec.models.find((m) => m.name === op.response!.name);
+  if (!responseModel) return null;
+
+  const dataField = responseModel.fields.find((f) => f.name === 'data');
+  const hasListMetadata = responseModel.fields.some((f) => f.name === 'list_metadata');
+  if (!dataField || !hasListMetadata) return null;
+  if (dataField.type.kind !== 'array') return null;
+
+  const itemType = mapTypeRef(dataField.type.items);
+  // Require an `after` cursor in the params (query params).
+  const hasAfter = op.queryParams.some((p) => p.name === 'after');
+  if (!hasAfter) return null;
+
+  // Path args are taken by owned `String` so the returned stream borrows
+  // nothing but `&self`. This keeps the lifetime story simple — only `'_`
+  // (the `&self` lifetime) is needed on the returned `impl Stream`.
+  const pathArgList = op.pathParams.map((p) => `${methodName(p.name)}: impl Into<String>`);
+  const pathArgNames = op.pathParams.map((p) => methodName(p.name));
+
+  const sig: string[] = [];
+  sig.push('');
+  sig.push(`    /// Returns an async [\`futures_util::Stream\`] that yields every \`${itemType}\``);
+  sig.push(`    /// across all pages, advancing the \`after\` cursor under the hood.`);
+  sig.push('    ///');
+  sig.push('    /// ```ignore');
+  sig.push('    /// use futures_util::TryStreamExt;');
+  sig.push(`    /// let all: Vec<${itemType}> = self`);
+  sig.push(`    ///     .${method}_auto_paging(${[...pathArgNames, 'params'].join(', ')})`);
+  sig.push('    ///     .try_collect()');
+  sig.push('    ///     .await?;');
+  sig.push('    /// ```');
+  if (op.deprecated) sig.push('    #[deprecated]');
+
+  const argsAll = ['&self', ...pathArgList, `params: ${paramsType}`];
+  const optsSig = `    pub fn ${method}_auto_paging(${argsAll.join(', ')}) -> impl futures_util::Stream<Item = Result<${itemType}, Error>> + '_ {`;
+  if (optsSig.length <= 110) {
+    sig.push(optsSig);
+  } else {
+    sig.push(`    pub fn ${method}_auto_paging(`);
+    for (const arg of argsAll) sig.push(`        ${arg},`);
+    sig.push(`    ) -> impl futures_util::Stream<Item = Result<${itemType}, Error>> + '_ {`);
+  }
+
+  sig.push('        use futures_util::TryStreamExt;');
+  for (const n of pathArgNames) {
+    sig.push(`        let ${n}: String = ${n}.into();`);
+  }
+  const initialTuple = ['Some(params)', ...pathArgNames, 'self'].join(', ');
+  sig.push(`        let initial = (${initialTuple});`);
+  const moveTuple = ['maybe_params', ...pathArgNames, 'this'].join(', ');
+  sig.push(`        futures_util::stream::try_unfold(initial, move |(${moveTuple})| async move {`);
+  sig.push('            let Some(params) = maybe_params else {');
+  sig.push('                return Ok::<_, Error>(None);');
+  sig.push('            };');
+  const callArgs = [...pathArgNames.map((n) => `&${n}`), 'params.clone()'].join(', ');
+  sig.push(`            let page = this.${method}(${callArgs}).await?;`);
+  sig.push('            let next_after = page.list_metadata.after.clone();');
+  sig.push('            let next = next_after.map(|after| {');
+  sig.push('                let mut p = params;');
+  sig.push('                p.after = Some(after);');
+  sig.push('                p');
+  sig.push('            });');
+  sig.push('            let chunk = futures_util::stream::iter(');
+  sig.push(`                page.data.into_iter().map(Ok::<${itemType}, Error>),`);
+  sig.push('            );');
+  const nextTuple = ['next', ...pathArgNames, 'this'].join(', ');
+  sig.push(`            Ok::<_, Error>(Some((chunk, (${nextTuple}))))`);
+  sig.push('        })');
+  sig.push('        .try_flatten()');
+  sig.push('    }');
+
   return sig.join('\n');
 }
 
@@ -240,6 +437,14 @@ function renderWrapperParamsStruct(
       rust = 'String';
     }
     if (rp.isOptional && !rust.startsWith('Option<')) rust = makeOptional(rust);
+    const desc = rp.field?.description?.trim();
+    if (desc) {
+      for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);
+    }
+    if (!rp.isOptional && !rust.startsWith('Option<')) {
+      if (desc) fieldLines.push('    ///');
+      fieldLines.push('    /// Required.');
+    }
     if (rust.startsWith('Option<')) {
       fieldLines.push('    #[serde(skip_serializing_if = "Option::is_none")]');
     }
@@ -264,27 +469,48 @@ function renderWrapperMethod(
 ): string {
   const segments = parsePathTemplate(op.path);
   const pathArgList = op.pathParams.map((p) => `${methodName(p.name)}: &str`);
+  const pathArgNames = op.pathParams.map((p) => methodName(p.name));
   const returnType = wrapper.responseModelName ? typeName(wrapper.responseModelName) : renderResponseType(op);
 
   const sig: string[] = [];
+  const docLines: string[] = [];
   const desc = (op.description ?? '').trim();
   if (desc) {
     for (const raw of desc.split('\n')) {
       const t = raw.trim();
-      sig.push(t.length === 0 ? '    ///' : `    /// ${t}`);
+      docLines.push(t.length === 0 ? '    ///' : `    /// ${t}`);
     }
   } else {
-    sig.push(`    /// ${op.httpMethod.toUpperCase()} ${op.path} (${wrapper.name})`);
+    docLines.push(`    /// ${op.httpMethod.toUpperCase()} ${op.path} (${wrapper.name})`);
   }
-  if (op.deprecated) sig.push('    #[deprecated]');
 
-  const argsAll = ['&self', ...pathArgList, `params: ${paramsType}`];
-  const singleLineSig = `    pub async fn ${method}(${argsAll.join(', ')}) -> Result<${returnType}, Error> {`;
-  if (singleLineSig.length <= 100) {
-    sig.push(singleLineSig);
+  // Convenience method — delegates to `_with_options`.
+  sig.push(...docLines);
+  if (op.deprecated) sig.push('    #[deprecated]');
+  const argsConvenience = ['&self', ...pathArgList, `params: ${paramsType}`];
+  const convenienceSig = `    pub async fn ${method}(${argsConvenience.join(', ')}) -> Result<${returnType}, Error> {`;
+  if (convenienceSig.length <= 100) {
+    sig.push(convenienceSig);
   } else {
     sig.push(`    pub async fn ${method}(`);
-    for (const arg of argsAll) sig.push(`        ${arg},`);
+    for (const arg of argsConvenience) sig.push(`        ${arg},`);
+    sig.push(`    ) -> Result<${returnType}, Error> {`);
+  }
+  const delegateArgs = [...pathArgNames, 'params', 'None'].join(', ');
+  sig.push(`        self.${method}_with_options(${delegateArgs}).await`);
+  sig.push('    }');
+  sig.push('');
+
+  // `_with_options` variant.
+  sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
+  if (op.deprecated) sig.push('    #[deprecated]');
+  const argsOpts = ['&self', ...pathArgList, `params: ${paramsType}`, 'options: Option<&crate::RequestOptions>'];
+  const optsSig = `    pub async fn ${method}_with_options(${argsOpts.join(', ')}) -> Result<${returnType}, Error> {`;
+  if (optsSig.length <= 100) {
+    sig.push(optsSig);
+  } else {
+    sig.push(`    pub async fn ${method}_with_options(`);
+    for (const arg of argsOpts) sig.push(`        ${arg},`);
     sig.push(`    ) -> Result<${returnType}, Error> {`);
   }
 
@@ -325,7 +551,7 @@ function renderWrapperMethod(
   sig.push('        #[derive(Serialize)]');
   sig.push('        struct EmptyQuery {}');
   sig.push('        self.client');
-  sig.push('            .request_with_body(method, &path, &EmptyQuery {}, Some(&body))');
+  sig.push('            .request_with_body_opts(method, &path, &EmptyQuery {}, Some(&body), options)');
   sig.push('            .await');
   sig.push('    }');
 
@@ -346,6 +572,15 @@ function clientFieldExpression(field: string): string {
     default:
       return '""';
   }
+}
+
+/** Multi-line `///` doc comment from a free-form description. */
+function paramDocComment(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => `/// ${l}`);
 }
 
 function methodDocLines(op: Operation): string[] {
@@ -375,6 +610,20 @@ function renderResponseType(op: Operation): string {
 /** Treat a body as optional when the IR wraps it in `nullable`. */
 function isBodyRequired(op: Operation): boolean {
   return op.requestBody !== undefined && op.requestBody.kind !== 'nullable';
+}
+
+/**
+ * `true` when the resolved operation contributes nothing to a params struct:
+ * no request body, and every exposed query/header parameter is inferred from
+ * the client or supplied as a default. Such methods take no `params:` arg in
+ * the public API and skip the empty struct entirely.
+ */
+function isEmptyParams(op: Operation, resolved: ResolvedOperation): boolean {
+  if (op.requestBody) return false;
+  const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
+  const visibleQuery = op.queryParams.filter((p) => !hidden.has(p.name));
+  const visibleHeader = op.headerParams.filter((p) => !hidden.has(p.name));
+  return visibleQuery.length === 0 && visibleHeader.length === 0;
 }
 
 function renderResourcesBarrel(exports: { module: string; struct: string }[]): string {
