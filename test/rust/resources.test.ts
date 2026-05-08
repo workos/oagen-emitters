@@ -238,7 +238,7 @@ describe('rust/resources', () => {
     ];
     const files = generateResources(services, ctxWithResolved(services), new UnionRegistry());
     const f = files.find((x) => x.path === 'src/resources/users.rs')!;
-    expect(f.content).toContain('let path = format!("/users/{}", id);');
+    expect(f.content).toContain('let path = format!("/users/{id}");');
     expect(f.content).toContain('pub async fn get_user(&self, id: &str');
   });
 });

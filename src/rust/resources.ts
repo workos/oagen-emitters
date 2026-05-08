@@ -283,20 +283,13 @@ function renderMethod(
     sig.push(`    ) -> Result<${returnType}, Error> {`);
   }
 
-  const pathFormat = segments.map((s) => (s.kind === 'literal' ? s.value : '{}')).join('');
-  const pathInterps = segments.filter((s) => s.kind === 'param').map((s) => methodName(s.name as string));
+  const pathFormat = segments
+    .map((s) => (s.kind === 'literal' ? s.value : `{${methodName(s.name as string)}}`))
+    .join('');
+  const pathHasParams = segments.some((s) => s.kind === 'param');
 
-  if (pathInterps.length > 0) {
-    const formatArgs = `${JSON.stringify(pathFormat)}, ${pathInterps.join(', ')}`;
-    const oneLine = `        let path = format!(${formatArgs});`;
-    if (formatArgs.length <= 60 && oneLine.length <= 100) {
-      sig.push(oneLine);
-    } else {
-      sig.push('        let path = format!(');
-      sig.push(`            ${JSON.stringify(pathFormat)},`);
-      sig.push(`            ${pathInterps.join(', ')}`);
-      sig.push('        );');
-    }
+  if (pathHasParams) {
+    sig.push(`        let path = format!(${JSON.stringify(pathFormat)});`);
   } else {
     sig.push(`        let path = ${JSON.stringify(pathFormat)}.to_string();`);
   }
@@ -514,20 +507,13 @@ function renderWrapperMethod(
     sig.push(`    ) -> Result<${returnType}, Error> {`);
   }
 
-  const pathFormat = segments.map((s) => (s.kind === 'literal' ? s.value : '{}')).join('');
-  const pathInterps = segments.filter((s) => s.kind === 'param').map((s) => methodName(s.name as string));
+  const pathFormat = segments
+    .map((s) => (s.kind === 'literal' ? s.value : `{${methodName(s.name as string)}}`))
+    .join('');
+  const pathHasParams = segments.some((s) => s.kind === 'param');
 
-  if (pathInterps.length > 0) {
-    const formatArgs = `${JSON.stringify(pathFormat)}, ${pathInterps.join(', ')}`;
-    const oneLine = `        let path = format!(${formatArgs});`;
-    if (formatArgs.length <= 60 && oneLine.length <= 100) {
-      sig.push(oneLine);
-    } else {
-      sig.push('        let path = format!(');
-      sig.push(`            ${JSON.stringify(pathFormat)},`);
-      sig.push(`            ${pathInterps.join(', ')}`);
-      sig.push('        );');
-    }
+  if (pathHasParams) {
+    sig.push(`        let path = format!(${JSON.stringify(pathFormat)});`);
   } else {
     sig.push(`        let path = ${JSON.stringify(pathFormat)}.to_string();`);
   }
