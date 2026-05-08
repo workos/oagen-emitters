@@ -11,7 +11,8 @@ describe('workosEmittersPlugin', () => {
     expect(languages).toContain('dotnet');
     expect(languages).toContain('kotlin');
     expect(languages).toContain('ruby');
-    expect(languages).toHaveLength(7);
+    expect(languages).toContain('rust');
+    expect(languages).toHaveLength(8);
   });
 
   it('exports extractors for all supported languages', () => {
