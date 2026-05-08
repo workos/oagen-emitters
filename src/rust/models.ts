@@ -28,7 +28,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
 
     const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
     const path = hintPath ?? `src/models/${mod}.rs`;
-    files.push({ path, content: renderModel(model, registry) });
+    files.push({ path, content: renderModel(model, registry), overwriteExisting: true });
   }
 
   // Always include the unions module in the barrel so downstream stages
@@ -40,6 +40,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
   files.push({
     path: 'src/models/mod.rs',
     content: renderModelsBarrel(moduleNames),
+    overwriteExisting: true,
   });
 
   return files;

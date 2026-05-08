@@ -26,10 +26,10 @@ export function generateClient(_spec: ApiSpec, ctx: EmitterContext, registry: Un
   // _unions.rs — emitted unconditionally so the models barrel reference
   // keeps the same shape across runs.
   const unionsContent = registry.size() > 0 ? registry.render() : '// No oneOf-style unions registered.\n';
-  files.push({ path: 'src/models/_unions.rs', content: unionsContent });
+  files.push({ path: 'src/models/_unions.rs', content: unionsContent, overwriteExisting: true });
 
   // resources_api.rs — `impl Client { fn user_management() -> ... }`.
-  files.push({ path: 'src/resources_api.rs', content: renderResourcesApi(ctx) });
+  files.push({ path: 'src/resources_api.rs', content: renderResourcesApi(ctx), overwriteExisting: true });
 
   return files;
 }

@@ -21,12 +21,14 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     files.push({
       path: `src/enums/${mod}.rs`,
       content: renderEnum(e),
+      overwriteExisting: true,
     });
   }
 
   files.push({
     path: 'src/enums/mod.rs',
     content: renderEnumsBarrel(moduleNames),
+    overwriteExisting: true,
   });
 
   return files;

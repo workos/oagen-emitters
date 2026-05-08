@@ -33,12 +33,14 @@ export function generateResources(_services: Service[], ctx: EmitterContext, reg
     files.push({
       path: `src/resources/${basename}.rs`,
       content: renderMountGroup(mountName, group.resolvedOps, ctx, registry, lookup),
+      overwriteExisting: true,
     });
   }
 
   files.push({
     path: 'src/resources/mod.rs',
     content: renderResourcesBarrel(exports),
+    overwriteExisting: true,
   });
 
   return files;
