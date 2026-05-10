@@ -8,7 +8,10 @@ import { typeName } from './naming.js';
  * self-contained.
  */
 export class UnionRegistry {
-  private byKey = new Map<string, { name: string; tag?: string; arms: { name: string; type: string }[] }>();
+  private byKey = new Map<
+    string,
+    { name: string; tag?: string; arms: { name: string; type: string; rename?: string }[] }
+  >();
   private hintCounts = new Map<string, number>();
 
   /** Total number of registered unions (used by callers to skip emit). */
@@ -28,8 +31,27 @@ export class UnionRegistry {
    */
   register(union: UnionType, hint: string): string {
     const variants = arms(union);
+
+    // Apply discriminator mapping (`{spec-value: '#/components/schemas/Foo'}`)
+    // as `#[serde(rename = "spec-value")]` on the matching variant. Without
+    // this, serde's tagged-union deserialization expects the discriminator
+    // value to literally equal the Rust variant name, which it never does
+    // when the OAS uses snake/kebab-case spec-side keys.
+    const mapping = union.discriminator?.mapping ?? {};
+    const inverseMapping = new Map<string, string>();
+    for (const [specKey, ref] of Object.entries(mapping)) {
+      const schemaName = ref.replace(/^#\/components\/schemas\//, '');
+      // Last value wins — matches spec semantics where the final mapping for
+      // a schema is canonical.
+      inverseMapping.set(typeName(schemaName), specKey);
+    }
+    const armsWithRename: { name: string; type: string; rename?: string }[] = variants.map((v) => {
+      const rename = inverseMapping.get(v.name);
+      return rename !== undefined ? { ...v, rename } : v;
+    });
+
     const key = JSON.stringify({
-      variants: variants.map((v) => v.type),
+      variants: armsWithRename.map((v) => ({ type: v.type, rename: v.rename ?? null })),
       discriminator: union.discriminator?.property ?? null,
       mapping: union.discriminator?.mapping ?? null,
     });
@@ -40,7 +62,7 @@ export class UnionRegistry {
     this.byKey.set(key, {
       name,
       tag: union.discriminator?.property,
-      arms: variants,
+      arms: armsWithRename,
     });
     return name;
   }
@@ -68,6 +90,9 @@ export class UnionRegistry {
       }
       blocks.push(`pub enum ${u.name} {`);
       for (const a of u.arms) {
+        if (a.rename !== undefined) {
+          blocks.push(`    #[serde(rename = ${JSON.stringify(a.rename)})]`);
+        }
         const single = `    ${a.name}(${a.type}),`;
         if (single.length <= 100) {
           blocks.push(single);
