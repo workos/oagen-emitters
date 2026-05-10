@@ -48,7 +48,7 @@ export function generateModelFixture(
   return result;
 }
 
-function exampleFor(
+export function exampleFor(
   type: TypeRef,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
