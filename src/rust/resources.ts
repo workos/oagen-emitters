@@ -10,6 +10,7 @@ import type {
 import { planOperation } from '@workos/oagen';
 import { fieldName, methodName, typeName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
+import { applySecretRedaction } from './secret.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import { groupByMount, buildResolvedLookup } from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
@@ -141,6 +142,7 @@ function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOpera
     seen.add(fname);
     let rust = mapTypeRef(p.type, { hint: `${name}${typeName(p.name)}`, registry });
     if (!p.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
+    rust = applySecretRedaction(rust, p.name);
     // Field-level documentation derived from the spec.
     const desc = p.description?.trim();
     if (desc) {
@@ -223,11 +225,13 @@ function renderParamsStruct(name: string, op: Operation, resolved: ResolvedOpera
 /** Constructor parameter type — accept `impl Into<String>` for ergonomic strings. */
 function ctorParamType(rust: string): string {
   if (rust === 'String') return 'impl Into<String>';
+  if (rust === 'crate::SecretString') return 'impl Into<crate::SecretString>';
   return rust;
 }
 
 function ctorParamConvert(rust: string, name: string): string {
   if (rust === 'String') return `${name}.into()`;
+  if (rust === 'crate::SecretString') return `${name}.into()`;
   return name;
 }
 
@@ -429,6 +433,7 @@ function renderWrapperParamsStruct(
       rust = 'String';
     }
     if (rp.isOptional && !rust.startsWith('Option<')) rust = makeOptional(rust);
+    rust = applySecretRedaction(rust, rp.paramName);
     const desc = rp.field?.description?.trim();
     if (desc) {
       for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);

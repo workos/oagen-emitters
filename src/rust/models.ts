@@ -1,6 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile, Field } from '@workos/oagen';
 import { typeName, fieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
+import { applySecretRedaction } from './secret.js';
 
 const HEADER_PLACEHOLDER = ''; // engine prepends fileHeader()
 
@@ -118,6 +119,9 @@ function renderField(field: Field, rustField: string, modelName: string, registr
   if (isOptional && !baseType.startsWith('Option<')) {
     baseType = makeOptional(baseType);
   }
+  // Wrap String / Option<String> in SecretString when the field name implies
+  // the value is a credential or token. Wire format is unchanged.
+  baseType = applySecretRedaction(baseType, field.name);
 
   if (rename) lines.push(`    #[serde(rename = "${rename}")]`);
   if (baseType.startsWith('Option<')) {
