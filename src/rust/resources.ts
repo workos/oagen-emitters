@@ -289,6 +289,10 @@ function renderMethod(
   const pathHasParams = segments.some((s) => s.kind === 'param');
 
   if (pathHasParams) {
+    for (const p of op.pathParams) {
+      const n = methodName(p.name);
+      sig.push(`        let ${n} = crate::client::path_segment(${n});`);
+    }
     sig.push(`        let path = format!(${JSON.stringify(pathFormat)});`);
   } else {
     sig.push(`        let path = ${JSON.stringify(pathFormat)}.to_string();`);
@@ -336,7 +340,8 @@ function renderAutoPagingMethod(
   ctx: EmitterContext,
 ): string | null {
   if (!op.response || op.response.kind !== 'model') return null;
-  const responseModel = ctx.spec.models.find((m) => m.name === op.response!.name);
+  const responseRef = op.response;
+  const responseModel = ctx.spec.models.find((m) => m.name === responseRef.name);
   if (!responseModel) return null;
 
   const dataField = responseModel.fields.find((f) => f.name === 'data');
@@ -409,6 +414,8 @@ function renderWrapperParamsStruct(
   params: ResolvedWrapperParam[],
   registry: UnionRegistry,
 ): string {
+  type FieldInfo = { fname: string; rust: string; required: boolean };
+  const fields: FieldInfo[] = [];
   const fieldLines: string[] = [];
   const seen = new Set<string>();
   for (const rp of params) {
@@ -426,7 +433,8 @@ function renderWrapperParamsStruct(
     if (desc) {
       for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);
     }
-    if (!rp.isOptional && !rust.startsWith('Option<')) {
+    const required = !rp.isOptional && !rust.startsWith('Option<');
+    if (required) {
       if (desc) fieldLines.push('    ///');
       fieldLines.push('    /// Required.');
     }
@@ -437,12 +445,47 @@ function renderWrapperParamsStruct(
       fieldLines.push(`    #[serde(rename = ${JSON.stringify(rp.paramName)})]`);
     }
     fieldLines.push(`    pub ${fname}: ${rust},`);
+    fields.push({ fname, rust, required });
   }
 
+  // Mirror the regular params struct: derive `Default` only when every field
+  // is optional, otherwise emit a `new(...)` constructor for the required
+  // ones. This prevents callers from cheaply constructing invalid request
+  // states.
+  const requiredFields = fields.filter((f) => f.required);
+  const allOptional = fields.length === 0 || requiredFields.length === 0;
+  const derives = allOptional ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
+
+  const out: string[] = [];
   if (fieldLines.length === 0) {
-    return ['#[derive(Debug, Clone, Default, Serialize)]', `pub struct ${name} {}`].join('\n');
+    out.push(`#[derive(${derives})]`, `pub struct ${name} {}`);
+  } else {
+    out.push(`#[derive(${derives})]`, `pub struct ${name} {`, ...fieldLines, '}');
   }
-  return ['#[derive(Debug, Clone, Default, Serialize)]', `pub struct ${name} {`, ...fieldLines, '}'].join('\n');
+
+  if (requiredFields.length > 0) {
+    const ctorArgs = requiredFields.map((f) => `${f.fname}: ${ctorParamType(f.rust)}`).join(', ');
+    const initLines: string[] = [];
+    for (const f of fields) {
+      if (f.required) {
+        const value = ctorParamConvert(f.rust, f.fname);
+        initLines.push(value === f.fname ? `            ${f.fname},` : `            ${f.fname}: ${value},`);
+      } else {
+        initLines.push(`            ${f.fname}: Default::default(),`);
+      }
+    }
+    out.push('');
+    out.push(`impl ${name} {`);
+    out.push(`    /// Construct a new \`${name}\` with the required fields set.`);
+    out.push(`    pub fn new(${ctorArgs}) -> Self {`);
+    out.push('        Self {');
+    out.push(...initLines);
+    out.push('        }');
+    out.push('    }');
+    out.push('}');
+  }
+
+  return out.join('\n');
 }
 
 function renderWrapperMethod(
@@ -505,6 +548,10 @@ function renderWrapperMethod(
   const pathHasParams = segments.some((s) => s.kind === 'param');
 
   if (pathHasParams) {
+    for (const p of op.pathParams) {
+      const n = methodName(p.name);
+      sig.push(`        let ${n} = crate::client::path_segment(${n});`);
+    }
     sig.push(`        let path = format!(${JSON.stringify(pathFormat)});`);
   } else {
     sig.push(`        let path = ${JSON.stringify(pathFormat)}.to_string();`);
