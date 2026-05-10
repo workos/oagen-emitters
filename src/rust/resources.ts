@@ -379,32 +379,24 @@ function renderAutoPagingMethod(
     sig.push(`    ) -> impl futures_util::Stream<Item = Result<${itemType}, Error>> + '_ {`);
   }
 
-  sig.push('        use futures_util::TryStreamExt;');
+  // Coerce path args to owned `String` so the closure passed to the shared
+  // pagination helper doesn't need to borrow them across `.await`s.
   for (const n of pathArgNames) {
     sig.push(`        let ${n}: String = ${n}.into();`);
   }
-  const initialTuple = ['Some(params)', ...pathArgNames, 'self'].join(', ');
-  sig.push(`        let initial = (${initialTuple});`);
-  const moveTuple = ['maybe_params', ...pathArgNames, 'this'].join(', ');
-  sig.push(`        futures_util::stream::try_unfold(initial, move |(${moveTuple})| async move {`);
-  sig.push('            let Some(params) = maybe_params else {');
-  sig.push('                return Ok::<_, Error>(None);');
-  sig.push('            };');
-  const callArgs = [...pathArgNames.map((n) => `&${n}`), 'params.clone()'].join(', ');
-  sig.push(`            let page = this.${method}(${callArgs}).await?;`);
-  sig.push('            let next_after = page.list_metadata.after.clone();');
-  sig.push('            let next = next_after.map(|after| {');
-  sig.push('                let mut p = params;');
-  sig.push('                p.after = Some(after);');
-  sig.push('                p');
-  sig.push('            });');
-  sig.push('            let chunk = futures_util::stream::iter(');
-  sig.push(`                page.data.into_iter().map(Ok::<${itemType}, Error>),`);
-  sig.push('            );');
-  const nextTuple = ['next', ...pathArgNames, 'this'].join(', ');
-  sig.push(`            Ok::<_, Error>(Some((chunk, (${nextTuple}))))`);
+  // Delegate cursor management to the shared `auto_paginate_pages` helper:
+  // generated code only has to fetch the next page and return its
+  // `(data, after)` pair.
+  sig.push('        crate::pagination::auto_paginate_pages(move |after| {');
+  for (const n of pathArgNames) sig.push(`            let ${n} = ${n}.clone();`);
+  sig.push('            let mut params = params.clone();');
+  sig.push('            params.after = after;');
+  sig.push('            async move {');
+  const callArgs = [...pathArgNames.map((n) => `&${n}`), 'params'].join(', ');
+  sig.push(`                let page = self.${method}(${callArgs}).await?;`);
+  sig.push('                Ok((page.data, page.list_metadata.after))');
+  sig.push('            }');
   sig.push('        })');
-  sig.push('        .try_flatten()');
   sig.push('    }');
 
   return sig.join('\n');
