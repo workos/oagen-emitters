@@ -308,18 +308,21 @@ function renderMethod(
   // serialises to nothing under serde, matching the previous empty-struct
   // behaviour without surfacing the struct in the public API.
   const queryRef = emptyParams ? '&()' : '&params';
+  const emptyResp = isEmptyResponse(op);
+  const bodyMethod = emptyResp ? 'request_with_body_opts_empty' : 'request_with_body_opts';
+  const queryMethod = emptyResp ? 'request_with_query_opts_empty' : 'request_with_query_opts';
 
   if (op.requestBody) {
     sig.push('        self.client');
     if (bodyRequired) {
-      sig.push(`            .request_with_body_opts(method, &path, ${queryRef}, Some(&params.body), options)`);
+      sig.push(`            .${bodyMethod}(method, &path, ${queryRef}, Some(&params.body), options)`);
     } else {
-      sig.push(`            .request_with_body_opts(method, &path, ${queryRef}, params.body.as_ref(), options)`);
+      sig.push(`            .${bodyMethod}(method, &path, ${queryRef}, params.body.as_ref(), options)`);
     }
     sig.push('            .await');
   } else {
     sig.push('        self.client');
-    sig.push(`            .request_with_query_opts(method, &path, ${queryRef}, options)`);
+    sig.push(`            .${queryMethod}(method, &path, ${queryRef}, options)`);
     sig.push('            .await');
   }
 
@@ -631,10 +634,22 @@ function methodDocLines(op: Operation): string[] {
 }
 
 function renderResponseType(op: Operation): string {
-  if (!op.response || (op.response.kind === 'primitive' && op.response.type === 'unknown')) {
-    return 'serde_json::Value';
-  }
-  return mapTypeRef(op.response);
+  if (isEmptyResponse(op)) return '()';
+  return mapTypeRef(op.response!);
+}
+
+/**
+ * True when the operation has no usable response schema. We treat the IR's
+ * `primitive: unknown` and missing-response cases the same way: the spec
+ * declared no JSON body, so the SDK promises nothing about the contents.
+ * Returning `Result<(), Error>` is more honest than handing back a
+ * `serde_json::Value` that's almost always `Object({})` — and it lets the
+ * caller `?` the result without an unused-variable warning.
+ */
+function isEmptyResponse(op: Operation): boolean {
+  if (!op.response) return true;
+  if (op.response.kind === 'primitive' && op.response.type === 'unknown') return true;
+  return false;
 }
 
 /** Treat a body as optional when the IR wraps it in `nullable`. */
