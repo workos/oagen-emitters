@@ -60,6 +60,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       mod.dotnetEmitter,
       mod.kotlinEmitter,
       mod.rubyEmitter,
+      mod.rustEmitter,
     ];
     for (const emitter of directEmitters) {
       expect(pluginLanguages).toContain(emitter.language);
