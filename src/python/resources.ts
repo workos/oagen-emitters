@@ -1023,15 +1023,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     lines.push('');
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
 
-    // urllib.parse.quote is needed whenever any operation has a path parameter,
-    // so each interpolated id can be URL-encoded with safe="" before being
-    // concatenated into the request path.
-    const hasAnyPathParam =
-      allOperations.some((op) => op.pathParams.length > 0) || allOperations.some((op) => /\{[^{}]+\}/.test(op.path));
-    if (hasAnyPathParam) {
-      lines.push('from urllib.parse import quote');
-    }
-
     lines.push('');
     lines.push('if TYPE_CHECKING:');
     lines.push(`    from ${importPrefix}_client import AsyncWorkOSClient, WorkOSClient`);
