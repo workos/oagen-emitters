@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/workos/oagen-emitters/compare/v0.11.0...v0.12.0) (2026-05-11)
+
+
+### Features
+
+* **rust:** add Rust emitter ([#97](https://github.com/workos/oagen-emitters/issues/97)) ([363942e](https://github.com/workos/oagen-emitters/commit/363942e977cf540538af266f8132495b02e18f22))
+
+
+### Bug Fixes
+
+* **python:** emit request path as tuple of segments ([#98](https://github.com/workos/oagen-emitters/issues/98)) ([64f4f6f](https://github.com/workos/oagen-emitters/commit/64f4f6fb5481bdcee328403d1cf7a31cab7126d8))
+
 ## [0.11.0](https://github.com/workos/oagen-emitters/compare/v0.10.0...v0.11.0) (2026-05-07)
 
 
