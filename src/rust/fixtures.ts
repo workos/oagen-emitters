@@ -41,7 +41,12 @@ export function generateModelFixture(
 
   for (const field of model.fields) {
     if (!field.required) continue;
-    result[field.name] = exampleFor(field.type, modelMap, enumMap, visiting, field.name);
+    // Prefer the spec `example` value when it is shape-compatible with the
+    // declared type. Falls back to the placeholder generator when no example
+    // is provided or when the example would not deserialize cleanly.
+    const fromExample = exampleFromSpec(field.example, field.type, enumMap);
+    result[field.name] =
+      fromExample !== undefined ? fromExample : exampleFor(field.type, modelMap, enumMap, visiting, field.name);
   }
 
   visiting.delete(model.name);
@@ -106,5 +111,86 @@ export function exampleFor(
       }
       return result;
     }
+  }
+}
+
+/**
+ * Resolve a spec-provided `example` against a TypeRef and return the value to
+ * embed in the fixture, or `undefined` when the example cannot be used safely.
+ *
+ * "Safely" means the value would round-trip through serde to the generated
+ * Rust type. We deliberately only accept primitives, enum string/number
+ * values, and homogenous arrays of those; nested object examples (which the
+ * spec sometimes supplies as illustrative metadata blobs) are skipped because
+ * they rarely match the strict struct shape Rust expects.
+ */
+export function exampleFromSpec(example: unknown, type: TypeRef, enumMap: Map<string, Enum>): unknown {
+  if (example === undefined) return undefined;
+  // Spec authors sometimes use `null` as a sentinel; let placeholder gen
+  // handle nullable types so we don't emit `null` for required fields.
+  if (example === null) return undefined;
+  return matchExampleToType(example, type, enumMap);
+}
+
+function matchExampleToType(value: unknown, type: TypeRef, enumMap: Map<string, Enum>): unknown {
+  switch (type.kind) {
+    case 'primitive':
+      return matchPrimitive(value, type.type);
+    case 'literal':
+      return value === type.value ? value : undefined;
+    case 'enum': {
+      const e = enumMap.get(type.name);
+      if (!e) return undefined;
+      const ok = e.values.some((v) => v.value === value);
+      return ok ? value : undefined;
+    }
+    case 'array': {
+      if (!Array.isArray(value)) return undefined;
+      const out: unknown[] = [];
+      for (const item of value) {
+        const matched = matchExampleToType(item, type.items, enumMap);
+        if (matched === undefined) return undefined;
+        out.push(matched);
+      }
+      // Empty arrays are valid but unhelpful in fixtures — fall back so the
+      // placeholder generator can produce a one-element example.
+      if (out.length === 0) return undefined;
+      return out;
+    }
+    case 'nullable':
+      return matchExampleToType(value, type.inner, enumMap);
+    case 'map':
+      // Map examples are usually free-form metadata blobs that match
+      // `HashMap<String, _>`; only accept plain objects with string-keyed values.
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+      return value;
+    case 'union': {
+      for (const variant of type.variants) {
+        const matched = matchExampleToType(value, variant, enumMap);
+        if (matched !== undefined) return matched;
+      }
+      return undefined;
+    }
+    case 'model':
+      // Model-shaped examples are too risky to copy verbatim: they rarely
+      // supply every required field and may use wire names that don't align
+      // with the generated struct. Let the recursive generator handle them.
+      return undefined;
+  }
+}
+
+function matchPrimitive(value: unknown, primitive: 'string' | 'integer' | 'number' | 'boolean' | 'unknown'): unknown {
+  switch (primitive) {
+    case 'string':
+      return typeof value === 'string' ? value : undefined;
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+    case 'number':
+      return typeof value === 'number' ? value : undefined;
+    case 'boolean':
+      return typeof value === 'boolean' ? value : undefined;
+    case 'unknown':
+      // `unknown` deserialises to `serde_json::Value`, so any JSON value works.
+      return value;
   }
 }

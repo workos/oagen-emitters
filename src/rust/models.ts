@@ -105,8 +105,13 @@ function resolveFieldNames(fields: Field[]): string[] {
 
 function renderField(field: Field, rustField: string, modelName: string, registry: UnionRegistry): string {
   const lines: string[] = [];
-  if (field.description) {
-    for (const c of docComment(field.description)) lines.push(`    ${c}`);
+  const hasDescription = !!field.description;
+  if (hasDescription) {
+    for (const c of docComment(field.description!)) lines.push(`    ${c}`);
+  }
+  if (field.default != null) {
+    if (hasDescription) lines.push('    ///');
+    lines.push(`    /// Defaults to \`${formatDefault(field.default)}\`.`);
   }
 
   const rename = rustField !== field.name ? field.name : null;
@@ -147,4 +152,14 @@ function docComment(text: string): string[] {
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .map((l) => `/// ${l}`);
+}
+
+/**
+ * Render a spec-level default value for inclusion in a doc comment. Strings
+ * render bare (e.g. `desc`) so they nest naturally inside the surrounding
+ * backticks; numbers/booleans use JSON encoding.
+ */
+function formatDefault(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
 }

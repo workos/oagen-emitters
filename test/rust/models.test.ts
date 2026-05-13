@@ -119,6 +119,44 @@ describe('rust/models', () => {
     expect(unions.content).toContain('pub enum EventPayloadOneOf {');
   });
 
+  it('documents Field.default as a "Defaults to" doc comment', () => {
+    const models: Model[] = [
+      {
+        name: 'Pagination',
+        fields: [
+          {
+            name: 'limit',
+            type: { kind: 'primitive', type: 'integer' },
+            required: false,
+            description: 'Page size.',
+            default: 10,
+          },
+          {
+            name: 'order',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            default: 'desc',
+          },
+          {
+            name: 'verbose',
+            type: { kind: 'primitive', type: 'boolean' },
+            required: false,
+            default: true,
+          },
+        ],
+      },
+    ];
+    const files = generateModels(models, ctx, new UnionRegistry());
+    const f = files.find((x) => x.path === 'src/models/pagination.rs')!;
+    // Number default with description: description first, blank `///`, then defaults.
+    expect(f.content).toContain('/// Page size.');
+    expect(f.content).toContain('/// Defaults to `10`.');
+    // String default renders bare (no JSON quotes).
+    expect(f.content).toContain('/// Defaults to `desc`.');
+    // Boolean default uses JSON encoding (`true`, not `"true"`).
+    expect(f.content).toContain('/// Defaults to `true`.');
+  });
+
   it('emits a barrel re-exporting each module', () => {
     const models: Model[] = [
       {
