@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/workos/oagen-emitters/compare/v0.12.0...v0.12.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* align rust sdk better with other languages ([0fc7cdc](https://github.com/workos/oagen-emitters/commit/0fc7cdcfc5493bfc402fe8411bb398646b6e69a9))
+
 ## [0.12.0](https://github.com/workos/oagen-emitters/compare/v0.11.0...v0.12.0) (2026-05-11)
 
 
