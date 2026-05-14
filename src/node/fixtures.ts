@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
 export const ID_PREFIXES: Record<string, string> = {
@@ -98,7 +98,7 @@ export function generateFixtures(
 
   for (const service of spec.services) {
     const resolvedName = ctx ? resolveResourceClassName(service, ctx) : service.name;
-    const serviceDir = resolveServiceDir(resolvedName);
+    const serviceDir = ctx ? resolveResourceDir(service, ctx) : resolveServiceDir(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {
         let itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;

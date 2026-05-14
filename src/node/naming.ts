@@ -58,6 +58,15 @@ export function setBaselineInterfaceNames(names: Set<string>): void {
 }
 
 /**
+ * IR models that belong to newly-adopted services should not be renamed by
+ * structural baseline matches from unrelated hand-written services.
+ */
+let adoptedModelNames: Set<string> = new Set();
+export function setAdoptedModelNames(names: Set<string>): void {
+  adoptedModelNames = names;
+}
+
+/**
  * Wire/response interface name.
  *
  * Resolution order:
@@ -166,8 +175,14 @@ export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
 
-  let inferred = ctx.overlayLookup?.modelNameByIR?.get(name);
+  let inferred = adoptedModelNames.has(name) ? undefined : ctx.overlayLookup?.modelNameByIR?.get(name);
   if (inferred) {
+    if (inferred.startsWith('Serialized')) {
+      const stripped = inferred.slice('Serialized'.length);
+      if (stripped && ctx.apiSurface?.interfaces?.[stripped]) {
+        inferred = stripped;
+      }
+    }
     // Structural matchers tend to lock onto the wire-shaped baseline
     // interface (`AuditLogSchemaResponse`) because the IR carries
     // snake_case fields. Prefer the corresponding domain name (without

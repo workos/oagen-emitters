@@ -1,8 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Model, Field, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type { Model, Field, TypeRef, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
+import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef, isInlineEnum } from './type-map.js';
-import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import {
+  fieldName,
+  wireFieldName,
+  fileName,
+  resolveInterfaceName,
+  wireInterfaceName,
+  resolveMethodName,
+} from './naming.js';
 import {
   collectFieldDependencies,
   docComment,
@@ -18,6 +26,8 @@ import {
   relativeImport,
   modelHasNewFields,
   computeNonEventReachable,
+  isServiceCoveredByExisting,
+  hasMethodsAbsentFromBaseline,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import {
@@ -29,6 +39,12 @@ import {
   hasDateTimeConversion,
 } from './field-plan.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile } from './live-surface.js';
+import { isNodeOwnedService } from './options.js';
+import { unwrapListModel } from './fixtures.js';
+import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { collectWrapperResponseModels } from './wrappers.js';
+import { resolveResourceClassName } from './resources.js';
 
 // ---------------------------------------------------------------------------
 // Shared context
@@ -39,6 +55,11 @@ interface SharedModelContext {
   resolveDir: (irService: string | undefined) => string;
   dedup: Map<string, string>;
   genericDefaults: Map<string, string>;
+}
+
+interface GeneratedResourceModelUsage {
+  interfaceRoots: Set<string>;
+  serializerRoots: Set<string>;
 }
 
 function buildSharedContext(models: Model[], ctx: EmitterContext): SharedModelContext {
@@ -103,7 +124,8 @@ function isSupportedFieldType(
     }
     case 'enum': {
       if (ctx.apiSurface?.enums?.[ref.name] || ctx.apiSurface?.typeAliases?.[ref.name]) return true;
-      const enumService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services).get(ref.name);
+      const enumService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services, ctx.spec.models, ctx).get(ref.name);
+      if (enumService) return true;
       const relPath = `src/${shared.resolveDir(enumService)}/interfaces/${fileName(ref.name)}.interface.ts`;
       return liveSurfaceHasManagedFile(relPath);
     }
@@ -140,6 +162,10 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     projectModelToManagedSurface(model, { modelToService, resolveDir, dedup, genericDefaults }, ctx),
   );
   const projectedByName = new Map(projectedModels.map((model) => [model.name, model]));
+  const resourceUsage = buildGeneratedResourceModelUsage(models, ctx);
+  const interfaceEligibleModels = resourceUsage
+    ? expandModelRoots(resourceUsage.interfaceRoots, projectedByName)
+    : undefined;
 
   const reachableModels = computeNonEventReachable(ctx.spec.services, models);
 
@@ -147,6 +173,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
+    if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
     if (!modelHasNewFields(model, ctx)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -166,13 +193,15 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
+    if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
-    if (!modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
+    const service = modelToService.get(model.name);
+    const isOwnedModel = isNodeOwnedService(ctx, service);
+    if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
 
     const canonicalName = dedup.get(model.name);
-    if (canonicalName) {
-      const service = modelToService.get(model.name);
+    if (canonicalName && !isOwnedModel) {
       const dirName = resolveDir(service);
       const skipTA = { skipTypeAlias: true };
       const domainName = resolveInterfaceName(model.name, ctx, skipTA);
@@ -230,7 +259,6 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       continue;
     }
 
-    const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const isDedupCanonical = [...dedup.values()].includes(model.name);
     const domainName = resolveInterfaceName(model.name, ctx, isDedupCanonical ? { skipTypeAlias: true } : undefined);
@@ -265,7 +293,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     const typeDecls = new Map<string, string>();
     const crossServiceImports = new Map<string, { name: string; relPath: string }>();
     const unresolvableNames = new Set<string>();
-    const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+    const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services, ctx.spec.models, ctx);
     const resolvedEnumNames = new Map<string, string>();
     for (const e of ctx.spec.enums) {
       resolvedEnumNames.set(resolveInterfaceName(e.name, ctx), e.name);
@@ -616,6 +644,10 @@ export function generateSerializers(
     projectModelToManagedSurface(model, { modelToService, resolveDir, dedup, genericDefaults: new Map() }, ctx),
   );
   const projectedByName = new Map(projectedModels.map((model) => [model.name, model]));
+  const resourceUsage = buildGeneratedResourceModelUsage(models, ctx);
+  const serializerEligibleModels = resourceUsage
+    ? expandModelRoots(resourceUsage.serializerRoots, projectedByName)
+    : undefined;
 
   const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
 
@@ -628,19 +660,22 @@ export function generateSerializers(
     for (const originalModel of models) {
       const model = projectedByName.get(originalModel.name) ?? originalModel;
       if (!serializerReachable.has(model.name)) continue;
+      if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
       const service = modelToService.get(model.name);
       const dirName = resolveDir(service);
       const domainName = resolveInterfaceName(model.name, ctx);
-      const serializerFile = path.join(
-        liveRoot,
-        'src',
-        dirName,
-        'serializers',
-        `${fileName(model.name)}.serializer.ts`,
-      );
+      const baselineSource = (ctx.apiSurface?.interfaces?.[domainName] as { sourceFile?: string } | undefined)
+        ?.sourceFile;
+      const serializerRelPath = baselineSource
+        ? baselineSource.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
+        : `src/${dirName}/serializers/${fileName(model.name)}.serializer.ts`;
+      const serializerFile = path.join(liveRoot, serializerRelPath);
       try {
         const content = fs.readFileSync(serializerFile, 'utf-8');
-        if (!new RegExp(`\\bserialize${domainName}\\b`).test(content)) {
+        const isGeneratedFile =
+          ctx.priorTargetManifestPaths?.has(serializerRelPath) ||
+          /auto-generated by oagen/i.test(content.slice(0, 400));
+        if (!isGeneratedFile && !new RegExp(`\\bserialize${domainName}\\b`).test(content)) {
           skippedSerializeModels.add(model.name);
         }
       } catch {
@@ -653,6 +688,7 @@ export function generateSerializers(
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
+    if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
     if (!modelHasNewFields(model, ctx)) continue;
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -672,11 +708,15 @@ export function generateSerializers(
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
+    if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
-    if (!modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
+    const service = modelToService.get(model.name);
+    const isOwnedModel = isNodeOwnedService(ctx, service);
+    if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
     eligibleModels.push(model);
   }
+  (ctx as any)._generatedSerializerModels = new Set(eligibleModels.map((model) => model.name));
 
   // Pass 1: determine shouldSkipSerialize
   for (const model of eligibleModels) {
@@ -700,9 +740,10 @@ export function generateSerializers(
 
   // Pass 2: generate serializer files
   for (const model of eligibleModels) {
+    const service = modelToService.get(model.name);
+    const isOwnedModel = isNodeOwnedService(ctx, service);
     const canonicalName = dedup.get(model.name);
-    if (canonicalName) {
-      const service = modelToService.get(model.name);
+    if (canonicalName && !isOwnedModel) {
       const dirName = resolveDir(service);
       const skipTA = { skipTypeAlias: true };
       const domainName = resolveInterfaceName(model.name, ctx, skipTA);
@@ -728,7 +769,6 @@ export function generateSerializers(
       continue;
     }
 
-    const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
     const isDedupCanonical = [...dedup.values()].includes(model.name);
     const domainName = resolveInterfaceName(model.name, ctx, isDedupCanonical ? { skipTypeAlias: true } : undefined);
@@ -779,9 +819,166 @@ export function generateModelsAndSerializers(models: Model[], ctx: EmitterContex
   return [...generateModels(models, ctx, shared), ...generateSerializers(models, ctx, shared)];
 }
 
+export function generatedResourceInterfaceModelNames(models: Model[], ctx: EmitterContext): Set<string> | undefined {
+  const shared = buildSharedContext(models, ctx);
+  const projectedModels = models.map((model) => projectModelToManagedSurface(model, shared, ctx));
+  const projectedByName = new Map(projectedModels.map((model) => [model.name, model]));
+  const resourceUsage = buildGeneratedResourceModelUsage(models, ctx);
+  return resourceUsage ? expandModelRoots(resourceUsage.interfaceRoots, projectedByName) : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function buildGeneratedResourceModelUsage(
+  models: Model[],
+  ctx: EmitterContext,
+): GeneratedResourceModelUsage | undefined {
+  if (ctx.spec.services.length === 0) return undefined;
+
+  const modelMap = new Map(models.map((model) => [model.name, model]));
+  const interfaceRoots = new Set<string>();
+  const serializerRoots = new Set<string>();
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const mountGroups = groupByMount(ctx);
+  const services: Service[] =
+    mountGroups.size > 0
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : ctx.spec.services;
+
+  for (const service of services) {
+    const resourceClass = resolveResourceClassName(service, ctx);
+    const isOwnedService = isNodeOwnedService(ctx, service.name, resourceClass);
+    const baselineHasResourceClass = Boolean(ctx.apiSurface?.classes?.[resourceClass]);
+
+    if (
+      !isOwnedService &&
+      baselineHasResourceClass &&
+      isServiceCoveredByExisting(service, ctx) &&
+      !hasMethodsAbsentFromBaseline(service, ctx)
+    ) {
+      continue;
+    }
+
+    let plans = service.operations.map((op) => ({
+      op,
+      plan: planOperation(op),
+      method: resolveMethodName(op, service, ctx),
+    }));
+
+    const baselineMethodNames = new Set(Object.keys(ctx.apiSurface?.classes?.[resourceClass]?.methods ?? {}));
+    if (!isOwnedService && baselineMethodNames.size > 0) {
+      plans = plans.filter((p) => !baselineMethodNames.has(p.method));
+    }
+    if (plans.length === 0) continue;
+
+    for (const { op, plan } of plans) {
+      if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
+        let itemName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : undefined;
+        if (itemName) {
+          const itemModel = modelMap.get(itemName);
+          const unwrapped = itemModel ? unwrapListModel(itemModel, modelMap) : null;
+          if (unwrapped) itemName = unwrapped.name;
+          interfaceRoots.add(itemName);
+          serializerRoots.add(itemName);
+        }
+      } else if (plan.responseModelName) {
+        interfaceRoots.add(plan.responseModelName);
+        serializerRoots.add(plan.responseModelName);
+      }
+
+      const bodyInfo = extractRequestBodyModels(op, ctx);
+      for (const name of bodyInfo) {
+        interfaceRoots.add(name);
+        serializerRoots.add(name);
+      }
+
+      for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+        collectTypeRefModels(param.type, interfaceRoots);
+      }
+
+      const resolved = lookupResolved(op, resolvedLookup);
+      if (resolved) {
+        for (const name of collectWrapperResponseModels(resolved)) {
+          interfaceRoots.add(name);
+          serializerRoots.add(name);
+        }
+        for (const wrapper of resolved.wrappers ?? []) {
+          for (const { field } of resolveWrapperParams(wrapper, ctx)) {
+            if (field) collectTypeRefModels(field.type, interfaceRoots);
+          }
+        }
+      }
+    }
+  }
+
+  return { interfaceRoots, serializerRoots };
+}
+
+function extractRequestBodyModels(op: Operation, ctx: EmitterContext): string[] {
+  if (!op.requestBody) return [];
+  if (op.requestBody.kind === 'model') return [op.requestBody.name];
+  if (op.requestBody.kind !== 'union') return [];
+
+  const names: string[] = [];
+  for (const variant of op.requestBody.variants) {
+    if (variant.kind === 'model') names.push(variant.name);
+  }
+
+  return names.length > 0 ? names : collectDiscriminatorModelNames(op.requestBody.discriminator, ctx);
+}
+
+function collectDiscriminatorModelNames(
+  discriminator: { mapping?: Record<string, string> } | undefined,
+  ctx: EmitterContext,
+): string[] {
+  const names = new Set<string>();
+  for (const mapped of Object.values(discriminator?.mapping ?? {})) {
+    const name = mapped.split('/').pop();
+    if (name && ctx.spec.models.some((model) => model.name === name)) names.add(name);
+  }
+  return [...names];
+}
+
+function collectTypeRefModels(ref: TypeRef | undefined, out: Set<string>): void {
+  if (!ref) return;
+  switch (ref.kind) {
+    case 'model':
+      out.add(ref.name);
+      return;
+    case 'array':
+      collectTypeRefModels(ref.items, out);
+      return;
+    case 'nullable':
+      collectTypeRefModels(ref.inner, out);
+      return;
+    case 'union':
+      for (const variant of ref.variants) collectTypeRefModels(variant, out);
+      return;
+    default:
+      return;
+  }
+}
+
+function expandModelRoots(roots: Set<string>, modelsByName: Map<string, Model>): Set<string> {
+  const out = new Set<string>();
+  const queue = [...roots];
+
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (out.has(name)) continue;
+    const model = modelsByName.get(name);
+    if (!model) continue;
+    out.add(name);
+
+    for (const dep of collectFieldDependencies(model).models) {
+      if (!out.has(dep)) queue.push(dep);
+    }
+  }
+
+  return out;
+}
 
 function baselineTypeResolvable(typeStr: string, importableNames: Set<string>): boolean {
   const matches = typeStr.match(/\b[A-Z][a-zA-Z0-9]*\b/g);

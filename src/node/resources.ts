@@ -12,7 +12,7 @@ import type {
 import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef, isInlineEnum } from './type-map.js';
-import { liveSurfaceHasFunction, liveSurfaceHasFile } from './live-surface.js';
+import { liveSurfaceHasFunction, liveSurfaceHasFile, liveSurfaceHasAutogenFile } from './live-surface.js';
 
 /**
  * Render the request-body argument for an HTTP call.
@@ -35,7 +35,7 @@ function bodyArgExpr(irModelName: string, resolvedName: string, ctx: EmitterCont
   const candidate = sourceFile
     ? sourceFile.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
     : `src/${defaultModelDir(irModelName, ctx)}/serializers/${fileName(irModelName)}.serializer.ts`;
-  if (liveSurfaceHasFile(candidate)) return paramName;
+  if (liveSurfaceHasFile(candidate) && !liveSurfaceHasAutogenFile(candidate)) return paramName;
 
   return `${ser}(${paramName})`;
 }
@@ -60,6 +60,7 @@ import {
   isServiceCoveredByExisting,
   hasMethodsAbsentFromBaseline,
   uncoveredOperations,
+  relativeImport,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import { unwrapListModel } from './fixtures.js';
@@ -74,6 +75,7 @@ import {
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { buildNodePathExpression } from './path-expression.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { isNodeOwnedService } from './options.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -111,6 +113,12 @@ export function resolveResourceClassName(service: Service, ctx: EmitterContext):
   return irName;
 }
 
+export function resolveResourceDir(service: Service, ctx: EmitterContext): string {
+  const resolvedName = resolveResourceClassName(service, ctx);
+  if (resolvedName === 'WebhooksEndpoints') return 'webhooks';
+  return resolveServiceDir(resolvedName);
+}
+
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */
 const PAGINATION_PARAM_NAMES = new Set(['limit', 'before', 'after', 'order']);
 
@@ -129,6 +137,76 @@ function paginatedOptionsName(method: string, resolvedServiceName: string): stri
     return `${toPascalCase(resolvedServiceName)}ListOptions`;
   }
   return toPascalCase(method) + 'Options';
+}
+
+type BaselineMethod = {
+  params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
+  returnType?: string;
+};
+
+function baselineMethodFor(service: Service, method: string, ctx: EmitterContext): BaselineMethod | undefined {
+  const serviceClass = resolveResourceClassName(service, ctx);
+  return ctx.apiSurface?.classes?.[serviceClass]?.methods?.[method]?.[0] as BaselineMethod | undefined;
+}
+
+function optionsObjectParam(method: BaselineMethod | undefined): { name: string; type: string } | undefined {
+  if (!method || method.params.length !== 1) return undefined;
+  const [param] = method.params;
+  if (param.name !== 'options') return undefined;
+  if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
+  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
+  return { name: param.name, type: param.type };
+}
+
+function autoPaginatableItemType(returnType: string | undefined): string | undefined {
+  return returnType?.match(/\bAutoPaginatable<\s*([A-Za-z_$][\w$]*)/)?.[1];
+}
+
+function baselineTypeSourceFile(ctx: EmitterContext, typeName: string): string | undefined {
+  const surface = ctx.apiSurface as
+    | {
+        interfaces?: Record<string, { sourceFile?: string }>;
+        typeAliases?: Record<string, { sourceFile?: string }>;
+        enums?: Record<string, { sourceFile?: string }>;
+      }
+    | undefined;
+  return (
+    surface?.interfaces?.[typeName]?.sourceFile ??
+    surface?.typeAliases?.[typeName]?.sourceFile ??
+    surface?.enums?.[typeName]?.sourceFile
+  );
+}
+
+function preferredBaselineTypeName(ctx: EmitterContext, typeName: string | undefined): string | undefined {
+  if (!typeName) return undefined;
+  const surface = ctx.apiSurface as
+    | {
+        typeAliases?: Record<string, { value?: string; sourceFile?: string }>;
+        interfaces?: Record<string, { sourceFile?: string }>;
+      }
+    | undefined;
+  const sourceFile = baselineTypeSourceFile(ctx, typeName);
+  for (const [alias, info] of Object.entries(surface?.typeAliases ?? {})) {
+    if (info.value !== typeName) continue;
+    if (sourceFile && info.sourceFile !== sourceFile) continue;
+    if (liveSurfaceHasFunction(`deserialize${alias}`)) return alias;
+  }
+  return typeName;
+}
+
+function preferredBaselineReturnType(ctx: EmitterContext, returnType: string | undefined): string | undefined {
+  const itemType = autoPaginatableItemType(returnType);
+  const preferred = preferredBaselineTypeName(ctx, itemType);
+  if (!returnType || !itemType || !preferred || preferred === itemType) return returnType;
+  return returnType.replace(new RegExp(`\\b${itemType}\\b`, 'g'), preferred);
+}
+
+function requestEntityType(bodyExpr: string, requestType: string): string {
+  return bodyExpr === 'payload' ? requestType : wireInterfaceName(requestType);
+}
+
+function unionEntityType(modelNames: string[], ctx: EmitterContext): string {
+  return modelNames.map((name) => wireInterfaceName(resolveInterfaceName(name, ctx))).join(' | ');
 }
 
 /** HTTP methods that require a body argument even when the spec has no request body. */
@@ -241,7 +319,7 @@ function generatePaginatedOptionsInterfaces(
 ): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = resolveServiceDir(resolvedName);
+  const serviceDir = resolveResourceDir(service, ctx);
 
   const plans = service.operations.map((op) => ({
     op,
@@ -295,7 +373,8 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   const topLevelEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
 
   for (const service of mergedServices) {
-    if (isServiceCoveredByExisting(service, ctx)) {
+    const isOwnedService = isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx));
+    if (!isOwnedService && isServiceCoveredByExisting(service, ctx)) {
       if (!hasMethodsAbsentFromBaseline(service, ctx)) {
         continue; // Fully covered, no new methods -- skip entirely
       }
@@ -310,7 +389,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       continue;
     }
 
-    const ops = uncoveredOperations(service, ctx);
+    const ops = isOwnedService ? service.operations : uncoveredOperations(service, ctx);
     if (ops.length === 0) continue;
 
     if (ops.length < service.operations.length) {
@@ -341,7 +420,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // stable.  Placing them under `interfaces/` lets the per-service barrel
   // pick them up automatically.
   for (const service of mergedServices) {
-    if (isServiceCoveredByExisting(service, ctx) && !hasMethodsAbsentFromBaseline(service, ctx)) continue;
+    const isOwnedService = isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx));
+    if (!isOwnedService && isServiceCoveredByExisting(service, ctx) && !hasMethodsAbsentFromBaseline(service, ctx))
+      continue;
     files.push(...generatePaginatedOptionsInterfaces(service, ctx, topLevelEnumNames));
   }
 
@@ -350,7 +431,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
 function generateResourceClass(service: Service, ctx: EmitterContext): GeneratedFile | null {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = resolveServiceDir(resolvedName);
+  const serviceDir = resolveResourceDir(service, ctx);
   const serviceClass = resolvedName;
   const resourcePath = `src/${serviceDir}/${fileName(resolvedName)}.ts`;
 
@@ -413,7 +494,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // the kept operations only — no orphan imports.
   const baselineMethodNames = new Set(Object.keys(ctx.apiSurface?.classes?.[serviceClass]?.methods ?? {}));
   const planCountBeforeFilter = plans.length;
-  if (baselineMethodNames.size > 0) {
+  if (!isNodeOwnedService(ctx, service.name, serviceClass) && baselineMethodNames.size > 0) {
     plans = plans.filter((p) => !baselineMethodNames.has(p.method));
   }
   const filteredOut = planCountBeforeFilter - plans.length;
@@ -427,15 +508,30 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   }
 
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
+  const needsPaginationOptionsImport = plans.some(
+    (p) =>
+      p.plan.isPaginated &&
+      (!optionsObjectParam(baselineMethodFor(service, p.method, ctx)) ||
+        /\bPaginationOptions\b/.test(
+          preferredBaselineReturnType(ctx, baselineMethodFor(service, p.method, ctx)?.returnType) ?? '',
+        )),
+  );
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
   // Collect models for imports — only include models that are actually used
   // in method signatures (not all union variants from the spec)
   const responseModels = new Set<string>();
   const requestModels = new Set<string>();
+  const requestModelsForSignature = new Set<string>();
   const paramEnums = new Set<string>();
   const paramModels = new Set<string>();
+  const optionObjectTypes = new Set<string>();
+  const baselineResponseTypes = new Set<string>();
   for (const { op, plan } of plans) {
+    const baselineMethod = baselineMethodFor(service, resolveMethodName(op, service, ctx), ctx);
+    const existingOptions = optionsObjectParam(baselineMethod);
+    if (existingOptions) optionObjectTypes.add(existingOptions.type);
+
     // Always collect param type refs for enums — inline options interfaces
     // are generated for all methods (including baseline ones), so their
     // type dependencies must always be imported.
@@ -454,7 +550,12 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     // compile errors. Redundant imports are harmless (eslint --fix prunes
     // them post-generation via `formatCommand`).
 
-    if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
+    const baselinePaginatedItemType = existingOptions
+      ? preferredBaselineTypeName(ctx, autoPaginatableItemType(baselineMethod?.returnType))
+      : undefined;
+    if (plan.isPaginated && baselinePaginatedItemType) {
+      baselineResponseTypes.add(baselinePaginatedItemType);
+    } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       // For paginated operations, import the item type (e.g., Connection)
       // rather than the list wrapper type (e.g., ConnectionList).
       // fetchAndDeserialize handles the list envelope internally.
@@ -475,18 +576,21 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     const bodyInfo = extractRequestBodyType(op, ctx);
     if (bodyInfo?.kind === 'model') {
       requestModels.add(bodyInfo.name);
+      if (!existingOptions) requestModelsForSignature.add(bodyInfo.name);
     } else if (bodyInfo?.kind === 'union') {
       if (bodyInfo.discriminator) {
         // Discriminated union: import variant models with serializers so we can
         // dispatch to the correct serializer at runtime based on the discriminator.
         for (const name of bodyInfo.modelNames) {
           requestModels.add(name);
+          if (!existingOptions) requestModelsForSignature.add(name);
         }
       } else {
         // Non-discriminated union: import variant models with serializers so we
         // can dispatch to the correct serializer at runtime via field guards.
         for (const name of bodyInfo.modelNames) {
           requestModels.add(name);
+          if (!existingOptions) requestModelsForSignature.add(name);
         }
       }
     }
@@ -512,14 +616,16 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     }
   }
 
-  const allModels = new Set([...responseModels, ...requestModels, ...paramModels]);
+  const allModels = new Set([...responseModels, ...requestModelsForSignature, ...paramModels]);
 
   const lines: string[] = [];
 
   // Imports
   lines.push("import type { WorkOS } from '../workos';");
   if (hasPaginated) {
-    lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
+    if (needsPaginationOptionsImport) {
+      lines.push("import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';");
+    }
     lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
     lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
@@ -544,6 +650,13 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push("import type { PostOptions } from '../common/interfaces/post-options.interface';");
   }
 
+  const importedTypeNames = new Set<string>();
+  for (const optionType of optionObjectTypes) {
+    if (importedTypeNames.has(optionType)) continue;
+    importedTypeNames.add(optionType);
+    lines.push(`import type { ${optionType} } from './interfaces/${fileName(optionType)}.interface';`);
+  }
+
   // Compute model-to-service mapping for correct cross-service import paths
   const { modelToService, resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
 
@@ -553,9 +666,15 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   for (const name of responseModels) {
     usedWireTypes.add(resolveInterfaceName(name, ctx));
   }
+  for (const name of requestModels) {
+    const resolved = resolveInterfaceName(name, ctx);
+    const bodyExpr = bodyArgExpr(name, resolved, ctx);
+    if (requestEntityType(bodyExpr, resolved) !== resolved) {
+      usedWireTypes.add(resolved);
+    }
+  }
 
   // Track imported resolved names to prevent duplicate type name collisions
-  const importedTypeNames = new Set<string>();
   for (const name of allModels) {
     const resolved = resolveInterfaceName(name, ctx);
     if (importedTypeNames.has(resolved)) continue; // Skip duplicate resolved names
@@ -571,6 +690,33 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     } else {
       lines.push(`import type { ${resolved} } from '${relPath}';`);
     }
+  }
+
+  for (const name of requestModels) {
+    if (allModels.has(name)) continue;
+    const resolved = resolveInterfaceName(name, ctx);
+    if (!usedWireTypes.has(resolved)) continue;
+    const wireName = wireInterfaceName(resolved);
+    if (importedTypeNames.has(wireName)) continue;
+    const modelDir = modelToService.get(name);
+    const modelServiceDir = resolveDir(modelDir);
+    const relPath =
+      modelServiceDir === serviceDir
+        ? `./interfaces/${fileName(name)}.interface`
+        : `../${modelServiceDir}/interfaces/${fileName(name)}.interface`;
+    lines.push(`import type { ${wireName} } from '${relPath}';`);
+    importedTypeNames.add(wireName);
+  }
+
+  for (const name of baselineResponseTypes) {
+    if (importedTypeNames.has(name)) continue;
+    const wireName = wireInterfaceName(name);
+    const sourceFile = baselineTypeSourceFile(ctx, name) ?? baselineTypeSourceFile(ctx, wireName);
+    if (!sourceFile) continue;
+    const importNames = wireName === name ? name : `${name}, ${wireName}`;
+    lines.push(`import type { ${importNames} } from '${relativeImport(resourcePath, sourceFile)}';`);
+    importedTypeNames.add(name);
+    importedTypeNames.add(wireName);
   }
 
   // Collect serializer imports by module path so we can merge deserialize and
@@ -592,6 +738,19 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     existing.push(`deserialize${resolved}`);
     serializerImportsByPath.set(relPath, existing);
   }
+  for (const name of baselineResponseTypes) {
+    if (importedDeserializers.has(name)) continue;
+    importedDeserializers.add(name);
+    const sourceFile = baselineTypeSourceFile(ctx, name) ?? baselineTypeSourceFile(ctx, wireInterfaceName(name));
+    if (!sourceFile) continue;
+    const serializerPath = sourceFile
+      .replace('/interfaces/', '/serializers/')
+      .replace(/\.interface\.ts$/, '.serializer.ts');
+    const relPath = relativeImport(resourcePath, serializerPath);
+    const existing = serializerImportsByPath.get(relPath) ?? [];
+    existing.push(`deserialize${name}`);
+    serializerImportsByPath.set(relPath, existing);
+  }
 
   const importedSerializers = new Set<string>();
   for (const name of requestModels) {
@@ -608,7 +767,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
       const candidate = sourceFile
         ? sourceFile.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
         : `src/${resolveDir(modelToService.get(name))}/serializers/${fileName(name)}.serializer.ts`;
-      if (liveSurfaceHasFile(candidate)) continue;
+      if (liveSurfaceHasFile(candidate) && !liveSurfaceHasAutogenFile(candidate)) continue;
     }
 
     const modelDir = modelToService.get(name);
@@ -635,7 +794,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   // Only import enums that actually exist in the spec's global enums list —
   // inline string unions may have kind 'enum' but no corresponding file.
   if (paramEnums.size > 0) {
-    const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services);
+    const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services, ctx.spec.models, ctx);
     for (const name of paramEnums) {
       if (allModels.has(name)) continue; // Already imported as a model
       if (!specEnumNames.has(name)) continue; // No file generated for this enum
@@ -768,7 +927,8 @@ function renderMethod(
   // Prefer the overlay (existing method signature) if available;
   // otherwise compute from what the render path will actually include.
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
-  const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey);
+  const baselineClassMethod = baselineMethodFor(service, method, ctx);
+  const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey) ?? baselineClassMethod;
   let validParamNames: Set<string> | null = null;
   if (overlayMethod) {
     validParamNames = new Set(overlayMethod.params.map((p) => p.name));
@@ -954,8 +1114,11 @@ function renderMethod(
     // When an overlay method exists, prefer its return type so the JSDoc
     // matches the actual TypeScript signature (the overlay may use a
     // different model name than the OpenAPI schema).
-    if (overlayMethod?.returnType) {
-      docParts.push(`@returns {${overlayMethod.returnType}}`);
+    const documentedReturnType =
+      preferredBaselineReturnType(ctx, baselineClassMethod?.returnType) ??
+      preferredBaselineReturnType(ctx, overlayMethod?.returnType);
+    if (documentedReturnType) {
+      docParts.push(`@returns {${documentedReturnType}}`);
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       // Unwrap list wrapper models to match the actual return type — the method returns
       // AutoPaginatable<ItemType>, not the list wrapper.
@@ -1000,6 +1163,10 @@ function renderMethod(
         lines.push('   */');
       }
     }
+  }
+
+  if (renderOptionsObjectMethod(lines, op, plan, method, service, ctx, modelMap, specEnumNames, baselineClassMethod)) {
+    return lines;
   }
 
   const preDecisionCount = lines.length;
@@ -1058,6 +1225,168 @@ function renderMethod(
   }
 
   return lines;
+}
+
+function renderOptionsObjectMethod(
+  lines: string[],
+  op: Operation,
+  plan: OperationPlan,
+  method: string,
+  service: Service,
+  ctx: EmitterContext,
+  modelMap: Map<string, Model>,
+  specEnumNames: Set<string> | undefined,
+  baselineMethod: BaselineMethod | undefined,
+): boolean {
+  const optionParam = optionsObjectParam(baselineMethod);
+  if (!optionParam) return false;
+
+  const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
+  const pathStr = buildPathStr(op);
+  const pathBindings = buildOptionsObjectPathBindings(op, optionParam.type, ctx);
+
+  if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
+    let itemRawName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
+    if (itemRawName) {
+      const pModel = modelMap.get(itemRawName);
+      if (pModel) {
+        const unwrapped = unwrapListModel(pModel, modelMap);
+        if (unwrapped) itemRawName = unwrapped.name;
+      }
+    }
+    const itemType =
+      preferredBaselineTypeName(ctx, autoPaginatableItemType(baselineMethod?.returnType)) ??
+      (itemRawName ? resolveInterfaceName(itemRawName, ctx) : responseModel);
+    if (!itemType) return false;
+    const wireType = wireInterfaceName(itemType);
+    const returnType =
+      preferredBaselineReturnType(ctx, baselineMethod?.returnType) ?? `Promise<AutoPaginatable<${itemType}>>`;
+    lines.push(`  async ${method}(options: ${optionParam.type}): ${returnType} {`);
+    renderOptionsObjectDestructure(lines, pathBindings, 'paginationOptions');
+    lines.push(`    return new AutoPaginatable(`);
+    lines.push(`      await fetchAndDeserialize<${wireType}, ${itemType}>(`);
+    lines.push(`        this.workos,`);
+    lines.push(`        ${pathStr},`);
+    lines.push(`        deserialize${itemType},`);
+    lines.push(`        paginationOptions,`);
+    lines.push(`      ),`);
+    lines.push(`      (params) =>`);
+    lines.push(`        fetchAndDeserialize<${wireType}, ${itemType}>(`);
+    lines.push(`          this.workos,`);
+    lines.push(`          ${pathStr},`);
+    lines.push(`          deserialize${itemType},`);
+    lines.push(`          params,`);
+    lines.push(`        ),`);
+    lines.push(`      paginationOptions,`);
+    lines.push(`    );`);
+    lines.push('  }');
+    return true;
+  }
+
+  if (plan.isDelete && !plan.hasBody) {
+    lines.push(`  async ${method}(options: ${optionParam.type}): Promise<void> {`);
+    renderOptionsObjectDestructure(lines, pathBindings);
+    lines.push(`    await this.workos.delete(${pathStr});`);
+    lines.push('  }');
+    return true;
+  }
+
+  if (plan.hasBody) {
+    const bodyInfo = extractRequestBodyType(op, ctx);
+    let requestType: string;
+    let bodyExpr: string;
+    let entityType: string;
+    if (bodyInfo?.kind === 'model') {
+      requestType = resolveInterfaceName(bodyInfo.name, ctx);
+      bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx, 'payload');
+      entityType = requestEntityType(bodyExpr, requestType);
+    } else if (bodyInfo?.kind === 'union') {
+      requestType = bodyInfo.typeStr;
+      bodyExpr = bodyInfo.discriminator
+        ? renderUnionBodySerializer(bodyInfo.discriminator, ctx)
+        : renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
+      entityType = unionEntityType(bodyInfo.modelNames, ctx);
+    } else {
+      requestType = 'Record<string, unknown>';
+      bodyExpr = 'payload';
+      entityType = requestType;
+    }
+
+    if (plan.isDelete) {
+      lines.push(`  async ${method}(options: ${optionParam.type}): Promise<void> {`);
+      renderOptionsObjectDestructure(lines, pathBindings, 'payload');
+      lines.push(`    await this.workos.deleteWithBody<${entityType}>(${pathStr}, ${bodyExpr});`);
+      lines.push('  }');
+      return true;
+    }
+
+    if (!responseModel) {
+      lines.push(`  async ${method}(options: ${optionParam.type}): Promise<void> {`);
+      renderOptionsObjectDestructure(lines, pathBindings, 'payload');
+      lines.push(`    await this.workos.${op.httpMethod}<void, ${entityType}>(${pathStr}, ${bodyExpr});`);
+      lines.push('  }');
+      return true;
+    }
+
+    const returnType = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
+    const wireType = plan.isArrayResponse ? `${wireInterfaceName(responseModel)}[]` : wireInterfaceName(responseModel);
+    const returnExpr = plan.isArrayResponse
+      ? `data.map(deserialize${responseModel})`
+      : `deserialize${responseModel}(data)`;
+
+    lines.push(`  async ${method}(options: ${optionParam.type}): Promise<${returnType}> {`);
+    renderOptionsObjectDestructure(lines, pathBindings, 'payload');
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
+    lines.push(`      ${pathStr},`);
+    lines.push(`      ${bodyExpr},`);
+    lines.push('    );');
+    lines.push(`    return ${returnExpr};`);
+    lines.push('  }');
+    return true;
+  }
+
+  if (responseModel) {
+    const returnType = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
+    const wireType = plan.isArrayResponse ? `${wireInterfaceName(responseModel)}[]` : wireInterfaceName(responseModel);
+    const returnExpr = plan.isArrayResponse
+      ? `data.map(deserialize${responseModel})`
+      : `deserialize${responseModel}(data)`;
+
+    lines.push(`  async ${method}(options: ${optionParam.type}): Promise<${returnType}> {`);
+    renderOptionsObjectDestructure(lines, pathBindings);
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr});`);
+    lines.push(`    return ${returnExpr};`);
+    lines.push('  }');
+    return true;
+  }
+
+  return false;
+}
+
+function renderOptionsObjectDestructure(lines: string[], pathBindings: string[], restName?: string): void {
+  if (pathBindings.length > 0 && restName) {
+    lines.push(`    const { ${pathBindings.join(', ')}, ...${restName} } = options;`);
+  } else if (pathBindings.length > 0) {
+    lines.push(`    const { ${pathBindings.join(', ')} } = options;`);
+  } else if (restName) {
+    lines.push(`    const ${restName} = options;`);
+  }
+}
+
+function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: EmitterContext): string[] {
+  return op.pathParams.map((param) => {
+    const localName = fieldName(param.name);
+    const optionField = resolveOptionsObjectField(localName, optionType, ctx);
+    return optionField === localName ? localName : `${optionField}: ${localName}`;
+  });
+}
+
+function resolveOptionsObjectField(localName: string, optionType: string, ctx: EmitterContext): string {
+  const fields = ctx.apiSurface?.interfaces?.[optionType]?.fields;
+  if (!fields) return localName;
+  if (fields[localName]) return localName;
+  if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
+  return localName;
 }
 
 function renderPaginatedMethod(
@@ -1130,9 +1459,11 @@ function renderDeleteWithBodyMethod(
   const bodyInfo = extractRequestBodyType(op, ctx);
   let requestType: string;
   let bodyExpr: string;
+  let entityType: string;
   if (bodyInfo?.kind === 'model') {
     requestType = resolveInterfaceName(bodyInfo.name, ctx);
     bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
+    entityType = requestEntityType(bodyExpr, requestType);
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
@@ -1140,9 +1471,11 @@ function renderDeleteWithBodyMethod(
     } else {
       bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
+    entityType = unionEntityType(bodyInfo.modelNames, ctx);
   } else {
     requestType = 'Record<string, unknown>';
     bodyExpr = 'payload';
+    entityType = requestType;
   }
 
   const paramParts: string[] = [];
@@ -1154,7 +1487,7 @@ function renderDeleteWithBodyMethod(
   paramParts.push(`payload: ${requestType}`);
 
   lines.push(`  async ${method}(${paramParts.join(', ')}): Promise<void> {`);
-  lines.push(`    await this.workos.deleteWithBody(${pathStr}, ${bodyExpr});`);
+  lines.push(`    await this.workos.deleteWithBody<${entityType}>(${pathStr}, ${bodyExpr});`);
   lines.push('  }');
 }
 
@@ -1171,9 +1504,11 @@ function renderBodyMethod(
   const bodyInfo = extractRequestBodyType(op, ctx);
   let requestType: string;
   let bodyExpr: string;
+  let entityType: string;
   if (bodyInfo?.kind === 'model') {
     requestType = resolveInterfaceName(bodyInfo.name, ctx);
     bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
+    entityType = requestEntityType(bodyExpr, requestType);
   } else if (bodyInfo?.kind === 'union') {
     requestType = bodyInfo.typeStr;
     if (bodyInfo.discriminator) {
@@ -1181,9 +1516,11 @@ function renderBodyMethod(
     } else {
       bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
     }
+    entityType = unionEntityType(bodyInfo.modelNames, ctx);
   } else {
     requestType = 'Record<string, unknown>';
     bodyExpr = 'payload';
+    entityType = requestType;
   }
 
   const paramParts: string[] = [];
@@ -1217,13 +1554,13 @@ function renderBodyMethod(
   lines.push(`  async ${method}(${paramsStr}): Promise<${returnType}> {`);
   if (plan.isIdempotentPost) {
     if (hasCustomEncoding) {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push(`      { ...requestOptions${encodingOption} },`);
       lines.push('    );');
     } else {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push('      requestOptions,');
@@ -1231,13 +1568,13 @@ function renderBodyMethod(
     }
   } else {
     if (hasCustomEncoding) {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push(`      { ${encodingOption.slice(2)} },`);
       lines.push('    );');
     } else {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(`);
+      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
       lines.push(`      ${pathStr},`);
       lines.push(`      ${bodyExpr},`);
       lines.push('    );');
@@ -1384,12 +1721,14 @@ function renderVoidMethod(
 
   let bodyParam = '';
   let bodyExpr = 'payload';
+  let entityType = 'Record<string, unknown>';
   if (plan.hasBody) {
     const bodyInfo = extractRequestBodyType(op, ctx);
     if (bodyInfo?.kind === 'model') {
       const requestType = resolveInterfaceName(bodyInfo.name, ctx);
       bodyParam = `payload: ${requestType}`;
       bodyExpr = bodyArgExpr(bodyInfo.name, requestType, ctx);
+      entityType = requestEntityType(bodyExpr, requestType);
     } else if (bodyInfo?.kind === 'union') {
       bodyParam = `payload: ${bodyInfo.typeStr}`;
       if (bodyInfo.discriminator) {
@@ -1397,9 +1736,11 @@ function renderVoidMethod(
       } else {
         bodyExpr = renderNonDiscriminatedUnionBodySerializer(bodyInfo.modelNames, ctx);
       }
+      entityType = unionEntityType(bodyInfo.modelNames, ctx);
     } else {
       bodyParam = 'payload: Record<string, unknown>';
       bodyExpr = 'payload';
+      entityType = 'Record<string, unknown>';
     }
   }
 
@@ -1411,7 +1752,7 @@ function renderVoidMethod(
 
   lines.push(`  async ${method}(${allParams}): Promise<void> {`);
   if (plan.hasBody) {
-    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}, ${bodyExpr});`);
+    lines.push(`    await this.workos.${op.httpMethod}<void, ${entityType}>(${pathStr}, ${bodyExpr});`);
   } else if (hasQuery) {
     if (hasInjected) {
       // Build query object with visible params, defaults, and inferred fields

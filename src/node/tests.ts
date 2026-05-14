@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
 import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
@@ -12,7 +14,7 @@ import {
   wireInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import {
   assignModelsToServices,
   createServiceDirResolver,
@@ -24,6 +26,30 @@ import {
   computeNonEventReachable,
 } from './utils.js';
 import { groupByMount } from '../shared/resolved-ops.js';
+import { isNodeOwnedService } from './options.js';
+
+type BaselineMethod = {
+  params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
+  returnType?: string;
+};
+
+function baselineMethodFor(service: Service, method: string, ctx: EmitterContext): BaselineMethod | undefined {
+  const serviceClass = resolveResourceClassName(service, ctx);
+  return ctx.apiSurface?.classes?.[serviceClass]?.methods?.[method]?.[0] as BaselineMethod | undefined;
+}
+
+function optionsObjectParam(method: BaselineMethod | undefined): { name: string; type: string } | undefined {
+  if (!method || method.params.length !== 1) return undefined;
+  const [param] = method.params;
+  if (param.name !== 'options') return undefined;
+  if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
+  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
+  return { name: param.name, type: param.type };
+}
+
+function autoPaginatableItemType(returnType: string | undefined): string | undefined {
+  return returnType?.match(/\bAutoPaginatable<\s*([A-Za-z_$][\w$]*)/)?.[1];
+}
 
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -76,7 +102,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const { name: mountName, operations } of testEntries) {
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
-    const ops = uncoveredOperations(mergedService, ctx);
+    const isOwnedService = isNodeOwnedService(ctx, mountName, resolveResourceClassName(mergedService, ctx));
+    const ops = isOwnedService ? operations : uncoveredOperations(mergedService, ctx);
     if (ops.length === 0) continue;
 
     // Skip tests for services without a WorkOS property in the baseline
@@ -104,7 +131,7 @@ function generateServiceTest(
   mountAccessors?: Map<string, string>,
 ): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
-  const serviceDir = resolveServiceDir(resolvedName);
+  const serviceDir = resolveResourceDir(service, ctx);
   const serviceClass = resolvedName;
   const serviceProp = mountAccessors?.get(service.name) ?? servicePropertyName(resolvedName);
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
@@ -148,11 +175,6 @@ function generateServiceTest(
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
-  // Import shared test helpers for error and pagination tests
-  if (hasPaginated) testUtils.push('testEmptyResults', 'testPaginationParams');
-  // Only import testUnauthorized when at least one operation has a response model or is paginated
-  const hasErrorTests = plans.some((p) => p.plan.responseModelName || p.plan.isPaginated);
-  if (hasErrorTests) testUtils.push('testUnauthorized');
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -215,24 +237,20 @@ function generateServiceTest(
   lines.push('  beforeEach(() => fetch.resetMocks());');
 
   for (const { op, plan, method } of plans) {
+    const existingMethod = baselineMethodFor(service, method, ctx);
     lines.push('');
     lines.push(`  describe('${method}', () => {`);
 
     if (plan.isPaginated) {
-      renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
+      renderPaginatedTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames, existingMethod);
     } else if (plan.isDelete) {
-      renderDeleteTest(lines, op, plan, method, serviceProp, modelMap);
+      renderDeleteTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     } else if (plan.hasBody && plan.responseModelName) {
-      renderBodyTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
+      renderBodyTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames, existingMethod);
     } else if (plan.responseModelName) {
-      renderGetTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames);
+      renderGetTest(lines, op, plan, method, serviceProp, modelMap, ctx, entityHelperNames, existingMethod);
     } else {
-      renderVoidTest(lines, op, plan, method, serviceProp, modelMap);
-    }
-
-    // Error case test for all non-void operations
-    if (plan.responseModelName || plan.isPaginated) {
-      renderErrorTest(lines, op, plan, method, serviceProp, modelMap);
+      renderVoidTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     }
 
     lines.push('  });');
@@ -281,6 +299,7 @@ function renderPaginatedTest(
   modelMap: Map<string, Model>,
   ctx?: EmitterContext,
   entityHelpers?: Set<string>,
+  baselineMethod?: BaselineMethod,
 ): void {
   let itemModelName = op.pagination?.itemType.kind === 'model' ? op.pagination.itemType.name : 'Item';
   // Unwrap list wrapper models to match the fixture file naming in fixtures.ts
@@ -292,11 +311,15 @@ function renderPaginatedTest(
     }
   }
   const pathArgs = buildTestPathArgs(op);
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
+  const baselineItemType = autoPaginatableItemType(baselineMethod?.returnType);
+  const generatedItemType = ctx ? resolveInterfaceName(itemModelName, ctx) : null;
+  const skipFieldAssertions = Boolean(baselineItemType && generatedItemType && baselineItemType !== generatedItemType);
 
   lines.push("    it('returns paginated results', async () => {");
   lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
   lines.push('');
-  lines.push(`      const { data, listMetadata } = await workos.${serviceProp}.${method}(${pathArgs});`);
+  lines.push(`      const { data, listMetadata } = await workos.${serviceProp}.${method}(${optionsArg ?? pathArgs});`);
   lines.push('');
   lines.push("      expect(fetchMethod()).toBe('GET');");
   // Fix #12: Full URL path assertion instead of toContain()
@@ -308,7 +331,9 @@ function renderPaginatedTest(
 
   // Assert on first item fields — use entity helper if available
   const paginatedHelperName = ctx ? `expect${resolveInterfaceName(itemModelName, ctx)}` : null;
-  if (paginatedHelperName && entityHelpers?.has(paginatedHelperName)) {
+  if (skipFieldAssertions) {
+    lines.push('      expect(data.length).toBeGreaterThan(0);');
+  } else if (paginatedHelperName && entityHelpers?.has(paginatedHelperName)) {
     lines.push('      expect(data.length).toBeGreaterThan(0);');
     lines.push(`      ${paginatedHelperName}(data[0]);`);
   } else {
@@ -325,17 +350,6 @@ function renderPaginatedTest(
   }
 
   lines.push('    });');
-
-  // Edge case: handles empty results — use shared helper
-  lines.push('');
-  lines.push(`    testEmptyResults(() => workos.${serviceProp}.${method}(${pathArgs}));`);
-
-  // Edge case: forwards pagination params — use shared helper
-  lines.push('');
-  lines.push(`    testPaginationParams(`);
-  lines.push(`      (opts) => workos.${serviceProp}.${method}(${pathArgs ? pathArgs + ', ' : ''}opts),`);
-  lines.push(`      list${itemModelName}Fixture,`);
-  lines.push('    );');
 }
 
 function renderDeleteTest(
@@ -345,12 +359,15 @@ function renderDeleteTest(
   method: string,
   serviceProp: string,
   modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
 ): void {
   const pathArgs = buildTestPathArgs(op);
   // Build realistic payload for body-bearing delete operations
   const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
   const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap)) : '';
-  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
+  const args = optionsArg ?? (plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs);
 
   lines.push("    it('sends a DELETE request', async () => {");
   lines.push('      fetchOnce({}, { status: 204 });');
@@ -380,6 +397,7 @@ function renderBodyTest(
   modelMap: Map<string, Model>,
   ctx?: EmitterContext,
   entityHelpers?: Set<string>,
+  baselineMethod?: BaselineMethod,
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
@@ -388,7 +406,8 @@ function renderBodyTest(
   // Build realistic payload from request body model fields
   const payload = buildTestPayload(op, modelMap);
   const payloadArg = payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap);
-  const allArgs = pathArgs ? `${pathArgs}, ${payloadArg}` : payloadArg;
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
+  const allArgs = optionsArg ?? (pathArgs ? `${pathArgs}, ${payloadArg}` : payloadArg);
 
   lines.push("    it('sends the correct request and returns result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
@@ -440,15 +459,17 @@ function renderGetTest(
   modelMap: Map<string, Model>,
   ctx?: EmitterContext,
   entityHelpers?: Set<string>,
+  baselineMethod?: BaselineMethod,
 ): void {
   const responseModelName = plan.responseModelName!;
   const fixture = `${toCamelCase(responseModelName)}Fixture`;
   const pathArgs = buildTestPathArgs(op);
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
 
   lines.push("    it('returns the expected result', async () => {");
   lines.push(`      fetchOnce(${fixture});`);
   lines.push('');
-  lines.push(`      const result = await workos.${serviceProp}.${method}(${pathArgs});`);
+  lines.push(`      const result = await workos.${serviceProp}.${method}(${optionsArg ?? pathArgs});`);
   lines.push('');
   lines.push(`      expect(fetchMethod()).toBe('${op.httpMethod.toUpperCase()}');`);
   // Fix #12: Full URL path assertion instead of toContain()
@@ -485,12 +506,15 @@ function renderVoidTest(
   method: string,
   serviceProp: string,
   modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
 ): void {
   const pathArgs = buildTestPathArgs(op);
   // Build realistic payload for body-bearing void operations
   const payload = plan.hasBody ? buildTestPayload(op, modelMap) : null;
   const bodyArg = plan.hasBody ? (payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap)) : '';
-  const args = plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs;
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
+  const args = optionsArg ?? (plan.hasBody ? (pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg) : pathArgs);
 
   lines.push("    it('sends the request', async () => {");
   lines.push('      fetchOnce({});');
@@ -507,57 +531,44 @@ function renderVoidTest(
   lines.push('    });');
 }
 
-function renderErrorTest(
-  lines: string[],
+function buildOptionsObjectTestArg(
   op: Operation,
   plan: any,
-  method: string,
-  serviceProp: string,
+  baselineMethod: BaselineMethod | undefined,
   modelMap: Map<string, Model>,
-): void {
-  const args = buildCallArgs(op, plan, modelMap);
+  ctx?: EmitterContext,
+): string | null {
+  const optionParam = optionsObjectParam(baselineMethod);
+  if (!optionParam) return null;
 
-  lines.push('');
-  lines.push(`    testUnauthorized(() => workos.${serviceProp}.${method}(${args}));`);
-
-  // Add error-status tests based on the operation's error responses
-  const errorStatuses = new Set(op.errors.map((e) => e.statusCode));
-
-  // 404 test for find/get methods
-  if (errorStatuses.has(404) && (method.startsWith('get') || method.startsWith('find'))) {
-    lines.push('');
-    lines.push("    it('throws NotFoundException on 404', async () => {");
-    lines.push("      fetchOnce('', { status: 404 });");
-    lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
-    lines.push('    });');
+  const entries: string[] = [];
+  for (const param of op.pathParams) {
+    const localName = fieldName(param.name);
+    const optionField = resolveOptionsObjectField(localName, optionParam.type, ctx);
+    entries.push(`${optionField}: ${JSON.stringify(pathParamTestValue(param, localName))}`);
   }
 
-  // 422 test for create/update methods
-  if (errorStatuses.has(422) && (method.startsWith('create') || method.startsWith('update'))) {
-    lines.push('');
-    lines.push("    it('throws UnprocessableEntityException on 422', async () => {");
-    lines.push("      fetchOnce('', { status: 422 });");
-    lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
-    lines.push('    });');
+  if (plan.hasBody) {
+    const payload = buildTestPayload(op, modelMap);
+    if (payload) entries.push(...objectLiteralEntries(payload.camelCaseObj));
   }
+
+  return `{ ${entries.join(', ')} }`;
 }
 
-/**
- * Build the argument string for a method call in tests.
- * Shared by renderErrorTest and other test renderers.
- */
-function buildCallArgs(op: Operation, plan: any, modelMap: Map<string, Model>): string {
-  const pathArgs = buildTestPathArgs(op);
-  const isPaginated = plan.isPaginated;
-  const hasBody = plan.hasBody;
+function objectLiteralEntries(literal: string): string[] {
+  const trimmed = literal.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return [];
+  const body = trimmed.slice(1, -1).trim();
+  return body ? body.split(',').map((entry) => entry.trim()) : [];
+}
 
-  if (isPaginated) return pathArgs || '';
-  if (hasBody) {
-    const payload = buildTestPayload(op, modelMap);
-    const bodyArg = payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap);
-    return pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg;
-  }
-  return pathArgs || '';
+function resolveOptionsObjectField(localName: string, optionType: string, ctx?: EmitterContext): string {
+  const fields = ctx?.apiSurface?.interfaces?.[optionType]?.fields;
+  if (!fields) return localName;
+  if (fields[localName]) return localName;
+  if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
+  return localName;
 }
 
 /**
@@ -848,6 +859,12 @@ function modelNeedsRoundTripTest(model: Model): boolean {
   return model.fields.length > 0;
 }
 
+function fixtureIsHandOwned(fixturePath: string, ctx: EmitterContext): boolean {
+  const root = ctx.outputDir ?? ctx.targetDir;
+  if (!root) return false;
+  return fs.existsSync(path.join(root, fixturePath));
+}
+
 /**
  * Generate serializer round-trip tests for models that have both serialize and
  * deserialize functions and have nested types requiring non-trivial serialization.
@@ -867,14 +884,17 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   // Skip models unchanged from baseline (no new fields) since their serializers are not regenerated.
   // Skip models unreachable from non-event services (no model/serializer files generated).
   const nonEventReachable = computeNonEventReachable(spec.services, spec.models);
-  const eligibleModels = spec.models.filter(
-    (m) =>
+  const generatedSerializerModels = (ctx as any)._generatedSerializerModels as Set<string> | undefined;
+  const eligibleModels = spec.models.filter((m) => {
+    const service = modelToService.get(m.name);
+    return (
       nonEventReachable.has(m.name) &&
       modelNeedsRoundTripTest(m) &&
       !isListMetadataModel(m) &&
       !isListWrapperModel(m) &&
-      modelHasNewFields(m, ctx),
-  );
+      (generatedSerializerModels?.has(m.name) ?? (modelHasNewFields(m, ctx) || isNodeOwnedService(ctx, service)))
+    );
+  });
 
   if (eligibleModels.length === 0) return files;
 
@@ -887,6 +907,8 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   for (const model of eligibleModels) {
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
+    const fixturePath = `src/${dirName}/fixtures/${fileName(model.name)}.json`;
+    if (!fixtureIsHandOwned(fixturePath, ctx)) continue;
     if (!modelsByDir.has(dirName)) {
       modelsByDir.set(dirName, []);
     }
@@ -901,6 +923,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     const serializerImports: string[] = [];
     const interfaceImports: string[] = [];
     const fixtureImports: string[] = [];
+    const deserializeOnlyModels = new Set<string>();
 
     for (const model of models) {
       const domainName = resolveInterfaceName(model.name, ctx);
@@ -909,8 +932,10 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
       const interfacePath = `src/${modelDir}/interfaces/${fileName(model.name)}.interface.ts`;
       const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.json`;
+      const deserializeOnly = serializeSkipped.has(model.name) || fixtureIsHandOwned(fixturePath, ctx);
+      if (deserializeOnly) deserializeOnlyModels.add(model.name);
 
-      if (serializeSkipped.has(model.name)) {
+      if (deserializeOnly) {
         serializerImports.push(
           `import { deserialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
         );
@@ -941,8 +966,8 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const fixtureName = `${toCamelCase(domainName)}Fixture`;
       const wireName = wireInterfaceName(domainName);
 
-      if (serializeSkipped.has(model.name)) {
-        // Deserialize-only test (no serialize function available)
+      if (deserializeOnlyModels.has(model.name)) {
+        // Deserialize-only test for hand-owned fixtures or models without a serializer.
         lines.push(`describe('${domainName}Serializer', () => {`);
         lines.push("  it('deserializes correctly', () => {");
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);

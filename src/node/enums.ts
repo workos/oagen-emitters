@@ -1,14 +1,14 @@
-import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { toPascalCase, walkTypeRef } from '@workos/oagen';
+import type { Enum, EmitterContext, GeneratedFile, Model, Service } from '@workos/oagen';
+import { assignModelsToServices, collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment } from './utils.js';
 import { isInlineEnum } from './type-map.js';
-import { liveSurfaceConstEnumMembers } from './live-surface.js';
+import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
-  const enumToService = assignEnumsToServices(enums, ctx.spec.services);
+  const enumToService = assignEnumsToServices(enums, ctx.spec.services, ctx.spec.models, ctx);
   const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
@@ -25,7 +25,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const baselineAlias = ctx.apiSurface?.typeAliases?.[enumDef.name];
     const generatedPath = `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`;
 
-    const baselineSourceFile = (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile;
+    const baselineSourceFile =
+      (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile ?? liveSurfaceInterfacePath(enumDef.name);
+    if (dirName === 'common' && !baselineSourceFile && (ctx.outputDir || ctx.targetDir || ctx.apiSurface)) {
+      continue;
+    }
     if (baselineSourceFile && baselineSourceFile !== generatedPath) {
       continue;
     }
@@ -127,7 +131,12 @@ function extractLiteralUnionValues(aliasValue: string): Set<string> {
   return values;
 }
 
-export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {
+export function assignEnumsToServices(
+  enums: Enum[],
+  services: Service[],
+  models: Model[] = [],
+  ctx?: EmitterContext,
+): Map<string, string> {
   const enumToService = new Map<string, string>();
   const enumNames = new Set(enums.map((e) => e.name));
 
@@ -145,6 +154,20 @@ export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<s
       for (const name of refs) {
         if (enumNames.has(name) && !enumToService.has(name)) {
           enumToService.set(name, service.name);
+        }
+      }
+    }
+  }
+
+  if (models.length > 0) {
+    const modelToService = assignModelsToServices(models, services, ctx?.modelHints);
+    for (const model of models) {
+      const service = modelToService.get(model.name);
+      if (!service) continue;
+
+      for (const name of collectFieldDependencies(model).enums) {
+        if (enumNames.has(name) && !enumToService.has(name)) {
+          enumToService.set(name, service);
         }
       }
     }

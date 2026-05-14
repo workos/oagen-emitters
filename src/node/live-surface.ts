@@ -89,7 +89,6 @@ export function buildLiveSurface(rootDir: string): LiveSurface {
   for (const absPath of walk(srcRoot)) {
     const rel = toPosix(path.relative(rootDir, absPath));
     surface.files.add(rel);
-    if (rel.endsWith('.spec.ts') || rel.endsWith('.test.ts')) continue;
     if (!rel.endsWith('.ts')) continue;
     if (surface.trackedFiles.size > 0 && !surface.trackedFiles.has(rel)) continue;
 
@@ -105,6 +104,8 @@ export function buildLiveSurface(rootDir: string): LiveSurface {
     } else if (isAutogen(text)) {
       surface.autogenFiles.add(rel);
     }
+
+    if (rel.endsWith('.spec.ts') || rel.endsWith('.test.ts')) continue;
 
     extractDeclarations(text, rel, surface);
   }
@@ -138,6 +139,9 @@ export function liveSurfaceHasManagedFile(relPath: string): boolean {
   const managedPaths = surface.trackedFiles.size > 0 ? surface.trackedFiles : surface.files;
   return managedPaths.has(relPath);
 }
+export function liveSurfaceHasAutogenFile(relPath: string): boolean {
+  return activeSurface?.autogenFiles.has(relPath) ?? false;
+}
 export function liveSurfaceHasExistingSdk(): boolean {
   const surface = activeSurface;
   if (!surface) return false;
@@ -163,6 +167,9 @@ export function emptyLiveSurface(): LiveSurface {
 /** Returns the existing member-name → value map for a const-object enum, if any. */
 export function liveSurfaceConstEnumMembers(name: string): Map<string, string> | undefined {
   return activeSurface?.constObjectEnums.get(name);
+}
+export function liveSurfaceInterfacePath(name: string): string | undefined {
+  return activeSurface?.interfaces.get(name)?.filePath;
 }
 
 /** Should the emitter avoid writing this relative path on disk? */
