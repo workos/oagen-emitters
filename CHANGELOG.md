@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.12.1](https://github.com/workos/oagen-emitters/compare/v0.12.0...v0.12.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* align rust sdk better with other languages ([0fc7cdc](https://github.com/workos/oagen-emitters/commit/0fc7cdcfc5493bfc402fe8411bb398646b6e69a9))
+
+## [0.12.0](https://github.com/workos/oagen-emitters/compare/v0.11.0...v0.12.0) (2026-05-11)
+
+
+### Features
+
+* **rust:** add Rust emitter ([#97](https://github.com/workos/oagen-emitters/issues/97)) ([363942e](https://github.com/workos/oagen-emitters/commit/363942e977cf540538af266f8132495b02e18f22))
+
+
+### Bug Fixes
+
+* **python:** emit request path as tuple of segments ([#98](https://github.com/workos/oagen-emitters/issues/98)) ([64f4f6f](https://github.com/workos/oagen-emitters/commit/64f4f6fb5481bdcee328403d1cf7a31cab7126d8))
+
+## [0.11.0](https://github.com/workos/oagen-emitters/compare/v0.10.0...v0.11.0) (2026-05-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* code that previously caught a TypeError from a typed property assignment, or that read $data passthrough from an unmatched union variant, will instead need to handle \UnexpectedValueException at the fromArray() call site. Every generated PHP SDK with a discriminated union model is affected.
+
+### Bug Fixes
+
+* surface schema/SDK drift across PHP, Python, Go, Ruby emitters ([#94](https://github.com/workos/oagen-emitters/issues/94)) ([558c55c](https://github.com/workos/oagen-emitters/commit/558c55cc851e16f27a6a2e7eb577442557827be7))
+
+
+### Miscellaneous Chores
+
+* release as 0.11.0 ([a448006](https://github.com/workos/oagen-emitters/commit/a448006a0a20674bd91971de1f4b56e81ffcb76d))
+
+## [0.10.0](https://github.com/workos/oagen-emitters/compare/v0.9.1...v0.10.0) (2026-05-06)
+
+
+### Features
+
+* **dotnet:** honor enum default as zero variant ([#92](https://github.com/workos/oagen-emitters/issues/92)) ([3fbb5d5](https://github.com/workos/oagen-emitters/commit/3fbb5d5f53fa66f1a3b4f2cb08c069e9d2d2a1fc))
+
 ## [0.9.1](https://github.com/workos/oagen-emitters/compare/v0.9.0...v0.9.1) (2026-05-06)
 
 

@@ -168,6 +168,76 @@ describe('go/resources', () => {
     expect(content).toContain('newIterator[User](ctx, s.client, "GET", "/users", nil, "after", "data", opts,');
   });
 
+  it('propagates spec defaults into the newIterator defaults map', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          makeOp({
+            name: 'listUsers',
+            httpMethod: 'get',
+            path: '/users',
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+                default: 10,
+              },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                default: 'desc',
+              },
+            ],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'User' },
+            },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const content = generateResources(services, makeCtx(spec))[0].content;
+    expect(content).toMatch(/newIterator\[User\][^\n]*map\[string\]string\{"limit": "10", "order": "desc"\}/);
+  });
+
+  it('omits defaults from newIterator when the spec carries no defaults (no client-side hardcode)', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          makeOp({
+            name: 'listUsers',
+            httpMethod: 'get',
+            path: '/users',
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              { name: 'order', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'User' },
+            },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services);
+    const content = generateResources(services, makeCtx(spec))[0].content;
+    // Last argument to newIterator must be `nil`, not a map literal.
+    expect(content).toMatch(/newIterator\[User\][^\n]*opts, nil\)/);
+    expect(content).not.toContain('"order": "desc"');
+  });
+
   it('generates delete methods returning error', () => {
     const services: Service[] = [
       {

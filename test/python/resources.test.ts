@@ -83,8 +83,8 @@ describe('generateResources', () => {
     // GET method with path param
     expect(content).toContain('def get_organization(');
     expect(content).toContain('id: str,');
-    expect(content).toContain(`f"organizations/{quote(str(id), safe='')}"`);
-    expect(content).toContain('from urllib.parse import quote');
+    expect(content).toContain(`("organizations", str(id))`);
+    expect(content).not.toContain('from urllib.parse import quote');
     expect(content).toContain('model=Organization');
     // Public request methods (no underscore prefix)
     expect(content).toContain('self._client.request(');
@@ -167,6 +167,51 @@ describe('generateResources', () => {
       'after: An object ID that defines your place in the list. When the ID is not present, you are at the end of the list.',
     );
     expect(content).toContain('order: Order the results by the creation time.');
+    // The spec has no `default` for `order` here, so the SDK must NOT
+    // hardcode 'desc' on the client. Server's default applies instead.
+    expect(content).toContain('order: Optional[str] = None,');
+    expect(content).not.toContain('order: Optional[str] = "desc"');
+  });
+
+  it('reads pagination order default from the spec rather than hardcoding "desc"', () => {
+    const models: Model[] = [
+      { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'listOrganizations',
+            httpMethod: 'get',
+            path: '/organizations',
+            pathParams: [],
+            queryParams: [
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                default: 'desc',
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Organization' },
+            },
+          },
+        ],
+      },
+    ];
+    const content = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } })[0].content;
+    expect(content).toContain('order: Optional[str] = "desc",');
   });
 
   it('indents multiline argument descriptions in docstrings', () => {

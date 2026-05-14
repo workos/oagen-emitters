@@ -187,6 +187,64 @@ describe('ruby/resources', () => {
     expect(content).toContain('ListStruct.from_response(');
   });
 
+  it('reads pagination order default from the spec rather than hardcoding "desc"', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'listOrganizations',
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              {
+                name: 'order',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                default: 'desc',
+              },
+            ],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Organization' },
+            },
+          }),
+        ],
+      },
+    ];
+    const content = generateResources(services, makeCtx(makeSpec(services)))[0].content;
+    expect(content).toContain("order: 'desc'");
+  });
+
+  it("emits order: nil when the spec carries no default (no 'desc' hardcode)", () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'listOrganizations',
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              { name: 'order', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Organization' },
+            },
+          }),
+        ],
+      },
+    ];
+    const content = generateResources(services, makeCtx(makeSpec(services)))[0].content;
+    expect(content).toContain('order: nil');
+    expect(content).not.toContain("order: 'desc'");
+  });
+
   // ── P0-3: paginated response shape detection ──────────────────────────
 
   it('generates ListStruct for paginated endpoints with array response type', () => {

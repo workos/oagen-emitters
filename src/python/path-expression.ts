@@ -1,4 +1,4 @@
-import { parsePathTemplate, hasPathParams } from '../shared/path-template.js';
+import { parsePathTemplate, type PathSegment } from '../shared/path-template.js';
 import { fieldName } from './naming.js';
 
 export interface PythonPathOptions {
@@ -7,46 +7,95 @@ export interface PythonPathOptions {
 }
 
 /**
- * Build the Python f-string that the SDK passes to the request layer.
+ * Build the Python tuple expression that the SDK passes to the request layer.
  *
- * Every {paramName} placeholder is wrapped in
- * `urllib.parse.quote(str(...), safe="")` so that an unencoded "/" or "../"
- * in a caller-supplied id cannot be normalized by the underlying HTTP
- * transport into a different endpoint of the WorkOS API while still
- * authenticated with the application's API key. `safe=""` is critical:
- * the stdlib default of `safe="/"` does NOT encode "/" and would leave the
- * traversal vector open.
+ * The returned expression is a tuple of per-segment values. The request layer
+ * (`_BaseWorkOSClient._encode_path`) URL-encodes each element with `safe=""`
+ * before joining with "/", so a caller-supplied id containing "/" or "../"
+ * cannot escape its intended segment. This is the structural fix that lets
+ * the request layer make a real guarantee instead of inspecting an already-
+ * concatenated path string.
  *
- * Generated files using this helper must import `quote` (e.g.
- * `from urllib.parse import quote`).
+ *   "/orgs"                        → `("orgs",)`
+ *   "/orgs/{id}"                   → `("orgs", str(id))`
+ *   "/orgs/{id}/users/{uid}"       → `("orgs", str(id), "users", str(uid))`
+ *   "/orgs/{id}" with id ∈ enums   → `("orgs", str(enum_value(id)))`
  *
- *   "/orgs"                        → `"orgs"`
- *   "/orgs/{id}"                   → `f"orgs/{quote(str(id), safe='')}"`
- *   "/orgs/{id}" with id ∈ enums   → `f"orgs/{quote(str(enum_value(id)), safe='')}"`
+ * Mixed segments (e.g. literal text adjacent to a placeholder within a single
+ * path component) are emitted as a Python f-string element. Per-segment
+ * encoding is still applied to the whole element by the request layer; this
+ * is rare in WorkOS specs but is handled deterministically.
  */
 export function buildPythonPathExpression(rawPath: string, options: PythonPathOptions = {}): string {
   const segments = parsePathTemplate(rawPath, { stripLeadingSlash: true });
-  if (segments.length === 0) return '""';
-  if (!hasPathParams(segments)) {
-    const literal = (segments[0] as { value: string }).value;
-    return `"${escapePyDoubleQuoted(literal)}"`;
-  }
+  if (segments.length === 0) return '()';
 
-  const enums = options.enumParams;
-  let body = '';
+  const components = splitIntoComponents(segments);
+  const parts = components.map((c) => emitComponent(c, options.enumParams));
+  return parts.length === 1 ? `(${parts[0]!},)` : `(${parts.join(', ')})`;
+}
+
+type Subpiece = { kind: 'literal'; value: string } | { kind: 'param'; name: string };
+
+/**
+ * Split a parsed path template into one component per "/"-separated piece.
+ * Each component is a list of literal / param subpieces; multi-subpiece
+ * components occur only for mixed segments like `foo{id}bar`.
+ */
+function splitIntoComponents(segments: PathSegment[]): Subpiece[][] {
+  const components: Subpiece[][] = [[]];
   for (const seg of segments) {
     if (seg.kind === 'literal') {
-      body += escapePyDoubleQuoted(seg.value);
+      const parts = seg.value.split('/');
+      const first = parts[0];
+      if (first !== undefined && first !== '') {
+        components[components.length - 1]!.push({ kind: 'literal', value: first });
+      }
+      for (let i = 1; i < parts.length; i++) {
+        components.push([]);
+        const part = parts[i];
+        if (part !== undefined && part !== '') {
+          components[components.length - 1]!.push({ kind: 'literal', value: part });
+        }
+      }
     } else {
-      const varName = fieldName(seg.name);
-      const inner = enums?.has(seg.name) ? `enum_value(${varName})` : varName;
-      body += `{quote(str(${inner}), safe='')}`;
+      components[components.length - 1]!.push({ kind: 'param', name: seg.name });
+    }
+  }
+  // Drop a trailing empty component if the path ended with a separator.
+  while (components.length > 1 && components[components.length - 1]!.length === 0) {
+    components.pop();
+  }
+  return components;
+}
+
+function emitComponent(component: Subpiece[], enumParams?: ReadonlySet<string>): string {
+  if (component.length === 1) {
+    const only = component[0]!;
+    if (only.kind === 'literal') return `"${escapePyDoubleQuoted(only.value)}"`;
+    const varName = fieldName(only.name);
+    const inner = enumParams?.has(only.name) ? `enum_value(${varName})` : varName;
+    return `str(${inner})`;
+  }
+  // Mixed component — fall back to an f-string. The request layer still
+  // URL-encodes the resulting element as a single segment.
+  let body = '';
+  for (const piece of component) {
+    if (piece.kind === 'literal') {
+      body += escapeFStringLiteral(piece.value);
+    } else {
+      const varName = fieldName(piece.name);
+      const inner = enumParams?.has(piece.name) ? `enum_value(${varName})` : varName;
+      body += `{${inner}}`;
     }
   }
   return `f"${body}"`;
 }
 
 function escapePyDoubleQuoted(literal: string): string {
-  // f-strings: backslash, double-quote, and "{"/"}" all need escaping
+  return literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function escapeFStringLiteral(literal: string): string {
   return literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\{/g, '{{').replace(/\}/g, '}}');
 }

@@ -70,18 +70,37 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('    [STJS.JsonConverter(typeof(WorkOSStringEnumConverterFactory))]');
     lines.push(`    public enum ${typeName}`);
     lines.push('    {');
-    // Unknown sentinel as first member (value 0) for forward-compatibility
-    lines.push(`        [EnumMember(Value = "unknown")]`);
-    lines.push(`        Unknown,`);
-    lines.push('');
+
+    // If the spec defines a default that matches a member, promote it to
+    // ordinal 0 so `default(EnumType)` returns that variant. Other members
+    // get explicit ascending ordinals, and the Unknown sentinel is pushed
+    // to a high explicit ordinal (99) so it never sits at 0.
+    const defaultMatch =
+      enumDef.default !== undefined ? uniqueValues.find((v) => v.value === enumDef.default) : undefined;
+
+    const orderedValues = defaultMatch
+      ? [defaultMatch, ...uniqueValues.filter((v) => v !== defaultMatch)]
+      : uniqueValues;
 
     const usedNames = new Set<string>();
-    usedNames.add('Unknown');
-    // Track used EnumMember wire values to avoid duplicates (sentinel uses "unknown")
     const usedWireValues = new Set<string>();
-    usedWireValues.add('unknown');
-    for (let i = 0; i < uniqueValues.length; i++) {
-      const v = uniqueValues[i];
+
+    if (defaultMatch) {
+      // Reserve the sentinel name and wire value so spec values that collide
+      // with "unknown"/Unknown still get the existing skip/dedup behavior.
+      usedNames.add('Unknown');
+      usedWireValues.add('unknown');
+    } else {
+      // Existing behavior: Unknown sentinel at ordinal 0.
+      lines.push(`        [EnumMember(Value = "unknown")]`);
+      lines.push(`        Unknown,`);
+      lines.push('');
+      usedNames.add('Unknown');
+      usedWireValues.add('unknown');
+    }
+
+    for (let i = 0; i < orderedValues.length; i++) {
+      const v = orderedValues[i];
       // Skip values whose wire representation collides with the sentinel
       if (usedWireValues.has(String(v.value))) continue;
       usedWireValues.add(String(v.value));
@@ -102,8 +121,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push(`        [System.Obsolete("${msg}")]`);
       }
       lines.push(`        [EnumMember(Value = "${v.value}")]`);
-      const comma = i < uniqueValues.length - 1 ? ',' : ',';
-      lines.push(`        ${memberName}${comma}`);
+      // Explicit ordinals only when we promoted a default to position 0.
+      const ordinal = defaultMatch ? ` = ${i}` : '';
+      lines.push(`        ${memberName}${ordinal},`);
+    }
+
+    if (defaultMatch) {
+      lines.push('');
+      lines.push(`        [EnumMember(Value = "unknown")]`);
+      lines.push(`        Unknown = 99,`);
     }
 
     lines.push('    }');
