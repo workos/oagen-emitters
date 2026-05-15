@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile } from '@workos/oagen';
 
-import { fileName, resolveServiceDir, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import { fileName, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import { isInlineEnum } from './type-map.js';
 import {
   docComment,
   createServiceDirResolver,
@@ -11,7 +12,9 @@ import {
   isListWrapperModel,
   computeNonEventReachable,
 } from './utils.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, resolveResourceDir } from './resources.js';
+import { generatedResourceInterfaceModelNames } from './models.js';
+import { assignEnumsToServices } from './enums.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -48,7 +51,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = resolveServiceDir(resolvedName);
+    const serviceDir = resolveResourceDir(service, ctx);
     lines.push(`import { ${resolvedName} } from './${serviceDir}/${fileName(resolvedName)}';`);
   }
 
@@ -126,6 +129,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
+  const enumToService = assignEnumsToServices(spec.enums, spec.services, spec.models, ctx);
 
   // Group interface files by directory, tracking exported symbol names
   // to prevent TS2308 duplicate export errors when two files in the same
@@ -189,7 +193,8 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   // from common utils, so no per-resource interface file is generated.
   // Also skip unreachable models — use the same non-event reachability as model
   // generation so every barrel entry has a corresponding generated file.
-  const barrelReachable = computeNonEventReachable(spec.services, spec.models);
+  const barrelReachable =
+    generatedResourceInterfaceModelNames(spec.models, ctx) ?? computeNonEventReachable(spec.services, spec.models);
   for (const model of spec.models) {
     if (isListMetadataModel(model) || isListWrapperModel(model)) continue;
     if (!barrelReachable.has(model.name)) continue;
@@ -226,7 +231,10 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
 
   // Enums -> service directories
   for (const enumDef of spec.enums) {
-    const enumService = findEnumService(enumDef.name, spec.services);
+    // Inlined enums have no file to re-export.
+    if (isInlineEnum(enumDef.name)) continue;
+
+    const enumService = enumToService.get(enumDef.name);
     const dirName = resolveDir(enumService);
     if (!dirExports.has(dirName)) {
       dirExports.set(dirName, []);
@@ -368,6 +376,7 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
 function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
   const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
+  const enumToService = assignEnumsToServices(spec.enums, spec.services, spec.models, ctx);
 
   // Track all exported names to prevent duplicates.
   // Pre-seed with names already exported by the existing SDK to avoid generating
@@ -492,7 +501,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   // Per-service exports: service barrel + resource class
   for (const service of spec.services) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const serviceDir = resolveServiceDir(resolvedName);
+    const serviceDir = resolveResourceDir(service, ctx);
     // The interfaces directory may differ from the resource class directory when
     // a service's class name is remapped (e.g., WebhooksEndpoints class lives in
     // webhooks-endpoints/ but its model interfaces live in webhooks/).
@@ -508,7 +517,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
       return true;
     });
     const serviceEnums = spec.enums.filter((e) => {
-      const enumService = findEnumService(e.name, spec.services);
+      const enumService = enumToService.get(e.name);
       return enumService === service.name;
     });
 
@@ -575,7 +584,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const reachable = computeNonEventReachable(spec.services, spec.models);
   const unassignedModels = spec.models.filter((m) => !modelToService.has(m.name) && reachable.has(m.name));
   const commonEnums = spec.enums.filter((e) => {
-    const enumService = findEnumService(e.name, spec.services);
+    const enumService = enumToService.get(e.name);
     return !enumService;
   });
 
@@ -615,7 +624,7 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     if (exportedNames.has(enumDef.name)) continue;
     if (existingSdkExports.has(enumDef.name)) continue;
     exportedNames.add(enumDef.name);
-    const enumService = findEnumService(enumDef.name, spec.services);
+    const enumService = enumToService.get(enumDef.name);
     const dir = resolveDir(enumService);
     if (!exportedDirs.has(dir)) {
       const baselineEnum = ctx.apiSurface?.enums?.[enumDef.name];
@@ -641,28 +650,6 @@ function generateBarrel(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
     content: lines.join('\n'),
     skipIfExists: true,
   };
-}
-
-function findEnumService(enumName: string, services: Service[]): string | undefined {
-  for (const service of services) {
-    for (const op of service.operations) {
-      const refs: string[] = [];
-      const collect = (ref: any) => {
-        if (ref?.kind === 'enum' && ref.name === enumName) refs.push(ref.name);
-        if (ref?.items) collect(ref.items);
-        if (ref?.inner) collect(ref.inner);
-        if (ref?.variants) ref.variants.forEach(collect);
-        if (ref?.valueType) collect(ref.valueType);
-      };
-      if (op.requestBody) collect(op.requestBody);
-      collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams]) {
-        collect(p.type);
-      }
-      if (refs.length > 0) return service.name;
-    }
-  }
-  return undefined;
 }
 
 /**

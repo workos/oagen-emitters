@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { generateEnums } from '../../src/node/enums.js';
-import type { EmitterContext, ApiSpec, Enum, Service } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Enum } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { generateEnums } from '../../src/node/enums.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -24,33 +24,7 @@ describe('generateEnums', () => {
     expect(generateEnums([], ctx)).toEqual([]);
   });
 
-  it('generates string literal union type', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
-        {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
-            {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
-            },
-          ],
-          queryParams: [],
-          headerParams: [],
-          response: {
-            kind: 'model',
-            name: 'Organization',
-          },
-          errors: [],
-          injectIdempotencyKey: false,
-        },
-      ],
-    };
-
+  it('generates const-object enum with derived type alias', () => {
     const enums: Enum[] = [
       {
         name: 'Status',
@@ -62,138 +36,93 @@ describe('generateEnums', () => {
       },
     ];
 
-    // Enum not referenced by any service → placed in common/
-    const files = generateEnums(enums, {
-      ...ctx,
-      spec: { ...emptySpec, services: [service] },
-    });
-    expect(files.length).toBe(1);
-    expect(files[0].content).toMatchInlineSnapshot(`
-      "export type Status =
-        | 'active'
-        | 'inactive'
-        | 'pending';"
-    `);
+    const result = generateEnums(enums, ctx);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain('export const Status = {');
+    expect(result[0].content).toContain("Active: 'active'");
+    expect(result[0].content).toContain("Inactive: 'inactive'");
+    expect(result[0].content).toContain("Pending: 'pending'");
+    expect(result[0].content).toContain('} as const;');
+    expect(result[0].content).toContain('export type Status =');
+    expect(result[0].content).toContain('(typeof Status)[keyof typeof Status]');
+  });
+
+  it('places enum in common when not referenced by service', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [{ name: 'ACTIVE', value: 'active' }],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+
+    expect(result[0].path).toBe('src/common/interfaces/status.interface.ts');
   });
 
   it('places enum in service directory when referenced', () => {
-    const service: Service = {
-      name: 'Organizations',
-      operations: [
+    const enums: Enum[] = [
+      {
+        name: 'OrgStatus',
+        values: [{ name: 'ACTIVE', value: 'active' }],
+      },
+    ];
+
+    const specWithServices: ApiSpec = {
+      ...emptySpec,
+      enums,
+      services: [
         {
-          name: 'getOrganization',
-          httpMethod: 'get',
-          path: '/organizations/{id}',
-          pathParams: [
+          name: 'Organizations',
+          operations: [
             {
-              name: 'id',
-              type: { kind: 'primitive', type: 'string' },
-              required: true,
+              name: 'listOrganizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                {
+                  name: 'status',
+                  type: { kind: 'enum', name: 'OrgStatus', values: ['active'] },
+                  required: false,
+                },
+              ],
+              headerParams: [],
+              response: { kind: 'primitive', type: 'unknown' },
+              errors: [],
+              injectIdempotencyKey: false,
             },
           ],
-          queryParams: [],
-          headerParams: [],
-          response: { kind: 'enum', name: 'OrgStatus' },
-          errors: [],
-          injectIdempotencyKey: false,
         },
       ],
     };
 
-    const enums: Enum[] = [
-      {
-        name: 'OrgStatus',
-        values: [
-          { name: 'ACTIVE', value: 'active' },
-          { name: 'INACTIVE', value: 'inactive' },
-        ],
-      },
-    ];
-
-    const files = generateEnums(enums, {
+    const ctxWithServices: EmitterContext = {
       ...ctx,
-      spec: { ...emptySpec, services: [service] },
-    });
-    expect(files[0].path).toBe('src/organizations/interfaces/org-status.interface.ts');
-  });
-
-  it('derives PascalCase member names when merging new enum values into baseline', () => {
-    const enums: Enum[] = [
-      {
-        name: 'OrganizationDomainState',
-        values: [
-          { name: 'FAILED', value: 'failed' },
-          { name: 'PENDING', value: 'pending' },
-          { name: 'VERIFIED', value: 'verified' },
-          { name: 'LEGACY_VERIFIED', value: 'legacy_verified' },
-          { name: 'UNVERIFIED', value: 'unverified' },
-        ],
-      },
-    ];
-
-    const testCtx: EmitterContext = {
-      ...ctx,
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {},
-        interfaces: {},
-        typeAliases: {},
-        enums: {
-          OrganizationDomainState: {
-            name: 'OrganizationDomainState',
-            members: {
-              Failed: 'failed',
-              Pending: 'pending',
-              Verified: 'verified',
-            },
-          },
-        },
-        exports: {},
-      },
+      spec: specWithServices,
     };
 
-    const files = generateEnums(enums, testCtx);
-    const content = files[0].content;
+    const result = generateEnums(enums, ctxWithServices);
 
-    // Existing members should be preserved as-is
-    expect(content).toContain("Failed = 'failed',");
-    expect(content).toContain("Pending = 'pending',");
-    expect(content).toContain("Verified = 'verified',");
-
-    // New members should be PascalCase, not lowercased
-    expect(content).toContain("LegacyVerified = 'legacy_verified',");
-    expect(content).toContain("Unverified = 'unverified',");
-
-    // Should NOT produce lowercased member names
-    expect(content).not.toContain('legacyverified');
+    expect(result[0].path).toBe('src/organizations/interfaces/org-status.interface.ts');
   });
 
   it('renders @deprecated on enum values', () => {
     const enums: Enum[] = [
       {
-        name: 'Status',
+        name: 'Method',
         values: [
           { name: 'ACTIVE', value: 'active' },
-          {
-            name: 'LEGACY',
-            value: 'legacy',
-            description: 'No longer supported.',
-            deprecated: true,
-          },
-          { name: 'OLD', value: 'old', deprecated: true },
+          { name: 'OLD', value: 'old', deprecated: true, description: 'No longer supported.' },
+          { name: 'BARE', value: 'bare', deprecated: true },
         ],
       },
     ];
 
-    const files = generateEnums(enums, ctx);
-    const content = files[0].content;
+    const result = generateEnums(enums, ctx);
 
-    // Value with description + deprecated gets multiline JSDoc
-    expect(content).toContain('  /**\n   * No longer supported.\n   * @deprecated\n   */');
-
-    // Value with only deprecated gets single-line JSDoc
-    expect(content).toContain('  /** @deprecated */');
+    expect(result[0].content).toContain('No longer supported.\n   * @deprecated');
+    expect(result[0].content).toContain('/** @deprecated */');
   });
 });

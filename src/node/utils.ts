@@ -20,7 +20,6 @@ import { assignModelsToServices } from '@workos/oagen';
 
 /**
  * Compute a relative import path between two files within the generated SDK.
- * Strips .ts extension from the result.
  */
 export function relativeImport(fromFile: string, toFile: string): string {
   const fromDir = fromFile.split('/').slice(0, -1);
@@ -44,8 +43,6 @@ export function relativeImport(fromFile: string, toFile: string): string {
 
 /**
  * Render a JSDoc comment block from a description string.
- * Handles multiline descriptions by prefixing each line with ` * `.
- * Returns the lines with the given indent (default 0 spaces).
  */
 export function docComment(description: string, indent = 0): string[] {
   const pad = ' '.repeat(indent);
@@ -62,11 +59,7 @@ export function docComment(description: string, indent = 0): string[] {
 }
 
 /**
- * Build a map from model name → default type args string for generic models.
- * E.g., Profile<CustomAttributesType = Record<string, unknown>>
- *   → Map { 'Profile' → '<Record<string, unknown>>' }
- *
- * Non-generic models are not included in the map.
+ * Build a map from model name -> default type args string for generic models.
  */
 export function buildGenericModelDefaults(models: Model[]): Map<string, string> {
   const result = new Map<string, string>();
@@ -80,12 +73,8 @@ export function buildGenericModelDefaults(models: Model[]): Map<string, string> 
 
 /**
  * Remove unused imports from generated source code.
- * Scans the non-import body for each imported identifier and drops
- * individual names that are never referenced.  Removes entire import
- * statements when no names are used.
  */
 export function pruneUnusedImports(lines: string[]): string[] {
-  // Split lines into imports and body
   const importLines: string[] = [];
   const bodyLines: string[] = [];
   let inBody = false;
@@ -106,10 +95,8 @@ export function pruneUnusedImports(lines: string[]): string[] {
       kept.push(line);
       continue;
     }
-    // Extract imported names from the import statement
     const match = line.match(/\{([^}]+)\}/);
     if (!match) {
-      // Non-destructured import (e.g., import X from '...') — keep
       kept.push(line);
       continue;
     }
@@ -117,20 +104,14 @@ export function pruneUnusedImports(lines: string[]): string[] {
       .split(',')
       .map((n) => n.trim())
       .filter(Boolean);
-    // Filter to only names that appear in the body
     const usedNames = names.filter((name) => {
       const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
       return re.test(body);
     });
-    if (usedNames.length === 0) {
-      // No names used — drop entire import
-      continue;
-    }
+    if (usedNames.length === 0) continue;
     if (usedNames.length === names.length) {
-      // All names used — keep original line
       kept.push(line);
     } else {
-      // Some names unused — reconstruct import with only used names
       const isTypeImport = line.startsWith('import type');
       const fromMatch = line.match(/from\s+['"]([^'"]+)['"]/);
       if (fromMatch) {
@@ -145,7 +126,7 @@ export function pruneUnusedImports(lines: string[]): string[] {
   return [...kept, ...bodyLines];
 }
 
-/** Built-in TypeScript types that are always available (no import needed). */
+/** Built-in TypeScript types that are always available. */
 export const TS_BUILTINS = new Set([
   'Record',
   'Promise',
@@ -167,9 +148,7 @@ export const TS_BUILTINS = new Set([
 ]);
 
 /**
- * Detect whether the existing SDK uses string (ISO 8601) representation for
- * date-time fields.  Checks if any baseline interface has a date-time IR field
- * typed as plain `string` (not `Date`).
+ * Detect whether the existing SDK uses string representation for date-time fields.
  */
 export function detectStringDateConvention(models: Model[], ctx: EmitterContext): boolean {
   if (!ctx.apiSurface?.interfaces) return false;
@@ -190,8 +169,6 @@ export function detectStringDateConvention(models: Model[], ctx: EmitterContext)
 
 /**
  * Build a comprehensive set of all known type names from the IR and baseline.
- * Used to identify type parameters by elimination — any PascalCase name not in
- * this set is likely a generic type parameter.
  */
 export function buildKnownTypeNames(models: Model[], ctx: EmitterContext): Set<string> {
   const knownNames = new Set<string>();
@@ -211,8 +188,11 @@ export function buildKnownTypeNames(models: Model[], ctx: EmitterContext): Set<s
 
 /**
  * Create a service directory resolver bundle.
- * Encapsulates the common pattern of mapping models to services and resolving
- * the output directory for a given IR service name.
+ *
+ * When `ctx.apiSurface` is populated, the baseline `sourceFile` of an
+ * existing interface wins over the IR-derived first-reference assignment.
+ * This keeps generated imports pointing at the existing live SDK location
+ * instead of duplicating a model into a different service directory.
  */
 export function createServiceDirResolver(
   models: Model[],
@@ -225,19 +205,68 @@ export function createServiceDirResolver(
 } {
   const modelToService = assignModelsToServices(models, services, ctx.modelHints);
   const serviceNameMap = buildServiceNameMap(services, ctx);
-  const resolveDir = (irService: string | undefined) =>
-    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+
+  // Per-name → directory override, harvested from the live SDK surface.
+  // Stored under a sentinel "" service key in modelToService so resolveDir
+  // can dispatch on it without a separate map. Implementation: model name ->
+  // baseline directory string (e.g., "user-management"). The override map is
+  // attached by tagging the model name with a directory prefix that bypasses
+  // the IR-service lookup. Concretely we keep a side map.
+  const baselineDirByModel = new Map<string, string>();
+  const recordSource = (name: string, info: { sourceFile?: string } | undefined) => {
+    const sourceFile = info?.sourceFile;
+    if (!sourceFile) return;
+    const m = sourceFile.match(/^src\/([^/]+)\//);
+    if (!m) return;
+    baselineDirByModel.set(name, m[1]);
+  };
+  // Both interfaces and type aliases can shadow IR model names — e.g.
+  // `type Role = EnvironmentRole | OrganizationRole;` is the live SDK's
+  // canonical Role definition even though the IR represents Role as a model.
+  for (const [name, info] of Object.entries(ctx.apiSurface?.interfaces ?? {})) {
+    recordSource(name, info as { sourceFile?: string });
+  }
+  for (const [name, info] of Object.entries(ctx.apiSurface?.typeAliases ?? {})) {
+    if (!baselineDirByModel.has(name)) {
+      recordSource(name, info as { sourceFile?: string });
+    }
+  }
+
+  // Override modelToService for any IR model that has a baseline sourceFile.
+  // We invent a synthetic IR-service key that maps directly to the baseline
+  // directory via serviceNameMap so resolveDir returns the correct dir.
+  for (const [modelName] of modelToService) {
+    const dir = baselineDirByModel.get(modelName);
+    if (!dir) continue;
+    const synthetic = `__baseline_dir__:${dir}`;
+    modelToService.set(modelName, synthetic);
+    if (!serviceNameMap.has(synthetic)) {
+      // resolveServiceDir is identity on already-kebab-case names, so storing
+      // the dir directly keeps round-tripping through the resolver clean.
+      serviceNameMap.set(synthetic, dir);
+    }
+  }
+
+  const resolveDir = (irService: string | undefined) => {
+    if (!irService) return 'common';
+    if (irService.startsWith('__baseline_dir__:')) return irService.slice('__baseline_dir__:'.length);
+    return resolveServiceDir(serviceNameMap.get(irService) ?? irService);
+  };
   return { modelToService, serviceNameMap, resolveDir };
 }
 
 /**
- * Check if a set of baseline interface fields appears to contain generic type
- * parameters — PascalCase names that aren't known models, enums, or builtins.
+ * Check if baseline interface fields appear to contain generic type parameters.
+ *
+ * Heuristic: strip string literals first (so `'GoogleSAML'` is not mistaken
+ * for a type name), then look for any PascalCase token that isn't a known
+ * type — those indicate an unbound generic parameter like `TCustomAttributes`.
  */
 export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: Set<string>): boolean {
   for (const [, bf] of Object.entries(fields)) {
-    const fieldType = (bf as { type: string }).type;
-    const typeNames = fieldType.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+    const rawType = (bf as { type: string }).type;
+    const stripped = rawType.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    const typeNames = stripped.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
     if (!typeNames) continue;
     for (const tn of typeNames) {
       if (TS_BUILTINS.has(tn)) continue;
@@ -248,13 +277,8 @@ export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: S
   return false;
 }
 
-// Re-export shared model detection utilities
 export { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
 
-/**
- * Compute a structural fingerprint for a model based on its fields.
- * Two models with identical fingerprints are structurally equivalent.
- */
 function modelFingerprint(model: Model): string {
   const fields = model.fields.map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`).sort();
   return fields.join('|');
@@ -262,12 +286,6 @@ function modelFingerprint(model: Model): string {
 
 /**
  * Find structurally identical models and build a deduplication map.
- * Also deduplicates models that resolve to the same interface name across
- * services — when a `$ref` schema is used by multiple tags, the IR may
- * produce per-tag copies that diverge slightly.  The version with the most
- * fields is chosen as canonical.
- *
- * Returns a Map from duplicate model name → canonical model name.
  */
 export function buildDeduplicationMap(
   models: Model[],
@@ -276,19 +294,15 @@ export function buildDeduplicationMap(
 ): Map<string, string> {
   const dedup = new Map<string, string>();
 
-  // Pass 1: structural fingerprint dedup (exact match)
-  // When a reachability set is provided, prefer reachable models as canonicals
-  // so that aliases always point to models that will actually be generated.
+  // Pass 1: structural fingerprint dedup
   const fingerprints = new Map<string, string>();
   for (const model of models) {
     if (model.fields.length === 0) continue;
     const fp = modelFingerprint(model);
     const existing = fingerprints.get(fp);
     if (existing) {
-      // If the existing canonical is unreachable but this model is reachable,
-      // swap: make this model the canonical and demote the old one to alias.
       if (reachable && !reachable.has(existing) && reachable.has(model.name)) {
-        dedup.delete(existing); // remove stale alias if present
+        dedup.delete(existing);
         dedup.set(existing, model.name);
         fingerprints.set(fp, model.name);
       } else {
@@ -299,15 +313,12 @@ export function buildDeduplicationMap(
     }
   }
 
-  // Pass 2: name-based dedup for models that resolve to the same interface
-  // name across services.  Only applies when context with name resolution is
-  // available.  Picks the model with the most fields as canonical, preferring
-  // reachable models when a reachability set is provided.
+  // Pass 2: name-based dedup
   if (ctx) {
     const byDomainName = new Map<string, Model[]>();
     for (const model of models) {
       if (model.fields.length === 0) continue;
-      if (dedup.has(model.name)) continue; // already deduped in pass 1
+      if (dedup.has(model.name)) continue;
       const domainName = resolveInterfaceName(model.name, ctx);
       const group = byDomainName.get(domainName);
       if (group) {
@@ -318,7 +329,6 @@ export function buildDeduplicationMap(
     }
     for (const [, group] of byDomainName) {
       if (group.length < 2) continue;
-      // Choose canonical: prefer reachable, then most fields, then alphabetically
       group.sort((a, b) => {
         if (reachable) {
           const aReach = reachable.has(a.name) ? 0 : 1;
@@ -340,23 +350,8 @@ export function buildDeduplicationMap(
 /**
  * Check whether a service's endpoints are already fully covered by existing
  * hand-written service classes.
- *
- * A service is considered "covered" when:
- * 1. **Every** operation in it appears in `overlayLookup.methodByOperation`
- * 2. The overlay maps those operations to a class that exists in the baseline
- *    `apiSurface` (confirming the hand-written class is actually present)
- *
- * Services with zero operations are never considered covered (nothing to
- * deduplicate).  When no `apiSurface` is available, the overlay alone is
- * used as the coverage signal (the overlay is only built from existing code).
- *
- * This prevents the emitter from generating resource classes like `Connections`
- * that would duplicate hand-written modules like `SSO` for the same API
- * endpoints (e.g., `GET /connections`).
  */
 export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext): boolean {
-  // A service is "covered" when its mountOn differs from its own name,
-  // meaning its operations are mounted on a different (existing) class.
   const mountTarget = getMountTarget(service, ctx);
   if (mountTarget !== toPascalCase(service.name)) return true;
 
@@ -364,15 +359,10 @@ export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext
   if (!overlay || overlay.size === 0) return false;
   if (service.operations.length === 0) return false;
 
-  // Collect the set of existing class names from the baseline surface.
-  // When no apiSurface is available, the overlay alone cannot confirm that
-  // a hand-written class exists — it may only carry naming hints.
   const baselineClasses = ctx.apiSurface?.classes;
   if (!baselineClasses) return false;
   const existingClassNames = new Set(Object.keys(baselineClasses));
 
-  // Check that every operation is in the overlay AND the overlay's target class
-  // exists in the baseline.
   return service.operations.every((op: Operation) => {
     const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
     const match = overlay.get(httpKey);
@@ -383,20 +373,16 @@ export function isServiceCoveredByExisting(service: Service, ctx: EmitterContext
 
 /**
  * Check whether a fully-covered service has operations whose overlay-mapped
- * methods are missing from the baseline class.  Returns true when at least
- * one operation maps to a method name that the baseline class does not have,
- * meaning the merger needs to add new methods (skipIfExists must be removed).
+ * methods are missing from the baseline class.
  */
 export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterContext): boolean {
   const baselineClasses = ctx.apiSurface?.classes;
   if (!baselineClasses) return false;
 
-  // When a service mounts on a different class (via mount rules), check
-  // each operation's resolved method name against the target class directly.
   const mountTarget = getMountTarget(service, ctx);
   if (mountTarget !== toPascalCase(service.name)) {
     const cls = baselineClasses[mountTarget];
-    if (!cls) return true; // Target class missing from baseline — treat as absent
+    if (!cls) return true;
     for (const op of service.operations) {
       const method = resolveMethodName(op, service, ctx);
       if (!cls.methods?.[method]) return true;
@@ -404,7 +390,6 @@ export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterConte
     return false;
   }
 
-  // Default overlay-based detection
   const overlay = ctx.overlayLookup?.methodByOperation;
   if (!overlay) return false;
 
@@ -421,28 +406,36 @@ export function hasMethodsAbsentFromBaseline(service: Service, ctx: EmitterConte
 
 /**
  * Check whether an IR model has fields not present in the baseline interface.
- * Returns true if the model has new fields that need generation.
- * Returns true if no baseline exists (new model entirely).
+ *
+ * When the live SDK exposes the same name as a type alias (e.g.
+ * `type Role = EnvironmentRole | OrganizationRole;`), treat it as already
+ * fully covered — generating an interface against an existing alias would
+ * collide. The alias's referenced types still get generated independently
+ * and serve as the canonical implementation.
  */
 export function modelHasNewFields(model: Model, ctx: EmitterContext): boolean {
-  if (!ctx.apiSurface?.interfaces) return true; // No surface = generate everything
+  if (!ctx.apiSurface?.interfaces && !ctx.apiSurface?.typeAliases) return true;
 
   const domainName = resolveInterfaceName(model.name, ctx);
-  const baseline = ctx.apiSurface.interfaces[domainName];
-  if (!baseline?.fields) return true; // No baseline for this model = new model
+
+  if (ctx.apiSurface?.typeAliases?.[domainName]) {
+    return false;
+  }
+
+  const baseline = ctx.apiSurface?.interfaces?.[domainName];
+  if (!baseline?.fields) return true;
 
   for (const field of model.fields) {
     const camelName = fieldName(field.name);
-    if (!baseline.fields[camelName]) return true; // New field found
+    if (!baseline.fields[camelName]) return true;
   }
 
-  return false; // All fields exist in baseline
+  return false;
 }
 
 /**
  * Return operations in a service that are NOT covered by existing hand-written
- * service classes. For fully uncovered services, returns all operations.
- * For partially covered services, returns only the uncovered operations.
+ * service classes.
  */
 export function uncoveredOperations(service: Service, ctx: EmitterContext): Operation[] {
   const overlay = ctx.overlayLookup?.methodByOperation;
@@ -455,19 +448,13 @@ export function uncoveredOperations(service: Service, ctx: EmitterContext): Oper
   return service.operations.filter((op: Operation) => {
     const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
     const match = overlay.get(httpKey);
-    if (!match) return true; // Not in overlay → uncovered
-    return !existingClassNames.has(match.className); // Class doesn't exist → uncovered
+    if (!match) return true;
+    return !existingClassNames.has(match.className);
   });
 }
 
 /**
  * Compute the set of model names reachable from non-event service operations.
- * The Events service pulls in hundreds of webhook payload models that the
- * existing SDK handles via hand-written event types, so those models are
- * excluded from generation.
- *
- * Shared between model generation, barrel generation, dedup, and tests to
- * ensure consistency: every module agrees on which models will be generated.
  */
 export function computeNonEventReachable(services: Service[], models: Model[]): Set<string> {
   const seeds = new Set<string>();

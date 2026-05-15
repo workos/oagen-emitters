@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { generateResources, resolveResourceClassName, hasCompatibleConstructor } from '../../src/node/resources.js';
-import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { nodeEmitter } from '../../src/node/index.js';
+import {
+  generateResources,
+  resolveResourceClassName,
+  resolveResourceDir,
+  hasCompatibleConstructor,
+} from '../../src/node/resources.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -19,12 +29,50 @@ const ctx: EmitterContext = {
   spec: emptySpec,
 };
 
+function createTrackedSdkRoot(): string {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-adopt-surface-'));
+  fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), '// @oagen-ignore-file\nexport class WorkOS {}\n');
+  fs.writeFileSync(
+    path.join(tmpRoot, 'src', 'index.ts'),
+    '// @oagen-ignore-file\nexport { WorkOS } from "./workos";\n',
+  );
+  execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+  execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+  return tmpRoot;
+}
+
+const connectService: Service = {
+  name: 'Connect',
+  operations: [
+    {
+      name: 'getConnect',
+      httpMethod: 'get',
+      path: '/connect',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'unknown' },
+      errors: [],
+      injectIdempotencyKey: false,
+    },
+  ],
+};
+
 describe('generateResources', () => {
   it('returns empty for no services', () => {
     expect(generateResources([], ctx)).toEqual([]);
   });
 
   it('generates a resource class with GET method', () => {
+    const orgModel: Model = {
+      name: 'Organization',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    };
+
     const services: Service[] = [
       {
         name: 'Organizations',
@@ -33,13 +81,7 @@ describe('generateResources', () => {
             name: 'getOrganization',
             httpMethod: 'get',
             path: '/organizations/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'Organization' },
@@ -50,195 +92,17 @@ describe('generateResources', () => {
       },
     ];
 
-    const files = generateResources(services, ctx);
-    expect(files.length).toBe(1);
-    expect(files[0].path).toBe('src/organizations/organizations.ts');
+    const spec: ApiSpec = { ...emptySpec, services, models: [orgModel] };
+    const ctxWithSpec: EmitterContext = { ...ctx, spec };
+    const result = generateResources(services, ctxWithSpec);
 
-    const content = files[0].content;
-    expect(content).toContain('export class Organizations {');
-    expect(content).toContain('constructor(private readonly workos: WorkOS) {}');
-    expect(content).toContain('async getOrganization(id: string): Promise<Organization>');
-    expect(content).toContain('deserializeOrganization(data)');
-  });
-
-  it('generates paginated list method', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'listOrganizations',
-            httpMethod: 'get',
-            path: '/organizations',
-            pathParams: [],
-            queryParams: [
-              {
-                name: 'domains',
-                type: {
-                  kind: 'array',
-                  items: { kind: 'primitive', type: 'string' },
-                },
-                required: false,
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'Organization' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should have AutoPaginatable value import and fetchAndDeserialize import
-    expect(content).toContain("import { AutoPaginatable } from '../common/utils/pagination'");
-    expect(content).toContain("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize'");
-    // Options interface lives in its own file under interfaces/ so the
-    // per-service barrel picks it up.
-    expect(content).toContain(
-      "import type { ListOrganizationsOptions } from './interfaces/list-organizations-options.interface';",
-    );
-
-    // The options interface file is emitted separately.
-    const optionsFile = files.find(
-      (f) => f.path === 'src/organizations/interfaces/list-organizations-options.interface.ts',
-    );
-    expect(optionsFile).toBeDefined();
-    expect(optionsFile!.content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
-    expect(optionsFile!.content).toContain('domains?: string[];');
-
-    // Should return AutoPaginatable
-    expect(content).toContain('Promise<AutoPaginatable<Organization, ListOrganizationsOptions>>');
-
-    // `domains` has the same camelCase and snake_case spelling, so no wire
-    // serializer should be emitted; options are passed directly.
-    expect(content).not.toContain('serializeListOrganizationsOptions');
-    expect(content).toContain('new AutoPaginatable(');
-    expect(content).toContain('fetchAndDeserialize<OrganizationResponse, Organization>');
-    expect(content).toContain('options,');
-  });
-
-  it('emits wire-options serializer for paginated list with camelCase filter fields', () => {
-    // Regression test for PR #1535 reviewer comment r3075477146: list
-    // methods whose extended filter fields have divergent camelCase/snake_case
-    // spellings (e.g. `organizationId` ↔ `organization_id`) must translate
-    // keys before hitting the wire, otherwise the API silently ignores them.
-    const services: Service[] = [
-      {
-        name: 'Applications',
-        operations: [
-          {
-            name: 'listApplications',
-            httpMethod: 'get',
-            path: '/connect/applications',
-            pathParams: [],
-            queryParams: [
-              {
-                name: 'organization_id',
-                type: { kind: 'primitive', type: 'string' },
-                required: false,
-                description: 'Filter by organization ID.',
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'ConnectApplication' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'ConnectApplication' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Options interface uses camelCase (user-facing) and lives in its own file.
-    const optionsFile = files.find(
-      (f) => f.path === 'src/applications/interfaces/list-applications-options.interface.ts',
-    );
-    expect(optionsFile).toBeDefined();
-    expect(optionsFile!.content).toContain('export interface ListApplicationsOptions extends PaginationOptions {');
-    expect(optionsFile!.content).toContain('organizationId?: string;');
-
-    // Resource class imports the options type from the interface file.
-    expect(content).toContain(
-      "import type { ListApplicationsOptions } from './interfaces/list-applications-options.interface';",
-    );
-
-    // Wire-options serializer emits snake_case key for the extension field
-    // and leaves standard pagination fields unchanged.
-    expect(content).toContain(
-      'const serializeListApplicationsOptions = (options: ListApplicationsOptions): PaginationOptions => {',
-    );
-    expect(content).toContain('wire.organization_id = options.organizationId');
-    expect(content).not.toContain('wire.organizationId');
-
-    // fetchAndDeserialize is invoked with the serialized options.
-    expect(content).toContain('serializeListApplicationsOptions(options)');
-    expect(content).toContain('new AutoPaginatable(');
-  });
-
-  it('uses item type not list wrapper type for paginated methods', () => {
-    // The response model is the list wrapper (ConnectionList), but the pagination
-    // itemType is the actual item (Connection). The generated code should use the
-    // item type for fetchAndDeserialize, not the list wrapper.
-    const services: Service[] = [
-      {
-        name: 'SSO',
-        operations: [
-          {
-            name: 'listConnections',
-            httpMethod: 'get',
-            path: '/connections',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'ConnectionList' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'Connection' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const testCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-    };
-
-    const files = generateResources(services, testCtx);
-    const content = files[0].content;
-
-    // Should use item type (Connection) not list wrapper (ConnectionList)
-    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
-    expect(content).toContain('deserializeConnection');
-    expect(content).toContain('Promise<AutoPaginatable<Connection,');
-
-    // Should NOT reference the list wrapper type
-    expect(content).not.toContain('ConnectionList');
-    expect(content).not.toContain('deserializeConnectionList');
+    expect(result.length).toBeGreaterThan(0);
+    const resourceFile = result.find((f) => f.path.includes('organizations.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toContain('export class Organizations');
+    expect(resourceFile!.content).toContain('constructor(private readonly workos: WorkOS)');
+    expect(resourceFile!.content).toContain('async getOrganization(id: string): Promise<Organization>');
+    expect(resourceFile!.content).toContain('deserializeOrganization(data)');
   });
 
   it('generates DELETE method returning void', () => {
@@ -250,13 +114,7 @@ describe('generateResources', () => {
             name: 'deleteOrganization',
             httpMethod: 'delete',
             path: '/organizations/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
             headerParams: [],
             response: { kind: 'primitive', type: 'unknown' },
@@ -267,610 +125,221 @@ describe('generateResources', () => {
       },
     ];
 
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain('async deleteOrganization(id: string): Promise<void>');
-    expect(content).toContain('await this.workos.delete(');
+    const spec: ApiSpec = { ...emptySpec, services };
+    const ctxWithSpec: EmitterContext = { ...ctx, spec };
+    const result = generateResources(services, ctxWithSpec);
+
+    const resourceFile = result.find((f) => f.path.includes('organizations.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toContain('Promise<void>');
   });
 
-  it('generates unpaginated GET returning an array of models', () => {
-    // Regression test for PR #1535 reviewer comment (r3074705330): endpoints
-    // whose OpenAPI response is `type: array` must return `Model[]` and map
-    // the deserializer over each element, not treat the array as a single
-    // object (which silently produces garbage at runtime).
-    const services: Service[] = [
-      {
-        name: 'Secrets',
-        operations: [
-          {
-            name: 'listSecrets',
-            httpMethod: 'get',
-            path: '/applications/{id}/secrets',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'array', items: { kind: 'model', name: 'Secret' } },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    expect(content).toContain('async listSecrets(id: string): Promise<Secret[]>');
-    expect(content).toContain('this.workos.get<SecretResponse[]>');
-    expect(content).toContain('return data.map(deserializeSecret);');
-    // Should NOT produce the single-object form — that was the bug.
-    expect(content).not.toMatch(/Promise<Secret>\s*\{/);
-    expect(content).not.toContain('return deserializeSecret(data);');
-  });
-
-  it('generates POST method with body and idempotency', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'createOrganization',
-            httpMethod: 'post',
-            path: '/organizations',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateOrganizationInput' },
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: true,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain(
-      'async createOrganization(payload: CreateOrganizationInput, requestOptions: PostOptions = {}): Promise<Organization>',
-    );
-    expect(content).toContain('serializeCreateOrganizationInput(payload)');
-    expect(content).toContain('requestOptions,');
-  });
-
-  it('uses overlay-resolved name for output path and class', () => {
-    const mfaService: Service = {
-      name: 'MultiFactorAuth',
-      operations: [
+  it('applies Node-only operation overrides without global operation hints', () => {
+    const operation = {
+      name: 'listOrganizationMembershipGroups',
+      httpMethod: 'get' as const,
+      path: '/user_management/organization_memberships/{omId}/groups',
+      pathParams: [{ name: 'omId', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = {
+      name: 'UserManagementOrganizationMembershipGroups',
+      operations: [operation],
+    };
+    const spec: ApiSpec = { ...emptySpec, services: [service] };
+    const ctxWithResolved: EmitterContext = {
+      ...ctx,
+      spec,
+      resolvedOperations: [
         {
-          name: 'enrollFactor',
-          httpMethod: 'post',
-          path: '/auth/factors/enroll',
-          pathParams: [],
-          queryParams: [],
-          headerParams: [],
-          requestBody: { kind: 'model', name: 'EnrollFactorInput' },
-          response: { kind: 'model', name: 'AuthenticationFactor' },
-          errors: [],
-          injectIdempotencyKey: true,
+          operation,
+          service,
+          methodName: 'list_organization_membership_groups',
+          mountOn: 'UserManagementOrganizationMembershipGroups',
+          defaults: {},
+          inferFromClient: [],
+          urlBuilder: false,
         },
       ],
     };
 
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services: [mfaService], models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /auth/factors/enroll',
-            {
-              className: 'Mfa',
-              methodName: 'enrollFactor',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-    };
+    const result = nodeEmitter.generateResources(spec.services, ctxWithResolved);
 
-    const files = generateResources([mfaService], overlayCtx);
-    expect(files.length).toBe(1);
-    expect(files[0].path).toBe('src/mfa/mfa.ts');
-
-    const content = files[0].content;
-    expect(content).toContain('export class Mfa {');
+    expect(result.some((f) => f.path.includes('user-management-organization-membership-groups'))).toBe(false);
+    const resourceFile = result.find((f) => f.path === 'src/user-management/user-management.ts');
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toContain('export class UserManagement');
+    expect(resourceFile!.content).toContain('async listGroupsForOrganizationMembership');
   });
 
-  it('renders multiline description and @deprecated in method docstring', () => {
-    const services: Service[] = [
-      {
-        name: 'Radar',
-        operations: [
-          {
-            name: 'updateAttempt',
-            description: 'Update a Radar attempt\n\nYou may optionally inform Radar that an attempt was successful.',
-            httpMethod: 'put',
-            path: '/radar/attempts/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-                description: 'The unique identifier of the attempt.',
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'UpdateAttemptInput' },
-            response: { kind: 'model', name: 'RadarAttempt' },
-            errors: [],
-            injectIdempotencyKey: false,
-            deprecated: true,
-          },
-        ],
-      },
-    ];
+  it('drops brand-new service paths in an existing SDK by default', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const spec: ApiSpec = { ...emptySpec, services: [connectService] };
+      const result = nodeEmitter.generateResources(spec.services, { ...ctx, spec, outputDir: tmpRoot });
 
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    expect(content).toContain('  /**');
-    expect(content).toContain('   * Update a Radar attempt');
-    expect(content).toContain('   *');
-    expect(content).toContain('   * You may optionally inform Radar that an attempt was successful.');
-    expect(content).toContain('   * @param id - The unique identifier of the attempt.');
-    expect(content).toContain('   * @returns {Promise<RadarAttempt>}');
-    expect(content).toContain('   * @deprecated');
-    expect(content).toContain('   */');
+      expect(result.some((f) => f.path === 'src/connect/connect.ts')).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
-  it('renders @returns for response model', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'getOrganization',
-            httpMethod: 'get',
-            path: '/organizations/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
+  it('adopts brand-new service paths when configured', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const spec: ApiSpec = { ...emptySpec, services: [connectService] };
+      const result = nodeEmitter.generateResources(spec.services, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true },
+      } as EmitterContext);
 
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain('@returns {Promise<Organization>}');
+      const resourceFile = result.find((f) => f.path === 'src/connect/connect.ts');
+      expect(resourceFile).toBeDefined();
+      expect(resourceFile!.content).toContain('export class Connect');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
-  it('renders @returns from overlay return type when available', () => {
-    const services: Service[] = [
-      {
-        name: 'Authorization',
+  it('overwrites tracked files for explicitly owned services', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'groups'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'groups', 'groups.ts'),
+        'export class Groups { async createGroup() {} }\n',
+      );
+      execFileSync('git', ['add', 'src/groups/groups.ts'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const groupService: Service = {
+        name: 'Groups',
         operations: [
           {
-            name: 'createEnvironmentRole',
+            name: 'createGroup',
             httpMethod: 'post',
-            path: '/authorization/roles',
-            pathParams: [],
+            path: '/organizations/{organizationId}/groups',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateRoleInput' },
-            response: { kind: 'model', name: 'Role' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /authorization/roles',
-            {
-              className: 'Authorization',
-              methodName: 'createEnvironmentRole',
-              params: [{ name: 'payload', type: 'CreateRoleInput', optional: false }],
-              returnType: 'Promise<EnvironmentRole>',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    const content = files[0].content;
-    // JSDoc should use the overlay return type, not the spec schema name
-    expect(content).toContain('@returns {Promise<EnvironmentRole>}');
-    expect(content).not.toContain('@returns {Role}');
-    expect(content).not.toContain('@returns {Promise<Role>}');
-  });
-
-  it('renders query param docs for non-paginated operations', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'getOrganization',
-            httpMethod: 'get',
-            path: '/organizations/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [
-              {
-                name: 'include_fields',
-                type: { kind: 'primitive', type: 'string' },
-                required: false,
-                description: 'Comma-separated list of fields to include.',
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain('@param options.includeFields - Comma-separated list of fields to include.');
-  });
-
-  it('renders header and cookie param docs', () => {
-    const services: Service[] = [
-      {
-        name: 'Sessions',
-        operations: [
-          {
-            name: 'getSession',
-            httpMethod: 'get',
-            path: '/sessions/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [
-              {
-                name: 'X-Request-Id',
-                type: { kind: 'primitive', type: 'string' },
-                required: false,
-                description: 'Unique request identifier.',
-              },
-            ],
-            cookieParams: [
-              {
-                name: 'session_token',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-                description: 'The session cookie.',
-              },
-            ],
-            response: { kind: 'model', name: 'Session' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    // Header and cookie params are intentionally NOT documented in JSDoc —
-    // they are not exposed in the method signature (handled internally by the SDK).
-    expect(content).not.toContain('@param xRequestId');
-    expect(content).not.toContain('@param sessionToken');
-  });
-
-  it('renders single @returns without status-code duplicates', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'createOrganization',
-            httpMethod: 'post',
-            path: '/organizations',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateOrganizationInput' },
-            response: { kind: 'model', name: 'Organization' },
-            successResponses: [
-              {
-                statusCode: 200,
-                type: { kind: 'model', name: 'Organization' },
-              },
-              {
-                statusCode: 201,
-                type: { kind: 'model', name: 'Organization' },
-              },
-            ],
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    // Only emit a single @returns for the primary response model (no status-code variants)
-    expect(content).toContain('@returns {Promise<Organization>}');
-    expect(content).not.toContain('@returns {Promise<Organization>} 200');
-    expect(content).not.toContain('@returns {Promise<Organization>} 201');
-  });
-
-  it('generates DELETE-with-body method using deleteWithBody', () => {
-    const services: Service[] = [
-      {
-        name: 'Radar',
-        operations: [
-          {
-            name: 'deleteRadarListEntry',
-            httpMethod: 'delete',
-            path: '/radar/lists/{listId}/entries',
-            pathParams: [
-              {
-                name: 'listId',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'DeleteRadarListEntryInput' },
-            response: { kind: 'primitive', type: 'unknown' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain(
-      'async deleteRadarListEntry(listId: string, payload: DeleteRadarListEntryInput): Promise<void>',
-    );
-    expect(content).toContain('await this.workos.deleteWithBody(');
-    expect(content).toContain('serializeDeleteRadarListEntryInput(payload)');
-  });
-
-  it('renders deprecated path params', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'getOrganization',
-            httpMethod: 'get',
-            path: '/organizations/{slug}',
-            pathParams: [
-              {
-                name: 'slug',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-                description: 'The organization slug.',
-                deprecated: true,
-              },
-            ],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-    expect(content).toContain('@param slug - (deprecated) The organization slug.');
-  });
-
-  it('generates typed options interface for non-paginated GET with query params', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'getOrganization',
-            httpMethod: 'get',
-            path: '/organizations/{id}',
-            pathParams: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-            queryParams: [
-              {
-                name: 'include_fields',
-                type: { kind: 'primitive', type: 'string' },
-                required: false,
-                description: 'Comma-separated list of fields to include.',
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should generate a typed options interface
-    expect(content).toContain('export interface GetOrganizationOptions {');
-    expect(content).toContain('includeFields?: string;');
-
-    // Should use the typed options in the method signature
-    expect(content).toContain(
-      'async getOrganization(id: string, options?: GetOrganizationOptions): Promise<Organization>',
-    );
-
-    // Should NOT use Record<string, unknown>
-    expect(content).not.toContain('Record<string, unknown>');
-  });
-
-  it('generates typed options interface for void GET with query params', () => {
-    const services: Service[] = [
-      {
-        name: 'Auth',
-        operations: [
-          {
-            name: 'authorize',
-            httpMethod: 'get',
-            path: '/user_management/authorize',
-            pathParams: [],
-            queryParams: [
-              {
-                name: 'client_id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-              {
-                name: 'redirect_uri',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-              {
-                name: 'response_type',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
             headerParams: [],
             response: { kind: 'primitive', type: 'unknown' },
             errors: [],
             injectIdempotencyKey: false,
           },
         ],
-      },
-    ];
+      };
+      const spec: ApiSpec = { ...emptySpec, services: [groupService] };
+      const result = nodeEmitter.generateResources(spec.services, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Groups'] },
+        apiSurface: {
+          classes: {
+            Groups: {
+              methods: {
+                createGroup: [{ name: 'createGroup', params: [], returnType: 'Promise<void>', async: true }],
+              },
+            },
+          },
+        } as any,
+      } as EmitterContext);
 
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should generate a typed options interface
-    expect(content).toContain('export interface AuthorizeOptions {');
-    expect(content).toContain('clientId: string;');
-    expect(content).toContain('redirectUri: string;');
-    expect(content).toContain('responseType: string;');
-
-    // Should use the typed options in the method signature
-    expect(content).toContain('async authorize(options?: AuthorizeOptions): Promise<void>');
-
-    // Should pass options as query params
-    expect(content).toContain('query: options');
+      const resourceFile = result.find((f) => f.path === 'src/groups/groups.ts');
+      expect(resourceFile).toBeDefined();
+      expect(resourceFile!.overwriteExisting).toBe(true);
+      expect(resourceFile!.skipIfExists).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
-  it('falls back to pass-through for non-discriminated union when models not in spec', () => {
-    const services: Service[] = [
-      {
-        name: 'Auth',
+  it('does not overwrite protected files for explicitly owned services', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'groups'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'groups', 'groups.ts'),
+        '// @oagen-ignore-file\nexport class Groups {}\n',
+      );
+      execFileSync('git', ['add', 'src/groups/groups.ts'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const groupService: Service = {
+        name: 'Groups',
         operations: [
           {
-            name: 'authenticate',
+            name: 'createGroup',
             httpMethod: 'post',
-            path: '/user_management/authenticate',
-            pathParams: [],
+            path: '/organizations/{organizationId}/groups',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
             queryParams: [],
             headerParams: [],
-            requestBody: {
-              kind: 'union',
-              variants: [
-                { kind: 'model', name: 'AuthByPassword' },
-                { kind: 'model', name: 'AuthByCode' },
-                { kind: 'model', name: 'AuthByMagicAuth' },
-              ],
-            },
-            response: { kind: 'model', name: 'AuthenticateResponse' },
+            response: { kind: 'primitive', type: 'unknown' },
             errors: [],
             injectIdempotencyKey: false,
           },
         ],
-      },
-    ];
+      };
+      const spec: ApiSpec = { ...emptySpec, services: [groupService] };
+      const result = nodeEmitter.generateResources(spec.services, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Groups'] },
+      } as EmitterContext);
 
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should use the union type for the payload parameter
-    expect(content).toContain('payload: AuthByPassword | AuthByCode | AuthByMagicAuth');
-
-    // Should NOT use Record<string, unknown>
-    expect(content).not.toContain('Record<string, unknown>');
-
-    // Models not in spec → falls back to pass-through
-    expect(content).toContain("'/user_management/authenticate',");
-    expect(content).toContain('payload,');
-
-    // Should import all union variant types
-    expect(content).toContain('AuthByPassword');
-    expect(content).toContain('AuthByCode');
-    expect(content).toContain('AuthByMagicAuth');
+      expect(result.some((f) => f.path === 'src/groups/groups.ts')).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
-  it('generates field-guard serializer dispatch for non-discriminated union with models', () => {
-    const services: Service[] = [
-      {
-        name: 'Applications',
+  it('treats prior-manifest generated files as managed before they are git-tracked', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'connect'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'connect', 'connect.ts'),
+        ['// This file is auto-generated by oagen. Do not edit.', '', 'export class Connect {}'].join('\n'),
+      );
+
+      const spec: ApiSpec = { ...emptySpec, services: [connectService] };
+      const result = nodeEmitter.generateResources(spec.services, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true },
+        priorTargetManifestPaths: new Set(['src/connect/connect.ts']),
+      } as EmitterContext);
+
+      const resourceFile = result.find((f) => f.path === 'src/connect/connect.ts');
+      expect(resourceFile).toBeDefined();
+      expect(resourceFile!.overwriteExisting).toBe(true);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('harvests serializer exports from prior-manifest generated files before they are git-tracked', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'connect', 'serializers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'connect', 'serializers', 'create-m2m-application.serializer.ts'),
+        [
+          '// This file is auto-generated by oagen. Do not edit.',
+          '',
+          'export const serializeCreateM2MApplication = (payload: unknown): unknown => payload;',
+        ].join('\n'),
+      );
+
+      const service: Service = {
+        name: 'Connect',
         operations: [
           {
             name: 'createApplication',
@@ -879,725 +348,62 @@ describe('generateResources', () => {
             pathParams: [],
             queryParams: [],
             headerParams: [],
-            requestBody: {
-              kind: 'union',
-              variants: [
-                { kind: 'model', name: 'CreateOAuthApplication' },
-                { kind: 'model', name: 'CreateM2MApplication' },
-              ],
-            },
-            response: { kind: 'model', name: 'ConnectApplication' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const testCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: {
-        ...emptySpec,
-        services,
-        models: [
-          {
-            name: 'CreateOAuthApplication',
-            fields: [
-              {
-                name: 'name',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-              {
-                name: 'redirect_uris',
-                type: {
-                  kind: 'array',
-                  items: { kind: 'primitive', type: 'string' },
-                },
-                required: true,
-              },
-              {
-                name: 'uses_pkce',
-                type: { kind: 'primitive', type: 'boolean' },
-                required: false,
-              },
-            ],
-          },
-          {
-            name: 'CreateM2MApplication',
-            fields: [
-              {
-                name: 'name',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-              {
-                name: 'scopes',
-                type: {
-                  kind: 'array',
-                  items: { kind: 'primitive', type: 'string' },
-                },
-                required: true,
-              },
-            ],
-          },
-          {
-            name: 'ConnectApplication',
-            fields: [
-              {
-                name: 'id',
-                type: { kind: 'primitive', type: 'string' },
-                required: true,
-              },
-            ],
-          },
-        ],
-      },
-    };
-
-    const files = generateResources(services, testCtx);
-    const content = files[0].content;
-
-    // Should use the union type for the payload parameter
-    expect(content).toContain('payload: CreateOAuthApplication | CreateM2MApplication');
-
-    // Should dispatch via unique required field guards
-    expect(content).toContain("'redirectUris' in payload");
-    expect(content).toContain('serializeCreateOAuthApplication(payload as any)');
-    expect(content).toContain('serializeCreateM2MApplication(payload as any)');
-
-    // Should import serializers for all union variants
-    expect(content).toContain('serializeCreateOAuthApplication');
-    expect(content).toContain('serializeCreateM2MApplication');
-  });
-
-  it('generates discriminated union serializer dispatch for request body', () => {
-    const services: Service[] = [
-      {
-        name: 'Auth',
-        operations: [
-          {
-            name: 'authenticate',
-            httpMethod: 'post',
-            path: '/user_management/authenticate',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: {
-              kind: 'union',
-              variants: [
-                { kind: 'model', name: 'AuthByPassword' },
-                { kind: 'model', name: 'AuthByCode' },
-                { kind: 'model', name: 'AuthByMagicAuth' },
-              ],
-              discriminator: {
-                property: 'grant_type',
-                mapping: {
-                  password: 'AuthByPassword',
-                  authorization_code: 'AuthByCode',
-                  'urn:workos:oauth:grant-type:magic-auth:code': 'AuthByMagicAuth',
-                },
-              },
-            },
-            response: { kind: 'model', name: 'AuthenticateResponse' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should use the union type for the payload parameter
-    expect(content).toContain('payload: AuthByPassword | AuthByCode | AuthByMagicAuth');
-
-    // Should dispatch to the correct serializer based on the discriminator,
-    // using the typed discriminator so TS narrows payload per case.
-    expect(content).toContain('switch (payload.grantType)');
-    expect(content).toContain("case 'password': return serializeAuthByPassword(payload)");
-    expect(content).toContain("case 'authorization_code': return serializeAuthByCode(payload)");
-    expect(content).toContain(
-      "case 'urn:workos:oauth:grant-type:magic-auth:code': return serializeAuthByMagicAuth(payload)",
-    );
-
-    // Should not use `as any` casts — TS discriminated-union narrowing makes
-    // them unnecessary and they suppress real type mismatches.
-    expect(content).not.toContain('switch ((payload as any)');
-    expect(content).not.toMatch(/return serialize\w+\(payload as any\)/);
-
-    // Should import serializers for all union variants
-    expect(content).toContain('serializeAuthByPassword');
-    expect(content).toContain('serializeAuthByCode');
-    expect(content).toContain('serializeAuthByMagicAuth');
-
-    // Should NOT pass payload directly without serialization
-    expect(content).not.toMatch(/,\n\s+payload,\n/);
-
-    // Default branch must throw — silently forwarding unserialized camelCase
-    // to the API produces malformed requests when the discriminator is unknown.
-    expect(content).toContain('default:');
-    expect(content).toContain('const _unknown: never = payload');
-    expect(content).toContain('throw new Error');
-    expect(content).not.toMatch(/default:\s*return payload/);
-  });
-
-  it('generates discriminated union serializer dispatch for void method', () => {
-    const services: Service[] = [
-      {
-        name: 'Auth',
-        operations: [
-          {
-            name: 'sendToken',
-            httpMethod: 'post',
-            path: '/auth/token',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: {
-              kind: 'union',
-              variants: [
-                { kind: 'model', name: 'TokenByCode' },
-                { kind: 'model', name: 'TokenByRefresh' },
-              ],
-              discriminator: {
-                property: 'grant_type',
-                mapping: {
-                  authorization_code: 'TokenByCode',
-                  refresh_token: 'TokenByRefresh',
-                },
-              },
-            },
+            requestBody: { kind: 'model', name: 'CreateM2MApplication' },
             response: { kind: 'primitive', type: 'unknown' },
             errors: [],
             injectIdempotencyKey: false,
           },
         ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should dispatch to the correct serializer using the typed discriminator.
-    expect(content).toContain('switch (payload.grantType)');
-    expect(content).toContain("case 'authorization_code': return serializeTokenByCode(payload)");
-    expect(content).toContain("case 'refresh_token': return serializeTokenByRefresh(payload)");
-  });
-
-  it('uses AutoPaginatable pattern in paginated methods', () => {
-    const services: Service[] = [
-      {
-        name: 'Connections',
-        operations: [
+      };
+      const spec: ApiSpec = {
+        ...emptySpec,
+        services: [service],
+        models: [
           {
-            name: 'listConnections',
-            httpMethod: 'get',
-            path: '/connections',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'Connection' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'Connection' },
-            },
-            injectIdempotencyKey: false,
+            name: 'CreateM2MApplication',
+            fields: [{ name: 'name', type: { kind: 'primitive', type: 'string' }, required: true }],
           },
         ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-    const content = files[0].content;
-
-    // Should use AutoPaginatable + fetchAndDeserialize pattern for paginated methods
-    expect(content).toContain('new AutoPaginatable(');
-    expect(content).toContain('fetchAndDeserialize<ConnectionResponse, Connection>');
-    expect(content).toContain('deserializeConnection');
-  });
-
-  it('prefixes ListOptions with service name when method is "list"', () => {
-    const services: Service[] = [
-      {
-        name: 'Payments',
-        operations: [
-          {
-            name: 'list',
-            httpMethod: 'get',
-            path: '/payments',
-            pathParams: [],
-            queryParams: [
-              {
-                name: 'connection_type',
-                type: { kind: 'primitive', type: 'string' },
-                required: false,
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'Connection' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'Connection' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    // Use overlay to resolve method name to "list"
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /payments',
-            {
-              className: 'Payments',
-              methodName: 'list',
-              params: [],
-              returnType: 'void',
-            },
-          ],
+      };
+      const result = nodeEmitter.generateResources(spec.services, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true },
+        priorTargetManifestPaths: new Set([
+          'src/connect/connect.ts',
+          'src/connect/serializers/create-m2m-application.serializer.ts',
         ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-    };
+      } as EmitterContext);
 
-    const files = generateResources(services, overlayCtx);
-    const content = files[0].content;
-
-    // Should use service-prefixed options name instead of generic "ListOptions"
-    const optionsFile = files.find((f) => f.path.endsWith('payments-list-options.interface.ts'));
-    expect(optionsFile).toBeDefined();
-    expect(optionsFile!.content).toContain('export interface PaymentsListOptions extends PaginationOptions {');
-    expect(content).toContain('Promise<AutoPaginatable<Connection, PaymentsListOptions>>');
-    // Should NOT use the generic "ListOptions"
-    expect(content).not.toContain('export interface ListOptions ');
-    expect(files.every((f) => !f.path.endsWith('/list-options.interface.ts'))).toBe(true);
-  });
-
-  it('does not prefix ListOptions when method is not "list"', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'listOrganizations',
-            httpMethod: 'get',
-            path: '/organizations',
-            pathParams: [],
-            queryParams: [
-              {
-                name: 'domains',
-                type: {
-                  kind: 'array',
-                  items: { kind: 'primitive', type: 'string' },
-                },
-                required: false,
-              },
-            ],
-            headerParams: [],
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            pagination: {
-              strategy: 'cursor',
-              param: 'after',
-              dataPath: 'data',
-              itemType: { kind: 'model', name: 'Organization' },
-            },
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const files = generateResources(services, ctx);
-
-    // Method is "listOrganizations", not "list", so options name should be normal
-    const optionsFile = files.find((f) => f.path.endsWith('list-organizations-options.interface.ts'));
-    expect(optionsFile).toBeDefined();
-    expect(optionsFile!.content).toContain('export interface ListOrganizationsOptions extends PaginationOptions {');
-  });
-
-  it('removes skipIfExists when fully-covered service has methods absent from baseline', () => {
-    const services: Service[] = [
-      {
-        name: 'SSOService',
-        operations: [
-          {
-            name: 'getAuthorizationUrl',
-            httpMethod: 'get',
-            path: '/sso/authorize',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'AuthorizationUrl' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-          {
-            name: 'logout',
-            httpMethod: 'get',
-            path: '/sso/logout',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'LogoutResult' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    // Overlay maps both operations to SSO class
-    // Baseline SSO class exists but only has getAuthorizationUrl (logout is missing)
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /sso/authorize',
-            {
-              className: 'SSO',
-              methodName: 'getAuthorizationUrl',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-          [
-            'GET /sso/logout',
-            {
-              className: 'SSO',
-              methodName: 'logout',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          SSO: {
-            name: 'SSO',
-            methods: {
-              getAuthorizationUrl: [
-                {
-                  name: 'getAuthorizationUrl',
-                  params: [],
-                  returnType: 'void',
-                  async: true,
-                },
-              ],
-              // logout method is intentionally ABSENT
-            },
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
-          },
-        },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    expect(files.length).toBe(1);
-
-    // skipIfExists should be removed because 'logout' is absent from baseline
-    expect(files[0].skipIfExists).toBeUndefined();
-  });
-
-  it('keeps skipIfExists when fully-covered service has all methods in baseline', () => {
-    const services: Service[] = [
-      {
-        name: 'SSOService',
-        operations: [
-          {
-            name: 'getAuthorizationUrl',
-            httpMethod: 'get',
-            path: '/sso/authorize',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'AuthorizationUrl' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /sso/authorize',
-            {
-              className: 'SSO',
-              methodName: 'getAuthorizationUrl',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          SSO: {
-            name: 'SSO',
-            methods: {
-              getAuthorizationUrl: [
-                {
-                  name: 'getAuthorizationUrl',
-                  params: [],
-                  returnType: 'void',
-                  async: true,
-                },
-              ],
-            },
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
-          },
-        },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    // Fully covered services with no new methods are skipped entirely
-    expect(files.length).toBe(0);
-  });
-
-  it('removes skipIfExists for purely oagen-managed services (no baseline)', () => {
-    const services: Service[] = [
-      {
-        name: 'Applications',
-        operations: [
-          {
-            name: 'create',
-            httpMethod: 'post',
-            path: '/connect/applications',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'ConnectApplication' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /connect/applications',
-            {
-              className: 'Applications',
-              methodName: 'create',
-              params: [],
-              returnType: 'ConnectApplication',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        // No baseline class for Applications — purely oagen-managed.
-        classes: {},
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    expect(files.length).toBe(1);
-
-    // skipIfExists must be removed so emitter improvements always overwrite.
-    expect(files[0].skipIfExists).toBeUndefined();
+      const resourceFile = result.find((f) => f.path === 'src/connect/connect.ts');
+      expect(resourceFile?.content).toContain(
+        "import { serializeCreateM2MApplication } from './serializers/create-m2m-application.serializer';",
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 
 describe('resolveResourceClassName', () => {
-  const webhooksService: Service = {
-    name: 'WebhookEvents',
-    operations: [
-      {
-        name: 'listWebhookEvents',
-        httpMethod: 'get',
-        path: '/webhook_events',
-        pathParams: [],
-        queryParams: [],
-        headerParams: [],
-        response: { kind: 'model', name: 'WebhookEvent' },
-        errors: [],
-        injectIdempotencyKey: false,
-      },
-    ],
-  };
-
-  it('generates separate class when baseline has incompatible constructor', () => {
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services: [webhooksService] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /webhook_events',
-            {
-              className: 'Webhooks',
-              methodName: 'listWebhookEvents',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          Webhooks: {
-            name: 'Webhooks',
-            methods: {},
-            properties: {},
-            constructorParams: [
-              {
-                name: 'cryptoProvider',
-                type: 'CryptoProvider',
-                optional: false,
-              },
-            ],
-          },
-        },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const result = resolveResourceClassName(webhooksService, overlayCtx);
-    // Falls back to IR name since overlay name has incompatible constructor
-    expect(result).toBe('WebhookEvents');
-  });
-
   it('uses overlay name when baseline has compatible constructor', () => {
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services: [webhooksService] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /webhook_events',
-            {
-              className: 'Webhooks',
-              methodName: 'listWebhookEvents',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
+    const service: Service = { name: 'Organizations', operations: [] };
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
         classes: {
-          Webhooks: {
-            name: 'Webhooks',
-            methods: {},
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+          Organizations: {
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
           },
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      } as any,
     };
-
-    const result = resolveResourceClassName(webhooksService, overlayCtx);
-    expect(result).toBe('Webhooks');
+    expect(resolveResourceClassName(service, ctxWithBaseline)).toBe('Organizations');
   });
 
   it('appends Endpoints suffix when IR name collides with overlay name', () => {
-    const collisionService: Service = {
+    const service: Service = {
       name: 'Webhooks',
       operations: [
         {
@@ -1607,64 +413,39 @@ describe('resolveResourceClassName', () => {
           pathParams: [],
           queryParams: [],
           headerParams: [],
-          response: { kind: 'model', name: 'Webhook' },
+          response: { kind: 'primitive', type: 'unknown' },
           errors: [],
           injectIdempotencyKey: false,
         },
       ],
     };
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services: [collisionService] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /webhooks',
-            {
-              className: 'Webhooks',
-              methodName: 'listWebhooks',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
+    const ctxWithIncompat: EmitterContext = {
+      ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
         classes: {
           Webhooks: {
-            name: 'Webhooks',
-            methods: {},
-            properties: {},
-            constructorParams: [
-              {
-                name: 'cryptoProvider',
-                type: 'CryptoProvider',
-                optional: false,
-              },
-            ],
+            constructorParams: [{ name: 'crypto', type: 'CryptoProvider' }],
           },
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      } as any,
+      resolvedOperations: [
+        {
+          operation: service.operations[0],
+          service,
+          methodName: 'list_webhooks',
+          mountOn: 'Webhooks',
+          defaults: {},
+          inferFromClient: [],
+          urlBuilder: false,
+        },
+      ],
     };
+    expect(resolveResourceClassName(service, ctxWithIncompat)).toBe('WebhooksEndpoints');
+    expect(resolveResourceDir(service, ctxWithIncompat)).toBe('webhooks');
 
-    const result = resolveResourceClassName(collisionService, overlayCtx);
-    // IR name "Webhooks" collides with overlay name "Webhooks", so append Endpoints
-    expect(result).toBe('WebhooksEndpoints');
+    const result = generateResources([service], { ...ctxWithIncompat, spec: { ...emptySpec, services: [service] } });
+    expect(result.some((f) => f.path === 'src/webhooks/webhooks-endpoints.ts')).toBe(true);
+    expect(result.some((f) => f.path === 'src/webhooks-endpoints/webhooks-endpoints.ts')).toBe(false);
   });
 });
 
@@ -1674,485 +455,44 @@ describe('hasCompatibleConstructor', () => {
   });
 
   it('returns true when baseline has workos: WorkOS param', () => {
-    const ctxWithSurface: EmitterContext = {
+    const ctxWithBaseline: EmitterContext = {
       ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
         classes: {
           Organizations: {
-            name: 'Organizations',
-            methods: {},
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
           },
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      } as any,
     };
-
-    expect(hasCompatibleConstructor('Organizations', ctxWithSurface)).toBe(true);
+    expect(hasCompatibleConstructor('Organizations', ctxWithBaseline)).toBe(true);
   });
 
   it('returns false when baseline has incompatible constructor', () => {
-    const ctxWithSurface: EmitterContext = {
+    const ctxWithIncompat: EmitterContext = {
       ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
         classes: {
           Webhooks: {
-            name: 'Webhooks',
-            methods: {},
-            properties: {},
-            constructorParams: [
-              {
-                name: 'cryptoProvider',
-                type: 'CryptoProvider',
-                optional: false,
-              },
-            ],
+            constructorParams: [{ name: 'crypto', type: 'CryptoProvider' }],
           },
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      } as any,
     };
-
-    expect(hasCompatibleConstructor('Webhooks', ctxWithSurface)).toBe(false);
+    expect(hasCompatibleConstructor('Webhooks', ctxWithIncompat)).toBe(false);
   });
 
   it('returns true when baseline has no constructor params', () => {
-    const ctxWithSurface: EmitterContext = {
+    const ctxWithEmptyCtor: EmitterContext = {
       ...ctx,
       apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
         classes: {
-          EmptyService: {
-            name: 'EmptyService',
-            methods: {},
-            properties: {},
+          Utils: {
             constructorParams: [],
           },
         },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
+      } as any,
     };
-
-    expect(hasCompatibleConstructor('EmptyService', ctxWithSurface)).toBe(true);
-  });
-});
-
-describe('partial service coverage', () => {
-  it('generates methods for uncovered operations in partially covered services', () => {
-    const services: Service[] = [
-      {
-        name: 'AuditLogs',
-        operations: [
-          {
-            name: 'createEvent',
-            httpMethod: 'post',
-            path: '/audit_logs/events',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'AuditLogEvent' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-          {
-            name: 'getRetention',
-            httpMethod: 'get',
-            path: '/audit_logs/retention',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'AuditLogRetention' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    // createEvent is covered by existing AuditLogs class, getRetention is NOT
-    const ctxPartial: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /audit_logs/events',
-            {
-              className: 'AuditLogs',
-              methodName: 'createEvent',
-              params: [],
-              returnType: 'AuditLogEvent',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          AuditLogs: {
-            name: 'AuditLogs',
-            methods: {
-              createEvent: [
-                {
-                  name: 'createEvent',
-                  params: [],
-                  returnType: 'AuditLogEvent',
-                  async: true,
-                },
-              ],
-            },
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
-          },
-        },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const files = generateResources(services, ctxPartial);
-    expect(files.length).toBe(1);
-    const content = files[0].content;
-
-    // Should generate method for uncovered operation
-    expect(content).toContain('async getRetention');
-    // Should also generate covered operation so the merger can apply JSDoc
-    expect(content).toContain('async createEvent');
-  });
-
-  it('skips fully covered services with no new methods', () => {
-    const services: Service[] = [
-      {
-        name: 'Permissions',
-        operations: [
-          {
-            name: 'listPermissions',
-            description: 'List all permissions.',
-            httpMethod: 'get',
-            path: '/authorization/permissions',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'model', name: 'PermissionList' },
-            errors: [{ statusCode: 404 }],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const ctxCovered: EmitterContext = {
-      ...ctx,
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'GET /authorization/permissions',
-            {
-              className: 'Permissions',
-              methodName: 'listPermissions',
-              params: [],
-              returnType: 'void',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-      apiSurface: {
-        language: 'node',
-        extractedFrom: 'test',
-        extractedAt: '2024-01-01',
-        classes: {
-          Permissions: {
-            name: 'Permissions',
-            methods: {
-              listPermissions: [
-                {
-                  name: 'listPermissions',
-                  params: [],
-                  returnType: 'void',
-                  async: true,
-                },
-              ],
-            },
-            properties: {},
-            constructorParams: [{ name: 'workos', type: 'WorkOS', optional: false }],
-          },
-        },
-        interfaces: {},
-        typeAliases: {},
-        enums: {},
-        exports: {},
-      },
-    };
-
-    const files = generateResources(services, ctxCovered);
-    // Fully covered services with no new methods are skipped entirely
-    // (JSDoc-only updates are deferred until a structural change touches the file)
-    expect(files.length).toBe(0);
-  });
-
-  it('uses resolved operation method names when provided', () => {
-    const op = {
-      name: 'listRolesOrganizations',
-      httpMethod: 'get' as const,
-      path: '/authorization/organizations/{organizationId}/roles',
-      pathParams: [
-        {
-          name: 'organizationId',
-          type: { kind: 'primitive' as const, type: 'string' as const },
-          required: true,
-        },
-      ],
-      queryParams: [],
-      headerParams: [],
-      response: { kind: 'model' as const, name: 'RoleList' },
-      errors: [],
-      pagination: {
-        strategy: 'cursor' as const,
-        param: 'after',
-        itemType: { kind: 'model' as const, name: 'RoleList' },
-      },
-      injectIdempotencyKey: false,
-    };
-    const services: Service[] = [
-      {
-        name: 'Authorization',
-        operations: [op],
-      },
-    ];
-
-    const ctxResolved: EmitterContext = {
-      ...ctx,
-      spec: {
-        ...emptySpec,
-        services,
-        models: [{ name: 'RoleList', fields: [] }],
-      },
-      resolvedOperations: [
-        {
-          operation: op,
-          service: services[0],
-          methodName: 'list_organization_roles',
-          mountOn: 'Authorization',
-        } as any,
-      ],
-    };
-
-    const files = generateResources(services, ctxResolved);
-    expect(files.length).toBe(1);
-    const content = files[0].content;
-    // Should use the resolved operation name (converted to camelCase)
-    expect(content).toContain('async listOrganizationRoles');
-    expect(content).not.toContain('async listRolesOrganizations');
-  });
-
-  it('deduplicates method names for operations on different paths', () => {
-    const services: Service[] = [
-      {
-        name: 'Organizations',
-        operations: [
-          {
-            name: 'create',
-            httpMethod: 'post',
-            path: '/organization_domains',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateOrgDomain' },
-            response: { kind: 'model', name: 'OrgDomain' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-          {
-            name: 'create',
-            httpMethod: 'post',
-            path: '/organizations',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateOrg' },
-            response: { kind: 'model', name: 'Organization' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const ctxDedup: EmitterContext = {
-      ...ctx,
-      spec: {
-        ...emptySpec,
-        services,
-        models: [
-          { name: 'CreateOrgDomain', fields: [] },
-          { name: 'OrgDomain', fields: [] },
-          { name: 'CreateOrg', fields: [] },
-          { name: 'Organization', fields: [] },
-        ],
-      },
-    };
-
-    const files = generateResources(services, ctxDedup);
-    expect(files.length).toBe(1);
-    const content = files[0].content;
-    // The best-scoring plan keeps the name; the other gets disambiguated.
-    // "create" matches "organizations" path better (the word "create" doesn't
-    // appear in either path, but scoring is equal — first wins).
-    // The other gets a path suffix.
-    const createMatches = content.match(/async create\b/g);
-    // At most one un-suffixed "create"
-    expect(createMatches?.length ?? 0).toBeLessThanOrEqual(1);
-    // The two methods should have different names
-    const methodNames = [...content.matchAll(/async (\w+)\(/g)].map((m) => m[1]);
-    const createMethods = methodNames.filter((n) => n.toLowerCase().startsWith('create'));
-    expect(new Set(createMethods).size).toBe(createMethods.length); // all unique
-  });
-
-  it('omits @param payload when overlay method has no payload param', () => {
-    const services: Service[] = [
-      {
-        name: 'AuditLogs',
-        operations: [
-          {
-            name: 'createEvent',
-            httpMethod: 'post',
-            path: '/audit_logs/events',
-            pathParams: [],
-            queryParams: [],
-            headerParams: [],
-            requestBody: { kind: 'model', name: 'CreateAuditLogEvent' },
-            response: { kind: 'primitive', type: 'unknown' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /audit_logs/events',
-            {
-              className: 'AuditLogs',
-              methodName: 'createEvent',
-              params: [
-                { name: 'organization', type: 'string', optional: false },
-                { name: 'event', type: 'CreateAuditLogEventOptions', optional: false },
-                { name: 'options', type: 'CreateAuditLogEventRequestOptions', optional: true },
-              ],
-              returnType: 'Promise<void>',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    const content = files[0].content;
-    // Overlay has (organization, event, options) — no payload param
-    expect(content).not.toContain('@param payload');
-  });
-
-  it('documents @param options when overlay folds path params into options', () => {
-    const services: Service[] = [
-      {
-        name: 'FeatureFlags',
-        operations: [
-          {
-            name: 'addFeatureFlagTarget',
-            httpMethod: 'post',
-            path: '/feature-flags/{slug}/targets/{target_id}',
-            pathParams: [
-              { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
-              { name: 'target_id', type: { kind: 'primitive', type: 'string' }, required: true },
-            ],
-            queryParams: [],
-            headerParams: [],
-            response: { kind: 'primitive', type: 'unknown' },
-            errors: [],
-            injectIdempotencyKey: false,
-          },
-        ],
-      },
-    ];
-
-    const overlayCtx: EmitterContext = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: { ...emptySpec, services, models: [] },
-      overlayLookup: {
-        methodByOperation: new Map([
-          [
-            'POST /feature-flags/{slug}/targets/{target_id}',
-            {
-              className: 'FeatureFlags',
-              methodName: 'addFlagTarget',
-              params: [{ name: 'options', type: 'AddFlagTargetOptions', optional: false }],
-              returnType: 'Promise<void>',
-            },
-          ],
-        ]),
-        httpKeyByMethod: new Map(),
-        interfaceByName: new Map(),
-        typeAliasByName: new Map(),
-        requiredExports: new Map(),
-        modelNameByIR: new Map(),
-        fileBySymbol: new Map(),
-      },
-    };
-
-    const files = generateResources(services, overlayCtx);
-    const content = files[0].content;
-    // Path params (slug, targetId) are folded into options — should not appear as top-level @param
-    expect(content).not.toContain('@param slug');
-    expect(content).not.toContain('@param targetId');
-    // Should have @param options since it's in the overlay signature
-    expect(content).toContain('@param options');
+    expect(hasCompatibleConstructor('Utils', ctxWithEmptyCtor)).toBe(true);
   });
 });

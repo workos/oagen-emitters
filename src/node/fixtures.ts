@@ -1,13 +1,8 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
-import { resolveResourceClassName } from './resources.js';
+import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
 
-/**
- * Prefix mapping for generating realistic ID fixture values.
- * When a field named "id" belongs to a model whose name matches a key here,
- * the generated ID will be prefixed accordingly (e.g. "conn_01234").
- */
 export const ID_PREFIXES: Record<string, string> = {
   Connection: 'conn_',
   Organization: 'org_',
@@ -24,10 +19,6 @@ export const ID_PREFIXES: Record<string, string> = {
   PasswordReset: 'password_reset_',
 };
 
-/**
- * Generate JSON fixture files for test data.
- * Each model that appears as a response gets a fixture in wire format (snake_case).
- */
 export function generateFixtures(
   spec: {
     models: Model[];
@@ -48,12 +39,11 @@ export function generateFixtures(
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
-  // Only generate fixtures for models reachable from non-event operations
   const fixtureSeeds = new Set<string>();
   for (const svc of spec.services) {
     if (svc.name.toLowerCase() === 'events') continue;
     for (const op of svc.operations) {
-      const collectFromRef = (t: import('@workos/oagen').TypeRef | undefined): void => {
+      const collectFromRef = (t: TypeRef | undefined): void => {
         if (!t) return;
         if (t.kind === 'model') fixtureSeeds.add(t.name);
         if (t.kind === 'array') collectFromRef(t.items);
@@ -75,7 +65,7 @@ export function generateFixtures(
     const m = fixtureModelMap.get(name);
     if (!m) continue;
     for (const field of m.fields) {
-      const walk = (t: import('@workos/oagen').TypeRef): void => {
+      const walk = (t: TypeRef): void => {
         if (t.kind === 'model' && !fixtureReachable.has(t.name)) fixtureQueue.push(t.name);
         if (t.kind === 'array') walk(t.items);
         if (t.kind === 'nullable') walk(t.inner);
@@ -84,6 +74,7 @@ export function generateFixtures(
       walk(field.type);
     }
   }
+
   const seenFixturePaths = new Set<string>();
   for (const model of spec.models) {
     if (!fixtureReachable.has(model.name)) continue;
@@ -94,8 +85,6 @@ export function generateFixtures(
     const dirName = resolveDir(service);
     const fixturePath = `src/${dirName}/fixtures/${fileName(model.name)}.json`;
 
-    // After noise suffix stripping, multiple models may resolve to the same
-    // fixture path (e.g., OrganizationDto and Organization).  Skip duplicates.
     if (seenFixturePaths.has(fixturePath)) continue;
     seenFixturePaths.add(fixturePath);
 
@@ -107,16 +96,13 @@ export function generateFixtures(
     });
   }
 
-  // Generate list fixtures for models that appear in paginated responses
   for (const service of spec.services) {
     const resolvedName = ctx ? resolveResourceClassName(service, ctx) : service.name;
-    const serviceDir = resolveServiceDir(resolvedName);
+    const serviceDir = ctx ? resolveResourceDir(service, ctx) : resolveServiceDir(resolvedName);
     for (const op of service.operations) {
       if (op.pagination) {
         let itemModel = op.pagination.itemType.kind === 'model' ? modelMap.get(op.pagination.itemType.name) : null;
         if (itemModel) {
-          // Detect if the "item" model is actually a list wrapper (has `data` array + `list_metadata`).
-          // If so, unwrap to the actual item type to avoid double-nesting in fixtures.
           const unwrapped = unwrapListModel(itemModel, modelMap);
           if (unwrapped) {
             itemModel = unwrapped;
@@ -141,12 +127,6 @@ export function generateFixtures(
   return files;
 }
 
-/**
- * Detect if a model is a list wrapper (has a `data` array field and a `list_metadata` field).
- * If so, return the inner item model from the `data` array. Otherwise return null.
- * This prevents double-nesting when the pagination itemType points to a list wrapper
- * instead of the actual item model.
- */
 export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
   const dataField = model.fields.find((f) => f.name === 'data');
   const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
@@ -159,7 +139,7 @@ export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Mod
   return null;
 }
 
-function generateModelFixture(
+export function generateModelFixture(
   model: Model,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
@@ -168,7 +148,6 @@ function generateModelFixture(
 
   for (const field of model.fields) {
     const wireName = wireFieldName(field.name);
-    // Prefer the OpenAPI example value when available on the field
     if (field.example !== undefined) {
       fixture[wireName] = field.example;
     } else {
@@ -181,14 +160,14 @@ function generateModelFixture(
 
 function generateFieldValue(
   ref: TypeRef,
-  fieldName: string,
+  fName: string,
   modelName: string,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
 ): any {
   switch (ref.kind) {
     case 'primitive':
-      return generatePrimitiveValue(ref.type, ref.format, fieldName, modelName);
+      return generatePrimitiveValue(ref.type, ref.format, fName, modelName);
     case 'literal':
       return ref.value;
     case 'enum': {
@@ -201,21 +180,20 @@ function generateFieldValue(
       return {};
     }
     case 'array': {
-      // For array<enum>, use actual enum values instead of a single generated item
       if (ref.items.kind === 'enum') {
         const e = enumMap.get(ref.items.name);
         if (e && e.values.length > 0) {
           return e.values.map((v) => v.value);
         }
       }
-      const item = generateFieldValue(ref.items, fieldName, modelName, modelMap, enumMap);
+      const item = generateFieldValue(ref.items, fName, modelName, modelMap, enumMap);
       return [item];
     }
     case 'nullable':
-      return generateFieldValue(ref.inner, fieldName, modelName, modelMap, enumMap);
+      return generateFieldValue(ref.inner, fName, modelName, modelMap, enumMap);
     case 'union':
       if (ref.variants.length > 0) {
-        return generateFieldValue(ref.variants[0], fieldName, modelName, modelMap, enumMap);
+        return generateFieldValue(ref.variants[0], fName, modelName, modelMap, enumMap);
       }
       return null;
     case 'map':
