@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/workos/oagen-emitters/compare/v0.12.1...v0.12.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* **deps:** update minor and patch updates ([#101](https://github.com/workos/oagen-emitters/issues/101)) ([84bf149](https://github.com/workos/oagen-emitters/commit/84bf149ca176c0c7fa3d7a5bd7a38c3f108fbc75))
+
 ## [0.12.1](https://github.com/workos/oagen-emitters/compare/v0.12.0...v0.12.1) (2026-05-13)
 
 
