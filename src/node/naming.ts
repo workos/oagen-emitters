@@ -65,6 +65,9 @@ let adoptedModelNames: Set<string> = new Set();
 export function setAdoptedModelNames(names: Set<string>): void {
   adoptedModelNames = names;
 }
+export function isAdoptedModelName(name: string): boolean {
+  return adoptedModelNames.has(name);
+}
 
 /**
  * Wire/response interface name.

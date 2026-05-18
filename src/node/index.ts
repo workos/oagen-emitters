@@ -315,10 +315,19 @@ function applyLiveSurface(files: GeneratedFile[], ctx: EmitterContext, surface: 
     // user has hand-tuned, or leave it pointing at sibling files that no
     // longer have the same shape. Treat existing test/fixture files as
     // frozen even when they carry the auto-gen header.
+    //
+    // Adopted-service directories are treated like owned dirs for this
+    // purpose: adoption means oagen created the directory from scratch, so
+    // by construction there is no hand-written content to preserve and
+    // emitting tests/fixtures is safe. Rule (a) still drops files that
+    // somehow exist hand-written.
     if (isUserOwnedAfterFirstEmit(f.path)) {
+      const dir = topLevelDir(f.path);
+      const isAdoptedDir = dir !== undefined && policy.adoptedServiceDirs.has(dir);
+      const isManagedDir = ownedPath || isAdoptedDir;
       if (surface.files.has(f.path) && !surface.autogenFiles.has(f.path)) continue;
-      if (!ownedPath && !surface.autogenFiles.has(f.path)) continue;
-      if (ownedPath && !policy.regenerateOwnedTests) continue;
+      if (!isManagedDir && !surface.autogenFiles.has(f.path)) continue;
+      if (isManagedDir && !policy.regenerateOwnedTests) continue;
     }
 
     // Previously auto-generated files → fully overwrite so spec changes

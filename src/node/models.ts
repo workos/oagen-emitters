@@ -10,6 +10,7 @@ import {
   resolveInterfaceName,
   wireInterfaceName,
   resolveMethodName,
+  isAdoptedModelName,
 } from './naming.js';
 import {
   collectFieldDependencies,
@@ -119,6 +120,12 @@ function isSupportedFieldType(
       if (ref.name === ownerModelName) return true;
       const resolvedName = resolveInterfaceName(ref.name, ctx);
       if (ctx.apiSurface?.interfaces?.[resolvedName] || ctx.apiSurface?.typeAliases?.[resolvedName]) return true;
+      // Adopted-service models will have their interfaces emitted in this
+      // same pass, so the field reference will resolve once writing is done.
+      // Without this, fields like `UserManagementLoginRequest.user` get
+      // silently dropped on first emission because the target interface
+      // (`UserObject` under the adopted `connect/` dir) hasn't landed yet.
+      if (isAdoptedModelName(ref.name)) return true;
       const relPath = `src/${shared.resolveDir(shared.modelToService.get(ref.name))}/interfaces/${fileName(ref.name)}.interface.ts`;
       return liveSurfaceHasManagedFile(relPath);
     }

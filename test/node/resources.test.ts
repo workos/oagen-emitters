@@ -176,6 +176,76 @@ describe('generateResources', () => {
     expect(resourceFile!.content).toContain('async listGroupsForOrganizationMembership');
   });
 
+  it('options-object: URL template binds to the SDK field name, not the spec path-param name', () => {
+    // When the spec uses `omId` as a path-param name but the baseline options
+    // interface exposes `organizationMembershipId`, both the destructure and
+    // the URL template should reference `organizationMembershipId` directly —
+    // no `organizationMembershipId: omId` rename indirection in the body.
+    const operation = {
+      name: 'removeOrganizationMembership',
+      httpMethod: 'delete' as const,
+      path: '/organizations/{organizationId}/groups/{groupId}/organization-memberships/{omId}',
+      pathParams: [
+        { name: 'organizationId', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+        { name: 'groupId', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+        { name: 'omId', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+      ],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = { name: 'Groups', operations: [operation] };
+    const spec: ApiSpec = { ...emptySpec, services: [service] };
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['Groups'] },
+      apiSurface: {
+        classes: {
+          Groups: {
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
+            methods: {
+              removeOrganizationMembership: [
+                {
+                  name: 'removeOrganizationMembership',
+                  params: [
+                    {
+                      name: 'options',
+                      type: 'RemoveGroupOrganizationMembershipOptions',
+                      passingStyle: 'options_object',
+                    },
+                  ],
+                  returnType: 'Promise<void>',
+                  async: true,
+                },
+              ],
+            },
+          },
+        },
+        interfaces: {
+          RemoveGroupOrganizationMembershipOptions: {
+            fields: {
+              organizationId: { type: 'string', required: true },
+              groupId: { type: 'string', required: true },
+              organizationMembershipId: { type: 'string', required: true },
+            },
+          },
+        },
+      } as any,
+    };
+
+    const result = generateResources([service], ctxWithBaseline);
+    const resourceFile = result.find((f) => f.path === 'src/groups/groups.ts');
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+    expect(content).toContain('const { organizationId, groupId, organizationMembershipId } = options;');
+    expect(content).toContain('${encodeURIComponent(organizationMembershipId)}');
+    expect(content).not.toContain('organizationMembershipId: omId');
+    expect(content).not.toContain('encodeURIComponent(omId)');
+  });
+
   it('drops brand-new service paths in an existing SDK by default', () => {
     const tmpRoot = createTrackedSdkRoot();
     try {
