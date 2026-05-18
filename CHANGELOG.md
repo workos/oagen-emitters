@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/workos/oagen-emitters/compare/v0.12.2...v0.12.3) (2026-05-18)
+
+
+### Bug Fixes
+
+* **node:** generate tests for adopted services and fix related bugs ([#107](https://github.com/workos/oagen-emitters/issues/107)) ([abe877b](https://github.com/workos/oagen-emitters/commit/abe877bd6489365d0f145a1739a7c449b15760c2))
+
 ## [0.12.2](https://github.com/workos/oagen-emitters/compare/v0.12.1...v0.12.2) (2026-05-15)
 
 
