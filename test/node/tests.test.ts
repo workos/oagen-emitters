@@ -116,4 +116,99 @@ describe('node test generation ownership', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('emits tests and fixtures for adopted services when regenerateOwnedTests is true', () => {
+    // Adopted dirs are created by oagen from scratch — no hand-written content
+    // to preserve, so scaffolding tests/fixtures is safe and useful.
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(spec, {
+        ...ctx,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true, regenerateOwnedTests: true },
+      } as EmitterContext);
+
+      const testFile = result.find((f) => f.path === 'src/groups/groups.spec.ts');
+      const fixtureFile = result.find((f) => f.path === 'src/groups/fixtures/group.json');
+      expect(testFile).toBeDefined();
+      expect(fixtureFile).toBeDefined();
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips tests for adopted services when regenerateOwnedTests is false', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(spec, {
+        ...ctx,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true },
+      } as EmitterContext);
+
+      expect(result.some((f) => f.path.startsWith('src/groups/'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips tests when the resource class diverges from the mount accessor', () => {
+    // Hand-written `Webhooks` has a constructor incompatible with WorkOS,
+    // so the emitter forks endpoint methods onto a `WebhooksEndpoints`
+    // helper class. A generated test would call `workos.webhooks.foo(...)`
+    // — but those methods live on the helper, not the crypto class. Skip
+    // these tests so we don't ship a spec that fails to compile.
+    const webhookOp = {
+      name: 'listWebhookEndpoints',
+      httpMethod: 'get' as const,
+      path: '/webhook_endpoints',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const webhookService: Service = { name: 'Webhooks', operations: [webhookOp] };
+    const webhookSpec: ApiSpec = {
+      ...spec,
+      services: [webhookService],
+    };
+
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(webhookSpec, {
+        ...ctx,
+        spec: webhookSpec,
+        outputDir: tmpRoot,
+        emitterOptions: { adoptMissingServices: true, regenerateOwnedTests: true },
+        apiSurface: {
+          classes: {
+            Webhooks: {
+              constructorParams: [{ name: 'crypto', type: 'CryptoProvider' }],
+            },
+            WorkOS: {
+              properties: { webhooks: { type: 'Webhooks' } },
+            },
+          },
+        },
+        resolvedOperations: [
+          {
+            operation: webhookOp,
+            service: webhookService,
+            methodName: 'list_webhook_endpoints',
+            mountOn: 'Webhooks',
+            defaults: {},
+            inferFromClient: [],
+            urlBuilder: false,
+          },
+        ],
+      } as unknown as EmitterContext);
+
+      expect(result.some((f) => f.path === 'src/webhooks/webhooks-endpoints.spec.ts')).toBe(false);
+      expect(result.some((f) => f.path === 'src/webhooks/webhooks.spec.ts')).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });

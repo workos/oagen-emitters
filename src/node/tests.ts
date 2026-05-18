@@ -110,6 +110,15 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const propName = mountAccessors.get(mountName) ?? servicePropertyName(mountName);
     if (ctx.apiSurface && baselineWorkOSProps.size > 0 && !baselineWorkOSProps.has(propName)) continue;
 
+    // Skip when the resource class diverges from the mount accessor — this
+    // happens for services with constructor-incompatible baselines (e.g.
+    // hand-written `Webhooks(crypto)` forks the emitted ops onto
+    // `WebhooksEndpoints`). The generated test would do
+    // `workos.<propName>.fooMethod(...)`, but those methods live on a
+    // different class, so the test would fail to compile.
+    const resourceClass = resolveResourceClassName(mergedService, ctx);
+    if (resourceClass !== mountName) continue;
+
     const testService = ops.length < operations.length ? { ...mergedService, operations: ops } : mergedService;
     files.push(generateServiceTest(testService, spec, ctx, modelMap, mountAccessors));
   }
@@ -409,8 +418,12 @@ function renderBodyTest(
   const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
   const allArgs = optionsArg ?? (pathArgs ? `${pathArgs}, ${payloadArg}` : payloadArg);
 
+  const isArrayResponse = !!plan.isArrayResponse;
+  const fixtureExpr = isArrayResponse ? `[${fixture}]` : fixture;
+  const accessor = isArrayResponse ? 'result[0]' : 'result';
+
   lines.push("    it('sends the correct request and returns result', async () => {");
-  lines.push(`      fetchOnce(${fixture});`);
+  lines.push(`      fetchOnce(${fixtureExpr});`);
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${allArgs});`);
   lines.push('');
@@ -427,14 +440,18 @@ function renderBodyTest(
     lines.push('      expect(fetchBody()).toBeDefined();');
   }
 
+  if (isArrayResponse) {
+    lines.push('      expect(Array.isArray(result)).toBe(true);');
+  }
+
   // Use entity helper if available, otherwise inline assertions
   const bodyHelperName = ctx ? `expect${resolveInterfaceName(responseModelName, ctx)}` : null;
   if (bodyHelperName && entityHelpers?.has(bodyHelperName)) {
-    lines.push(`      ${bodyHelperName}(result);`);
+    lines.push(`      ${bodyHelperName}(${accessor});`);
   } else {
     const responseModel = modelMap.get(responseModelName);
     if (responseModel) {
-      const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
+      const assertions = buildFieldAssertions(responseModel, accessor, modelMap);
       if (assertions.length > 0) {
         for (const assertion of assertions) {
           lines.push(`      ${assertion}`);
@@ -466,8 +483,12 @@ function renderGetTest(
   const pathArgs = buildTestPathArgs(op);
   const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
 
+  const isArrayResponse = !!plan.isArrayResponse;
+  const fixtureExpr = isArrayResponse ? `[${fixture}]` : fixture;
+  const accessor = isArrayResponse ? 'result[0]' : 'result';
+
   lines.push("    it('returns the expected result', async () => {");
-  lines.push(`      fetchOnce(${fixture});`);
+  lines.push(`      fetchOnce(${fixtureExpr});`);
   lines.push('');
   lines.push(`      const result = await workos.${serviceProp}.${method}(${optionsArg ?? pathArgs});`);
   lines.push('');
@@ -475,15 +496,18 @@ function renderGetTest(
   // Fix #12: Full URL path assertion instead of toContain()
   const expectedPathGet = buildExpectedPath(op);
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathGet}');`);
+  if (isArrayResponse) {
+    lines.push('      expect(Array.isArray(result)).toBe(true);');
+  }
 
   // Use entity helper if available, otherwise inline assertions
   const helperName = ctx ? `expect${resolveInterfaceName(responseModelName, ctx)}` : null;
   if (helperName && entityHelpers?.has(helperName)) {
-    lines.push(`      ${helperName}(result);`);
+    lines.push(`      ${helperName}(${accessor});`);
   } else {
     const responseModel = modelMap.get(responseModelName);
     if (responseModel) {
-      const assertions = buildFieldAssertions(responseModel, 'result', modelMap);
+      const assertions = buildFieldAssertions(responseModel, accessor, modelMap);
       if (assertions.length > 0) {
         for (const assertion of assertions) {
           lines.push(`      ${assertion}`);
@@ -636,27 +660,37 @@ function generateEntityHelpers(
  * nested models so we still get meaningful assertions instead of a bare
  * `toBeDefined()`.
  */
+function isDateTimeFieldType(type: TypeRef): boolean {
+  if (type.kind === 'primitive') return type.format === 'date-time';
+  if (type.kind === 'nullable') return isDateTimeFieldType(type.inner);
+  return false;
+}
+
 function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<string, Model>): string[] {
   const assertions: string[] = [];
 
   for (const field of model.fields) {
     if (!field.required) continue;
+    const domainField = fieldName(field.name);
+    // `string` + `format: 'date-time'` is deserialized to `Date` by the
+    // serializer (see `mapPrimitive` in type-map.ts). Asserting against a
+    // string literal would fail Object.is — compare via `.toISOString()`.
+    const isDateTime = isDateTimeFieldType(field.type);
+    const fieldAccessor = isDateTime ? `${accessor}.${domainField}.toISOString()` : `${accessor}.${domainField}`;
     // When a field has an example value, use it as the expected assertion value
     if (field.example !== undefined) {
-      const domainField = fieldName(field.name);
       if (typeof field.example === 'object' && field.example !== null) {
         // Objects and arrays need toEqual with JSON serialization
         assertions.push(`expect(${accessor}.${domainField}).toEqual(${JSON.stringify(field.example)});`);
       } else {
         const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);
-        assertions.push(`expect(${accessor}.${domainField}).toBe(${exampleLiteral});`);
+        assertions.push(`expect(${fieldAccessor}).toBe(${exampleLiteral});`);
       }
       continue;
     }
     const value = fixtureValueForType(field.type, field.name, model.name);
     if (value === null) continue;
-    const domainField = fieldName(field.name);
-    assertions.push(`expect(${accessor}.${domainField}).toBe(${value});`);
+    assertions.push(`expect(${fieldAccessor}).toBe(${value});`);
   }
 
   // When no primitive assertions were found (e.g. wrapper types like

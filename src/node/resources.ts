@@ -1242,8 +1242,8 @@ function renderOptionsObjectMethod(
   if (!optionParam) return false;
 
   const responseModel = plan.responseModelName ? resolveInterfaceName(plan.responseModelName, ctx) : null;
-  const pathStr = buildPathStr(op);
   const pathBindings = buildOptionsObjectPathBindings(op, optionParam.type, ctx);
+  const pathStr = buildPathStr(op, buildOptionsObjectPathParamMap(op, optionParam.type, ctx));
 
   if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
     let itemRawName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
@@ -1374,11 +1374,27 @@ function renderOptionsObjectDestructure(lines: string[], pathBindings: string[],
 }
 
 function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: EmitterContext): string[] {
-  return op.pathParams.map((param) => {
+  // Return resolved SDK field names directly — the URL template uses these
+  // names too (via the param-name map threaded into buildNodePathExpression),
+  // so the destructure no longer needs `optionField: localName` renames.
+  return op.pathParams.map((param) => resolveOptionsObjectField(fieldName(param.name), optionType, ctx));
+}
+
+/**
+ * Map spec path-param names (e.g. `omId`) to the SDK field name exposed on
+ * the options interface (e.g. `organizationMembershipId`). Empty when every
+ * path param's spec name already matches the SDK field. Consumed by
+ * `buildNodePathExpression` so the URL template binds to the same identifier
+ * the destructure does.
+ */
+function buildOptionsObjectPathParamMap(op: Operation, optionType: string, ctx: EmitterContext): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const param of op.pathParams) {
     const localName = fieldName(param.name);
-    const optionField = resolveOptionsObjectField(localName, optionType, ctx);
-    return optionField === localName ? localName : `${optionField}: ${localName}`;
-  });
+    const sdkField = resolveOptionsObjectField(localName, optionType, ctx);
+    if (sdkField !== localName) map.set(param.name, sdkField);
+  }
+  return map;
 }
 
 function resolveOptionsObjectField(localName: string, optionType: string, ctx: EmitterContext): string {
@@ -1826,8 +1842,8 @@ function renderQueryExpr(queryParams: { name: string; required: boolean }[]): st
   return `options ? { ${parts.join(', ')} } : undefined`;
 }
 
-function buildPathStr(op: Operation): string {
-  return buildNodePathExpression(op.path);
+function buildPathStr(op: Operation, paramNameMap?: Map<string, string>): string {
+  return buildNodePathExpression(op.path, paramNameMap);
 }
 
 function buildPathParams(op: Operation, specEnumNames?: Set<string>): string {
