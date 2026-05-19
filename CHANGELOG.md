@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/workos/oagen-emitters/compare/v0.12.3...v0.12.4) (2026-05-19)
+
+
+### Bug Fixes
+
+* **node:** emit serializers/index.ts barrel for owned and adopted services ([#109](https://github.com/workos/oagen-emitters/issues/109)) ([e176552](https://github.com/workos/oagen-emitters/commit/e17655296de50c9df759b84273b104ae828cd08e))
+
 ## [0.12.3](https://github.com/workos/oagen-emitters/compare/v0.12.2...v0.12.3) (2026-05-18)
 
 
