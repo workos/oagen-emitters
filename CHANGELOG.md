@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/workos/oagen-emitters/compare/v0.12.4...v0.12.5) (2026-05-19)
+
+
+### Bug Fixes
+
+* **node:** skip dead deserializers and strengthen all-optional body tests ([#111](https://github.com/workos/oagen-emitters/issues/111)) ([632bd82](https://github.com/workos/oagen-emitters/commit/632bd8257d4139ab53895b5225fffd6913702e3b))
+
 ## [0.12.4](https://github.com/workos/oagen-emitters/compare/v0.12.3...v0.12.4) (2026-05-19)
 
 
