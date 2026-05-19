@@ -666,6 +666,10 @@ interface SerializerContext {
   resolveDir: (irService: string | undefined) => string;
   dedup: Map<string, string>;
   skippedSerializeModels: Set<string>;
+  /** Models reachable from any response — anything outside this set is
+   *  request-only and won't have a `deserialize<X>` emitted. `undefined`
+   *  means "no usage info available, assume deserialize exists". */
+  responseReachableModels: Set<string> | undefined;
   ctx: EmitterContext;
 }
 
@@ -723,6 +727,10 @@ export function buildSerializerImports(
     const canon = sctx.dedup.get(dep);
     const depSkipSerialize =
       sctx.skippedSerializeModels.has(dep) || (canon != null && sctx.skippedSerializeModels.has(canon));
+    const depSkipDeserialize =
+      sctx.responseReachableModels !== undefined &&
+      !sctx.responseReachableModels.has(dep) &&
+      (canon == null || !sctx.responseReachableModels.has(canon));
 
     // Decide whether this serializer is reachable at runtime:
     //   - file on disk → honor what it exports (hasDeser/hasSer)
@@ -759,8 +767,11 @@ export function buildSerializerImports(
       continue;
     }
 
+    if (depSkipSerialize && depSkipDeserialize) continue;
     if (depSkipSerialize) {
       lines.push(`import { deserialize${depName} } from '${rel}';`);
+    } else if (depSkipDeserialize) {
+      lines.push(`import { serialize${depName} } from '${rel}';`);
     } else {
       lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
     }
@@ -821,27 +832,30 @@ export function emitSerializerBody(
   baselineResponse: BaselineInterface | undefined,
   skipFormatFields: Set<string>,
   shouldSkipSerialize: boolean,
+  shouldSkipDeserialize: boolean,
   ctx: EmitterContext,
 ): string[] {
   const lines: string[] = [];
 
-  const seenDeserFields = new Set<string>();
-  const deserParamPrefix = model.fields.length === 0 ? '_' : '';
-  lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
-  lines.push(`  ${deserParamPrefix}response: ${responseName}${typeParams.usage},`);
-  lines.push(`): ${domainName}${typeParams.usage} => ({`);
-  for (const field of model.fields) {
-    const domain = fieldName(field.name);
-    if (seenDeserFields.has(domain)) continue;
-    seenDeserFields.add(domain);
-    const plan = planDeserializeField(field, baselineDomain, baselineResponse, skipFormatFields, ctx);
-    if (!plan.skip) lines.push(plan.line);
+  if (!shouldSkipDeserialize) {
+    const seenDeserFields = new Set<string>();
+    const deserParamPrefix = model.fields.length === 0 ? '_' : '';
+    lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);
+    lines.push(`  ${deserParamPrefix}response: ${responseName}${typeParams.usage},`);
+    lines.push(`): ${domainName}${typeParams.usage} => ({`);
+    for (const field of model.fields) {
+      const domain = fieldName(field.name);
+      if (seenDeserFields.has(domain)) continue;
+      seenDeserFields.add(domain);
+      const plan = planDeserializeField(field, baselineDomain, baselineResponse, skipFormatFields, ctx);
+      if (!plan.skip) lines.push(plan.line);
+    }
+    lines.push('});');
   }
-  lines.push('});');
 
   if (!shouldSkipSerialize) {
+    if (!shouldSkipDeserialize) lines.push('');
     const serParamPrefix = model.fields.length === 0 ? '_' : '';
-    lines.push('');
     lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
     lines.push(`  ${serParamPrefix}model: ${domainName}${typeParams.usage},`);
     lines.push(`): ${responseName}${typeParams.usage} => ({`);

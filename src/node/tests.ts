@@ -838,18 +838,33 @@ function buildTestPayload(
   }
   if (!model) return null;
 
-  const fields = model.fields.filter((f) => f.required);
+  const requiredFields = model.fields.filter((f) => f.required);
   // Only use fields that we can generate deterministic values for (primitives, enums, and nested models)
-  const usableFields = fields.filter((f) => fixtureValueForType(f.type, f.name, model.name, modelMap) !== null);
+  const usableRequired = requiredFields.filter(
+    (f) => fixtureValueForType(f.type, f.name, model.name, modelMap) !== null,
+  );
 
-  // Only generate a typed payload when ALL required fields have fixture values.
-  // A partial payload missing required fields would fail TypeScript type checking.
-  if (usableFields.length === 0 || usableFields.length < fields.length) return null;
+  let chosenFields: typeof model.fields;
+  if (requiredFields.length > 0) {
+    // Only generate a typed payload when ALL required fields have fixture values.
+    // A partial payload missing required fields would fail TypeScript type checking.
+    if (usableRequired.length < requiredFields.length) return null;
+    chosenFields = usableRequired;
+  } else {
+    // All-optional model (e.g. PATCH `Update<X>` bodies). Pick the first few
+    // optional fields with available fixture values so the test asserts the
+    // wire format instead of falling back to `expect(fetchBody()).toBeDefined()`.
+    const usableOptional = model.fields.filter(
+      (f) => !f.required && fixtureValueForType(f.type, f.name, model.name, modelMap) !== null,
+    );
+    if (usableOptional.length === 0) return null;
+    chosenFields = usableOptional.slice(0, 2);
+  }
 
   const camelEntries: string[] = [];
   const snakeEntries: string[] = [];
 
-  for (const field of usableFields) {
+  for (const field of chosenFields) {
     const camelValue = fixtureValueForType(field.type, field.name, model.name, modelMap)!;
     const wireValue = fixtureValueForType(field.type, field.name, model.name, modelMap, true)!;
     const camelKey = fieldName(field.name);
@@ -935,6 +950,10 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   // Use the skipped-serialize set computed by the serializer generator.
   // It's stashed on the context during generateSerializers.
   const serializeSkipped: Set<string> = (ctx as any)._skippedSerializeModels ?? new Set<string>();
+  // Response-reachable models — anything outside this set is request-only
+  // and has no `deserialize<X>` to test. `undefined` means "no usage info,
+  // assume deserialize exists" (standalone generation, smoke tests).
+  const responseReachableModels: Set<string> | undefined = (ctx as any)._responseReachableModels;
 
   // Group eligible models by service directory for one test file per service
   const modelsByDir = new Map<string, Model[]>();
@@ -958,6 +977,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     const interfaceImports: string[] = [];
     const fixtureImports: string[] = [];
     const deserializeOnlyModels = new Set<string>();
+    const serializeOnlyModels = new Set<string>();
 
     for (const model of models) {
       const domainName = resolveInterfaceName(model.name, ctx);
@@ -966,13 +986,24 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const serializerPath = `src/${modelDir}/serializers/${fileName(model.name)}.serializer.ts`;
       const interfacePath = `src/${modelDir}/interfaces/${fileName(model.name)}.interface.ts`;
       const fixturePath = `src/${modelDir}/fixtures/${fileName(model.name)}.json`;
-      const deserializeOnly = serializeSkipped.has(model.name) || fixtureIsHandOwned(fixturePath, ctx);
+      // Request-only models (e.g. `CreateWebhookEndpoint`) have no
+      // `deserialize<X>` emitted, so they can only be tested via serialize.
+      // This check has to come first: a hand-owned fixture would otherwise
+      // route through the deserialize-only branch, which then imports a
+      // function that doesn't exist.
+      const isRequestOnly = responseReachableModels !== undefined && !responseReachableModels.has(model.name);
+      const deserializeOnly =
+        !isRequestOnly && (serializeSkipped.has(model.name) || fixtureIsHandOwned(fixturePath, ctx));
+      const serializeOnly = isRequestOnly;
       if (deserializeOnly) deserializeOnlyModels.add(model.name);
+      if (serializeOnly) serializeOnlyModels.add(model.name);
 
       if (deserializeOnly) {
         serializerImports.push(
           `import { deserialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
         );
+      } else if (serializeOnly) {
+        serializerImports.push(`import { serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`);
       } else {
         serializerImports.push(
           `import { deserialize${domainName}, serialize${domainName} } from '${relativeImport(testPath, serializerPath)}';`,
@@ -1007,6 +1038,15 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
         lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
         lines.push('    expect(deserialized).toBeDefined();');
+        lines.push('  });');
+        lines.push('});');
+      } else if (serializeOnlyModels.has(model.name)) {
+        // Serialize-only test for request-body-only models without a deserializer.
+        lines.push(`describe('${domainName}Serializer', () => {`);
+        lines.push("  it('serializes correctly', () => {");
+        lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
+        lines.push(`    const serialized = serialize${domainName}(fixture as any);`);
+        lines.push('    expect(serialized).toBeDefined();');
         lines.push('  });');
         lines.push('});');
       } else {
