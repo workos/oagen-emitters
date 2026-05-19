@@ -558,4 +558,36 @@ describe('generateSerializers', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('emits a serializers/index.ts barrel listing every emitted serializer', () => {
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'OrganizationMember',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const spec = makeSpec(models);
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateSerializers(models, ctxWithModels);
+
+    const serializerFiles = result.filter((f) => f.path.endsWith('.serializer.ts'));
+    expect(serializerFiles.length).toBeGreaterThan(0);
+
+    // Every emitted serializer file should appear in a barrel at the same
+    // directory's `serializers/index.ts`.
+    for (const sf of serializerFiles) {
+      const match = sf.path.match(/^src\/([^/]+)\/serializers\/(.+)\.serializer\.ts$/);
+      expect(match).not.toBeNull();
+      const [, dir, stem] = match!;
+      const barrel = result.find((f) => f.path === `src/${dir}/serializers/index.ts`);
+      expect(barrel, `expected barrel for ${dir}`).toBeDefined();
+      expect(barrel!.content).toContain(`export * from './${stem}.serializer';`);
+      expect(barrel!.overwriteExisting).toBe(true);
+    }
+  });
 });

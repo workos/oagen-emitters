@@ -813,6 +813,41 @@ export function generateSerializers(
 
   (ctx as any)._skippedSerializeModels = skippedSerializeModels;
 
+  // Emit a `serializers/index.ts` barrel per directory that received serializer
+  // files in this pass. Mirrors the per-service `interfaces/index.ts` barrel so
+  // consumers can `import { ... } from './serializers'` rather than reaching
+  // into individual `.serializer.ts` files. Also includes any pre-existing
+  // `*.serializer.ts` files in the same directory (e.g. hand-written option
+  // serializers in an owned service) so we don't strand them from the barrel.
+  const serializersByDir = new Map<string, Set<string>>();
+  for (const f of files) {
+    const match = f.path.match(/^src\/([^/]+)\/serializers\/(.+)\.serializer\.ts$/);
+    if (!match) continue;
+    const [, dir, stem] = match;
+    if (!serializersByDir.has(dir)) serializersByDir.set(dir, new Set());
+    serializersByDir.get(dir)!.add(stem);
+  }
+  const liveRootForBarrel = ctx.outputDir ?? ctx.targetDir;
+  for (const [dir, stems] of serializersByDir) {
+    if (liveRootForBarrel) {
+      const serializersDir = path.join(liveRootForBarrel, 'src', dir, 'serializers');
+      try {
+        for (const entry of fs.readdirSync(serializersDir)) {
+          if (!entry.endsWith('.serializer.ts')) continue;
+          stems.add(entry.replace(/\.serializer\.ts$/, ''));
+        }
+      } catch {
+        // Directory doesn't exist yet — only this-pass serializers will appear.
+      }
+    }
+    const lines = [...stems].sort().map((stem) => `export * from './${stem}.serializer';`);
+    files.push({
+      path: `src/${dir}/serializers/index.ts`,
+      content: lines.join('\n') + '\n',
+      overwriteExisting: true,
+    });
+  }
+
   return files;
 }
 
