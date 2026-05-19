@@ -61,6 +61,10 @@ interface SharedModelContext {
 interface GeneratedResourceModelUsage {
   interfaceRoots: Set<string>;
   serializerRoots: Set<string>;
+  /** Models that are directly used as a request body. Drive `serialize<X>`. */
+  requestRoots: Set<string>;
+  /** Models that are directly used as a response body. Drive `deserialize<X>`. */
+  responseRoots: Set<string>;
 }
 
 function buildSharedContext(models: Model[], ctx: EmitterContext): SharedModelContext {
@@ -655,6 +659,14 @@ export function generateSerializers(
   const serializerEligibleModels = resourceUsage
     ? expandModelRoots(resourceUsage.serializerRoots, projectedByName)
     : undefined;
+  // Models reachable from any response — only these need a `deserialize<X>`.
+  // A model used solely as a request body (e.g. `CreateWebhookEndpoint`)
+  // would otherwise emit a deserializer with a partial response shape that
+  // silently misbehaves if called. Undefined means "no resource usage info,
+  // emit both halves" (standalone generation, smoke tests).
+  const responseReachableModels = resourceUsage
+    ? expandModelRoots(resourceUsage.responseRoots, projectedByName)
+    : undefined;
 
   const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
 
@@ -765,9 +777,19 @@ export function generateSerializers(
       if (domainName === canonDomainName) continue;
       const rel = relativeImport(serializerPath, canonSerializerPath);
       const canonSkipSerialize = skippedSerializeModels.has(canonicalName) || skippedSerializeModels.has(model.name);
-      const reexportContent = canonSkipSerialize
-        ? `export { deserialize${canonDomainName} as deserialize${domainName} } from '${rel}';`
-        : `export { deserialize${canonDomainName} as deserialize${domainName}, serialize${canonDomainName} as serialize${domainName} } from '${rel}';`;
+      const canonSkipDeserialize =
+        responseReachableModels !== undefined &&
+        !responseReachableModels.has(canonicalName) &&
+        !responseReachableModels.has(model.name);
+      if (canonSkipSerialize && canonSkipDeserialize) continue;
+      const parts: string[] = [];
+      if (!canonSkipDeserialize) {
+        parts.push(`deserialize${canonDomainName} as deserialize${domainName}`);
+      }
+      if (!canonSkipSerialize) {
+        parts.push(`serialize${canonDomainName} as serialize${domainName}`);
+      }
+      const reexportContent = `export { ${parts.join(', ')} } from '${rel}';`;
       files.push({
         path: serializerPath,
         content: reexportContent,
@@ -787,8 +809,21 @@ export function generateSerializers(
 
     const skipFormatFields = buildSkipFormatFields(model, baselineDomain);
     const shouldSkipSerialize = skippedSerializeModels.has(model.name);
+    // Skip `deserialize<X>` when the model never appears as a response (and
+    // we have usage info to verify that — `undefined` means "emit both halves
+    // conservatively"). Cuts unused, partially-typed deserializers like
+    // `deserializeCreateWebhookEndpoint` from request-body-only models.
+    const shouldSkipDeserialize = responseReachableModels !== undefined && !responseReachableModels.has(model.name);
+    if (shouldSkipSerialize && shouldSkipDeserialize) continue;
 
-    const sctx = { modelToService, resolveDir, dedup, skippedSerializeModels, ctx };
+    const sctx = {
+      modelToService,
+      resolveDir,
+      dedup,
+      skippedSerializeModels,
+      responseReachableModels,
+      ctx,
+    };
     const lines = [
       ...buildSerializerImports(model, serializerPath, dirName, domainName, responseName, sctx),
       ...emitSerializerBody(
@@ -800,6 +835,7 @@ export function generateSerializers(
         baselineResponse,
         skipFormatFields,
         shouldSkipSerialize,
+        shouldSkipDeserialize,
         ctx,
       ),
     ];
@@ -812,6 +848,10 @@ export function generateSerializers(
   }
 
   (ctx as any)._skippedSerializeModels = skippedSerializeModels;
+  // Surface the response-reachable set so the serializer-roundtrip test
+  // generator can fall back to a deserialize-skipped path for request-only
+  // models (where `deserialize<X>` was deliberately not emitted).
+  (ctx as any)._responseReachableModels = responseReachableModels;
 
   // Emit a `serializers/index.ts` barrel per directory that received serializer
   // files in this pass. Mirrors the per-service `interfaces/index.ts` barrel so
@@ -882,6 +922,8 @@ function buildGeneratedResourceModelUsage(
   const modelMap = new Map(models.map((model) => [model.name, model]));
   const interfaceRoots = new Set<string>();
   const serializerRoots = new Set<string>();
+  const requestRoots = new Set<string>();
+  const responseRoots = new Set<string>();
   const resolvedLookup = buildResolvedLookup(ctx);
   const mountGroups = groupByMount(ctx);
   const services: Service[] =
@@ -924,16 +966,19 @@ function buildGeneratedResourceModelUsage(
           if (unwrapped) itemName = unwrapped.name;
           interfaceRoots.add(itemName);
           serializerRoots.add(itemName);
+          responseRoots.add(itemName);
         }
       } else if (plan.responseModelName) {
         interfaceRoots.add(plan.responseModelName);
         serializerRoots.add(plan.responseModelName);
+        responseRoots.add(plan.responseModelName);
       }
 
       const bodyInfo = extractRequestBodyModels(op, ctx);
       for (const name of bodyInfo) {
         interfaceRoots.add(name);
         serializerRoots.add(name);
+        requestRoots.add(name);
       }
 
       for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
@@ -945,6 +990,7 @@ function buildGeneratedResourceModelUsage(
         for (const name of collectWrapperResponseModels(resolved)) {
           interfaceRoots.add(name);
           serializerRoots.add(name);
+          responseRoots.add(name);
         }
         for (const wrapper of resolved.wrappers ?? []) {
           for (const { field } of resolveWrapperParams(wrapper, ctx)) {
@@ -955,7 +1001,7 @@ function buildGeneratedResourceModelUsage(
     }
   }
 
-  return { interfaceRoots, serializerRoots };
+  return { interfaceRoots, serializerRoots, requestRoots, responseRoots };
 }
 
 function extractRequestBodyModels(op: Operation, ctx: EmitterContext): string[] {

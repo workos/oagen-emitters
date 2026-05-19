@@ -590,4 +590,60 @@ describe('generateSerializers', () => {
       expect(barrel!.overwriteExisting).toBe(true);
     }
   });
+
+  it('omits deserialize half for request-body-only models', () => {
+    // `CreateOrganization` is sent as a POST body but the operation responds
+    // with a separate `Organization` model. The deserializer for the request
+    // model would be dead code AND would silently misbehave if called (the
+    // response wire shape doesn't match), so it shouldn't be emitted.
+    const models: Model[] = [
+      {
+        name: 'Organization',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateOrganization',
+        fields: [{ name: 'name', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const spec: ApiSpec = {
+      ...emptySpec,
+      models,
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              name: 'createOrganization',
+              httpMethod: 'post',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Organization' },
+              requestBody: { kind: 'model', name: 'CreateOrganization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const ctxWithModels: EmitterContext = { ...ctx, spec };
+    const result = generateSerializers(models, ctxWithModels);
+
+    const createSerializer = result.find((f) => f.path.endsWith('create-organization.serializer.ts'));
+    expect(createSerializer).toBeDefined();
+    expect(createSerializer!.content).toContain('export const serializeCreateOrganization');
+    expect(createSerializer!.content).not.toContain('export const deserializeCreateOrganization');
+
+    // Response-side model still gets both halves.
+    const orgSerializer = result.find(
+      (f) => f.path.endsWith('organization.serializer.ts') && !f.path.includes('create'),
+    );
+    expect(orgSerializer).toBeDefined();
+    expect(orgSerializer!.content).toContain('export const deserializeOrganization');
+  });
 });

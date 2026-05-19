@@ -211,4 +211,61 @@ describe('node test generation ownership', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('asserts wire format on all-optional request bodies instead of toBeDefined()', () => {
+    // For PATCH/Update bodies where every field is optional, the test
+    // emitter previously fell back to `expect(fetchBody()).toBeDefined()`,
+    // which passes even if the serializer writes the wrong keys. Picking a
+    // couple of optional fields with deterministic fixture values makes the
+    // test actually validate snake_case conversion on the wire.
+    const updateModel: Model = {
+      name: 'UpdateGroup',
+      fields: [
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'description', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+    };
+
+    const updateOp = {
+      name: 'updateGroup',
+      httpMethod: 'patch' as const,
+      path: '/organizations/{organizationId}/groups/{id}',
+      pathParams: [
+        { name: 'organizationId', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+        { name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+      ],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: 'Group' },
+      requestBody: { kind: 'model' as const, name: 'UpdateGroup' },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+
+    const updateService: Service = { name: 'Groups', operations: [updateOp] };
+    const updateSpec: ApiSpec = {
+      ...spec,
+      models: [groupModel, updateModel],
+      services: [updateService],
+    };
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(updateSpec, {
+        ...ctx,
+        spec: updateSpec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Groups'], regenerateOwnedTests: true },
+      } as EmitterContext);
+
+      const testFile = result.find((f) => f.path === 'src/groups/groups.spec.ts');
+      expect(testFile).toBeDefined();
+      const content = testFile!.content;
+      // The body assertion picks at least one optional field and checks its
+      // snake_case wire format — not just `.toBeDefined()`.
+      expect(content).toContain('expect(fetchBody()).toEqual(');
+      expect(content).toMatch(/expect\.objectContaining\(\{[^}]*\bname\b/);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
