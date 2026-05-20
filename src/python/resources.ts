@@ -23,6 +23,8 @@ import {
   buildMountDirMap,
   dirToModule,
   relativeImportPrefix,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -1012,10 +1014,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : services.map((s) => ({ name: resolveClassName(s, ctx), operations: s.operations }));
 
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const { name: mountName, operations: allOperations } of entries) {
     if (allOperations.length === 0) continue;
     const dirName = moduleName(mountName);
-    const resourceClassName = className(mountName);
+    const resourceClassName = className(resolveServiceTarget(mountName, exportedClasses));
     const importPrefix = relativeImportPrefix(dirName);
 
     const lines: string[] = [];

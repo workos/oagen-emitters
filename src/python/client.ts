@@ -1,6 +1,14 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
-import { className, resolveServiceDir, servicePropertyName, buildMountDirMap, dirToModule } from './naming.js';
+import {
+  className,
+  resolveServiceDir,
+  servicePropertyName,
+  buildMountDirMap,
+  dirToModule,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
+} from './naming.js';
 import { resolveResourceClassName, collectParameterGroupClassNames } from './resources.js';
 import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
@@ -149,9 +157,10 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Import resource classes (both sync and async)
   const serviceDirMap = buildMountDirMap(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const clsName = className(resolvedName);
+    const clsName = className(resolveServiceTarget(resolvedName, exportedClasses));
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const importLine = `from .${dirToModule(dirName)}._resource import ${clsName}, Async${clsName}`;
     if (importLine.length > 88) {
@@ -185,7 +194,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const generatedProps = new Set<string>();
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const clsName = className(resolvedName);
+    const clsName = className(resolveServiceTarget(resolvedName, exportedClasses));
     const prop = servicePropertyName(resolvedName);
     const readable = clsName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
     lines.push('');
@@ -208,7 +217,7 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const asyncGeneratedProps = new Set<string>();
   for (const service of topLevelServices) {
     const resolvedName = resolveResourceClassName(service, ctx);
-    const clsName = className(resolvedName);
+    const clsName = className(resolveServiceTarget(resolvedName, exportedClasses));
     const prop = servicePropertyName(resolvedName);
     const readable = clsName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
     lines.push('');
@@ -255,6 +264,7 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
   const topLevel = deduplicateByMount(spec.services, ctx);
   const serviceDirMap = buildMountDirMap(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
 
   // Build a map from mount target -> operations so we can discover parameter
   // group dataclasses that need re-exporting from __init__.py.
@@ -262,6 +272,7 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   for (const service of topLevel) {
     const resolvedName = resolveResourceClassName(service, ctx);
+    const clsName = className(resolveServiceTarget(resolvedName, exportedClasses));
     const dirName = serviceDirMap.get(service.name) ?? resolveServiceDir(resolvedName);
     const lines: string[] = [];
 
@@ -274,7 +285,7 @@ function generateServiceInits(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     // public re-exports. Otherwise consumers importing
     // `from workos.user_management import RoleSingle` get a private-import
     // warning under strict mode. Models barrel uses the same convention.
-    const resourceImports = [resolvedName, `Async${resolvedName}`, ...groupClassNames];
+    const resourceImports = [clsName, `Async${clsName}`, ...groupClassNames];
     const aliasedImports = resourceImports.map((n) => `${n} as ${n}`);
     lines.push(`from ._resource import ${aliasedImports.join(', ')}`);
     lines.push('from .models import *');

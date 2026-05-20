@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ApiSpec, AuthScheme, EmitterContext, GeneratedFile } from '@workos/oagen';
 
-import { fileName, servicePropertyName, resolveInterfaceName, wireInterfaceName } from './naming.js';
+import {
+  fileName,
+  servicePropertyName,
+  resolveInterfaceName,
+  wireInterfaceName,
+  resolveServiceName,
+} from './naming.js';
 import { isInlineEnum } from './type-map.js';
 import {
   docComment,
@@ -89,7 +95,10 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   for (const service of spec.services) {
     if (coveredServices.has(service.name)) continue;
     const resolvedName = resolveResourceClassName(service, ctx);
-    const propName = servicePropertyName(resolvedName);
+    // Accessor name uses the un-suffixed service name so that the public API
+    // stays `client.organizationMembership` even when the class itself was
+    // renamed to `OrganizationMembershipService` to avoid a model collision.
+    const propName = servicePropertyName(resolveServiceName(service, ctx));
     if (existingProps.has(propName)) continue;
     // Propagate `@deprecated` from the service class to the property so
     // IDEs surface the strikethrough at `workos.xyz` access sites, not

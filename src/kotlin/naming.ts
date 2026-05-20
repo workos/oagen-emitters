@@ -1,4 +1,8 @@
 import type { Operation, Service, EmitterContext, TypeRef } from '@workos/oagen';
+import {
+  buildExportedClassNameSet as buildExportedClassNameSetShared,
+  resolveServiceTarget as resolveServiceTargetShared,
+} from '../shared/service-name-collision.js';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix } from '../shared/naming-utils.js';
@@ -71,6 +75,36 @@ export function packageSegment(name: string): string {
 /** Kotlin service class name for a mount group (e.g., `Organizations`). */
 export function apiClassName(name: string): string {
   return className(name);
+}
+
+/**
+ * Resolve the Kotlin service class name with the collision suffix applied
+ * when needed. Wraps `apiClassName` so callers don't need to thread the
+ * exported-classes set through unrelated emission logic.
+ */
+export function resolveApiClassName(name: string, exportedClasses: Set<string>): string {
+  return apiClassName(resolveServiceTarget(name, exportedClasses));
+}
+
+/**
+ * Build the set of model + enum class names exported by the SDK. Used to
+ * detect collisions with operation-client class names — a colliding service
+ * gets a `Service` suffix appended.
+ */
+export function buildExportedClassNameSet(ctx: EmitterContext): Set<string> {
+  return buildExportedClassNameSetShared(ctx, className);
+}
+
+/**
+ * Resolve a service's mount-target identifier, appending `Service` on
+ * collision with an exported model/enum class. Kotlin sees the collision
+ * when a service class shares a simple name with an imported model class
+ * (e.g. `com.workos.models.OrganizationMembership` vs
+ * `com.workos.organizationmembership.OrganizationMembership`) — the file's
+ * local declaration shadows the import for unqualified references.
+ */
+export function resolveServiceTarget(target: string, exportedClasses: Set<string>): string {
+  return resolveServiceTargetShared(target, exportedClasses, className);
 }
 
 /** Accessor property exposed on the WorkOS client (camelCase). */

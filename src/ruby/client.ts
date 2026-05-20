@@ -1,6 +1,14 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, Model, Enum } from '@workos/oagen';
 import { assignModelsToServices } from '@workos/oagen';
-import { servicePropertyName, resolveClassName, className, fileName, buildMountDirMap } from './naming.js';
+import {
+  servicePropertyName,
+  resolveClassName,
+  className,
+  fileName,
+  buildMountDirMap,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
+} from './naming.js';
 import { classifyUnassignedModel } from './models.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
@@ -89,8 +97,12 @@ function buildInflectionMap(spec: ApiSpec, ctx: EmitterContext): Map<string, str
 
   inflections.set('workos', 'WorkOS');
 
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const service of buildTopLevelServices(spec, ctx)) {
-    const target = getMountTarget(service, ctx) || resolveClassName(service, ctx);
+    const target = resolveServiceTarget(
+      getMountTarget(service, ctx) || resolveClassName(service, ctx),
+      exportedClasses,
+    );
     const cls = className(target);
     const file = fileName(target);
     if (rubyCamelize(file) !== cls) inflections.set(file, cls);
@@ -203,10 +215,11 @@ function generateClientClass(spec: ApiSpec, ctx: EmitterContext): GeneratedFile 
   lines.push('  class Client < BaseClient');
 
   const topLevelServices = buildTopLevelServices(spec, ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const service of topLevelServices) {
-    const target = getMountTarget(service, ctx) || resolveClassName(service, ctx);
-    const cls = className(target);
-    const prop = servicePropertyName(target);
+    const rawTarget = getMountTarget(service, ctx) || resolveClassName(service, ctx);
+    const cls = className(resolveServiceTarget(rawTarget, exportedClasses));
+    const prop = servicePropertyName(rawTarget);
     lines.push('');
     lines.push(`    def ${prop}`);
     lines.push(`      @${prop} ||= WorkOS::${cls}.new(self)`);

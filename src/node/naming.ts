@@ -2,6 +2,10 @@ import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toKebabCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 import { stripUrnPrefix } from '../shared/naming-utils.js';
+import {
+  buildExportedClassNameSet as buildExportedClassNameSetShared,
+  resolveServiceTarget as resolveServiceTargetShared,
+} from '../shared/service-name-collision.js';
 
 /** Strip spec-noise suffixes (e.g., "Dto") from an IR name. */
 export function stripNoiseSuffixes(name: string): string {
@@ -115,6 +119,26 @@ export function servicePropertyName(name: string): string {
  */
 export function resolveServiceName(service: Service, ctx: EmitterContext): string {
   return resolveClassName(service, ctx);
+}
+
+/**
+ * Build the set of model + enum class names exported by the SDK. Used to
+ * detect collisions with operation-client class names — a colliding service
+ * gets a `Service` suffix appended.
+ */
+export function buildExportedClassNameSet(ctx: EmitterContext): Set<string> {
+  return buildExportedClassNameSetShared(ctx, className);
+}
+
+/**
+ * Resolve a service's mount-target identifier, appending `Service` on
+ * collision with an exported model/enum class. The result feeds `className`
+ * and `fileName` so both the `export class` declaration and its file name
+ * stay aligned (e.g. `OrganizationMembershipService` /
+ * `organization-membership-service.ts`).
+ */
+export function resolveServiceTarget(target: string, exportedClasses: Set<string>): string {
+  return resolveServiceTargetShared(target, exportedClasses, className);
 }
 
 /**

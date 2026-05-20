@@ -2,6 +2,10 @@ import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
+import {
+  buildExportedClassNameSet as buildExportedClassNameSetShared,
+  resolveServiceTarget as resolveServiceTargetShared,
+} from '../shared/service-name-collision.js';
 
 /**
  * Python class names that collide with builtins or typing imports.
@@ -134,6 +138,27 @@ export function resolveMethodName(op: Operation, _service: Service, ctx: Emitter
   const existing = ctx.overlayLookup?.methodByOperation?.get(httpKey);
   if (existing) return toSnakeCase(existing.methodName);
   return toSnakeCase(op.name);
+}
+
+/**
+ * Build the set of model + enum class names exported by the SDK. Used to
+ * detect collisions with operation-client class names — a colliding service
+ * gets a `Service` suffix appended.
+ */
+export function buildExportedClassNameSet(ctx: EmitterContext): Set<string> {
+  return buildExportedClassNameSetShared(ctx, className);
+}
+
+/**
+ * Resolve a service's mount-target identifier, appending `Service` on
+ * collision with an exported model/enum class. Feeds `className`/`fileName`
+ * so the class declaration, file, and any qualified references stay aligned.
+ *
+ * Accessor names (`servicePropertyName`) intentionally use the RAW target —
+ * `client.organization_membership` reads better than the suffixed form.
+ */
+export function resolveServiceTarget(target: string, exportedClasses: Set<string>): string {
+  return resolveServiceTargetShared(target, exportedClasses, className);
 }
 
 /** Resolve the SDK class name for a service, using resolved operations' mountOn. */

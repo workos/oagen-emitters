@@ -11,6 +11,7 @@ import {
   servicePropertyName,
   resolveMethodName,
   resolveInterfaceName,
+  resolveServiceName,
   wireInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
@@ -142,7 +143,9 @@ function generateServiceTest(
   const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = resolveResourceDir(service, ctx);
   const serviceClass = resolvedName;
-  const serviceProp = mountAccessors?.get(service.name) ?? servicePropertyName(resolvedName);
+  // Accessor stays un-suffixed so `client.organizationMembership` resolves even
+  // when the class was renamed to dodge a model-name collision.
+  const serviceProp = mountAccessors?.get(service.name) ?? servicePropertyName(resolveServiceName(service, ctx));
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
 
   const plans = service.operations.map((op) => ({
