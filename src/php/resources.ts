@@ -1,7 +1,7 @@
 import type { Service, Operation, Model, EmitterContext, GeneratedFile, ResolvedOperation } from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
-import { className, fieldName, resolveMethodName } from './naming.js';
+import { className, fieldName, resolveMethodName, buildExportedClassNameSet, resolveServiceTarget } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import {
   groupByMount,
@@ -43,9 +43,10 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : services.map((s) => ({ name: className(s.name), operations: s.operations }));
 
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const { name: mountName, operations } of entries) {
     if (operations.length === 0) continue;
-    const resourceName = className(mountName);
+    const resourceName = className(resolveServiceTarget(mountName, exportedClasses));
     const mergedService: Service = { name: mountName, operations };
     const lines: string[] = [];
 

@@ -1,5 +1,5 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
-import { apiClassName, packageSegment, servicePropertyName } from './naming.js';
+import { resolveApiClassName, packageSegment, servicePropertyName, buildExportedClassNameSet } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -23,8 +23,9 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 
   const imports = new Set<string>();
   const accessorLines: string[] = [];
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const mount of targets) {
-    const apiCls = apiClassName(mount);
+    const apiCls = resolveApiClassName(mount, exportedClasses);
     const fqn = `com.workos.${packageSegment(mount)}.${apiCls}`;
     imports.add(fqn);
     const prop = servicePropertyName(mount);

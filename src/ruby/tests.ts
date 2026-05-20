@@ -7,6 +7,8 @@ import {
   scopedGroupVariantClassName,
   servicePropertyName,
   resolveMethodName,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -38,11 +40,13 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   const lookup = buildResolvedLookup(ctx);
   const groupOwners = buildGroupOwnerMap(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountTarget, group] of groups) {
-    const cls = className(mountTarget);
+    const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
+    const cls = className(resolvedTarget);
     const prop = servicePropertyName(mountTarget);
-    const file = fileName(mountTarget);
+    const file = fileName(resolvedTarget);
 
     const lines: string[] = [];
     lines.push(`require 'test_helper'`);
@@ -85,7 +89,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
       const resolved = lookupResolved(op, lookup);
       const hiddenParams = buildHiddenParams(resolved);
-      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models);
+      const callArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models, exportedClasses);
       const bodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models);
 
       // Collect method info for the parameterized 401 test (T20).
@@ -118,7 +122,15 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         for (let vi = 1; vi < group.variants.length; vi++) {
           const variant = group.variants[vi];
           const overrides = new Map<string, number>([[group.name, vi]]);
-          const variantCallArgs = buildCallArgsStub(op, modelByName, hiddenParams, groupOwners, models, overrides);
+          const variantCallArgs = buildCallArgsStub(
+            op,
+            modelByName,
+            hiddenParams,
+            groupOwners,
+            models,
+            exportedClasses,
+            overrides,
+          );
           const variantBodyMatcher = buildBodyMatcher(op, modelByName, hiddenParams, models, overrides);
           const suffix = `with_${fieldName(group.name)}_${fieldName(variant.name)}`;
           lines.push('');
@@ -338,6 +350,7 @@ function buildCallArgsStub(
   hiddenParams: Set<string>,
   groupOwners: Map<string, string>,
   models: Model[],
+  exportedClasses: Set<string>,
   variantOverrides: Map<string, number> = new Map(),
 ): string {
   const parts: string[] = [];
@@ -406,7 +419,11 @@ function buildCallArgsStub(
       if (!owner) {
         throw new Error(`No owner mount target found for parameter group '${group.name}'`);
       }
-      const variantClass = scopedGroupVariantClassName(owner, group.name, variant.name);
+      const variantClass = scopedGroupVariantClassName(
+        resolveServiceTarget(owner, exportedClasses),
+        group.name,
+        variant.name,
+      );
       const fieldStubs = variant.parameters
         .map((p) => `${fieldName(p.name)}: ${stubValueFor(pickVariantParamType(p.type, bodyFieldTypes.get(p.name)))}`)
         .join(', ');

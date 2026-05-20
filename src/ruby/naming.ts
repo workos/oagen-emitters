@@ -2,6 +2,10 @@ import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
+import {
+  buildExportedClassNameSet as buildExportedClassNameSetShared,
+  resolveServiceTarget as resolveServiceTargetShared,
+} from '../shared/service-name-collision.js';
 
 /**
  * Ruby class names that collide with core classes. When a model name resolves
@@ -115,6 +119,32 @@ export function safeParamName(name: string): string {
 /** snake_case module/directory name. */
 export function moduleName(name: string): string {
   return toSnakeCase(name);
+}
+
+/**
+ * Build the set of model + enum Ruby class names that the SDK exposes under
+ * `WorkOS::`. Used to detect collisions with operation-client class names —
+ * a colliding service gets a `Service` suffix (`OrganizationMembershipService`)
+ * so it doesn't shadow the model class under Zeitwerk's collapsed namespace.
+ */
+export function buildExportedClassNameSet(ctx: EmitterContext): Set<string> {
+  return buildExportedClassNameSetShared(ctx, className);
+}
+
+/**
+ * Resolve a service's mount-target identifier, appending `Service` on
+ * collision with an exported model/enum class name. The returned PascalCase
+ * value feeds `className`/`fileName` to derive matching class + file names
+ * (e.g. `OrganizationMembershipService` / `organization_membership_service`).
+ *
+ * Accessor names (`servicePropertyName`) intentionally use the RAW target —
+ * `client.organization_membership` is more readable than the suffixed form.
+ *
+ * The directory used by `loader.collapse` (the model home) likewise uses the
+ * raw target.
+ */
+export function resolveServiceTarget(target: string, exportedClasses: Set<string>): string {
+  return resolveServiceTargetShared(target, exportedClasses, className);
 }
 
 /**

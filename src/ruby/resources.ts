@@ -8,6 +8,8 @@ import {
   safeParamName,
   resolveMethodName,
   scopedGroupVariantClassName,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
 } from './naming.js';
 import { mapTypeRefForYard } from './type-map.js';
 import {
@@ -48,10 +50,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // dispatcher and YARD `@param` reference resolves variant classes through
   // this map so cross-resource references stay consistent.
   const groupOwners = buildGroupOwnerMap(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountTarget, group] of groups) {
-    const cls = className(mountTarget);
-    const file = fileName(mountTarget);
+    const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
+    const cls = className(resolvedTarget);
+    const file = fileName(resolvedTarget);
 
     const operations = group.operations;
     if (operations.length === 0) continue;
@@ -103,6 +107,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         listWrapperModels,
         requires,
         groupOwners,
+        exportedClasses,
       });
       methodBodies.push(body);
 
@@ -182,6 +187,7 @@ function emitMethod(args: {
   listWrapperModels: Map<string, Model>;
   requires: Set<string>;
   groupOwners: Map<string, string>;
+  exportedClasses: Set<string>;
 }): string {
   const {
     op,
@@ -195,6 +201,7 @@ function emitMethod(args: {
     listWrapperModels,
     requires,
     groupOwners,
+    exportedClasses,
   } = args;
   void enumNames;
 
@@ -204,7 +211,7 @@ function emitMethod(args: {
     if (!owner) {
       throw new Error(`No owner mount target found for parameter group '${group.name}'`);
     }
-    return scopedGroupVariantClassName(owner, group.name, variantName);
+    return scopedGroupVariantClassName(resolveServiceTarget(owner, exportedClasses), group.name, variantName);
   };
 
   const plan = planOperation(op);

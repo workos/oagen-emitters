@@ -7,6 +7,9 @@ import {
   safeParamName,
   scopedGroupVariantClassName,
   resolveMethodName,
+  servicePropertyName,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -129,9 +132,11 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     if (isListWrapperModel(m)) listWrapperModels.set(m.name, m);
   }
   const groupOwners = buildGroupOwnerMap(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountTarget, group] of groups) {
-    const cls = className(mountTarget);
+    const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
+    const cls = className(resolvedTarget);
     const lines: string[] = [];
     lines.push('# typed: strong');
     lines.push('');
@@ -143,6 +148,9 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     // layout in lib/workos/<service>.rb.
     const variants = collectVariantsForMountTarget(ctx, spec.models as Model[], mountTarget);
     for (const v of variants) {
+      // Rewrite mountTarget to the (possibly pluralized) service class so the
+      // RBI's `WorkOS::<Service>::<Variant>` reference matches the runtime.
+      v.mountTarget = resolvedTarget;
       for (const line of emitInlineVariantRbi(v)) lines.push(line);
       lines.push('');
     }
@@ -183,7 +191,8 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         if (!owner) {
           throw new Error(`No owner mount target found for parameter group '${group.name}'`);
         }
-        const variants = group.variants.map((v) => scopedGroupVariantClassName(owner, group.name, v.name));
+        const resolvedOwner = resolveServiceTarget(owner, exportedClasses);
+        const variants = group.variants.map((v) => scopedGroupVariantClassName(resolvedOwner, group.name, v.name));
         if (variants.length === 1) return variants[0];
         return `T.any(${variants.join(', ')})`;
       };
@@ -267,7 +276,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('end');
 
     files.push({
-      path: `rbi/workos/${fileName(mountTarget)}.rbi`,
+      path: `rbi/workos/${fileName(resolvedTarget)}.rbi`,
       content: lines.join('\n'),
       integrateTarget: true,
       overwriteExisting: true,
@@ -283,11 +292,9 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('  class Client < BaseClient');
 
     for (const [mountTarget] of groups) {
-      const cls = className(mountTarget);
-      const prop = mountTarget
-        .replace(/-/g, '_')
-        .replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`)
-        .replace(/^_/, '');
+      const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
+      const cls = className(resolvedTarget);
+      const prop = servicePropertyName(mountTarget);
       lines.push(`    sig { returns(WorkOS::${cls}) }`);
       lines.push(`    def ${prop}; end`);
       lines.push('');

@@ -53,6 +53,8 @@ import {
   resolveInterfaceName,
   resolveServiceName,
   wireInterfaceName,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
 } from './naming.js';
 import {
   docComment,
@@ -102,21 +104,31 @@ export function hasCompatibleConstructor(className: string, ctx: EmitterContext)
  */
 export function resolveResourceClassName(service: Service, ctx: EmitterContext): string {
   const overlayName = resolveServiceName(service, ctx);
+  let base: string;
   if (hasCompatibleConstructor(overlayName, ctx)) {
-    return overlayName;
+    base = overlayName;
+  } else {
+    // Incompatible constructor — fall back to IR name, with `Endpoints` suffix
+    // if it would collide with the overlay name.
+    const irName = toPascalCase(service.name);
+    base = irName === overlayName ? `${irName}Endpoints` : irName;
   }
-  // Incompatible constructor — fall back to IR name
-  const irName = toPascalCase(service.name);
-  if (irName === overlayName) {
-    return irName + 'Endpoints';
-  }
-  return irName;
+  // Cross-language `Service` suffix when the chosen class name would shadow
+  // an exported model/enum (e.g. tag `OrganizationMembership` + schema
+  // `OrganizationMembership`).
+  return resolveServiceTarget(base, buildExportedClassNameSet(ctx));
 }
 
 export function resolveResourceDir(service: Service, ctx: EmitterContext): string {
   const resolvedName = resolveResourceClassName(service, ctx);
   if (resolvedName === 'WebhooksEndpoints') return 'webhooks';
-  return resolveServiceDir(resolvedName);
+  // Drop the collision-`Service` suffix when picking the directory so the
+  // resource and its model-interfaces share a folder (e.g.
+  // `organization-membership/` houses both `OrganizationMembershipService`
+  // and `OrganizationMembership`'s interface files).
+  const overlayName = resolveServiceName(service, ctx);
+  const dirBase = resolvedName === `${overlayName}Service` ? overlayName : resolvedName;
+  return resolveServiceDir(dirBase);
 }
 
 /** Standard pagination query params handled by PaginationOptions — not imported individually. */

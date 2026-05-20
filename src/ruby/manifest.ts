@@ -7,9 +7,14 @@ import { servicePropertyName } from './naming.js';
  * Uses each resolved operation's actual mountOn (not the service default) so
  * operations remounted via operationHints land on the correct service prop.
  * Split operations emit one entry per wrapper (keyed by wrapper name + variant).
+ *
+ * The accessor (`service` field) uses the raw mountOn — accessor names stay
+ * unsuffixed even when the underlying service class gets a `Service` suffix
+ * on collision.
  */
 export function buildOperationsMap(spec: ApiSpec, ctx: EmitterContext): OperationsMap {
   void spec;
+  void ctx;
   const manifest: OperationsMap = {};
 
   for (const r of ctx.resolvedOperations ?? []) {

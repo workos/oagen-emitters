@@ -16,7 +16,7 @@ import { enumCanonicalMap } from './enums.js';
 import {
   className,
   propertyName,
-  apiClassName,
+  resolveApiClassName,
   packageSegment,
   resolveMethodName,
   ktLiteral,
@@ -24,6 +24,7 @@ import {
   escapeReserved,
   humanize,
   maybeShortenEnumParamDescription,
+  buildExportedClassNameSet,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -96,13 +97,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
   const files: GeneratedFile[] = [];
   const resolvedLookup = buildResolvedLookup(ctx);
+  const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountName, group] of mountGroups) {
     const classCode = generateApiClass(mountName, group.operations, ctx, resolvedLookup);
     if (!classCode) continue;
     const pkg = packageSegment(mountName);
     files.push({
-      path: `${KOTLIN_SRC_PREFIX}com/workos/${pkg}/${apiClassName(mountName)}.kt`,
+      path: `${KOTLIN_SRC_PREFIX}com/workos/${pkg}/${resolveApiClassName(mountName, exportedClasses)}.kt`,
       content: classCode,
       overwriteExisting: true,
     });
@@ -118,7 +120,7 @@ function generateApiClass(
   resolvedLookup: Map<string, ResolvedOperation>,
 ): string | null {
   if (operations.length === 0) return null;
-  const apiClass = apiClassName(mountName);
+  const apiClass = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
   const pkg = `com.workos.${packageSegment(mountName)}`;
 
   const imports = new Set<string>();

@@ -2,6 +2,10 @@ import type { Service, Operation, EmitterContext, Enum } from '@workos/oagen';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
+import {
+  buildExportedClassNameSet as buildExportedClassNameSetShared,
+  resolveServiceTarget as resolveServiceTargetShared,
+} from '../shared/service-name-collision.js';
 
 /** Namespace grouping result (shared with client.ts). */
 export interface NamespaceGroup {
@@ -88,6 +92,24 @@ export function className(name: string): string {
     result += 'Model';
   }
   return result;
+}
+
+/**
+ * Build the set of model + enum class names exported by the SDK. Used to
+ * detect collisions with operation-client class names — a colliding service
+ * gets a `Service` suffix appended.
+ */
+export function buildExportedClassNameSet(ctx: EmitterContext): Set<string> {
+  return buildExportedClassNameSetShared(ctx, className);
+}
+
+/**
+ * Resolve a service's mount-target identifier, appending `Service` on
+ * collision with an exported model/enum class. Used in `\Service\…` files
+ * to avoid `use WorkOS\Resource\X; class X` PHP fatal errors.
+ */
+export function resolveServiceTarget(target: string, exportedClasses: Set<string>): string {
+  return resolveServiceTargetShared(target, exportedClasses, className);
 }
 
 /** PascalCase file name (without extension) — PSR-4 convention. */

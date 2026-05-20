@@ -1,6 +1,6 @@
 import type { ApiSpec, Service, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase, toCamelCase } from '@workos/oagen';
-import { className, servicePropertyName } from './naming.js';
+import { className, servicePropertyName, buildExportedClassNameSet, resolveServiceTarget } from './naming.js';
 import { getMountTarget } from '../shared/resolved-ops.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
@@ -61,11 +61,12 @@ export function buildServiceAccessPaths(services: Service[], ctx: EmitterContext
 
 function deduplicateByMount(services: Service[], ctx: EmitterContext): { name: string; propName: string }[] {
   const seen = new Map<string, { name: string; propName: string }>();
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const service of services) {
     const target = getMountTarget(service, ctx);
     if (!seen.has(target)) {
       seen.set(target, {
-        name: className(target),
+        name: className(resolveServiceTarget(target, exportedClasses)),
         propName: servicePropertyName(target),
       });
     }

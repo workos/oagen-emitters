@@ -10,7 +10,15 @@ import type {
   ResolvedWrapper,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { apiClassName, packageSegment, resolveMethodName, ktStringLiteral, className, propertyName } from './naming.js';
+import {
+  resolveApiClassName,
+  packageSegment,
+  resolveMethodName,
+  ktStringLiteral,
+  className,
+  propertyName,
+  buildExportedClassNameSet,
+} from './naming.js';
 import { mapTypeRef } from './type-map.js';
 import {
   groupByMount,
@@ -70,12 +78,13 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const mountGroups = groupByMount(ctx);
   const resolvedLookup = buildResolvedLookup(ctx);
 
+  const exportedClasses = buildExportedClassNameSet(ctx);
   for (const [mountName, group] of mountGroups) {
     const content = generateServiceTestClass(mountName, group.operations, ctx, resolvedLookup);
     if (!content) continue;
     const pkg = packageSegment(mountName);
     files.push({
-      path: `${TEST_PREFIX}com/workos/${pkg}/${apiClassName(mountName)}Test.kt`,
+      path: `${TEST_PREFIX}com/workos/${pkg}/${resolveApiClassName(mountName, exportedClasses)}Test.kt`,
       content,
       overwriteExisting: true,
     });
@@ -203,7 +212,7 @@ function generateServiceTestClass(
   }
 
   const pkg = packageSegment(mountName);
-  const apiCls = apiClassName(mountName);
+  const apiCls = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
 
   // If any operation would emit a disabled placeholder test, preregister
   // the `Disabled` import before we serialize the header.
