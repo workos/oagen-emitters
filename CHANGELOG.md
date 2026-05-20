@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/workos/oagen-emitters/compare/v0.12.5...v0.13.0) (2026-05-20)
+
+
+### Features
+
+* **shared:** standardize Service suffix for class-name collisions ([#113](https://github.com/workos/oagen-emitters/issues/113)) ([15be2e5](https://github.com/workos/oagen-emitters/commit/15be2e52adeb634108f192b16c95d5b1c18e4584))
+
 ## [0.12.5](https://github.com/workos/oagen-emitters/compare/v0.12.4...v0.12.5) (2026-05-19)
 
 
