@@ -16,6 +16,8 @@ import { generateEnums as generateEnumFiles } from './enums.js';
 import { generateResources, resolveResourceClassName, resolveResourceDir } from './resources.js';
 import { generateClient } from './client.js';
 import { generateTests as generateTestFiles } from './tests.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { planDiscriminatedModels, generateDiscriminatedFiles } from './discriminated-models.js';
 import { buildLiveSurface, emptyLiveSurface, setActiveLiveSurface, type LiveSurface } from './live-surface.js';
 import {
   setBaselineSerializedNames,
@@ -214,7 +216,10 @@ function computeOwnedServiceDirs(ctx: EmitterContext): Set<string> {
   const mountGroups = groupByMount(ctx);
   const services =
     mountGroups.size > 0
-      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      ? [...mountGroups].map(([name, group]) => ({
+          name,
+          operations: group.operations,
+        }))
       : ctx.spec.services;
   const { resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
 
@@ -233,7 +238,10 @@ function computeAdoptedServiceDirs(ctx: EmitterContext, surface: LiveSurface): S
   const mountGroups = groupByMount(ctx);
   const services =
     mountGroups.size > 0
-      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      ? [...mountGroups].map(([name, group]) => ({
+          name,
+          operations: group.operations,
+        }))
       : ctx.spec.services;
   const { resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
 
@@ -350,19 +358,58 @@ function applyLiveSurface(files: GeneratedFile[], ctx: EmitterContext, surface: 
   return out;
 }
 
+/**
+ * Flatten oneOf / allOf+oneOf variant fields from the raw spec onto each
+ * model. `enrichModelsFromSpec` produces (a) extra optional fields on models
+ * whose schema is `allOf [base, oneOf [...]]`, and (b) synthetic models /
+ * enums for inline objects encountered inside variants (e.g. the inline
+ * `redirect_uris` item shape on `ConnectApplication`).
+ *
+ * Node, like Go / Kotlin / .NET, emits flat interfaces rather than a sum
+ * type, so on `enrichModelsFromSpec`-marked discriminated bases we restore
+ * the original IR fields — otherwise the base interface would be empty.
+ * A future change can emit a real TS discriminated union; for now the goal
+ * is parity with the other flat-emit languages so every variant field is
+ * at least reachable.
+ */
+function enrichModelsForNode(models: Model[]): Model[] {
+  const enriched = enrichModelsFromSpec(models);
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  return enriched.map((m) => {
+    if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+}
+
 export const nodeEmitter: Emitter = {
   language: 'node',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     const nodeCtx = withNodeOperationOverrides(ctx);
     const surface = getSurface(nodeCtx);
-    return applyLiveSurface(generateModelsAndSerializers(models, nodeCtx), nodeCtx, surface);
+    const enriched = enrichModelsForNode(models);
+    // Detect `allOf [base, oneOf [variant, …]]` schemas and hand them off
+    // to the discriminated-models module. Leave the model in the standard
+    // pipeline's input so its field-type deps stay reachable, but stash the
+    // name set on ctx so models.ts skips emitting an interface/serializer —
+    // the discriminated module owns those paths instead.
+    const discPlans = planDiscriminatedModels(enriched, nodeCtx);
+    (nodeCtx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames = new Set(discPlans.keys());
+    const standardFiles = generateModelsAndSerializers(enriched, nodeCtx);
+    const discFiles = generateDiscriminatedFiles(discPlans, nodeCtx);
+    return applyLiveSurface([...standardFiles, ...discFiles], nodeCtx, surface);
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
     const nodeCtx = withNodeOperationOverrides(ctx);
     const surface = getSurface(nodeCtx);
-    return applyLiveSurface(generateEnumFiles(enums, nodeCtx), nodeCtx, surface);
+    const syntheticEnums = getSyntheticEnums();
+    return applyLiveSurface(generateEnumFiles([...enums, ...syntheticEnums], nodeCtx), nodeCtx, surface);
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
@@ -374,7 +421,11 @@ export const nodeEmitter: Emitter = {
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     const nodeCtx = withNodeOperationOverrides(ctx);
     const surface = getSurface(nodeCtx);
-    return applyLiveSurface(generateClient(spec, nodeCtx), nodeCtx, surface);
+    // `nodeCtx.spec` has the synthetic models that `enrichModelsFromSpec`
+    // produced (e.g. inline-object item types like `ConnectApplicationRedirectUri`).
+    // The `spec` param is the engine's pre-enrichment spec, so the barrel
+    // generator would miss those synthetic interfaces. Use the enriched one.
+    return applyLiveSurface(generateClient(nodeCtx.spec, nodeCtx), nodeCtx, surface);
   },
 
   // workos-node ships its own exception hierarchy under src/common/exceptions/.

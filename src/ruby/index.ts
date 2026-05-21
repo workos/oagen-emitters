@@ -15,6 +15,7 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { generateRbiFiles } from './rbi.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 
 /** Ensure every generated file's content ends with a trailing newline. */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
@@ -26,16 +27,40 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   return files;
 }
 
+/**
+ * Flatten oneOf / allOf+oneOf variant fields onto each base model and pick
+ * up the synthetic models / enums `enrichModelsFromSpec` produces for inline
+ * variant shapes. Ruby emits flat hash-backed models, not sum types, so a
+ * discriminated base whose IR fields were stripped (the new EventSchema-
+ * style behaviour after the parser learned to walk allOf-wrapped variants)
+ * has its original fields restored — otherwise `ConnectApplication`-style
+ * bases would silently lose every variant field they had previously.
+ */
+function enrichModelsForRuby(models: Model[]): Model[] {
+  const enriched = enrichModelsFromSpec(models);
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  return enriched.map((m) => {
+    if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+}
+
 export const rubyEmitter: Emitter = {
   language: 'ruby',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    const modelFiles = generateModels(models, ctx);
+    const modelFiles = generateModels(enrichModelsForRuby(models), ctx);
     return ensureTrailingNewlines(modelFiles);
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateEnums(enums, ctx));
+    const syntheticEnums = getSyntheticEnums();
+    return ensureTrailingNewlines(generateEnums([...enums, ...syntheticEnums], ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {

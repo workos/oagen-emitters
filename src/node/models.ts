@@ -130,6 +130,13 @@ function isSupportedFieldType(
       // silently dropped on first emission because the target interface
       // (`UserObject` under the adopted `connect/` dir) hasn't landed yet.
       if (isAdoptedModelName(ref.name)) return true;
+      // Synthetic models produced by `enrichModelsFromSpec` (e.g. the
+      // inline-object item type for `ConnectApplication.redirect_uris`)
+      // are added to the models list passed into this generation pass —
+      // and hence into `shared.modelToService` — but won't yet exist on
+      // disk or in `apiSurface`. Accept them so their parent field
+      // survives field-projection.
+      if (shared.modelToService.has(ref.name)) return true;
       const relPath = `src/${shared.resolveDir(shared.modelToService.get(ref.name))}/interfaces/${fileName(ref.name)}.interface.ts`;
       return liveSurfaceHasManagedFile(relPath);
     }
@@ -201,12 +208,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     }
   }
 
+  const discriminatedSkip = (ctx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames;
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
+    if (discriminatedSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);
     if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
@@ -723,6 +732,7 @@ export function generateSerializers(
     }
   }
 
+  const discriminatedSerializerSkip = (ctx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames;
   const eligibleModels: Model[] = [];
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
@@ -730,6 +740,7 @@ export function generateSerializers(
     if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model)) continue;
+    if (discriminatedSerializerSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);
     if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
@@ -928,7 +939,10 @@ function buildGeneratedResourceModelUsage(
   const mountGroups = groupByMount(ctx);
   const services: Service[] =
     mountGroups.size > 0
-      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      ? [...mountGroups].map(([name, group]) => ({
+          name,
+          operations: group.operations,
+        }))
       : ctx.spec.services;
 
   for (const service of services) {
