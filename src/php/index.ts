@@ -18,6 +18,7 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { initializeEnumDedup } from './naming.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 
 /** Initialize enum deduplication from spec data. */
 function ensureNamingInitialized(ctx: EmitterContext): void {
@@ -34,17 +35,39 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   return files;
 }
 
+/**
+ * Flatten oneOf / allOf+oneOf variant fields onto each base model and pull
+ * in synthetic models / enums for inline variant shapes. PHP emits flat
+ * classes (no sum types), so a discriminated base whose IR fields the
+ * parser stripped (post-allOf-aware detection) gets its original fields
+ * restored to avoid silently dropping variant data.
+ */
+function enrichModelsForPhp(models: Model[]): Model[] {
+  const enriched = enrichModelsFromSpec(models);
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  return enriched.map((m) => {
+    if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+}
+
 export const phpEmitter: Emitter = {
   language: 'php',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     ensureNamingInitialized(ctx);
-    return ensureTrailingNewlines(generateModels(models, ctx));
+    return ensureTrailingNewlines(generateModels(enrichModelsForPhp(models), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
     ensureNamingInitialized(ctx);
-    return ensureTrailingNewlines(generateEnums(enums, ctx));
+    const syntheticEnums = getSyntheticEnums();
+    return ensureTrailingNewlines(generateEnums([...enums, ...syntheticEnums], ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {

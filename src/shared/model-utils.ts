@@ -1,5 +1,5 @@
 import type { Model, Field, TypeRef, Enum } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
+import { toSnakeCase, toUpperSnakeCase } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 // @ts-ignore -- js-yaml has no type declarations in this project
@@ -83,7 +83,7 @@ function discoverSpecPath(): string | null {
 let _rawSpecCache: Record<string, any> | null = null;
 let _rawSpecLoaded = false;
 
-function loadRawSpec(): Record<string, any> | null {
+export function loadRawSpec(): Record<string, any> | null {
   if (_rawSpecLoaded) return _rawSpecCache;
   _rawSpecLoaded = true;
   const specPath = discoverSpecPath();
@@ -114,7 +114,10 @@ function lookupRawSchema(name: string): Record<string, any> | null {
  */
 interface SyntheticCollector {
   models: Model[];
-  enums: Array<{ name: string; values: Array<{ value: string; description?: string }> }>;
+  enums: Array<{
+    name: string;
+    values: Array<{ value: string; description?: string }>;
+  }>;
   /** Track names already used to avoid duplicates. */
   usedNames: Set<string>;
 }
@@ -582,10 +585,17 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
     return modified ? { ...model, fields: newFields } : model;
   });
 
-  // Convert synthetic enum collector entries to proper Enum objects
+  // Convert synthetic enum collector entries to proper Enum objects. PHP's
+  // emitter (and others built on top of `EnumValue.name`) crash when this
+  // field is missing, so derive it from the value via the same upper-snake
+  // transform the parser uses for declared enums.
   _lastSyntheticEnums = collector.enums.map((e) => ({
     name: e.name,
-    values: e.values.map((v) => ({ value: v.value, description: v.description })),
+    values: e.values.map((v) => ({
+      name: toUpperSnakeCase(String(v.value)),
+      value: v.value,
+      description: v.description,
+    })),
   })) as Enum[];
 
   // Append synthetic models, skipping those whose snake_case name collides

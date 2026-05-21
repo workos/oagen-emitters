@@ -16,6 +16,7 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { UnionRegistry } from './type-map.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 
 /**
  * Shared per-emit registry that collects synthesised oneOf-style unions
@@ -34,16 +35,39 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   return files;
 }
 
+/**
+ * Flatten oneOf / allOf+oneOf variant fields onto each base model and pull
+ * in synthetic models / enums for inline variant shapes. Rust emits flat
+ * structs (a synthesised enum-union from `UnionRegistry` exists, but the
+ * field-on-base pattern is what matches `ConnectApplication` today). A
+ * discriminated base whose IR fields the parser stripped gets its original
+ * fields restored to avoid losing variant data.
+ */
+function enrichModelsForRust(models: Model[]): Model[] {
+  const enriched = enrichModelsFromSpec(models);
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  return enriched.map((m) => {
+    if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+}
+
 export const rustEmitter: Emitter = {
   language: 'rust',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     unionRegistry.reset();
-    return ensureTrailingNewlines(generateModels(models, ctx, unionRegistry));
+    return ensureTrailingNewlines(generateModels(enrichModelsForRust(models), ctx, unionRegistry));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateEnums(enums, ctx));
+    const syntheticEnums = getSyntheticEnums();
+    return ensureTrailingNewlines(generateEnums([...enums, ...syntheticEnums], ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
