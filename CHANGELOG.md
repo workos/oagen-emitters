@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/workos/oagen-emitters/compare/v0.13.0...v0.14.0) (2026-05-21)
+
+
+### Features
+
+* discriminated-union output across Node, Ruby, PHP, Rust ([#115](https://github.com/workos/oagen-emitters/issues/115)) ([1ff5fbf](https://github.com/workos/oagen-emitters/commit/1ff5fbf4f1ce0dcdce0bf8691aa9d0d00e6f94b1))
+
 ## [0.13.0](https://github.com/workos/oagen-emitters/compare/v0.12.5...v0.13.0) (2026-05-20)
 
 
