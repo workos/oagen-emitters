@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.3](https://github.com/workos/oagen-emitters/compare/v0.14.2...v0.14.3) (2026-05-22)
+
+
+### Bug Fixes
+
+* include discriminator fields in generated fixtures ([#125](https://github.com/workos/oagen-emitters/issues/125)) ([6a3633e](https://github.com/workos/oagen-emitters/commit/6a3633e0e3f0497146bf89fc31a5dabc1152cce1))
+
 ## [0.14.2](https://github.com/workos/oagen-emitters/compare/v0.14.1...v0.14.2) (2026-05-22)
 
 
