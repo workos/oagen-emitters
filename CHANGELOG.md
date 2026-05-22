@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.1](https://github.com/workos/oagen-emitters/compare/v0.14.0...v0.14.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* emit non-paginated list wrappers, dotnet member/class collisions, rust glob ambiguity ([#120](https://github.com/workos/oagen-emitters/issues/120)) ([6df9822](https://github.com/workos/oagen-emitters/commit/6df98221dfa707800babce0d6a4cf1a653923743))
+* **node:** carry forward prior-manifest paths so prune diffs stay accurate ([#117](https://github.com/workos/oagen-emitters/issues/117)) ([a03e4db](https://github.com/workos/oagen-emitters/commit/a03e4dbf2733e33ae4c31be568c2a12ea8361be1))
+* **shared:** prevent synthetic-enum collision with IR enums ([#119](https://github.com/workos/oagen-emitters/issues/119)) ([0211f66](https://github.com/workos/oagen-emitters/commit/0211f669b51da3a14717dfa61941c954dc7edaa6))
+
 ## [0.14.0](https://github.com/workos/oagen-emitters/compare/v0.13.0...v0.14.0) (2026-05-21)
 
 
