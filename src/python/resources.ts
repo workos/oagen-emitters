@@ -1053,8 +1053,14 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 
     for (const op of allOperations) {
       const plan = planOperation(op);
-      if (plan.responseModelName && !listWrapperNames.has(plan.responseModelName)) {
-        modelImports.add(plan.responseModelName);
+      if (plan.responseModelName) {
+        // List-wrapper responses are normally replaced by SyncPage on paginated
+        // ops, so the wrapper itself is never referenced. On non-paginated ops
+        // (e.g. `GET /vault/v1/kv/{id}/versions` → `VersionListResponse`) the
+        // resource method still returns the wrapper by name and must import it.
+        if (!listWrapperNames.has(plan.responseModelName) || !plan.isPaginated) {
+          modelImports.add(plan.responseModelName);
+        }
       }
       if (op.requestBody?.kind === 'model') {
         const requestBodyRef = op.requestBody;

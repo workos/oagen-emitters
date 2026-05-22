@@ -23,6 +23,7 @@ import {
   createServiceDirResolver,
   isListMetadataModel,
   isListWrapperModel,
+  collectNonPaginatedResponseModelNames,
   buildDeduplicationMap,
   relativeImport,
   modelHasNewFields,
@@ -209,12 +210,16 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   }
 
   const discriminatedSkip = (ctx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames;
+  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
+  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
+  // code references them by name and pagination iterators don't unwrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);
@@ -733,13 +738,14 @@ export function generateSerializers(
   }
 
   const discriminatedSerializerSkip = (ctx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames;
+  const serializerNonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
   const eligibleModels: Model[] = [];
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
     if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
+    if (isListWrapperModel(model) && !serializerNonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSerializerSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);

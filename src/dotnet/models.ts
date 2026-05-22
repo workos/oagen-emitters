@@ -20,7 +20,11 @@ import {
 } from './naming.js';
 
 // Import and re-export shared model detection utilities
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import {
+  isListWrapperModel,
+  isListMetadataModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -74,6 +78,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // (see workos-dotnet#248 with `CreateUserApiKey` /
   // `UserManagementCreateApiKeyOptions`). Skip emission for those.
   const requestBodyOnlyNames = collectRequestBodyOnlyModelNames(ctx.spec.services, models);
+  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
+  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
+  // code references them by name and the pagination iterator doesn't unwrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
 
   // Build a lookup of base model field C# names → C# types for inheritance.
   // Variant models skip inherited fields and use `new` for type-divergent ones.
@@ -81,9 +90,12 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   if (discCtx) {
     for (const model of models) {
       if (discCtx.discriminatorBases.has(model.name)) {
+        const baseClassName = modelClassName(model.name);
         const fieldMap = new Map<string, string>();
         for (const field of model.fields) {
-          fieldMap.set(fieldName(field.name), mapTypeRef(field.type));
+          let csName = fieldName(field.name);
+          if (csName === baseClassName) csName = `${csName}Value`;
+          fieldMap.set(csName, mapTypeRef(field.type));
         }
         baseFieldLookup.set(model.name, fieldMap);
       }
@@ -91,7 +103,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   }
 
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (requestBodyOnlyNames.has(model.name)) continue;
 
     const csClassName = modelClassName(model.name);
@@ -104,7 +116,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     const fieldTypes = model.fields.map((f) => mapTypeRef(f.type));
     const needsCollections = fieldTypes.some((t) => t.startsWith('List<') || t.startsWith('Dictionary<'));
     const needsSystem = fieldTypes.some((t) => t.includes('DateTimeOffset'));
-    const needsJsonAttrs = model.fields.some((f) => f.required && isEnumRef(f.type));
+    // Required enums need JsonProperty / STJS; a field whose PascalCase name
+    // collides with the enclosing class needs the same imports for the wire-
+    // name override emitted below.
+    const hasClassNameCollision = model.fields.some((f) => fieldName(f.name) === csClassName);
+    const needsJsonAttrs = hasClassNameCollision || model.fields.some((f) => f.required && isEnumRef(f.type));
 
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -154,7 +170,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     // Deduplicate fields by C# property name
     const seenFieldNames = new Set<string>();
     for (const field of model.fields) {
-      const csFieldName = fieldName(field.name);
+      // CS0542: a property can't share its enclosing class's name. Spec schemas
+      // like `Error.error` PascalCase into `Error.Error`, so suffix with `Value`
+      // when that happens. Track the rename so we emit an explicit
+      // `[JsonProperty]` attribute below — the SnakeCaseLower naming policy
+      // would otherwise serialize `ErrorValue` as `error_value`, not `error`.
+      let csFieldName = fieldName(field.name);
+      const collidesWithClassName = csFieldName === csClassName;
+      if (collidesWithClassName) csFieldName = `${csFieldName}Value`;
       if (seenFieldNames.has(csFieldName)) continue;
       seenFieldNames.add(csFieldName);
 
@@ -234,7 +257,9 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       }
 
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
-      lines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
+      lines.push(
+        ...emitJsonPropertyAttributes(field.name, { isRequiredEnum, explicitWireName: collidesWithClassName }),
+      );
       // Discriminated-union-typed field: attach the variant-dispatching converter
       // so Newtonsoft picks the right subtype on deserialization. The converter
       // name is keyed off the first IR variant model name (matches how

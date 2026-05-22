@@ -156,7 +156,24 @@ export function isEnumRef(ref: TypeRef): boolean {
  * omission so the API returns a clear `missing required field` error instead
  * of a confusing 422.
  */
-export function emitJsonPropertyAttributes(_wireName: string, options: { isRequiredEnum?: boolean } = {}): string[] {
+export function emitJsonPropertyAttributes(
+  wireName: string,
+  options: { isRequiredEnum?: boolean; explicitWireName?: boolean } = {},
+): string[] {
+  // When the C# property name doesn't naturally map back to the wire name via
+  // the SnakeCaseLower naming policy (e.g. we suffixed the property to avoid a
+  // CS0542 class/member collision like `Error.Error` → `Error.ErrorValue`), the
+  // caller pins the wire name explicitly so JSON round-trip still works.
+  if (options.explicitWireName) {
+    if (options.isRequiredEnum) {
+      return [
+        `        [JsonProperty("${wireName}", DefaultValueHandling = DefaultValueHandling.Ignore)]`,
+        `        [STJS.JsonIgnore(Condition = STJS.JsonIgnoreCondition.WhenWritingDefault)]`,
+        `        [STJS.JsonPropertyName("${wireName}")]`,
+      ];
+    }
+    return [`        [JsonProperty("${wireName}")]`, `        [STJS.JsonPropertyName("${wireName}")]`];
+  }
   if (options.isRequiredEnum) {
     return [
       `        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]`,

@@ -1,7 +1,11 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, fieldName, fileName, buildMountDirMap } from './naming.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import {
+  isListWrapperModel,
+  isListMetadataModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 
 /** Folder under lib/workos/ for models not owned by any service. */
 export const SHARED_MODEL_DIR = 'shared';
@@ -77,11 +81,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const files: GeneratedFile[] = [];
 
+  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
+  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
+  // code references them by name and the pagination iterator doesn't unwrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+
   // Dedup identical models (by recursive structural hash).
   const recursiveHashes = buildRecursiveHashMap(models, enumNames);
   const hashGroups = new Map<string, string[]>();
   for (const m of models) {
-    if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
+    if (skipAsListWrapper(m) || isListMetadataModel(m)) continue;
     const h = recursiveHashes.get(m.name) ?? '';
     if (!hashGroups.has(h)) hashGroups.set(h, []);
     hashGroups.get(h)!.push(m.name);
@@ -95,7 +105,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
 
     const cls = className(model.name);
     const file = fileName(model.name);

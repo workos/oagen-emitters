@@ -140,7 +140,11 @@ function renderField(field: Field, rustField: string, modelName: string, registr
 function renderModelsBarrel(modules: string[]): string {
   const sorted = [...new Set(modules)].sort();
   const lines: string[] = [];
-  for (const m of sorted) lines.push(`pub mod ${m};`);
+  // Declare the modules privately so `pub use crate::models::*` in lib.rs only
+  // re-exports the struct names, not the module names themselves. Otherwise a
+  // module like `models::organization_membership` collides with the same-named
+  // `resources::organization_membership` when both barrels are glob-re-exported.
+  for (const m of sorted) lines.push(`mod ${m};`);
   lines.push('');
   for (const m of sorted) lines.push(`pub use ${m}::*;`);
   return lines.join('\n') + '\n';
