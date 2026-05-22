@@ -165,6 +165,23 @@ export function generateModelFixture(
     }
   }
 
+  if (model.discriminator) {
+    const [firstValue, variantName] = Object.entries(model.discriminator.mapping)[0];
+    fixture[wireFieldName(model.discriminator.property)] = firstValue;
+    const variantModel = modelMap.get(variantName);
+    if (variantModel) {
+      for (const field of variantModel.fields) {
+        const wireName = wireFieldName(field.name);
+        if (!(wireName in fixture)) {
+          fixture[wireName] =
+            field.example !== undefined
+              ? field.example
+              : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
+        }
+      }
+    }
+  }
+
   return fixture;
 }
 
