@@ -1,7 +1,14 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
 import { resolveResourceClassName, resolveResourceDir } from './resources.js';
-import { createServiceDirResolver, assignModelsToServices, isListMetadataModel, isListWrapperModel } from './utils.js';
+import {
+  createServiceDirResolver,
+  assignModelsToServices,
+  isListMetadataModel,
+  isListWrapperModel,
+  collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
+} from './utils.js';
 
 export const ID_PREFIXES: Record<string, string> = {
   Connection: 'conn_',
@@ -75,11 +82,14 @@ export function generateFixtures(
     }
   }
 
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
+
   const seenFixturePaths = new Set<string>();
   for (const model of spec.models) {
     if (!fixtureReachable.has(model.name)) continue;
-    if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);

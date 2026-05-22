@@ -6,6 +6,7 @@ import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -67,13 +68,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // code references them by name and pagination iterators don't unwrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
   const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+  // A `ListMetadata`-shape model referenced by a surviving non-paginated
+  // wrapper (e.g. vault's `VersionListResponse`) must still emit a data class
+  // — otherwise the wrapper's class references a type that was never declared.
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
+  const skipAsListMetadata = (m: Model): boolean => isListMetadataModel(m) && !listMetadataNeeded.has(m.name);
 
   // Deduplication: identical structures become typealiases.
   // Pass 1: hash without nested-alias resolution.
   modelAliasMap = null;
   const hashGroupsPass1 = new Map<string, string[]>();
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     const hash = structuralHash(model);
     if (!hashGroupsPass1.has(hash)) hashGroupsPass1.set(hash, []);
@@ -96,7 +102,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   modelAliasMap = aliasOf;
   const hashGroupsPass2 = new Map<string, string[]>();
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     if (aliasOf.has(model.name)) continue; // already aliased in pass 1
     const hash = structuralHash(model);
@@ -115,7 +121,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     const typeName = className(model.name);
 
     // Parent of a discriminated union: emit a sealed class.
@@ -152,7 +158,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // mapping so Jackson can deserialize directly to the correct concrete type.
   const eventMapping: Array<{ wireValue: string; modelName: string }> = [];
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (aliasOf.has(model.name)) continue;
     if (!isEventEnvelopeModel(model)) continue;
     const eventField = model.fields.find((f) => f.name === 'event');

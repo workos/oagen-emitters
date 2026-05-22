@@ -1,6 +1,7 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 import { fileName, fieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
+import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -34,9 +35,12 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
+
   for (const model of spec.models) {
-    if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
 
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 

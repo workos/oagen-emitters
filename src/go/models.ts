@@ -9,6 +9,7 @@ import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 export { isListWrapperModel, isListMetadataModel };
 
@@ -92,12 +93,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // code references them by name and the pagination iterator doesn't unwrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
   const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+  // A `ListMetadata`-shape model referenced by a surviving non-paginated
+  // wrapper (e.g. vault's `VersionListResponse`) must still be emitted —
+  // otherwise the wrapper's struct references a type that was never declared.
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
+  const skipAsListMetadata = (m: Model): boolean => isListMetadataModel(m) && !listMetadataNeeded.has(m.name);
 
   // Build structural hash for deduplication
   const modelHashMap = new Map<string, string>();
   const hashGroups = new Map<string, string[]>();
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (requestBodyOnly.has(model.name)) continue;
     const hash = structuralHash(model);
     modelHashMap.set(model.name, hash);
@@ -121,7 +127,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const batchedAliases = new Set<string>();
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (requestBodyOnly.has(model.name)) continue;
 
     const structName = className(model.name);
