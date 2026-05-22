@@ -316,6 +316,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
 /** Unwrap T.nilable(...) if already wrapped, to avoid double-wrapping. */
 function unwrapNilable(type: string): string {
+  if (type === 'T.untyped') return type;
   const match = type.match(/^T\.nilable\((.+)\)$/);
   return match ? match[1] : type;
 }
