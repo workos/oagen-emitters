@@ -517,36 +517,43 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     }
     lines.push('');
 
-    // Wire/response interface
-    const seenWireFields = new Set<string>();
-    if (model.fields.length === 0) {
-      lines.push(`export type ${responseName}${typeParams} = object;`);
-    } else {
-      lines.push(`export interface ${responseName}${typeParams} {`);
-      for (const field of model.fields) {
-        const wireField = wireFieldName(field.name);
-        if (seenWireFields.has(wireField)) continue;
-        seenWireFields.add(wireField);
-        const baselineField = baselineResponse?.fields?.[wireField];
-        if (
-          baselineField &&
-          baselineTypeResolvable(baselineField.type, importableNames) &&
-          baselineFieldCompatible(baselineField, field)
-        ) {
-          const opt = baselineField.optional ? '?' : '';
-          lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
-        } else {
-          const isNewFieldOnExistingModel = baselineResponse && !baselineField;
-          // Same baseline-optional preservation as the domain side. The
-          // wire interface's optional flag drives test-fixture shape, so
-          // flipping it on regen breaks every fixture that omitted the
-          // field assuming it was optional.
-          const baselineSaysOptional = baselineField?.optional === true;
-          const opt = baselineSaysOptional || !field.required || isNewFieldOnExistingModel ? '?' : '';
-          lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
+    // Wire/response interface — skip when the wire name collapsed onto the
+    // domain name (single-form structural-rename case, e.g. IR `Object` →
+    // `ReadObjectResponse`). Emitting the second declaration would either
+    // produce a literal duplicate `export interface ReadObjectResponse`
+    // pair or, after TypeScript's silent declaration merge, leave the
+    // call site with `import type { ReadObjectResponse, ReadObjectResponse }`.
+    if (responseName !== domainName) {
+      const seenWireFields = new Set<string>();
+      if (model.fields.length === 0) {
+        lines.push(`export type ${responseName}${typeParams} = object;`);
+      } else {
+        lines.push(`export interface ${responseName}${typeParams} {`);
+        for (const field of model.fields) {
+          const wireField = wireFieldName(field.name);
+          if (seenWireFields.has(wireField)) continue;
+          seenWireFields.add(wireField);
+          const baselineField = baselineResponse?.fields?.[wireField];
+          if (
+            baselineField &&
+            baselineTypeResolvable(baselineField.type, importableNames) &&
+            baselineFieldCompatible(baselineField, field)
+          ) {
+            const opt = baselineField.optional ? '?' : '';
+            lines.push(`  ${wireField}${opt}: ${baselineField.type};`);
+          } else {
+            const isNewFieldOnExistingModel = baselineResponse && !baselineField;
+            // Same baseline-optional preservation as the domain side. The
+            // wire interface's optional flag drives test-fixture shape, so
+            // flipping it on regen breaks every fixture that omitted the
+            // field assuming it was optional.
+            const baselineSaysOptional = baselineField?.optional === true;
+            const opt = baselineSaysOptional || !field.required || isNewFieldOnExistingModel ? '?' : '';
+            lines.push(`  ${wireField}${opt}: ${mapWireTypeRef(field.type, modelWireTypeRefOpts)};`);
+          }
         }
+        lines.push('}');
       }
-      lines.push('}');
     }
 
     // Preserve inline types from existing file
