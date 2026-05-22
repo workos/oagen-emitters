@@ -49,6 +49,22 @@ export function generateModelFixture(
       fromExample !== undefined ? fromExample : exampleFor(field.type, modelMap, enumMap, visiting, field.name);
   }
 
+  if (model.discriminator) {
+    const [firstValue, variantName] = Object.entries(model.discriminator.mapping)[0];
+    result[model.discriminator.property] = firstValue;
+    const variantModel = modelMap.get(variantName);
+    if (variantModel) {
+      for (const field of variantModel.fields) {
+        if (!(field.name in result)) {
+          if (!field.required) continue;
+          const fromExample = exampleFromSpec(field.example, field.type, enumMap);
+          result[field.name] =
+            fromExample !== undefined ? fromExample : exampleFor(field.type, modelMap, enumMap, visiting, field.name);
+        }
+      }
+    }
+  }
+
   visiting.delete(model.name);
   return result;
 }

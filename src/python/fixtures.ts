@@ -123,6 +123,22 @@ export function generateModelFixture(
     }
   }
 
+  if (model.discriminator) {
+    const [firstValue, variantName] = Object.entries(model.discriminator.mapping)[0];
+    fixture[model.discriminator.property] = firstValue;
+    const variantModel = modelMap.get(variantName);
+    if (variantModel) {
+      for (const field of variantModel.fields) {
+        if (!(field.name in fixture)) {
+          fixture[field.name] =
+            field.example !== undefined
+              ? field.example
+              : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
+        }
+      }
+    }
+  }
+
   return fixture;
 }
 
