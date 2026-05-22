@@ -36,8 +36,8 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
  * has its original fields restored — otherwise `ConnectApplication`-style
  * bases would silently lose every variant field they had previously.
  */
-function enrichModelsForRuby(models: Model[]): Model[] {
-  const enriched = enrichModelsFromSpec(models);
+function enrichModelsForRuby(models: Model[], enums: Enum[]): Model[] {
+  const enriched = enrichModelsFromSpec(models, enums);
   const originalByName = new Map(models.map((m) => [m.name, m]));
   return enriched.map((m) => {
     if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
@@ -54,7 +54,7 @@ export const rubyEmitter: Emitter = {
   language: 'ruby',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    const modelFiles = generateModels(enrichModelsForRuby(models), ctx);
+    const modelFiles = generateModels(enrichModelsForRuby(models, ctx.spec.enums), ctx);
     return ensureTrailingNewlines(modelFiles);
   },
 

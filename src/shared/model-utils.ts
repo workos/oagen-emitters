@@ -503,7 +503,7 @@ export function detectDiscriminators(models: Model[]): Model[] {
  * Returns a new array of enriched models (original models are not mutated).
  * Synthetic enums are stored internally; retrieve them via `getSyntheticEnums()`.
  */
-export function enrichModelsFromSpec(models: Model[]): Model[] {
+export function enrichModelsFromSpec(models: Model[], enums: Enum[] = []): Model[] {
   const spec = loadRawSpec();
   if (!spec) {
     _lastSyntheticEnums = [];
@@ -517,6 +517,17 @@ export function enrichModelsFromSpec(models: Model[]): Model[] {
   for (const m of models) {
     collector.usedNames.add(m.name);
     collector.usedNames.add(toSnakeCase(m.name));
+  }
+  // Seed existing IR enum names too. The parser already emits inline enums
+  // like `DataIntegrationAccessTokenResponseError` (PascalCase); without this
+  // seed, the synthetic path would emit a sibling enum named
+  // `DataIntegrationAccessTokenResponse_error`, and language emitters that
+  // PascalCase-normalize identifiers (Ruby, Go, PHP, Python) would collapse
+  // both onto the same class/file path — the second overwrites the first
+  // with a `X = X` self-alias.
+  for (const e of enums) {
+    collector.usedNames.add(e.name);
+    collector.usedNames.add(toSnakeCase(e.name));
   }
 
   const enriched = models.map((model) => {
