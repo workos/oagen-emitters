@@ -682,7 +682,14 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
     const fieldAccessor = isDateTime ? `${accessor}.${domainField}.toISOString()` : `${accessor}.${domainField}`;
     // When a field has an example value, use it as the expected assertion value
     if (field.example !== undefined) {
-      if (typeof field.example === 'object' && field.example !== null) {
+      // A null example on a nullable field must assert `toBeNull()` on the
+      // raw value — calling `.toISOString()` on null throws at runtime, and
+      // `.toBe(null)` against any non-null value never matches.
+      if (field.example === null) {
+        assertions.push(`expect(${accessor}.${domainField}).toBeNull();`);
+        continue;
+      }
+      if (typeof field.example === 'object') {
         // Objects and arrays need toEqual with JSON serialization
         assertions.push(`expect(${accessor}.${domainField}).toEqual(${JSON.stringify(field.example)});`);
       } else {
