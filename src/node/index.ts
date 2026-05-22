@@ -38,6 +38,24 @@ import { fileName } from './naming.js';
  */
 const surfaceCache = new WeakMap<EmitterContext, LiveSurface>();
 
+/**
+ * Paths the node emitter has produced so far in this ctx, accumulated across
+ * `applyLiveSurface` calls. Drives `carryForwardManagedFiles` so files in the
+ * prior manifest that we did not re-emit this run still land in the new
+ * manifest as "still managed" — without that, the orchestrator's prune diff
+ * treats every untouched autogen file as stale.
+ */
+const emittedPathsCache = new WeakMap<EmitterContext, Set<string>>();
+
+function getEmittedPaths(ctx: EmitterContext): Set<string> {
+  let set = emittedPathsCache.get(ctx);
+  if (!set) {
+    set = new Set();
+    emittedPathsCache.set(ctx, set);
+  }
+  return set;
+}
+
 function getSurface(ctx: EmitterContext): LiveSurface {
   let surface = surfaceCache.get(ctx);
   if (surface) return surface;
@@ -115,8 +133,10 @@ function getSurface(ctx: EmitterContext): LiveSurface {
  * `integrateTarget: false` files (smoke-manifest.json etc.) are also dropped:
  * with no `--target` step they would otherwise land as untracked cruft.
  *
- * Note: pairing this with `--no-prune` is required for stable behavior — see
- * `scripts/sdk-generate.sh` in the spec repo, which enables it for `--lang node`.
+ * Note: the carry-forward step in `generateTests` re-declares prior-manifest
+ * paths we didn't touch this run, so the orchestrator's prune diff stays
+ * accurate without needing `--no-prune` at the call site. See
+ * `carryForwardManagedFiles` below.
  */
 /**
  * `*.spec.ts`, `*.test.ts`, and JSON fixtures under `fixtures/` are owned by
@@ -355,6 +375,55 @@ function applyLiveSurface(files: GeneratedFile[], ctx: EmitterContext, surface: 
     }
     out.push(f);
   }
+  const emitted = getEmittedPaths(ctx);
+  for (const f of out) emitted.add(f.path);
+  return out;
+}
+
+/**
+ * Re-declare prior-manifest paths that we did not emit this run so manifest
+ * pruning can tell "intentionally removed" from "untouched but still managed."
+ *
+ * The node emitter only outputs files it actually wants to write each run —
+ * untouched-but-up-to-date autogen files don't come back through any
+ * `generateXxx` method. Without this carry-forward, the orchestrator's
+ * `prevManifest.files − currentEmission` diff treats every such file as stale
+ * and prunes the whole tree on a regen. That's why `scripts/sdk-generate.sh`
+ * historically paired the node emitter with `--no-prune` — at the cost of
+ * never pruning legitimately-removed files (e.g. an enum file orphaned by a
+ * `schemaNameTransform` rename like `RadarAction` → `RadarListAction`).
+ *
+ * The carry-forward entry uses `skipIfExists: true`, so writer.ts skips the
+ * write and only ensures the header is present (no-op for files that already
+ * have it). The path still lands in `outputEmittedPaths` and therefore in the
+ * new manifest, which restores correct prune semantics.
+ *
+ * Files dropped from the carry-forward set:
+ *  - Not on disk anymore (file was hand-deleted — let prune confirm absence).
+ *  - `@oagen-ignore-file` protected (user has explicitly taken ownership).
+ *  - `.ts` files that no longer carry the auto-gen header (user has taken
+ *    ownership in-place; the next prune cycle will clear the manifest entry).
+ */
+function carryForwardManagedFiles(ctx: EmitterContext, surface: LiveSurface): GeneratedFile[] {
+  const priorPaths = ctx.priorTargetManifestPaths;
+  if (!priorPaths || priorPaths.size === 0) return [];
+
+  const emitted = getEmittedPaths(ctx);
+  const out: GeneratedFile[] = [];
+  for (const relPath of priorPaths) {
+    if (emitted.has(relPath)) continue;
+    if (!surface.files.has(relPath)) continue;
+    if (surface.protectedFiles.has(relPath)) continue;
+    if (relPath.endsWith('.ts') && !surface.autogenFiles.has(relPath)) continue;
+
+    out.push({
+      path: relPath,
+      content: '',
+      skipIfExists: true,
+      headerPlacement: 'skip',
+    });
+    emitted.add(relPath);
+  }
   return out;
 }
 
@@ -440,11 +509,16 @@ export const nodeEmitter: Emitter = {
 
   // Test specs and fixtures are hand-maintained except for explicitly-owned
   // service directories.
+  //
+  // This is also the last `generateXxx` hook in `generateAllFiles`, so it's
+  // where we tack on the carry-forward set — see `carryForwardManagedFiles`.
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     const nodeCtx = withNodeOperationOverrides(ctx);
-    if (!nodeOptions(nodeCtx).regenerateOwnedTests) return [];
     const surface = getSurface(nodeCtx);
-    return applyLiveSurface(generateTestFiles(spec, nodeCtx), nodeCtx, surface);
+    const testFiles = nodeOptions(nodeCtx).regenerateOwnedTests
+      ? applyLiveSurface(generateTestFiles(spec, nodeCtx), nodeCtx, surface)
+      : [];
+    return [...testFiles, ...carryForwardManagedFiles(nodeCtx, surface)];
   },
 
   // No operations map needed — the manifest belongs to the staging+target flow,
