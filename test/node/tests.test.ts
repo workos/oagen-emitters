@@ -268,4 +268,73 @@ describe('node test generation ownership', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('asserts toBeNull() for nullable fields whose example is null', () => {
+    // When the spec gives `example: null` on a nullable field — common for
+    // optional date-times like `last_used_at` — the previous emitter would
+    // emit `expect(x.toISOString()).toBe(null)`, which both blows up at
+    // runtime on a null `x` and never matches when `x` is a Date.
+    const secretModel: Model = {
+      name: 'Secret',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true, example: 'sec_1' },
+        {
+          name: 'last_used_at',
+          type: {
+            kind: 'nullable',
+            inner: { kind: 'primitive', type: 'string', format: 'date-time' },
+          },
+          required: true,
+          example: null,
+        },
+        {
+          name: 'created_at',
+          type: { kind: 'primitive', type: 'string', format: 'date-time' },
+          required: true,
+          example: '2026-01-15T12:00:00.000Z',
+        },
+      ],
+    };
+
+    const showOp = {
+      name: 'showSecret',
+      httpMethod: 'get' as const,
+      path: '/secrets/{id}',
+      pathParams: [{ name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: 'Secret' },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const secretService: Service = { name: 'Secrets', operations: [showOp] };
+    const secretSpec: ApiSpec = {
+      ...spec,
+      models: [secretModel],
+      services: [secretService],
+    };
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'secrets', 'fixtures'), { recursive: true });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const result = nodeEmitter.generateTests!(secretSpec, {
+        ...ctx,
+        spec: secretSpec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Secrets'], regenerateOwnedTests: true },
+      } as EmitterContext);
+
+      const testFile = result.find((f) => f.path === 'src/secrets/secrets.spec.ts');
+      expect(testFile).toBeDefined();
+      const content = testFile!.content;
+      // Null example on a nullable date-time → toBeNull(), not `.toISOString().toBe(null)`.
+      expect(content).toContain('expect(result.lastUsedAt).toBeNull();');
+      expect(content).not.toContain('lastUsedAt.toISOString()).toBe(null)');
+      // Non-null date-time examples still go through `.toISOString()`.
+      expect(content).toContain("expect(result.createdAt.toISOString()).toBe('2026-01-15T12:00:00.000Z');");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
