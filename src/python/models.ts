@@ -41,9 +41,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // oneOf enrichment collide with existing IR models in snake_case.
   const emittedFilePaths = new Set<string>();
 
+  // Wrappers referenced as a non-paginated operation response (e.g.
+  // `VersionListResponse` for `GET /vault/v1/kv/{id}/versions`) must still be
+  // emitted — the resource code references them by name and SyncPage doesn't
+  // wrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+
   for (const model of models) {
     // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
-    if (isListWrapperModel(model)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     // Skip all list metadata models (e.g., ListMetadata, FooListListMetadata)
     if (isListMetadataModel(model)) continue;
 
@@ -865,5 +871,9 @@ function serializeField(ref: any, accessor: string): string {
 }
 
 // Import and re-export shared model detection utilities
-import { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
+import {
+  isListMetadataModel,
+  isListWrapperModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 export { isListMetadataModel, isListWrapperModel };

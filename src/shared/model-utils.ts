@@ -1,9 +1,30 @@
-import type { Model, Field, TypeRef, Enum } from '@workos/oagen';
-import { toSnakeCase, toUpperSnakeCase } from '@workos/oagen';
+import type { Model, Field, TypeRef, Enum, Service } from '@workos/oagen';
+import { toSnakeCase, toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 // @ts-ignore -- js-yaml has no type declarations in this project
 import { load as yamlLoad } from 'js-yaml';
+
+/**
+ * Collect model names referenced as the return type of any non-paginated
+ * operation. The list-wrapper skip rule below assumes a wrapper is always
+ * replaced by the SDK's pagination machinery — but a few endpoints
+ * (e.g. `GET /vault/v1/kv/{id}/versions`) have a list-envelope response
+ * shape with no pagination params, so the parser leaves them as a plain
+ * model reference. We must still emit those wrappers as regular models;
+ * otherwise the generated resource code references an undefined name.
+ */
+export function collectNonPaginatedResponseModelNames(services: Service[]): Set<string> {
+  const names = new Set<string>();
+  for (const service of services) {
+    for (const op of service.operations) {
+      if (op.pagination) continue;
+      walkTypeRef(op.response, { model: (r) => names.add(r.name) });
+      for (const sr of op.successResponses ?? []) walkTypeRef(sr.type, { model: (r) => names.add(r.name) });
+    }
+  }
+  return names;
+}
 
 /**
  * Detect whether a model is a list wrapper -- the standard paginated

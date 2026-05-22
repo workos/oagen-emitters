@@ -5,7 +5,11 @@ import { className, fieldName } from './naming.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
 
 // Import and re-export shared model detection utilities
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import {
+  isListWrapperModel,
+  isListMetadataModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -83,12 +87,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   lines.push('');
 
   const requestBodyOnly = collectRequestBodyOnlyModelNames(ctx.spec.services, models);
+  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
+  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
+  // code references them by name and the pagination iterator doesn't unwrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
 
   // Build structural hash for deduplication
   const modelHashMap = new Map<string, string>();
   const hashGroups = new Map<string, string[]>();
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (requestBodyOnly.has(model.name)) continue;
     const hash = structuralHash(model);
     modelHashMap.set(model.name, hash);
@@ -112,7 +121,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const batchedAliases = new Set<string>();
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (requestBodyOnly.has(model.name)) continue;
 
     const structName = className(model.name);

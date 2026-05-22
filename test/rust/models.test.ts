@@ -110,7 +110,7 @@ describe('rust/models', () => {
     const event = files.find((f) => f.path === 'src/models/event.rs')!;
     expect(event.content).toContain('pub payload: EventPayloadOneOf,');
     const barrel = files.find((f) => f.path === 'src/models/mod.rs')!;
-    expect(barrel.content).toContain('pub mod _unions;');
+    expect(barrel.content).toContain('mod _unions;');
     // The _unions.rs file is rendered by generateClient (the final structural
     // pass) so resource-side body unions can join the same registry.
     const clientFiles = generateClient(emptySpec, ctx, registry);
@@ -170,8 +170,8 @@ describe('rust/models', () => {
     ];
     const files = generateModels(models, ctx, new UnionRegistry());
     const barrel = files.find((f) => f.path === 'src/models/mod.rs')!;
-    expect(barrel.content).toContain('pub mod alpha;');
-    expect(barrel.content).toContain('pub mod beta;');
+    expect(barrel.content).toContain('mod alpha;');
+    expect(barrel.content).toContain('mod beta;');
     expect(barrel.content).toContain('pub use alpha::*;');
   });
 });

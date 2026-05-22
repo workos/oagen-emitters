@@ -2,7 +2,11 @@ import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@work
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
 import { className, propertyName, ktStringLiteral, humanize } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import {
+  isListWrapperModel,
+  isListMetadataModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const MODELS_PACKAGE = 'com.workos.models';
@@ -47,7 +51,7 @@ function promoteFieldType(f: Field): Field {
  * List wrappers (`{ data, list_metadata }`) and the shared `ListMetadata`
  * model are skipped — the hand-maintained runtime provides [Page]/[ListMetadata].
  */
-export function generateModels(models: Model[], _ctx: EmitterContext): GeneratedFile[] {
+export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   if (models.length === 0) return [];
 
   // First pass: call mapTypeRef on every model field so discriminator info is
@@ -58,12 +62,18 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
 
   const files: GeneratedFile[] = [];
 
+  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
+  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
+  // code references them by name and pagination iterators don't unwrap them.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+
   // Deduplication: identical structures become typealiases.
   // Pass 1: hash without nested-alias resolution.
   modelAliasMap = null;
   const hashGroupsPass1 = new Map<string, string[]>();
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     const hash = structuralHash(model);
     if (!hashGroupsPass1.has(hash)) hashGroupsPass1.set(hash, []);
@@ -86,7 +96,7 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   modelAliasMap = aliasOf;
   const hashGroupsPass2 = new Map<string, string[]>();
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     if (aliasOf.has(model.name)) continue; // already aliased in pass 1
     const hash = structuralHash(model);
@@ -105,7 +115,7 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   }
 
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     const typeName = className(model.name);
 
     // Parent of a discriminated union: emit a sealed class.
@@ -142,7 +152,7 @@ export function generateModels(models: Model[], _ctx: EmitterContext): Generated
   // mapping so Jackson can deserialize directly to the correct concrete type.
   const eventMapping: Array<{ wireValue: string; modelName: string }> = [];
   for (const model of models) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
     if (aliasOf.has(model.name)) continue;
     if (!isEventEnvelopeModel(model)) continue;
     const eventField = model.fields.find((f) => f.name === 'event');

@@ -277,7 +277,11 @@ export function isBaselineGeneric(fields: Record<string, unknown>, knownNames: S
   return false;
 }
 
-export { isListMetadataModel, isListWrapperModel } from '../shared/model-utils.js';
+export {
+  isListMetadataModel,
+  isListWrapperModel,
+  collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
 
 function modelFingerprint(model: Model): string {
   const fields = model.fields.map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`).sort();
