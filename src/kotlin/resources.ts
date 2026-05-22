@@ -11,7 +11,12 @@ import type {
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefOptional, implicitImportsFor } from './type-map.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import {
+  isListWrapperModel,
+  isListMetadataModel,
+  collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
+} from '../shared/model-utils.js';
 import { enumCanonicalMap } from './enums.js';
 import {
   className,
@@ -1124,6 +1129,12 @@ function registerTypeImports(ref: TypeRef, imports: Set<string>, ctx: EmitterCon
   const mapped = mapTypeRef(ref);
   for (const imp of implicitImportsFor(mapped)) imports.add(imp);
 
+  // Match the model-emission gate: a `ListMetadata`-shape model that survives
+  // emission (because a non-paginated wrapper still references it) needs its
+  // import here too.
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(ctx.spec.models, nonPaginatedRefs);
+
   walk(ref, (r) => {
     if (r.kind === 'enum') {
       // When an enum is aliased, import the canonical class instead of the alias.
@@ -1132,7 +1143,11 @@ function registerTypeImports(ref: TypeRef, imports: Set<string>, ctx: EmitterCon
     }
     if (r.kind === 'model') {
       const referenced = ctx.spec.models.find((m) => m.name === r.name);
-      if (referenced && (isListWrapperModel(referenced) || isListMetadataModel(referenced))) return;
+      if (referenced) {
+        const skipWrapper = isListWrapperModel(referenced) && !nonPaginatedRefs.has(referenced.name);
+        const skipMetadata = isListMetadataModel(referenced) && !listMetadataNeeded.has(referenced.name);
+        if (skipWrapper || skipMetadata) return;
+      }
       imports.add(`com.workos.models.${className(r.name)}`);
     }
   });

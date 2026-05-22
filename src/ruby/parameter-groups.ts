@@ -29,8 +29,10 @@ function mapSorbetType(ref: TypeRef): string {
       return `WorkOS::${className(ref.name)}`;
     case 'enum':
       return 'String';
-    case 'nullable':
-      return `T.nilable(${mapSorbetType(ref.inner)})`;
+    case 'nullable': {
+      const inner = mapSorbetType(ref.inner);
+      return inner === 'T.untyped' ? inner : `T.nilable(${inner})`;
+    }
     case 'literal':
       if (typeof ref.value === 'string') return 'String';
       if (ref.value === null) return 'NilClass';

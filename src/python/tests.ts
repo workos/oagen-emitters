@@ -22,6 +22,7 @@ import { resolveResourceClassName, bodyParamName } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
+import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 import {
   groupByMount,
   buildResolvedLookup,
@@ -1396,8 +1397,13 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   // A model is request-only if it's used as a request body but never as a response
   for (const name of responseModelNames) requestOnlyModelNames.delete(name);
 
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
   const models = spec.models.filter(
-    (m) => !isListWrapperModel(m) && !isListMetadataModel(m) && !requestOnlyModelNames.has(m.name),
+    (m) =>
+      !(isListWrapperModel(m) && !nonPaginatedRefs.has(m.name)) &&
+      !(isListMetadataModel(m) && !listMetadataNeeded.has(m.name)) &&
+      !requestOnlyModelNames.has(m.name),
   );
   if (models.length === 0) return null;
 

@@ -1,5 +1,5 @@
 import type { Model, Field, TypeRef, Enum, Service } from '@workos/oagen';
-import { toSnakeCase, toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
+import { collectFieldDependencies, toSnakeCase, toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 // @ts-ignore -- js-yaml has no type declarations in this project
@@ -70,6 +70,41 @@ export function isListMetadataModel(model: Model): boolean {
   if (!before || !after) return false;
 
   return isNullableString(before) && isNullableString(after);
+}
+
+/**
+ * Compute the `ListMetadata`-shape model names that must still be emitted
+ * because some surviving wrapper references them.
+ *
+ * Each language emitter blanket-skips `isListMetadataModel` models on the
+ * assumption that the SDK's shared pagination wrapper subsumes them. That
+ * is correct for paginated list envelopes (the iterator unwraps the
+ * envelope and `list_metadata` is handled at runtime), but a *non-paginated*
+ * wrapper like vault's `VersionListResponse` still has a
+ * `list_metadata: ListMetadata` field — and skipping emission of
+ * `ListMetadata` leaves the wrapper's interface importing from a file that
+ * was never written.
+ *
+ * Pass the same `nonPaginatedRefs` set the emitter uses for its own
+ * wrapper-survival decision so the two answers stay in sync.
+ */
+export function collectReferencedListMetadataModels(models: Model[], nonPaginatedRefs: Set<string>): Set<string> {
+  const listMetadataNames = new Set<string>();
+  for (const m of models) {
+    if (isListMetadataModel(m)) listMetadataNames.add(m.name);
+  }
+  if (listMetadataNames.size === 0) return new Set();
+
+  const referenced = new Set<string>();
+  for (const model of models) {
+    if (isListMetadataModel(model)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
+    const deps = collectFieldDependencies(model);
+    for (const dep of deps.models) {
+      if (listMetadataNames.has(dep)) referenced.add(dep);
+    }
+  }
+  return referenced;
 }
 
 /** Check if a field type is nullable string (nullable<string> or just string). */

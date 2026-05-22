@@ -24,6 +24,7 @@ import {
   isListMetadataModel,
   isListWrapperModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
   buildDeduplicationMap,
   relativeImport,
   modelHasNewFields,
@@ -214,11 +215,19 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
   // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
   // code references them by name and pagination iterators don't unwrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+
+  // ListMetadata-shape models are usually subsumed by the SDK's shared
+  // pagination wrapper, so we blanket-skip them. But a non-paginated
+  // wrapper like vault's `VersionListResponse` keeps the reference live
+  // (`list_metadata: ListMetadata`), and skipping the emission leaves the
+  // wrapper's interface importing from a file that was never written.
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
+
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
-    if (isListMetadataModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);
@@ -746,12 +755,16 @@ export function generateSerializers(
 
   const discriminatedSerializerSkip = (ctx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames;
   const serializerNonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+
+  // Mirror the interface-emission gate (see `generateModels`).
+  const serializerListMetadataNeeded = collectReferencedListMetadataModels(models, serializerNonPaginatedRefs);
+
   const eligibleModels: Model[] = [];
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!serializerReachable.has(model.name)) continue;
     if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
-    if (isListMetadataModel(model)) continue;
+    if (isListMetadataModel(model) && !serializerListMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !serializerNonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSerializerSkip?.has(model.name)) continue;
     const service = modelToService.get(model.name);

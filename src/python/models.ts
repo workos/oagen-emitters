@@ -46,12 +46,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // emitted — the resource code references them by name and SyncPage doesn't
   // wrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  // ListMetadata-shape models referenced by a surviving non-paginated wrapper
+  // (e.g. vault's `VersionListResponse`) must still emit a dataclass —
+  // otherwise the wrapper's module imports a class that was never written.
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
 
   for (const model of models) {
     // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     // Skip all list metadata models (e.g., ListMetadata, FooListListMetadata)
-    if (isListMetadataModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
 
     const service = modelToService.get(model.name);
     const dirName = resolveDir(service);
@@ -875,5 +879,6 @@ import {
   isListMetadataModel,
   isListWrapperModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 export { isListMetadataModel, isListWrapperModel };
