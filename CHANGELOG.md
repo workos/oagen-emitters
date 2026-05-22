@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.2](https://github.com/workos/oagen-emitters/compare/v0.14.1...v0.14.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* emit ListMetadata-shape models referenced by surviving wrappers ([#124](https://github.com/workos/oagen-emitters/issues/124)) ([8d8efe1](https://github.com/workos/oagen-emitters/commit/8d8efe148f3665fc9de92cc6aea0e08e77e0fe78))
+* **node:** stop emitting duplicate Response-suffixed interfaces ([#123](https://github.com/workos/oagen-emitters/issues/123)) ([2077d25](https://github.com/workos/oagen-emitters/commit/2077d250d1dc7968245e9ec31d5ef5f75441fc68))
+* **node:** use toBeNull() when example is null on date-time fields ([#121](https://github.com/workos/oagen-emitters/issues/121)) ([0f5029f](https://github.com/workos/oagen-emitters/commit/0f5029f38d2dafc63df09f49a4562e3ffeeb7558))
+
 ## [0.14.1](https://github.com/workos/oagen-emitters/compare/v0.14.0...v0.14.1) (2026-05-22)
 
 
