@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EmitterContext } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
-import { resolveInterfaceName, setAdoptedModelNames } from '../../src/node/naming.js';
+import {
+  resolveInterfaceName,
+  setAdoptedModelNames,
+  setBaselineInterfaceNames,
+  setStructurallyRenamedDomainNames,
+  wireInterfaceName,
+} from '../../src/node/naming.js';
 
 const ctx: EmitterContext = {
   namespace: 'workos',
@@ -19,6 +25,8 @@ const ctx: EmitterContext = {
 
 afterEach(() => {
   setAdoptedModelNames(new Set());
+  setBaselineInterfaceNames(new Set());
+  setStructurallyRenamedDomainNames(new Set());
 });
 
 describe('resolveInterfaceName', () => {
@@ -73,5 +81,41 @@ describe('resolveInterfaceName', () => {
     });
 
     expect(result).toBe('CreateM2MApplication');
+  });
+});
+
+describe('wireInterfaceName', () => {
+  it('emits *Wire for a fresh `*Response`-named IR model with an empty baseline', () => {
+    expect(wireInterfaceName('CreateDataKeyResponse')).toBe('CreateDataKeyResponseWire');
+  });
+
+  it('returns *Wire even when a prior buggy regen poisoned the baseline with the bare name', () => {
+    // Reproduces the vault regression: `CreateDataKeyResponse` is its own IR
+    // name (no structural rename), so the resolver does not flag it. A prior
+    // broken emission wrote `export interface CreateDataKeyResponse { ... }`
+    // twice into the file, and the baseline now contains the bare name.
+    // Without the rename signal, `wireInterfaceName` must still pick `*Wire`
+    // — otherwise the duplicate emission perpetuates across regens.
+    setBaselineInterfaceNames(new Set(['CreateDataKeyResponse']));
+    expect(wireInterfaceName('CreateDataKeyResponse')).toBe('CreateDataKeyResponseWire');
+  });
+
+  it('uses *Wire when baseline already has a separate `*Wire` companion', () => {
+    setBaselineInterfaceNames(new Set(['DecryptResponse', 'DecryptResponseWire']));
+    expect(wireInterfaceName('DecryptResponse')).toBe('DecryptResponseWire');
+  });
+
+  it('returns the bare name when a structural rename mapped a differently-named IR model onto a baseline `*Response`', () => {
+    // The legitimate single-form case the heuristic was designed for:
+    // `AuditLogSchemaJson` → `AuditLogSchemaResponse` via structural match,
+    // and the baseline owns just the one `AuditLogSchemaResponse` interface
+    // representing the wire shape.
+    setBaselineInterfaceNames(new Set(['AuditLogSchemaResponse']));
+    setStructurallyRenamedDomainNames(new Set(['AuditLogSchemaResponse']));
+    expect(wireInterfaceName('AuditLogSchemaResponse')).toBe('AuditLogSchemaResponse');
+  });
+
+  it('falls back to `${name}Response` for non-`*Response` IR names', () => {
+    expect(wireInterfaceName('Organization')).toBe('OrganizationResponse');
   });
 });

@@ -23,6 +23,7 @@ import {
   setBaselineSerializedNames,
   setBaselineInterfaceNames,
   setAdoptedModelNames,
+  setStructurallyRenamedDomainNames,
   resolveInterfaceName,
 } from './naming.js';
 import { withNodeOperationOverrides } from './node-overrides.js';
@@ -108,6 +109,19 @@ function getSurface(ctx: EmitterContext): LiveSurface {
   // Pass an empty map; type-map will fall back to emitting the symbol name.
   setInlineEnumUnions(new Map());
   setAdoptedModelNames(computeAdoptedModelNames(ctx, surface));
+
+  // Pre-compute which domain names the resolver reaches via structural
+  // rename so `wireInterfaceName` can tell `AuditLogSchemaJson` →
+  // `AuditLogSchemaResponse` (real single-form case) apart from
+  // `CreateDataKeyResponse` → `CreateDataKeyResponse` (fresh IR model whose
+  // own name already ends in `Response`).
+  const renamed = new Set<string>();
+  for (const model of ctx.spec.models) {
+    const resolved = resolveInterfaceName(model.name, ctx);
+    if (resolved !== model.name) renamed.add(resolved);
+  }
+  setStructurallyRenamedDomainNames(renamed);
+
   return surface;
 }
 

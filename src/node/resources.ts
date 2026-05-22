@@ -698,7 +698,15 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
         ? `./interfaces/${fileName(name)}.interface`
         : `../${modelServiceDir}/interfaces/${fileName(name)}.interface`;
     if (usedWireTypes.has(resolved)) {
-      lines.push(`import type { ${resolved}, ${wireInterfaceName(resolved)} } from '${relPath}';`);
+      const wireName = wireInterfaceName(resolved);
+      // When the wire name collapsed onto the domain name (single-form
+      // structural-rename emission), import once — otherwise we ship
+      // `import type { ReadObjectResponse, ReadObjectResponse }`.
+      if (wireName === resolved) {
+        lines.push(`import type { ${resolved} } from '${relPath}';`);
+      } else {
+        lines.push(`import type { ${resolved}, ${wireName} } from '${relPath}';`);
+      }
     } else {
       lines.push(`import type { ${resolved} } from '${relPath}';`);
     }

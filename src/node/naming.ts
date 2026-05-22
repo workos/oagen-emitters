@@ -74,6 +74,23 @@ export function isAdoptedModelName(name: string): boolean {
 }
 
 /**
+ * Domain names that `resolveInterfaceName` reached via a structural rename
+ * — the resolved name differs from the IR model's own name. `wireInterfaceName`
+ * consults this set to decide whether to fire the "single-form wire" case:
+ * that case is *only* meant for structurally-renamed models, where the
+ * baseline owns a `*Response` interface representing the wire shape with no
+ * separate `*Wire` companion. Without this signal, a freshly-emitted model
+ * whose IR name already ends in `Response` (e.g. `CreateDataKeyResponse`)
+ * would land in the same case as soon as a prior buggy regen wrote the
+ * baseline — producing two `export interface CreateDataKeyResponse { ... }`
+ * declarations in the same file.
+ */
+let structurallyRenamedDomainNames: Set<string> = new Set();
+export function setStructurallyRenamedDomainNames(names: Set<string>): void {
+  structurallyRenamedDomainNames = names;
+}
+
+/**
  * Wire/response interface name.
  *
  * Resolution order:
@@ -97,7 +114,14 @@ export function wireInterfaceName(domainName: string): string {
   if (domainName.endsWith('Response')) {
     const wireForm = `${domainName}Wire`;
     if (baselineInterfaceNames.has(wireForm)) return wireForm;
-    if (baselineInterfaceNames.has(domainName)) return domainName;
+    // Single-form case (#3 in the docstring): only fire when the resolver
+    // structurally renamed an IR model to this baseline name. Otherwise a
+    // fresh `CreateDataKeyResponse`-style IR model would collapse onto its
+    // own name as soon as one buggy regen wrote `CreateDataKeyResponse` to
+    // the baseline, perpetuating the duplicate-interface emission.
+    if (structurallyRenamedDomainNames.has(domainName) && baselineInterfaceNames.has(domainName)) {
+      return domainName;
+    }
     return wireForm;
   }
   return `${domainName}Response`;
