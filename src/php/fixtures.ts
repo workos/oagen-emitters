@@ -1,5 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
+import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 import { snakeName } from './naming.js';
 
 /**
@@ -34,9 +35,11 @@ export function generateFixtures(spec: {
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
 
   for (const model of spec.models) {
-    if (isListMetadataModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);

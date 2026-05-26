@@ -8,6 +8,7 @@ import {
   isListMetadataModel,
   isListWrapperModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 export { isListMetadataModel, isListWrapperModel };
 
@@ -40,9 +41,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
   // code references them by name and the pagination iterator doesn't unwrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
 
   for (const model of models) {
-    if (isListMetadataModel(model)) continue;
+    if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     const name = className(model.name);
     const lines: string[] = [];

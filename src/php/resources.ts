@@ -748,6 +748,12 @@ function isEnumType(ref: import('@workos/oagen').TypeRef): boolean {
   return false;
 }
 
+function isDateTimeType(ref: import('@workos/oagen').TypeRef): boolean {
+  if (ref.kind === 'primitive' && ref.format === 'date-time') return true;
+  if (ref.kind === 'nullable') return isDateTimeType(ref.inner);
+  return false;
+}
+
 function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
   const hidden = hiddenParams ?? new Set();
   const groupedParams = collectGroupedParamNames(op);
@@ -761,6 +767,10 @@ function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
         const hasEnumDefault = q.default != null && q.type.kind === 'enum';
         const nullsafe = q.required || hasEnumDefault ? '' : '?';
         return `'${q.name}' => $${phpName}${nullsafe}->value,`;
+      }
+      if (isDateTimeType(q.type)) {
+        const nullsafe = q.required ? '' : '?';
+        return `'${q.name}' => $${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED),`;
       }
       return `'${q.name}' => $${phpName},`;
     });
