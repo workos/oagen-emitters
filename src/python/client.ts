@@ -32,14 +32,6 @@ const PYTHON_NON_SPEC_WIRING: Record<string, PythonNonSpecWiring> = {
     ctorArg: 'self',
     docstring: 'Passwordless authentication sessions.',
   },
-  vault: {
-    importLine: 'from .vault import AsyncVault, Vault',
-    prop: 'vault',
-    syncClass: 'Vault',
-    asyncClass: 'AsyncVault',
-    ctorArg: 'self',
-    docstring: 'Vault encryption, key management, and secret storage.',
-  },
   actions: {
     importLine: 'from .actions import Actions, AsyncActions',
     prop: 'actions',

@@ -17,7 +17,7 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
 }
 
 /**
- * Non-spec services marked with `hasClientAccessor: true` (passwordless, vault)
+ * Non-spec services marked with `hasClientAccessor: true` (e.g. passwordless)
  * are included in the generated Client struct, constructor, and accessor methods
  * — identical to spec-driven services. Their service type (e.g. PasswordlessService)
  * is defined in a hand-written @oagen-ignore-file, but the Client wiring is generated.

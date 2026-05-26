@@ -43,11 +43,6 @@ export const NON_SPEC_SERVICES: readonly NonSpecService[] = [
     hasClientAccessor: true,
   },
   {
-    id: 'vault',
-    description: 'Vault KV storage, key operations, and client-side AES-GCM encrypt/decrypt.',
-    hasClientAccessor: true,
-  },
-  {
     id: 'webhook_verification',
     description: 'Webhook signature verification and event deserialization (H01/H02).',
   },
