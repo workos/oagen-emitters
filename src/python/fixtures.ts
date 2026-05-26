@@ -117,7 +117,7 @@ export function generateModelFixture(
     // Use the original field name as the wire key (matches from_dict access patterns)
     const wireName = field.name;
     if (field.example !== undefined) {
-      fixture[wireName] = field.example;
+      fixture[wireName] = normalizeDateTimeExample(field, field.example);
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
@@ -129,12 +129,10 @@ export function generateModelFixture(
     const variantModel = modelMap.get(variantName);
     if (variantModel) {
       for (const field of variantModel.fields) {
-        if (!(field.name in fixture)) {
-          fixture[field.name] =
-            field.example !== undefined
-              ? field.example
-              : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
-        }
+        fixture[field.name] =
+          field.example !== undefined
+            ? normalizeDateTimeExample(field, field.example)
+            : generateFieldValue(field.type, field.name, variantName, modelMap, enumMap);
       }
     }
   }
@@ -185,6 +183,24 @@ function generateFieldValue(
         key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap),
       };
   }
+}
+
+/**
+ * Normalize date-time example values to millisecond precision so that
+ * round-trip tests (from_dict → to_dict) produce identical output.
+ * Python's _format_datetime always serializes with milliseconds.
+ */
+function normalizeDateTimeExample(
+  field: { type: { kind: string; format?: string; type?: string; inner?: any } },
+  value: any,
+): any {
+  if (typeof value !== 'string') return value;
+  const ref = field.type.kind === 'nullable' ? field.type.inner : field.type;
+  if (ref?.kind !== 'primitive' || ref?.type !== 'string' || ref?.format !== 'date-time') return value;
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/);
+  if (!match) return value;
+  const [, prefix, , suffix] = match;
+  return `${prefix}.000${suffix}`;
 }
 
 function generatePrimitiveValue(type: string, format: string | undefined, name: string, modelName: string): any {
