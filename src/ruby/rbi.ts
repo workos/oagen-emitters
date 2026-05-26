@@ -49,7 +49,7 @@ function mapSorbetType(ref: TypeRef): string {
       if (unique.length === 1) return unique[0];
       return `T.any(${unique.join(', ')})`;
     },
-    nullable: (_ref, inner) => `T.nilable(${inner})`,
+    nullable: (_ref, inner) => wrapNilable(inner),
     literal: (r) =>
       typeof r.value === 'string'
         ? 'String'
@@ -95,7 +95,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const fname = fieldName(f.name);
       if (seenFieldNames.has(fname)) continue;
       seenFieldNames.add(fname);
-      const sorbetType = f.required ? mapSorbetType(f.type) : `T.nilable(${unwrapNilable(mapSorbetType(f.type))})`;
+      const sorbetType = f.required ? mapSorbetType(f.type) : wrapNilable(mapSorbetType(f.type));
       lines.push(`    sig { returns(${sorbetType}) }`);
       lines.push(`    def ${fname}; end`);
       lines.push('');
@@ -238,7 +238,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         const n = fieldName(f.name);
         if (seen.has(n)) continue;
         seen.add(n);
-        sigParams.push(`${n}: T.nilable(${unwrapNilable(mapSorbetType(f.type))})`);
+        sigParams.push(`${n}: ${wrapNilable(mapSorbetType(f.type))}`);
       }
       for (const q of queryParams) {
         if (hiddenParams.has(q.name)) continue;
@@ -246,14 +246,14 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         const n = safeParamName(q.name);
         if (seen.has(n)) continue;
         seen.add(n);
-        sigParams.push(`${n}: T.nilable(${unwrapNilable(mapSorbetType(q.type))})`);
+        sigParams.push(`${n}: ${wrapNilable(mapSorbetType(q.type))}`);
       }
       for (const group of parameterGroups) {
         if (!group.optional) continue;
         const n = fieldName(group.name);
         if (seen.has(n)) continue;
         seen.add(n);
-        sigParams.push(`${n}: T.nilable(${groupSorbetType(group)})`);
+        sigParams.push(`${n}: ${wrapNilable(groupSorbetType(group))}`);
       }
       sigParams.push('request_options: T::Hash[Symbol, T.untyped]');
 
@@ -321,6 +321,12 @@ function unwrapNilable(type: string): string {
   return match ? match[1] : type;
 }
 
+/** Wrap a type in T.nilable(), skipping T.untyped (which already includes nil) and avoiding double-wrapping. */
+function wrapNilable(type: string): string {
+  if (type === 'T.untyped') return type;
+  return `T.nilable(${unwrapNilable(type)})`;
+}
+
 /** Map a response TypeRef to a Sorbet return type. */
 function mapSorbetReturnType(ref: TypeRef, listWrapperModels: Map<string, Model>, modelNames: Set<string>): string {
   if (ref.kind === 'model' && listWrapperModels.has(ref.name)) {
@@ -333,7 +339,7 @@ function mapSorbetReturnType(ref: TypeRef, listWrapperModels: Map<string, Model>
     return `T::Array[WorkOS::${className(ref.items.name)}]`;
   }
   if (ref.kind === 'nullable') {
-    return `T.nilable(${mapSorbetReturnType(ref.inner, listWrapperModels, modelNames)})`;
+    return wrapNilable(mapSorbetReturnType(ref.inner, listWrapperModels, modelNames));
   }
   if (ref.kind === 'primitive' && ref.type === 'unknown') {
     return 'NilClass';
