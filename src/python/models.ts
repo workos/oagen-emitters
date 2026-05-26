@@ -51,6 +51,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // otherwise the wrapper's module imports a class that was never written.
   const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
 
+  // Discriminator model names — fields referencing these should use the Variant union type
+  const discriminatorNames = new Set<string>();
+  for (const m of models) {
+    if ((m as any).discriminator) discriminatorNames.add(m.name);
+  }
+
   for (const model of models) {
     // Skip list wrapper models (e.g., OrganizationList) — SyncPage handles envelopes
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
@@ -201,7 +207,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const canonicalClassName = className(canonicalName);
       const lines: string[] = [];
       lines.push('from typing import TypeAlias');
-      // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
         lines.push(`from .${fileName(canonicalName)} import ${canonicalClassName}`);
       } else {
@@ -274,11 +279,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (modelName === model.name) continue; // skip self
         const modelService = modelToService.get(modelName);
         const modelDir = resolveDir(modelService);
+        // For discriminator models, also import the Variant type alias (lives in same file)
+        const importNames = discriminatorNames.has(modelName)
+          ? `${className(modelName)}, ${className(modelName)}Variant`
+          : className(modelName);
         if (modelDir === dirName) {
-          lines.push(`from .${fileName(modelName)} import ${className(modelName)}`);
+          lines.push(`from .${fileName(modelName)} import ${importNames}`);
         } else {
           lines.push(
-            `from ${ctx.namespace}.${dirToModule(modelDir)}.models.${fileName(modelName)} import ${className(modelName)}`,
+            `from ${ctx.namespace}.${dirToModule(modelDir)}.models.${fileName(modelName)} import ${importNames}`,
           );
         }
       }
@@ -321,9 +330,21 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const requiredFields = deduplicatedFields.filter((f) => !isOptionalField(model.name, f, ctx));
     const optionalFields = deduplicatedFields.filter((f) => isOptionalField(model.name, f, ctx));
 
+    // Rewrite discriminator model references to their Variant union type.
+    // E.g. `"ConnectApplication"` → `"ConnectApplicationVariant"`
+    const rewriteDiscriminatorType = (typeStr: string): string => {
+      for (const discName of discriminatorNames) {
+        const quoted = `"${className(discName)}"`;
+        if (typeStr.includes(quoted)) {
+          typeStr = typeStr.replace(quoted, `"${className(discName)}Variant"`);
+        }
+      }
+      return typeStr;
+    };
+
     for (const field of requiredFields) {
       const pyFieldName = fieldName(field.name);
-      const pyType = resolveModelFieldType(field.type);
+      const pyType = rewriteDiscriminatorType(resolveModelFieldType(field.type));
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
@@ -339,7 +360,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const pyFieldName = fieldName(field.name);
       const innerType =
         field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
-      const pyType = `Optional[${innerType}]`;
+      const pyType = `Optional[${rewriteDiscriminatorType(innerType)}]`;
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);

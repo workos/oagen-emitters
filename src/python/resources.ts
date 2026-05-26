@@ -363,9 +363,16 @@ function emitMethodSignature(
       : className(resolvedItem);
     returnType = `${pageType}[${itemTypeName}]`;
   } else if (isArrayResponse) {
-    returnType = `List[${className(plan.responseModelName!)}]`;
+    const arrayItemModel = ctx.spec.models.find((m) => m.name === plan.responseModelName);
+    const arrayItemTypeName = (arrayItemModel as any)?.discriminator
+      ? className(plan.responseModelName!) + 'Variant'
+      : className(plan.responseModelName!);
+    returnType = `List[${arrayItemTypeName}]`;
   } else if (plan.responseModelName) {
-    returnType = className(plan.responseModelName);
+    const singleResponseModel = ctx.spec.models.find((m) => m.name === plan.responseModelName);
+    returnType = (singleResponseModel as any)?.discriminator
+      ? className(plan.responseModelName) + 'Variant'
+      : className(plan.responseModelName);
   } else {
     returnType = 'None';
   }
@@ -772,6 +779,10 @@ function emitMethodBody(
     lines.push('        )');
   } else if (plan.hasBody && op.requestBody) {
     const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+    const bodyResponseModelObj = plan.responseModelName
+      ? ctx.spec.models.find((m) => m.name === plan.responseModelName)
+      : null;
+    const isBodyResponseDiscriminator = !!(bodyResponseModelObj as any)?.discriminator;
     // Build body dict
     const bodyGroupedParams = collectGroupedParamNames(op);
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
@@ -847,6 +858,26 @@ function emitMethodBody(
       lines.push('            request_options=request_options,');
       lines.push('        )');
       lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
+    } else if (isBodyResponseDiscriminator && responseModel !== 'None') {
+      const variantType = responseModel + 'Variant';
+      lines.push(`        return cast(`);
+      lines.push(`            ${variantType},`);
+      lines.push(`            ${awaitPrefix}self._client.request(`);
+      lines.push(`                method="${httpMethod}",`);
+      lines.push(`                path=${pathStr},`);
+      lines.push(`                body=${bodyVarName},`);
+      if (bodyHasParams) {
+        lines.push('                params=params,');
+      }
+      lines.push(
+        `                model=${responseModel},  # type: ignore[arg-type]  # dispatcher; request only calls from_dict`,
+      );
+      if (plan.isIdempotentPost) {
+        lines.push('                idempotency_key=idempotency_key,');
+      }
+      lines.push('                request_options=request_options,');
+      lines.push('            )');
+      lines.push('        )');
     } else {
       const bodyReturnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${bodyReturnPrefix}${awaitPrefix}self._client.request(`);
@@ -868,6 +899,10 @@ function emitMethodBody(
   } else {
     // GET or similar with query params
     const responseModel = plan.responseModelName ? className(plan.responseModelName) : 'None';
+    const getResponseModelObj = plan.responseModelName
+      ? ctx.spec.models.find((m) => m.name === plan.responseModelName)
+      : null;
+    const isGetResponseDiscriminator = !!(getResponseModelObj as any)?.discriminator;
     const getGroupedParams = collectGroupedParamNames(op);
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
     const visibleQueryParams = op.queryParams.filter((p) => !hiddenParams.has(p.name) && !getGroupedParams.has(p.name));
@@ -937,6 +972,22 @@ function emitMethodBody(
       lines.push('            request_options=request_options,');
       lines.push('        )');
       lines.push(`        return [${itemModel}.from_dict(cast(Dict[str, Any], item)) for item in raw]`);
+    } else if (isGetResponseDiscriminator && responseModel !== 'None') {
+      const variantType = responseModel + 'Variant';
+      lines.push(`        return cast(`);
+      lines.push(`            ${variantType},`);
+      lines.push(`            ${awaitPrefix}self._client.request(`);
+      lines.push(`                method="${httpMethod}",`);
+      lines.push(`                path=${pathStr},`);
+      if (emittedParams) {
+        lines.push('                params=params,');
+      }
+      lines.push(
+        `                model=${responseModel},  # type: ignore[arg-type]  # dispatcher; request only calls from_dict`,
+      );
+      lines.push('                request_options=request_options,');
+      lines.push('            )');
+      lines.push('        )');
     } else {
       const returnPrefix = responseModel !== 'None' ? 'return ' : '';
       lines.push(`        ${returnPrefix}${awaitPrefix}self._client.request(`);
@@ -1061,6 +1112,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         if (!listWrapperNames.has(plan.responseModelName) || !plan.isPaginated) {
           modelImports.add(plan.responseModelName);
         }
+        // For discriminator (dispatcher) models also import the variant union type alias
+        if (!plan.isPaginated) {
+          const responseModelObj = ctx.spec.models.find((m) => m.name === plan.responseModelName);
+          if ((responseModelObj as any)?.discriminator) {
+            modelImports.add(plan.responseModelName + 'Variant');
+          }
+        }
       }
       if (op.requestBody?.kind === 'model') {
         const requestBodyRef = op.requestBody;
@@ -1161,13 +1219,23 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // Deduplicate: skip cross-service imports for models already available locally
     const localSet = new Set(localModels);
 
+    // Build a mapping from variant type aliases to their dispatcher's file name
+    // (e.g. ConnectApplicationVariant -> connect_application, not connect_application_variant)
+    const variantToFile = new Map<string, string>();
+    for (const model of ctx.spec.models) {
+      if ((model as any).discriminator) {
+        variantToFile.set(model.name + 'Variant', fileName(model.name));
+      }
+    }
+
     if (localModels.length > 0) {
       lines.push(`from .models import ${localModels.map((n) => className(n)).join(', ')}`);
     }
     for (const [csDir, names] of [...crossServiceModels].sort()) {
       const unique = names.filter((n) => !localSet.has(n));
       for (const n of unique) {
-        lines.push(`from ${ctx.namespace}.${dirToModule(csDir)}.models.${fileName(n)} import ${className(n)}`);
+        const filePath = variantToFile.get(n) ?? fileName(n);
+        lines.push(`from ${ctx.namespace}.${dirToModule(csDir)}.models.${filePath} import ${className(n)}`);
       }
     }
 
