@@ -41,12 +41,19 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
 
   // Within each group, pick the shortest className as canonical.
   const aliasOf = new Map<string, string>(); // enum name → canonical enum name
+  const sharedSortEmitters = new Set<string>();
   for (const [, group] of hashGroups) {
-    if (group.length <= 1) continue;
+    if (group.length <= 1) {
+      if (group.length === 1 && isSharedSortOrderEnum(group[0])) {
+        enumCanonicalMap.set(group[0].name, 'SortOrder');
+        sharedSortEmitters.add(group[0].name);
+      }
+      continue;
+    }
     if (group.every(isSharedSortOrderEnum)) {
       const [canonical, ...rest] = [...group].sort((a, b) => a.name.localeCompare(b.name));
-      enumCanonicalMap.set(canonical.name, canonical.name);
-      for (const enumDef of rest) enumCanonicalMap.set(enumDef.name, 'SortOrder');
+      sharedSortEmitters.add(canonical.name);
+      for (const enumDef of [canonical, ...rest]) enumCanonicalMap.set(enumDef.name, 'SortOrder');
       continue;
     }
     const sorted = [...group].sort(
@@ -68,7 +75,7 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     const typeName = canonicalEnumTypeName(enumDef);
 
     // Non-canonical enum: emit a typealias instead of a full enum class.
-    const sharedSortEmitter = isSharedSortOrderEnum(enumDef) && enumCanonicalMap.get(enumDef.name) === enumDef.name;
+    const sharedSortEmitter = sharedSortEmitters.has(enumDef.name);
     const canonicalName = sharedSortEmitter
       ? undefined
       : (aliasOf.get(enumDef.name) ?? enumCanonicalMap.get(enumDef.name));
