@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/workos/oagen-emitters/compare/v0.14.3...v0.14.4) (2026-05-26)
+
+
+### Bug Fixes
+
+* **ruby:** avoid double-wrapping T.nilable and skip T.untyped ([#127](https://github.com/workos/oagen-emitters/issues/127)) ([e42083f](https://github.com/workos/oagen-emitters/commit/e42083f77773f3ae96b750577db36cde01b65f4f))
+
 ## [0.14.3](https://github.com/workos/oagen-emitters/compare/v0.14.2...v0.14.3) (2026-05-22)
 
 
