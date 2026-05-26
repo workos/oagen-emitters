@@ -1317,10 +1317,7 @@ function renderResourcesBarrel(exports: { module: string; struct: string }[]): s
   unique.sort((a, b) => a.module.localeCompare(b.module));
 
   const lines: string[] = [];
-  // Declare modules privately — see the matching comment in `models.ts`.
-  // `pub mod resources::organization_membership` would collide with the
-  // same-named module re-exported via `pub use models::*` in lib.rs.
-  for (const { module } of unique) lines.push(`mod ${module};`);
+  for (const { module } of unique) lines.push(`pub mod ${module};`);
   lines.push('');
   for (const { module, struct } of unique) lines.push(`pub use ${module}::${struct};`);
   return lines.join('\n') + '\n';
