@@ -124,14 +124,14 @@ export function detectDiscriminatedShape(
       return {
         nameSuffix: variantNameSuffix(discValue),
         discriminatorValue: discValue,
-        fields: variantFields(fv, discProp, modelName, rawSchemas),
+        fields: variantFields(fv, discProp, modelName),
       };
     })
     .filter((v): v is VariantSpec => v !== null);
 
   if (variants.length !== flattenedVariants.length) return null;
 
-  const baseFields = baseObject ? collectObjectFields(baseObject, modelName, rawSchemas) : [];
+  const baseFields = baseObject ? collectObjectFields(baseObject, modelName) : [];
 
   return {
     modelName,
@@ -146,7 +146,7 @@ function mergeBase(prev: RawSchema | null, next: RawSchema): RawSchema {
   if (!prev) return next;
   return {
     type: 'object',
-    properties: { ...(prev.properties ?? {}), ...(next.properties ?? {}) },
+    properties: { ...prev.properties, ...next.properties },
     required: [...new Set([...(prev.required ?? []), ...(next.required ?? [])])],
   };
 }
@@ -328,48 +328,33 @@ function variantNameSuffix(constValue: string): string {
 // Field extraction
 // ---------------------------------------------------------------------------
 
-function collectObjectFields(
-  schema: RawSchema,
-  parentName: string,
-  rawSchemas: Record<string, RawSchema>,
-): FieldSpec[] {
+function collectObjectFields(schema: RawSchema, parentName: string): FieldSpec[] {
   const props = schema.properties ?? {};
   const required = new Set(schema.required ?? []);
   const fields: FieldSpec[] = [];
   for (const [name, propSchema] of Object.entries(props)) {
-    fields.push(buildField(name, propSchema, required.has(name), parentName, rawSchemas));
+    fields.push(buildField(name, propSchema, required.has(name), parentName));
   }
   return fields;
 }
 
-function variantFields(
-  fv: FlattenedVariant,
-  discriminatorProperty: string,
-  parentName: string,
-  rawSchemas: Record<string, RawSchema>,
-): FieldSpec[] {
+function variantFields(fv: FlattenedVariant, discriminatorProperty: string, parentName: string): FieldSpec[] {
   const fields: FieldSpec[] = [];
   for (const [name, propSchema] of fv.alwaysProperties) {
     if (name === discriminatorProperty) continue;
-    fields.push(buildField(name, propSchema, fv.required.has(name), parentName, rawSchemas));
+    fields.push(buildField(name, propSchema, fv.required.has(name), parentName));
   }
   for (const [name, propSchema] of fv.optionalProperties) {
     if (name === discriminatorProperty) continue;
-    fields.push(buildField(name, propSchema, false, parentName, rawSchemas));
+    fields.push(buildField(name, propSchema, false, parentName));
   }
   return fields;
 }
 
-function buildField(
-  rawName: string,
-  schema: RawSchema,
-  required: boolean,
-  parentName: string,
-  rawSchemas: Record<string, RawSchema>,
-): FieldSpec {
+function buildField(rawName: string, schema: RawSchema, required: boolean, parentName: string): FieldSpec {
   const modelDeps = new Set<string>();
-  const domainType = rawSchemaToTS(schema, parentName, rawName, false, modelDeps, rawSchemas);
-  const wireType = rawSchemaToTS(schema, parentName, rawName, true, modelDeps, rawSchemas);
+  const domainType = rawSchemaToTS(schema, parentName, rawName, false, modelDeps);
+  const wireType = rawSchemaToTS(schema, parentName, rawName, true, modelDeps);
   return {
     name: rawName,
     description: schema.description,
@@ -404,7 +389,6 @@ function rawSchemaToTS(
   fieldName: string,
   isWire: boolean,
   modelDeps: Set<string>,
-  rawSchemas: Record<string, RawSchema>,
 ): string {
   if (schema.$ref) {
     const refName = schema.$ref.split('/').pop()!;
@@ -428,7 +412,7 @@ function rawSchemaToTS(
   } else if (baseType === 'boolean') {
     core = 'boolean';
   } else if (baseType === 'array' && schema.items) {
-    const items = rawSchemaToTS(schema.items, parentName, singularize(fieldName), isWire, modelDeps, rawSchemas);
+    const items = rawSchemaToTS(schema.items, parentName, singularize(fieldName), isWire, modelDeps);
     core = `${parenthesizeUnion(items)}[]`;
   } else if (baseType === 'object' && schema.properties) {
     // Inline object — refer to the synthetic model name that
