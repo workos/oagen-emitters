@@ -96,6 +96,8 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     content: lines.join('\n'),
     overwriteExisting: true,
   });
+  const eventConstantsFile = generateEventConstantsFile(enums);
+  if (eventConstantsFile) files.push(eventConstantsFile);
 
   return files;
 }
@@ -171,6 +173,81 @@ function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
     }
   }
   return aliasOf;
+}
+
+function generateEventConstantsFile(enums: Enum[]): GeneratedFile | null {
+  const enumDef = findWebhookEventEnum(enums);
+  if (!enumDef) return null;
+
+  const lines: string[] = [];
+  lines.push('package events');
+  lines.push('');
+  lines.push('// Event is a WorkOS event type.');
+  lines.push('type Event string');
+  lines.push('');
+  lines.push('const (');
+
+  const seenValues = new Set<string>();
+  const usedNames = new Set<string>();
+  for (const value of enumDef.values) {
+    const valueStr = String(value.value);
+    if (seenValues.has(valueStr)) continue;
+    seenValues.add(valueStr);
+
+    const constName = uniqueEventConstantName(valueStr, usedNames);
+    usedNames.add(constName);
+
+    if (value.description) {
+      lines.push(`\t// ${constName} is ${value.description}.`);
+    }
+    if (value.deprecated) {
+      if (value.description) lines.push('\t//');
+      lines.push('\t// Deprecated: this value is deprecated.');
+    }
+    // Keep constants untyped so callers can use them as plain strings,
+    // events.Event values, or typed root-package enum values.
+    lines.push(`\t${constName} = "${escapeGoString(valueStr)}"`);
+  }
+
+  lines.push(')');
+  lines.push('');
+
+  return {
+    path: 'pkg/events/events.go',
+    content: lines.join('\n'),
+    overwriteExisting: true,
+  };
+}
+
+function findWebhookEventEnum(enums: Enum[]): Enum | null {
+  return (
+    enums.find((enumDef) => enumDef.name === 'CreateWebhookEndpointEvents') ??
+    enums.find(
+      (enumDef) =>
+        isWebhookEventEnumName(enumDef.name) &&
+        enumDef.values.length > 0 &&
+        enumDef.values.every((value) => typeof value.value === 'string' && value.value.includes('.')),
+    ) ??
+    null
+  );
+}
+
+function isWebhookEventEnumName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized.includes('webhook') && normalized.includes('event');
+}
+
+function uniqueEventConstantName(value: string, usedNames: Set<string>): string {
+  const base = className(value);
+  if (!usedNames.has(base)) return base;
+
+  let suffix = 2;
+  while (usedNames.has(`${base}${suffix}`)) suffix++;
+  return `${base}${suffix}`;
+}
+
+function escapeGoString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

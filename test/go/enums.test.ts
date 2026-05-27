@@ -129,4 +129,28 @@ describe('go/enums', () => {
     const content = files[0].content;
     expect(content).toContain('type SSOConnectionType string');
   });
+
+  it('generates an events compatibility package from webhook event enum values', () => {
+    const enums: Enum[] = [
+      {
+        name: 'CreateWebhookEndpointEvents',
+        values: [
+          { name: 'USER_CREATED', value: 'user.created' },
+          { name: 'API_KEY_CREATED', value: 'api_key.created' },
+          { name: 'DSYNC_USER_CREATED', value: 'dsync.user.created' },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    const compat = files.find((file) => file.path === 'pkg/events/events.go');
+
+    expect(compat).toBeDefined();
+    expect(compat!.content).toContain('package events');
+    expect(compat!.content).toContain('type Event string');
+    expect(compat!.content).toContain('UserCreated = "user.created"');
+    expect(compat!.content).toContain('APIKeyCreated = "api_key.created"');
+    expect(compat!.content).toContain('DsyncUserCreated = "dsync.user.created"');
+    expect(compat!.content).not.toContain('CreateWebhookEndpointEventsUserCreated');
+  });
 });
