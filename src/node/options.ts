@@ -1,5 +1,10 @@
 import type { EmitterContext } from '@workos/oagen';
 
+export interface OperationOverride {
+  methodName?: string;
+  mountOn?: string;
+}
+
 export interface NodeEmitterOptions {
   /**
    * Existing SDK mode normally drops brand-new paths to avoid large accidental
@@ -21,6 +26,12 @@ export interface NodeEmitterOptions {
    * and fixtures remain hand-owned.
    */
   regenerateOwnedTests?: boolean;
+  /**
+   * Node-specific operation overrides keyed by "METHOD /path".
+   * Allows renaming methods or remounting operations for the Node SDK
+   * without affecting other languages.
+   */
+  operationOverrides?: Record<string, OperationOverride>;
 }
 
 export function nodeOptions(ctx: EmitterContext): NodeEmitterOptions {

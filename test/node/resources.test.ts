@@ -154,6 +154,14 @@ describe('generateResources', () => {
     const ctxWithResolved: EmitterContext = {
       ...ctx,
       spec,
+      emitterOptions: {
+        operationOverrides: {
+          'GET /user_management/organization_memberships/{omId}/groups': {
+            methodName: 'list_groups_for_organization_membership',
+            mountOn: 'UserManagement',
+          },
+        },
+      },
       resolvedOperations: [
         {
           operation,
