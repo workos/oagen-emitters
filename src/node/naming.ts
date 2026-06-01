@@ -74,6 +74,16 @@ export function isAdoptedModelName(name: string): boolean {
 }
 
 /**
+ * IR model names handled by the discriminated-models module. These must not
+ * be remapped by the structural matcher because that module emits files and
+ * helpers under the original IR names.
+ */
+let discriminatedModelNames: Set<string> = new Set();
+export function setDiscriminatedModelNames(names: Set<string>): void {
+  discriminatedModelNames = names;
+}
+
+/**
  * Domain names that `resolveInterfaceName` reached via a structural rename
  * — the resolved name differs from the IR model's own name. `wireInterfaceName`
  * consults this set to decide whether to fire the "single-form wire" case:
@@ -226,7 +236,10 @@ export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: {
   const existing = ctx.overlayLookup?.interfaceByName?.get(name);
   if (existing) return existing;
 
-  let inferred = adoptedModelNames.has(name) ? undefined : ctx.overlayLookup?.modelNameByIR?.get(name);
+  let inferred =
+    adoptedModelNames.has(name) || discriminatedModelNames.has(name)
+      ? undefined
+      : ctx.overlayLookup?.modelNameByIR?.get(name);
   if (inferred) {
     if (inferred.startsWith('Serialized')) {
       const stripped = inferred.slice('Serialized'.length);

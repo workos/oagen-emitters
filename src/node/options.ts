@@ -3,6 +3,12 @@ import type { EmitterContext } from '@workos/oagen';
 export interface OperationOverride {
   methodName?: string;
   mountOn?: string;
+  optionsType?: string;
+  bodyFieldMap?: Record<string, string>;
+  returnType?: string;
+  returnDataProperty?: string;
+  returnTypeImports?: string[];
+  returnExpression?: string;
 }
 
 export interface NodeEmitterOptions {
@@ -43,10 +49,21 @@ function normalizeServiceName(name: string): string {
   return name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
 
+function ownedLookupNames(name: string): string[] {
+  const names = [name];
+  const baselineDirPrefix = '__baseline_dir__:';
+  if (name.startsWith(baselineDirPrefix)) {
+    names.push(name.slice(baselineDirPrefix.length));
+  }
+  return names;
+}
+
 export function isNodeOwnedService(ctx: EmitterContext, ...names: Array<string | undefined>): boolean {
   const configured = nodeOptions(ctx).ownedServices ?? [];
   if (configured.length === 0) return false;
 
   const owned = new Set(configured.map(normalizeServiceName));
-  return names.some((name) => name !== undefined && owned.has(normalizeServiceName(name)));
+  return names.some((name) =>
+    name !== undefined ? ownedLookupNames(name).some((candidate) => owned.has(normalizeServiceName(candidate))) : false,
+  );
 }

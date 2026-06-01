@@ -1,4 +1,12 @@
-import type { Service, Operation, Model, EmitterContext, GeneratedFile, ResolvedOperation } from '@workos/oagen';
+import type {
+  Service,
+  Operation,
+  Model,
+  EmitterContext,
+  GeneratedFile,
+  ResolvedOperation,
+  Parameter,
+} from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName, resolveMethodName, buildExportedClassNameSet, resolveServiceTarget } from './naming.js';
@@ -243,7 +251,8 @@ function generateMethod(
   ]);
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
-  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams);
+  const materializeQueryDefaults = !isRedirect;
+  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults });
   const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block
@@ -302,9 +311,10 @@ function generateMethod(
     const phpName = fieldName(q.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
-    // Spec-defaulted enum params are non-nullable (the signature default is the
-    // enum case, never null). Without a spec default, the param is nullable.
-    const hasEnumDefault = q.default != null && q.type.kind === 'enum';
+    // Spec-defaulted enum params on HTTP calls are non-nullable because the
+    // signature default is the enum case. URL builders keep them nullable so
+    // omitted optional query params stay omitted from the generated URL.
+    const hasEnumDefault = shouldMaterializeQueryDefault(q, materializeQueryDefaults);
     const nullSuffix = !q.required && !hasEnumDefault && !docType.endsWith('|null') ? '|null' : '';
     const prefix = q.deprecated ? '(deprecated) ' : '';
     let desc = q.description ? ` ${prefix}${q.description}` : q.deprecated ? ' (deprecated)' : '';
@@ -358,7 +368,7 @@ function generateMethod(
 
   if (isRedirect) {
     // Redirect endpoint: construct URL client-side instead of making HTTP request
-    const queryLines = buildQueryArray(op, hiddenParams);
+    const queryLines = buildQueryArray(op, hiddenParams, { materializeQueryDefaults });
     const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
     const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
@@ -617,6 +627,7 @@ function buildMethodParams(
   modelMap: Map<string, Model>,
   ctx: EmitterContext,
   hiddenParams?: Set<string>,
+  opts?: { materializeQueryDefaults?: boolean },
 ): string[] {
   // Collect all params into required/optional buckets to avoid
   // PHP's "required after optional" deprecation.
@@ -684,7 +695,7 @@ function buildMethodParams(
     usedNames.add(phpName);
     if (q.required) {
       required.push(`${phpType} $${phpName}`);
-    } else if (q.default != null && q.type.kind === 'enum') {
+    } else if (shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true)) {
       // Spec-provided default for an enum-typed param: emit a non-nullable
       // typed default (e.g. PaginationOrder $order = PaginationOrder::Desc).
       // Only enums are safe to default this way — primitives stay nullable so
@@ -754,7 +765,11 @@ function isDateTimeType(ref: import('@workos/oagen').TypeRef): boolean {
   return false;
 }
 
-function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
+function buildQueryArray(
+  op: Operation,
+  hiddenParams?: Set<string>,
+  opts?: { materializeQueryDefaults?: boolean },
+): string[] {
   const hidden = hiddenParams ?? new Set();
   const groupedParams = collectGroupedParamNames(op);
   return op.queryParams
@@ -762,9 +777,9 @@ function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
     .map((q) => {
       const phpName = fieldName(q.name);
       if (isEnumType(q.type)) {
-        // Mirrors the signature: enum params with a spec default are
-        // non-nullable, so we can dereference ->value without the nullsafe op.
-        const hasEnumDefault = q.default != null && q.type.kind === 'enum';
+        // Mirrors the signature: only materialized enum defaults are
+        // non-nullable, so other optional enum params use the nullsafe op.
+        const hasEnumDefault = shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true);
         const nullsafe = q.required || hasEnumDefault ? '' : '?';
         return `'${q.name}' => $${phpName}${nullsafe}->value,`;
       }
@@ -774,6 +789,10 @@ function buildQueryArray(op: Operation, hiddenParams?: Set<string>): string[] {
       }
       return `'${q.name}' => $${phpName},`;
     });
+}
+
+function shouldMaterializeQueryDefault(param: Parameter, enabled: boolean): boolean {
+  return enabled && param.default != null && param.type.kind === 'enum';
 }
 
 function phpLiteral(value: unknown): string {

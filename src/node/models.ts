@@ -227,6 +227,20 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     const model = projectedByName.get(originalModel.name) ?? originalModel;
     if (!reachableModels.has(model.name)) continue;
     if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
+    const service = modelToService.get(model.name);
+    const isOwnedModel = isNodeOwnedService(ctx, service);
+    if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      forceGenerate.add(canonicalName);
+      if (interfaceEligibleModels) interfaceEligibleModels.add(canonicalName);
+    }
+  }
+
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
+    if (!reachableModels.has(model.name)) continue;
+    if (interfaceEligibleModels && !interfaceEligibleModels.has(model.name)) continue;
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSkip?.has(model.name)) continue;
@@ -392,6 +406,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const depName = resolveInterfaceName(dep, ctx);
       const depService = modelToService.get(dep);
       const depDir = resolveDir(depService);
+      const depIsOwned = isNodeOwnedService(ctx, depService);
 
       // When the resolver maps the IR name to a different baseline interface
       // (via `overlayLookup.modelNameByIR` structural match), the import
@@ -400,7 +415,9 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       // emitter never generates — the canonical baseline file is at a
       // different stem (e.g. `create-audit-log-event-options.interface`).
       const currentFilePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
-      const baselineSrc = (ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
+      const baselineSrc = depIsOwned
+        ? undefined
+        : (ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
 
       // Self-reference: the dependency lives in the file we're currently
       // emitting. Skip the import — it's already in scope.
@@ -697,6 +714,13 @@ export function generateSerializers(
   const responseReachableModels = resourceUsage
     ? expandModelRoots(resourceUsage.responseRoots, projectedByName)
     : undefined;
+  // Models reachable from any request — only these need a `serialize<X>`.
+  // A model used solely as a response body can safely be deserialize-only;
+  // emitting its serialize half is both unused and brittle when it contains
+  // legacy nested response models that intentionally have no serialize helper.
+  const requestReachableModels = resourceUsage
+    ? expandModelRoots(resourceUsage.requestRoots, projectedByName)
+    : undefined;
 
   const serializerReachable = computeNonEventReachable(ctx.spec.services, models);
 
@@ -759,6 +783,20 @@ export function generateSerializers(
   // Mirror the interface-emission gate (see `generateModels`).
   const serializerListMetadataNeeded = collectReferencedListMetadataModels(models, serializerNonPaginatedRefs);
 
+  for (const originalModel of models) {
+    const model = projectedByName.get(originalModel.name) ?? originalModel;
+    if (!serializerReachable.has(model.name)) continue;
+    if (serializerEligibleModels && !serializerEligibleModels.has(model.name)) continue;
+    const service = modelToService.get(model.name);
+    const isOwnedModel = isNodeOwnedService(ctx, service);
+    if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
+    const canonicalName = dedup.get(model.name);
+    if (canonicalName) {
+      forceGenerateSerializer.add(canonicalName);
+      if (serializerEligibleModels) serializerEligibleModels.add(canonicalName);
+    }
+  }
+
   const eligibleModels: Model[] = [];
   for (const originalModel of models) {
     const model = projectedByName.get(originalModel.name) ?? originalModel;
@@ -781,14 +819,9 @@ export function generateSerializers(
     const responseName = wireInterfaceName(domainName);
     const baselineResponse = ctx.apiSurface?.interfaces?.[responseName];
     const baselineDomain = ctx.apiSurface?.interfaces?.[domainName];
-    const shouldSkip = shouldSkipSerializeForModel(
-      model,
-      baselineResponse,
-      baselineDomain,
-      dedup,
-      skippedSerializeModels,
-      ctx,
-    );
+    const shouldSkip =
+      (requestReachableModels !== undefined && !requestReachableModels.has(model.name)) ||
+      shouldSkipSerializeForModel(model, baselineResponse, baselineDomain, dedup, skippedSerializeModels, ctx);
     if (shouldSkip) {
       skippedSerializeModels.add(model.name);
     }
@@ -812,27 +845,37 @@ export function generateSerializers(
 
       if (serializerPath === canonSerializerPath) continue;
       if (domainName === canonDomainName) continue;
-      const rel = relativeImport(serializerPath, canonSerializerPath);
-      const canonSkipSerialize = skippedSerializeModels.has(canonicalName) || skippedSerializeModels.has(model.name);
-      const canonSkipDeserialize =
-        responseReachableModels !== undefined &&
-        !responseReachableModels.has(canonicalName) &&
-        !responseReachableModels.has(model.name);
-      if (canonSkipSerialize && canonSkipDeserialize) continue;
-      const parts: string[] = [];
-      if (!canonSkipDeserialize) {
-        parts.push(`deserialize${canonDomainName} as deserialize${domainName}`);
+
+      const aliasNeedsDeserialize = responseReachableModels === undefined || responseReachableModels.has(model.name);
+      const canonicalHasDeserialize =
+        responseReachableModels === undefined || responseReachableModels.has(canonicalName);
+      const canAliasToCanonical = !aliasNeedsDeserialize || canonicalHasDeserialize;
+      if (canAliasToCanonical) {
+        const rel = relativeImport(serializerPath, canonSerializerPath);
+        const canonSkipSerialize = skippedSerializeModels.has(canonicalName) || skippedSerializeModels.has(model.name);
+        const canonSkipDeserialize =
+          responseReachableModels !== undefined &&
+          !responseReachableModels.has(canonicalName) &&
+          !responseReachableModels.has(model.name);
+        if (canonSkipSerialize && canonSkipDeserialize) continue;
+        const parts: string[] = [];
+        if (!canonSkipDeserialize) {
+          parts.push(`deserialize${canonDomainName} as deserialize${domainName}`);
+        }
+        if (!canonSkipSerialize) {
+          parts.push(`serialize${canonDomainName} as serialize${domainName}`);
+        }
+        const reexportContent = `export { ${parts.join(', ')} } from '${rel}';`;
+        files.push({
+          path: serializerPath,
+          content: reexportContent,
+          overwriteExisting: true,
+        });
+        continue;
       }
-      if (!canonSkipSerialize) {
-        parts.push(`serialize${canonDomainName} as serialize${domainName}`);
-      }
-      const reexportContent = `export { ${parts.join(', ')} } from '${rel}';`;
-      files.push({
-        path: serializerPath,
-        content: reexportContent,
-        overwriteExisting: true,
-      });
-      continue;
+      // The alias is response-reachable, but the canonical model is
+      // request-only. Generate a local serializer instead of re-exporting a
+      // deserialize helper that the canonical serializer intentionally omits.
     }
 
     const dirName = resolveDir(service);
@@ -906,7 +949,7 @@ export function generateSerializers(
   }
   const liveRootForBarrel = ctx.outputDir ?? ctx.targetDir;
   for (const [dir, stems] of serializersByDir) {
-    if (liveRootForBarrel) {
+    if (liveRootForBarrel && !isNodeOwnedService(ctx, dir)) {
       const serializersDir = path.join(liveRootForBarrel, 'src', dir, 'serializers');
       try {
         for (const entry of fs.readdirSync(serializersDir)) {
