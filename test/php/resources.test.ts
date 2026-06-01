@@ -217,6 +217,56 @@ describe('generateResources', () => {
     expect(content).not.toMatch(/PaginationOrder::Desc/);
   });
 
+  it('does not materialize optional query defaults for URL builders', () => {
+    const screenHintEnum = {
+      name: 'UserManagementAuthenticationScreenHint',
+      values: [
+        { name: 'sign_in', value: 'sign-in' },
+        { name: 'sign_up', value: 'sign-up' },
+      ],
+    };
+    const op = {
+      name: 'getAuthorizationUrl',
+      httpMethod: 'get' as const,
+      path: '/user_management/authorize',
+      pathParams: [],
+      queryParams: [
+        { name: 'redirect_uri', type: { kind: 'primitive' as const, type: 'string' as const }, required: true },
+        {
+          name: 'screen_hint',
+          type: { kind: 'enum' as const, name: 'UserManagementAuthenticationScreenHint' },
+          required: false,
+          default: 'sign-in',
+        },
+      ],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = { name: 'UserManagement', operations: [op] };
+    const spec: ApiSpec = { ...emptySpec, enums: [screenHintEnum], services: [service] };
+    const content = generateResources([service], {
+      ...ctx,
+      spec,
+      resolvedOperations: [
+        {
+          operation: op,
+          service,
+          methodName: 'get_authorization_url',
+          mountOn: 'UserManagement',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+          urlBuilder: true,
+        },
+      ],
+    })[0].content;
+
+    expect(content).toContain('?\\WorkOS\\Resource\\UserManagementAuthenticationScreenHint $screenHint = null');
+    expect(content).toContain("'screen_hint' => $screenHint?->value");
+    expect(content).not.toContain('UserManagementAuthenticationScreenHint::SignIn');
+  });
+
   it('generates paginated list method', () => {
     const result = generateResources(services, ctx);
 
