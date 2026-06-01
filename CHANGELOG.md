@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/workos/oagen-emitters/compare/v0.15.0...v0.15.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **node:** resolve emitter bugs blocking service ownership migration ([#132](https://github.com/workos/oagen-emitters/issues/132)) ([e63cc06](https://github.com/workos/oagen-emitters/commit/e63cc06f948657965563a0d582ebbd9bedb1eb5f))
+
 ## [0.15.0](https://github.com/workos/oagen-emitters/compare/v0.14.4...v0.15.0) (2026-06-01)
 
 
