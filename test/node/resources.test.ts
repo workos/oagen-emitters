@@ -101,7 +101,9 @@ describe('generateResources', () => {
     expect(resourceFile).toBeDefined();
     expect(resourceFile!.content).toContain('export class Organizations');
     expect(resourceFile!.content).toContain('constructor(private readonly workos: WorkOS)');
-    expect(resourceFile!.content).toContain('async getOrganization(id: string): Promise<Organization>');
+    expect(resourceFile!.content).toContain(
+      'async getOrganization(options: GetOrganizationOptions): Promise<Organization>',
+    );
     expect(resourceFile!.content).toContain('deserializeOrganization(data)');
   });
 
@@ -154,6 +156,14 @@ describe('generateResources', () => {
     const ctxWithResolved: EmitterContext = {
       ...ctx,
       spec,
+      emitterOptions: {
+        operationOverrides: {
+          'GET /user_management/organization_memberships/{omId}/groups': {
+            methodName: 'list_groups_for_organization_membership',
+            mountOn: 'UserManagement',
+          },
+        },
+      },
       resolvedOperations: [
         {
           operation,

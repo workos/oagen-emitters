@@ -38,22 +38,22 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.0.1",
-    "@commitlint/config-conventional": "^21.0.1",
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
     "@types/node": "^25.9.1",
     "husky": "^9.1.7",
     "oxfmt": "^0.52.0",
     "oxlint": "^1.67.0",
     "prettier": "^3.8.3",
-    "tsdown": "^0.22.0",
-    "tsx": "^4.22.3",
+    "tsdown": "^0.22.1",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   },
   "engines": {
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.21.0"
+    "@workos/oagen": "^0.21.1"
   }
 }

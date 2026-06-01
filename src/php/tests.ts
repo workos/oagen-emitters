@@ -375,9 +375,15 @@ function buildTestArgs(
   return args.join(', ');
 }
 
-function generateTestValue(ref: { kind: string; type?: string; name?: string }, ctx?: EmitterContext): string {
+function generateTestValue(
+  ref: { kind: string; type?: string; name?: string; format?: string },
+  ctx?: EmitterContext,
+): string {
   switch (ref.kind) {
     case 'primitive':
+      if (ref.format === 'date-time') {
+        return "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
+      }
       switch (ref.type) {
         case 'string':
           return "'test_value'";
@@ -529,17 +535,21 @@ function emitQueryAssertions(lines: string[], op: Operation, ctx: EmitterContext
         lines.push(`        $this->assertSame('${e.values[0].value}', $query['${q.name}']);`);
       }
     } else if (innerType.kind === 'primitive') {
-      switch (innerType.type) {
-        case 'string':
-          lines.push(`        $this->assertSame('test_value', $query['${q.name}']);`);
-          break;
-        case 'integer':
-        case 'number':
-          lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
-          break;
-        case 'boolean':
-          lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
-          break;
+      if ((innerType as { format?: string }).format === 'date-time') {
+        lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+      } else {
+        switch (innerType.type) {
+          case 'string':
+            lines.push(`        $this->assertSame('test_value', $query['${q.name}']);`);
+            break;
+          case 'integer':
+          case 'number':
+            lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+            break;
+          case 'boolean':
+            lines.push(`        $this->assertArrayHasKey('${q.name}', $query);`);
+            break;
+        }
       }
     }
   }

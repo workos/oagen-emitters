@@ -86,7 +86,7 @@ describe('node test generation ownership', () => {
     }
   });
 
-  it('preserves existing hand-written tests and fixtures for owned services', () => {
+  it('regenerates over hand-written tests and fixtures for owned services', () => {
     const tmpRoot = createTrackedSdkRoot(true);
     try {
       const result = nodeEmitter.generateTests!(spec, {
@@ -95,8 +95,8 @@ describe('node test generation ownership', () => {
         emitterOptions: { ownedServices: ['Groups'], regenerateOwnedTests: true },
       } as EmitterContext);
 
-      expect(result.some((f) => f.path === 'src/groups/groups.spec.ts')).toBe(false);
-      expect(result.some((f) => f.path === 'src/groups/fixtures/group.json')).toBe(false);
+      expect(result.some((f) => f.path === 'src/groups/groups.spec.ts')).toBe(true);
+      expect(result.some((f) => f.path === 'src/groups/fixtures/group.json')).toBe(true);
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }

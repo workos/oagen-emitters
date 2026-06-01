@@ -1,4 +1,4 @@
-import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
+import type { EmitterContext, ResolvedOperation, ResolvedWrapper, Model } from '@workos/oagen';
 import { toSnakeCase } from '@workos/oagen';
 import { className, fieldName } from './naming.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
@@ -75,8 +75,15 @@ function emitWrapperMethod(
 
   lines.push('        request_options: Optional[RequestOptions] = None,');
 
-  // Return type
-  const responseType = wrapper.responseModelName ? className(wrapper.responseModelName) : 'None';
+  // Return type — use Variant type for discriminated union responses
+  const isDiscriminatorResponse = wrapper.responseModelName
+    ? !!(ctx.spec.models.find((m: Model) => m.name === wrapper.responseModelName) as any)?.discriminator
+    : false;
+  const responseType = wrapper.responseModelName
+    ? isDiscriminatorResponse
+      ? className(wrapper.responseModelName) + 'Variant'
+      : className(wrapper.responseModelName)
+    : 'None';
 
   lines.push(`    ) -> ${responseType}:`);
 
@@ -122,7 +129,21 @@ function emitWrapperMethod(
   const awaitPrefix = isAsync ? 'await ' : '';
   lines.push('');
 
-  if (wrapper.responseModelName) {
+  if (wrapper.responseModelName && isDiscriminatorResponse) {
+    const variantType = className(wrapper.responseModelName) + 'Variant';
+    lines.push(`        return cast(`);
+    lines.push(`            ${variantType},`);
+    lines.push(`            ${awaitPrefix}self._client.request(`);
+    lines.push(`                method="${op.httpMethod.toUpperCase()}",`);
+    lines.push(`                path=${pathExpr},`);
+    lines.push('                body=body,');
+    lines.push(
+      `                model=${className(wrapper.responseModelName)},  # type: ignore[arg-type]  # dispatcher; request only calls from_dict`,
+    );
+    lines.push('                request_options=request_options,');
+    lines.push('            )');
+    lines.push('        )');
+  } else if (wrapper.responseModelName) {
     lines.push(`        return ${awaitPrefix}self._client.request(`);
     lines.push(`            method="${op.httpMethod.toUpperCase()}",`);
     lines.push(`            path=${pathExpr},`);

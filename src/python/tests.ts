@@ -167,7 +167,27 @@ function generateServiceTest(
   const enumImports = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
-    if (plan.responseModelName) modelImports.add(plan.responseModelName);
+    if (plan.responseModelName) {
+      modelImports.add(plan.responseModelName);
+      // For non-paginated discriminated union responses, import the resolved variant class
+      if (!plan.isPaginated) {
+        const resolvedVariantClass = resolvePaginatedItemClass(plan.responseModelName, spec);
+        if (resolvedVariantClass && resolvedVariantClass !== className(plan.responseModelName)) {
+          const responseModel = spec.models.find((m) => m.name === plan.responseModelName);
+          const disc =
+            responseModel &&
+            ((responseModel as any).discriminator as { property: string; mapping: Record<string, string> } | undefined);
+          if (disc) {
+            for (const variantName of Object.values(disc.mapping)) {
+              if (className(variantName) === resolvedVariantClass) {
+                modelImports.add(variantName);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
     if (op.pagination?.itemType.kind === 'model') {
       modelImports.add(op.pagination.itemType.name);
       // Unwrap list wrapper to find the inner item model (may be a discriminated union)
@@ -220,11 +240,13 @@ function generateServiceTest(
     }
   }
 
-  // Filter out list wrapper models
+  // Filter out list wrapper models, but keep non-paginated response wrappers
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const actualImports = [...modelImports].filter((name) => {
     const model = spec.models.find((m) => m.name === name);
     if (!model) return true;
-    return !isListWrapperModel(model);
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(name)) return false;
+    return true;
   });
 
   // Group imports by their actual service directory (models may live in different services)
@@ -414,16 +436,33 @@ function generateServiceTest(
       const fixtureName = `${fileName(modelName)}.json`;
       const modelClass = className(modelName);
 
+      // For discriminated union responses, resolve to the concrete variant class
+      const resolvedClass = resolvePaginatedItemClass(modelName, spec) ?? modelClass;
+      // Pick assertable fields from the resolved variant, not the dispatcher
+      const resolvedModelName =
+        resolvedClass !== modelClass
+          ? (() => {
+              const responseModel = spec.models.find((m) => m.name === modelName);
+              const disc = (responseModel as any)?.discriminator as { mapping: Record<string, string> } | undefined;
+              if (disc) {
+                for (const variantName of Object.values(disc.mapping)) {
+                  if (className(variantName) === resolvedClass) return variantName;
+                }
+              }
+              return modelName;
+            })()
+          : modelName;
+
       lines.push(`    def test_${method}(self, workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(`);
       lines.push(`            json=load_fixture("${fixtureName}"),`);
       lines.push('        )');
       const args = buildTestArgs(op, spec, hiddenParams);
       lines.push(`        result = workos.${propName}.${method}(${args})`);
-      lines.push(`        assert isinstance(result, ${modelClass})`);
+      lines.push(`        assert isinstance(result, ${resolvedClass})`);
 
       // Field-value assertions: verify at least 2 scalar fields from fixture
-      const assertFields = pickAssertableFields(modelName, spec);
+      const assertFields = pickAssertableFields(resolvedModelName, spec);
       for (const af of assertFields) {
         const op_ = af.isBool ? 'is' : '==';
         lines.push(`        assert result.${af.field} ${op_} ${af.value}`);
@@ -706,12 +745,29 @@ function generateServiceTest(
       const modelName = plan.responseModelName;
       const fixtureName = `${fileName(modelName)}.json`;
       const modelClass = className(modelName);
+
+      // For discriminated union responses, resolve to the concrete variant class
+      const asyncResolvedClass = resolvePaginatedItemClass(modelName, spec) ?? modelClass;
+      const asyncResolvedModelName =
+        asyncResolvedClass !== modelClass
+          ? (() => {
+              const responseModel = spec.models.find((m) => m.name === modelName);
+              const disc = (responseModel as any)?.discriminator as { mapping: Record<string, string> } | undefined;
+              if (disc) {
+                for (const variantName of Object.values(disc.mapping)) {
+                  if (className(variantName) === asyncResolvedClass) return variantName;
+                }
+              }
+              return modelName;
+            })()
+          : modelName;
+
       pushAsyncTestDef(lines, `    async def test_${method}(self, async_workos, httpx_mock):`);
       lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
       lines.push(`        result = await async_workos.${propName}.${method}(${asyncArgs})`);
-      lines.push(`        assert isinstance(result, ${modelClass})`);
+      lines.push(`        assert isinstance(result, ${asyncResolvedClass})`);
       // Field-value assertions
-      const assertFields = pickAssertableFields(modelName, spec);
+      const assertFields = pickAssertableFields(asyncResolvedModelName, spec);
       for (const af of assertFields) {
         const op_ = af.isBool ? 'is' : '==';
         lines.push(`        assert result.${af.field} ${op_} ${af.value}`);
@@ -889,7 +945,9 @@ function emitWrapperTests(
     for (const wrapper of r.wrappers) {
       const method = wrapper.name;
       const wrapperParams = resolveWrapperParams(wrapper, ctx);
-      const responseType = wrapper.responseModelName ? className(wrapper.responseModelName) : null;
+      const resolvedResponseClass = wrapper.responseModelName
+        ? (resolvePaginatedItemClass(wrapper.responseModelName, spec) ?? className(wrapper.responseModelName))
+        : null;
       const fixtureName = wrapper.responseModelName ? `${fileName(wrapper.responseModelName)}.json` : null;
 
       // Build test args for required wrapper params
@@ -908,8 +966,8 @@ function emitWrapperTests(
         if (fixtureName) {
           lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
           lines.push(`        result = await async_workos.${propName}.${method}(${args})`);
-          if (responseType) {
-            lines.push(`        assert isinstance(result, ${responseType})`);
+          if (resolvedResponseClass) {
+            lines.push(`        assert isinstance(result, ${resolvedResponseClass})`);
           }
         } else {
           lines.push('        httpx_mock.add_response(json={})');
@@ -920,8 +978,8 @@ function emitWrapperTests(
         if (fixtureName) {
           lines.push(`        httpx_mock.add_response(json=load_fixture("${fixtureName}"))`);
           lines.push(`        result = workos.${propName}.${method}(${args})`);
-          if (responseType) {
-            lines.push(`        assert isinstance(result, ${responseType})`);
+          if (resolvedResponseClass) {
+            lines.push(`        assert isinstance(result, ${resolvedResponseClass})`);
           }
         } else {
           lines.push('        httpx_mock.add_response(json={})');

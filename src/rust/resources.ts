@@ -355,6 +355,7 @@ function renderParamsStruct(
 ): string {
   const bodyRequired = isBodyRequired(op);
   const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
+  const materializeSpecDefaults = !resolved.urlBuilder;
 
   // Names of params that belong to a parameter group; these are folded into
   // the enum field and must be omitted from the flat params struct.
@@ -412,9 +413,14 @@ function renderParamsStruct(
     });
     if (!p.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
     rust = applySecretRedaction(rust, p.name);
-    // Spec-level default → materialise it as a Rust expression so
-    // `Default::default()` and `new(…)` actually produce the documented value.
-    const defaultExpr = p.default != null ? rustDefaultExpr(p.default, p.type, rust.startsWith('Option<'), ctx) : null;
+    // Spec-level defaults on HTTP params are materialized so
+    // `Default::default()` and `new(…)` produce the documented value. URL
+    // builders keep optional query params omitted unless the caller supplies
+    // them, because the query string is the public redirect target.
+    const defaultExpr =
+      materializeSpecDefaults && p.default != null
+        ? rustDefaultExpr(p.default, p.type, rust.startsWith('Option<'), ctx)
+        : null;
     // Field-level documentation derived from the spec.
     const desc = p.description?.trim();
     if (desc) {
@@ -1317,10 +1323,7 @@ function renderResourcesBarrel(exports: { module: string; struct: string }[]): s
   unique.sort((a, b) => a.module.localeCompare(b.module));
 
   const lines: string[] = [];
-  // Declare modules privately — see the matching comment in `models.ts`.
-  // `pub mod resources::organization_membership` would collide with the
-  // same-named module re-exported via `pub use models::*` in lib.rs.
-  for (const { module } of unique) lines.push(`mod ${module};`);
+  for (const { module } of unique) lines.push(`pub mod ${module};`);
   lines.push('');
   for (const { module, struct } of unique) lines.push(`pub use ${module}::${struct};`);
   return lines.join('\n') + '\n';

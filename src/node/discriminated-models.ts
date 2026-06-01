@@ -69,6 +69,8 @@ interface DiscriminatedShape {
   discriminatorProperty: string;
   /** Field name in domain (camelCase). */
   discriminatorPropertyDomain: string;
+  /** Description from the OpenAPI spec, if present. */
+  discriminatorDescription?: string;
   variants: VariantSpec[];
 }
 
@@ -133,11 +135,14 @@ export function detectDiscriminatedShape(
 
   const baseFields = baseObject ? collectObjectFields(baseObject, modelName) : [];
 
+  const discriminatorDescription = flattenedVariants[0].alwaysProperties.get(discProp)?.description;
+
   return {
     modelName,
     baseFields,
     discriminatorProperty: discProp,
     discriminatorPropertyDomain: toCamelCase(discProp),
+    discriminatorDescription,
     variants,
   };
 }
@@ -527,6 +532,9 @@ function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: Va
   }
   // Discriminator (typed as the variant's const value)
   const discKey = isWire ? shape.discriminatorProperty : shape.discriminatorPropertyDomain;
+  if (shape.discriminatorDescription) {
+    lines.push(`  /** ${shape.discriminatorDescription} */`);
+  }
   lines.push(`  ${discKey}: '${variant.discriminatorValue}';`);
   // Variant-specific fields
   for (const field of variant.fields) {

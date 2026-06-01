@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
+import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
@@ -27,12 +27,16 @@ import {
   computeNonEventReachable,
 } from './utils.js';
 import { groupByMount } from '../shared/resolved-ops.js';
-import { isNodeOwnedService } from './options.js';
+import { isNodeOwnedService, nodeOptions } from './options.js';
 
 type BaselineMethod = {
   params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
   returnType?: string;
 };
+
+function operationOverrideFor(ctx: EmitterContext, op: Operation) {
+  return nodeOptions(ctx).operationOverrides?.[`${op.httpMethod.toUpperCase()} ${op.path}`];
+}
 
 function baselineMethodFor(service: Service, method: string, ctx: EmitterContext): BaselineMethod | undefined {
   const serviceClass = resolveResourceClassName(service, ctx);
@@ -46,6 +50,48 @@ function optionsObjectParam(method: BaselineMethod | undefined): { name: string;
   if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
   if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
   return { name: param.name, type: param.type };
+}
+
+function configuredOptionsMethod(ctx: EmitterContext, op: Operation): BaselineMethod | undefined {
+  const optionsType = operationOverrideFor(ctx, op)?.optionsType;
+  if (!optionsType) return undefined;
+  return {
+    params: [{ name: 'options', type: optionsType, passingStyle: 'options_object' }],
+  };
+}
+
+function methodOptionsName(method: string, serviceClass: string): string {
+  if (method === 'list') return `${toPascalCase(serviceClass)}ListOptions`;
+  return `${toPascalCase(method)}Options`;
+}
+
+function hasOptionsInput(op: Operation, plan: any): boolean {
+  return op.pathParams.length > 0 || plan.hasBody || plan.isPaginated || op.queryParams.length > 0;
+}
+
+function optionsMethodFor(
+  service: Service,
+  method: string,
+  op: Operation,
+  plan: any,
+  ctx: EmitterContext,
+): BaselineMethod | undefined {
+  const baseline = baselineMethodFor(service, method, ctx);
+  if (optionsObjectParam(baseline)) return baseline;
+
+  const configured = configuredOptionsMethod(ctx, op);
+  if (configured) return configured;
+
+  if (!hasOptionsInput(op, plan)) return baseline;
+  return {
+    params: [
+      {
+        name: 'options',
+        type: methodOptionsName(method, resolveResourceClassName(service, ctx)),
+        passingStyle: 'options_object',
+      },
+    ],
+  };
 }
 
 function autoPaginatableItemType(returnType: string | undefined): string | undefined {
@@ -249,7 +295,7 @@ function generateServiceTest(
   lines.push('  beforeEach(() => fetch.resetMocks());');
 
   for (const { op, plan, method } of plans) {
-    const existingMethod = baselineMethodFor(service, method, ctx);
+    const existingMethod = optionsMethodFor(service, method, op, plan, ctx);
     lines.push('');
     lines.push(`  describe('${method}', () => {`);
 
@@ -447,6 +493,13 @@ function renderBodyTest(
     lines.push('      expect(Array.isArray(result)).toBe(true);');
   }
 
+  const override = ctx ? operationOverrideFor(ctx, op) : undefined;
+  if (override?.returnExpression || override?.returnDataProperty) {
+    lines.push('      expect(result).toBeDefined();');
+    lines.push('    });');
+    return;
+  }
+
   // Use entity helper if available, otherwise inline assertions
   const bodyHelperName = ctx ? `expect${resolveInterfaceName(responseModelName, ctx)}` : null;
   if (bodyHelperName && entityHelpers?.has(bodyHelperName)) {
@@ -501,6 +554,19 @@ function renderGetTest(
   lines.push(`      expect(new URL(String(fetchURL())).pathname).toBe('${expectedPathGet}');`);
   if (isArrayResponse) {
     lines.push('      expect(Array.isArray(result)).toBe(true);');
+  }
+
+  const returnDataProperty = ctx ? operationOverrideFor(ctx, op)?.returnDataProperty : undefined;
+  if (returnDataProperty) {
+    const responseModel = modelMap.get(responseModelName);
+    const returnedField = responseModel?.fields.find((field) => fieldName(field.name) === returnDataProperty);
+    if (returnedField?.type.kind === 'array') {
+      lines.push('      expect(Array.isArray(result)).toBe(true);');
+    } else {
+      lines.push('      expect(result).toBeDefined();');
+    }
+    lines.push('    });');
+    return;
   }
 
   // Use entity helper if available, otherwise inline assertions
@@ -575,12 +641,41 @@ function buildOptionsObjectTestArg(
     entries.push(`${optionField}: ${JSON.stringify(pathParamTestValue(param, localName))}`);
   }
 
+  if (plan.isPaginated) {
+    entries.push("order: 'desc'");
+  }
+  const queryParams = plan.isPaginated
+    ? op.queryParams.filter((param) => !['limit', 'before', 'after', 'order'].includes(param.name))
+    : op.queryParams;
+  for (const param of queryParams) {
+    const localName = fieldName(param.name);
+    const value = fixtureValueForType(param.type, param.name, 'Options', modelMap) ?? "'test'";
+    entries.push(`${localName}: ${value}`);
+  }
+
   if (plan.hasBody) {
     const payload = buildTestPayload(op, modelMap);
-    if (payload) entries.push(...objectLiteralEntries(payload.camelCaseObj));
+    if (payload) {
+      const bodyFieldMap = ctx ? operationOverrideFor(ctx, op)?.bodyFieldMap : undefined;
+      entries.push(...mapBodyOptionEntries(objectLiteralEntries(payload.camelCaseObj), bodyFieldMap));
+    } else if (entries.length === 0) {
+      return '({} as any)';
+    }
   }
 
   return `{ ${entries.join(', ')} }`;
+}
+
+function mapBodyOptionEntries(entries: string[], bodyFieldMap: Record<string, string> | undefined): string[] {
+  const reverseMap = new Map(Object.entries(bodyFieldMap ?? {}).map(([source, target]) => [target, source]));
+  if (reverseMap.size === 0) return entries;
+
+  return entries.map((entry) => {
+    const match = entry.match(/^([A-Za-z_$][\w$]*)\s*:/);
+    if (!match) return entry;
+    const source = reverseMap.get(match[1]);
+    return source ? entry.replace(match[1], source) : entry;
+  });
 }
 
 function objectLiteralEntries(literal: string): string[] {
@@ -693,7 +788,12 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
         // Objects and arrays need toEqual with JSON serialization
         assertions.push(`expect(${accessor}.${domainField}).toEqual(${JSON.stringify(field.example)});`);
       } else {
-        const exampleLiteral = typeof field.example === 'string' ? `'${field.example}'` : String(field.example);
+        const exampleLiteral =
+          isDateTime && typeof field.example === 'string'
+            ? `'${new Date(field.example).toISOString()}'`
+            : typeof field.example === 'string'
+              ? `'${field.example}'`
+              : String(field.example);
         assertions.push(`expect(${fieldAccessor}).toBe(${exampleLiteral});`);
       }
       continue;
@@ -739,7 +839,7 @@ function fixtureValueForType(
 ): string | null {
   switch (ref.kind) {
     case 'primitive':
-      return fixtureValueForPrimitive(ref.type, ref.format, name, modelName);
+      return fixtureValueForPrimitive(ref.type, ref.format, name, modelName, wire);
     case 'literal':
       return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
     case 'enum':
@@ -781,10 +881,11 @@ function fixtureValueForPrimitive(
   format: string | undefined,
   name: string,
   modelName: string,
+  wire?: boolean,
 ): string | null {
   switch (type) {
     case 'string':
-      if (format === 'date-time') return "'2023-01-01T00:00:00.000Z'";
+      if (format === 'date-time') return wire ? "'2023-01-01T00:00:00.000Z'" : "new Date('2023-01-01T00:00:00.000Z')";
       if (format === 'date') return "'2023-01-01'";
       if (format === 'uuid') return "'00000000-0000-0000-0000-000000000000'";
       if (name === 'id') {

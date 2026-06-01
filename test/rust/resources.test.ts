@@ -320,6 +320,12 @@ describe('rust/resources', () => {
                 required: true,
               },
               {
+                name: 'screen_hint',
+                type: { kind: 'enum', name: 'UserManagementAuthenticationScreenHint' },
+                required: false,
+                default: 'sign-in',
+              },
+              {
                 name: 'state',
                 type: { kind: 'primitive', type: 'string' },
                 required: false,
@@ -347,6 +353,9 @@ describe('rust/resources', () => {
     expect(f.content).toContain('pub fn get_authorization_url(');
     expect(f.content).toContain('-> Result<String, Error>');
     expect(f.content).toContain('let qs = crate::query::encode_query');
+    expect(f.content).toContain('pub screen_hint: Option<UserManagementAuthenticationScreenHint>,');
+    expect(f.content).toContain('screen_hint: Default::default(),');
+    expect(f.content).not.toContain('screen_hint: Some(UserManagementAuthenticationScreenHint::SignIn)');
     expect(f.content).not.toContain('get_authorization_url_with_options');
     expect(f.content).not.toContain('request_with_query_opts');
   });

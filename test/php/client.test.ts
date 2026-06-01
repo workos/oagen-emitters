@@ -86,7 +86,6 @@ describe('generateClient', () => {
     const result = generateClient(emptySpec, ctx);
 
     expect(result[0].content).toContain('public function passwordless(): Passwordless');
-    expect(result[0].content).toContain('public function vault(): Vault');
     expect(result[0].content).toContain('public function webhookVerification(): WebhookVerification');
     expect(result[0].content).toContain('public function actions(): Actions');
     expect(result[0].content).toContain('public function sessionManager(): SessionManager');

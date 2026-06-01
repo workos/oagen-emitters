@@ -7,8 +7,15 @@ import {
   isBaselineGeneric,
   createServiceDirResolver,
   modelHasNewFields,
+  assignModelsToServices,
 } from './utils.js';
-import { liveSurfaceHasFunction, liveSurfaceHasFile, liveSurfaceFunctionPath } from './live-surface.js';
+import {
+  liveSurfaceHasFunction,
+  liveSurfaceHasFile,
+  liveSurfaceFunctionPath,
+  liveSurfaceHasAutogenFile,
+} from './live-surface.js';
+import { isNodeOwnedService } from './options.js';
 
 // ---------------------------------------------------------------------------
 // Guard strategy
@@ -51,6 +58,19 @@ function helperExists(helperName: string, depModelName: string, ctx: EmitterCont
   if (liveSurfaceHasFunction(helperName)) return true;
   const depModel = ctx.spec.models.find((m) => m.name === depModelName);
   if (!depModel) return false;
+  const modelToService = assignModelsToServices(ctx.spec.models, ctx.spec.services, ctx.modelHints);
+  const depService = modelToService.get(depModelName);
+  const resolvedName = resolveInterfaceName(depModelName, ctx);
+  const siblingPrefix = helperName.startsWith('serialize') ? 'deserialize' : 'serialize';
+  const siblingPath = liveSurfaceFunctionPath(`${siblingPrefix}${resolvedName}`);
+  if (siblingPath && liveSurfaceHasFile(siblingPath) && !liveSurfaceHasAutogenFile(siblingPath)) return false;
+  const sourceFile = (ctx.apiSurface?.interfaces?.[resolvedName] as { sourceFile?: string } | undefined)?.sourceFile;
+  const { resolveDir } = createServiceDirResolver(ctx.spec.models, ctx.spec.services, ctx);
+  const candidate = sourceFile
+    ? sourceFile.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
+    : `src/${resolveDir(depService)}/serializers/${fileName(depModelName)}.serializer.ts`;
+  if (liveSurfaceHasFile(candidate) && !liveSurfaceHasAutogenFile(candidate)) return false;
+  if (isNodeOwnedService(ctx, depService)) return true;
   return modelHasNewFields(depModel, ctx);
 }
 
@@ -699,6 +719,7 @@ export function buildSerializerImports(
     const depService = sctx.modelToService.get(dep);
     const depDir = sctx.resolveDir(depService);
     const depName = resolveInterfaceName(dep, sctx.ctx);
+    const depIsOwned = isNodeOwnedService(sctx.ctx, depService);
 
     // Locate the serializer file, in priority order:
     //   1. The actual file containing `deserialize${depName}` per
@@ -708,14 +729,16 @@ export function buildSerializerImports(
     //   2. The baseline interface's adjacent serializer file path.
     //   3. The IR-name path — this is where the emitter writes the
     //      serializer it's producing this run.
-    const baselineSrc = (sctx.ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
+    const baselineSrc = depIsOwned
+      ? undefined
+      : (sctx.ctx.apiSurface?.interfaces?.[depName] as { sourceFile?: string } | undefined)?.sourceFile;
     const baselineSerializerPath = baselineSrc
       ? baselineSrc.replace('/interfaces/', '/serializers/').replace('.interface.ts', '.serializer.ts')
       : null;
     const irNameSerializerPath = `src/${depDir}/serializers/${fileName(dep)}.serializer.ts`;
 
-    const liveDeserPath = liveSurfaceFunctionPath(`deserialize${depName}`);
-    const liveSerPath = liveSurfaceFunctionPath(`serialize${depName}`);
+    const liveDeserPath = depIsOwned ? undefined : liveSurfaceFunctionPath(`deserialize${depName}`);
+    const liveSerPath = depIsOwned ? undefined : liveSurfaceFunctionPath(`serialize${depName}`);
     const depSerializerPath =
       liveDeserPath ??
       liveSerPath ??
@@ -742,11 +765,11 @@ export function buildSerializerImports(
     // pass-through expression when it can't call the helper.
     const hasDeser = liveSurfaceHasFunction(`deserialize${depName}`);
     const hasSer = liveSurfaceHasFunction(`serialize${depName}`);
-    const fileExists = liveSurfaceHasFile(depSerializerPath);
+    const fileExists = !depIsOwned && liveSurfaceHasFile(depSerializerPath);
     if (fileExists && !hasDeser && !hasSer) continue;
     if (!fileExists) {
       const depModel = sctx.ctx.spec.models.find((m) => m.name === dep);
-      const willGenerateSerializer = depModel ? modelHasNewFields(depModel, sctx.ctx) : true;
+      const willGenerateSerializer = depModel ? depIsOwned || modelHasNewFields(depModel, sctx.ctx) : true;
       if (!willGenerateSerializer) continue;
     }
 
@@ -803,7 +826,9 @@ export function shouldSkipSerializeForModel(
   skippedSerializeModels: Set<string>,
   ctx: EmitterContext,
 ): boolean {
-  let shouldSkip = serializerHasBaselineIncompatibility(model, baselineResponse, baselineDomain, ctx);
+  let shouldSkip =
+    serializerHasBaselineIncompatibility(model, baselineResponse, baselineDomain, ctx) ||
+    hasUnsafeSerializePassthrough(model, baselineDomain, baselineResponse, ctx);
   if (!shouldSkip) {
     for (const field of model.fields) {
       for (const ref of collectSerializedModelRefs(field.type)) {
@@ -813,6 +838,11 @@ export function shouldSkipSerializeForModel(
         }
         const canon = dedup.get(ref);
         if (canon && skippedSerializeModels.has(canon)) {
+          shouldSkip = true;
+          break;
+        }
+        const resolved = resolveInterfaceName(ref, ctx);
+        if (wireInterfaceName(resolved) !== resolved && !helperExists(`serialize${resolved}`, ref, ctx)) {
           shouldSkip = true;
           break;
         }
@@ -836,6 +866,8 @@ export function emitSerializerBody(
   ctx: EmitterContext,
 ): string[] {
   const lines: string[] = [];
+  const effectiveShouldSkipSerialize =
+    shouldSkipSerialize || hasUnsafeSerializePassthrough(model, baselineDomain, baselineResponse, ctx);
 
   if (!shouldSkipDeserialize) {
     const seenDeserFields = new Set<string>();
@@ -853,7 +885,7 @@ export function emitSerializerBody(
     lines.push('});');
   }
 
-  if (!shouldSkipSerialize) {
+  if (!effectiveShouldSkipSerialize) {
     if (!shouldSkipDeserialize) lines.push('');
     const serParamPrefix = model.fields.length === 0 ? '_' : '';
     lines.push(`export const serialize${domainName} = ${typeParams.decl}(`);
@@ -871,4 +903,28 @@ export function emitSerializerBody(
   }
 
   return lines;
+}
+
+function hasUnsafeSerializePassthrough(
+  model: Model,
+  baselineDomain: BaselineInterface | undefined,
+  baselineResponse: BaselineInterface | undefined,
+  ctx: EmitterContext,
+): boolean {
+  if (!baselineDomain?.fields || !baselineResponse?.fields) return false;
+
+  for (const field of model.fields) {
+    const domain = fieldName(field.name);
+    const wire = wireFieldName(field.name);
+    const domainField = baselineDomain.fields[domain];
+    const wireField = baselineResponse.fields[wire];
+    if (!domainField || !wireField || domainField.type === wireField.type) continue;
+
+    const domainAccess = `model.${domain}`;
+    if (serializeExpression(field.type, domainAccess, ctx) === domainAccess) {
+      return true;
+    }
+  }
+
+  return false;
 }

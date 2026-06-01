@@ -49,18 +49,29 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalCls = className(canonicalName);
       const aliasCls = className(enumDef.name);
       const lines: string[] = [];
-      lines.push('from typing import TypeAlias');
       // Use explicit __all__ to prevent ruff F401 from stripping the re-export
       // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
+        lines.push('from typing import TypeAlias');
         lines.push(`from .${fileName(canonicalName)} import ${canonicalCls}`);
+        lines.push('');
+        lines.push(`${aliasCls}: TypeAlias = ${canonicalCls}`);
       } else {
-        lines.push(
-          `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)} import ${canonicalCls}`,
-        );
+        // Cross-service enum aliases use TYPE_CHECKING + __getattr__ to avoid
+        // circular imports caused by service __init__.py eagerly re-exporting
+        // all models (e.g. common → radar → common cycle).
+        const modPath = `${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)}`;
+        lines.push('from typing import TYPE_CHECKING');
+        lines.push('');
+        lines.push('if TYPE_CHECKING:');
+        lines.push(`    from ${modPath} import ${canonicalCls} as ${aliasCls}`);
+        lines.push('else:');
+        lines.push('    def __getattr__(name: str):');
+        lines.push(`        if name == "${aliasCls}":`);
+        lines.push(`            from ${modPath} import ${canonicalCls}`);
+        lines.push(`            return ${canonicalCls}`);
+        lines.push('        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")');
       }
-      lines.push('');
-      lines.push(`${aliasCls}: TypeAlias = ${canonicalCls}`);
       lines.push(`__all__ = ["${aliasCls}"]`);
       files.push({
         path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
@@ -71,19 +82,34 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
       // Also generate compat alias files for dedup aliases (they may have compat aliases too)
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
-        const importLine =
-          canonicalDir === dirName
-            ? `from .${fileName(canonicalName)} import ${canonicalCls}`
-            : `from ${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)} import ${canonicalCls}`;
-        files.push({
-          path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: [
+        let compatContent: string;
+        if (canonicalDir === dirName) {
+          compatContent = [
             'from typing import TypeAlias',
-            importLine,
+            `from .${fileName(canonicalName)} import ${canonicalCls}`,
             '',
             `${aliasName}: TypeAlias = ${canonicalCls}`,
             `__all__ = ["${aliasName}"]`,
-          ].join('\n'),
+          ].join('\n');
+        } else {
+          const modPath = `${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)}`;
+          compatContent = [
+            'from typing import TYPE_CHECKING',
+            '',
+            'if TYPE_CHECKING:',
+            `    from ${modPath} import ${canonicalCls} as ${aliasName}`,
+            'else:',
+            '    def __getattr__(name: str):',
+            `        if name == "${aliasName}":`,
+            `            from ${modPath} import ${canonicalCls}`,
+            `            return ${canonicalCls}`,
+            '        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")',
+            `__all__ = ["${aliasName}"]`,
+          ].join('\n');
+        }
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
+          content: compatContent,
           integrateTarget: true,
           overwriteExisting: true,
         });

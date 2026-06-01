@@ -27,7 +27,6 @@ import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
  */
 const NON_SPEC_ACCESSORS: Record<string, { prop: string; className: string; ctorArg: 'self' | '' }> = {
   passwordless: { prop: 'passwordless', className: 'Passwordless', ctorArg: 'self' },
-  vault: { prop: 'vault', className: 'Vault', ctorArg: 'self' },
   actions: { prop: 'actions', className: 'Actions', ctorArg: 'self' },
   session_manager: { prop: 'session_manager', className: 'SessionManager', ctorArg: 'self' },
   pkce: { prop: 'pkce', className: 'PKCE', ctorArg: '' },

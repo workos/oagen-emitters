@@ -18,9 +18,11 @@ import {
   isListWrapperModel,
   computeNonEventReachable,
 } from './utils.js';
+import { isNodeOwnedService, nodeOptions } from './options.js';
 import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import { generatedResourceInterfaceModelNames } from './models.js';
 import { assignEnumsToServices } from './enums.js';
+import { liveSurfaceInterfacePath } from './live-surface.js';
 
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -129,6 +131,46 @@ function generateWorkOSClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   };
 }
 
+function sourceFileForExportedType(ctx: EmitterContext, typeName: string): string | undefined {
+  return (
+    (ctx.apiSurface?.interfaces?.[typeName] as { sourceFile?: string } | undefined)?.sourceFile ??
+    (ctx.apiSurface?.typeAliases?.[typeName] as { sourceFile?: string } | undefined)?.sourceFile ??
+    (ctx.apiSurface?.enums?.[typeName] as { sourceFile?: string } | undefined)?.sourceFile ??
+    liveSurfaceInterfacePath(typeName)
+  );
+}
+
+function exportedNamesForSource(ctx: EmitterContext, sourceFile: string): string[] {
+  const names = new Set<string>();
+  const addNamesFromSurface = (items: Record<string, unknown> | undefined) => {
+    if (!items) return;
+    for (const [name, item] of Object.entries(items)) {
+      if ((item as { sourceFile?: string }).sourceFile === sourceFile) {
+        names.add(name);
+      }
+    }
+  };
+
+  addNamesFromSurface(ctx.apiSurface?.interfaces);
+  addNamesFromSurface(ctx.apiSurface?.typeAliases);
+  addNamesFromSurface(ctx.apiSurface?.enums);
+
+  const rootDir = ctx.targetDir ?? ctx.outputDir;
+  if (rootDir) {
+    try {
+      const content = fs.readFileSync(path.join(rootDir, sourceFile), 'utf-8');
+      for (const match of content.matchAll(/export\s+(?:interface|type|enum|class|const|function)\s+(\w+)/g)) {
+        names.add(match[1]);
+      }
+    } catch {
+      // The live source map is best-effort; apiSurface/livesurface names above
+      // are enough when the file is not readable.
+    }
+  }
+
+  return [...names];
+}
+
 /**
  * Generate per-service barrel files (interfaces/index.ts) that re-export
  * all interface and enum files for each service directory. This reduces
@@ -146,6 +188,12 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   // from one file and a domain type from another).
   const dirExports = new Map<string, string[]>();
   const dirSymbols = new Map<string, Set<string>>();
+  const ownedDirNames = new Set<string>();
+  for (const service of spec.services) {
+    if (isNodeOwnedService(ctx, service.name)) {
+      ownedDirNames.add(resolveDir(service.name));
+    }
+  }
 
   // Pre-seed dirSymbols with names already exported by existing interface files.
   // When the existing SDK has an interface file in a directory that already
@@ -160,6 +208,7 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     const match = sourceFile.match(/^src\/([^/]+)\/interfaces\/(.+)\.ts$/);
     if (!match) return;
     const dirName = match[1];
+    if (ownedDirNames.has(dirName)) return;
     const fileStem = match[2];
     if (!dirSymbols.has(dirName)) dirSymbols.set(dirName, new Set());
     dirSymbols.get(dirName)!.add(name);
@@ -260,14 +309,82 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
     dirExports.get(dirName)!.push(`export * from './${fileName(enumDef.name)}.interface';`);
   }
 
+  const overrideWildcardSources = new Set<string>();
+  const overrideNamedExports = new Set<string>();
+  const addOverrideTypeExport = (typeName: string | undefined) => {
+    if (!typeName) return;
+    const sourceFile = sourceFileForExportedType(ctx, typeName);
+    if (!sourceFile) return;
+    const match = sourceFile?.match(/^src\/([^/]+)\/interfaces\/(.+)\.ts$/);
+    if (!match) return;
+    const dirName = match[1];
+    const stem = match[2].replace(/\.ts$/, '');
+    if (!dirExports.has(dirName)) {
+      dirExports.set(dirName, []);
+      if (!dirSymbols.has(dirName)) {
+        dirSymbols.set(dirName, new Set());
+      }
+    }
+    const symbols = dirSymbols.get(dirName)!;
+    const sourceKey = `${dirName}/${stem}`;
+    if (overrideWildcardSources.has(sourceKey)) return;
+
+    const sourceNames = exportedNamesForSource(ctx, sourceFile);
+    const hasConflictingNeighbor = sourceNames.some((name) => name !== typeName && globalExistingSymbols.has(name));
+    if (hasConflictingNeighbor) {
+      const exportKey = `${sourceKey}:${typeName}`;
+      if (overrideNamedExports.has(exportKey)) return;
+      dirExports.get(dirName)!.push(`export type { ${typeName} } from './${stem}';`);
+      overrideNamedExports.add(exportKey);
+      symbols.add(typeName);
+      globalExistingSymbols.add(typeName);
+      return;
+    }
+
+    dirExports.get(dirName)!.push(`export * from './${stem}';`);
+    overrideWildcardSources.add(sourceKey);
+    const namesToRegister = sourceNames.length > 0 ? sourceNames : [typeName];
+    for (const name of namesToRegister) {
+      symbols.add(name);
+      globalExistingSymbols.add(name);
+    }
+  };
+
+  for (const override of Object.values(nodeOptions(ctx).operationOverrides ?? {})) {
+    addOverrideTypeExport(override.optionsType);
+    for (const typeName of override.returnTypeImports ?? []) {
+      addOverrideTypeExport(typeName);
+    }
+  }
+
+  const generatedOptionExports = (ctx as any)._nodeGeneratedOptionInterfaceExports as
+    | Map<string, Array<{ stem: string; typeName: string }>>
+    | undefined;
+  for (const [dirName, options] of generatedOptionExports ?? []) {
+    if (!dirExports.has(dirName)) {
+      dirExports.set(dirName, []);
+      if (!dirSymbols.has(dirName)) {
+        dirSymbols.set(dirName, new Set());
+      }
+    }
+    const symbols = dirSymbols.get(dirName)!;
+    for (const { stem, typeName } of options) {
+      if (globalExistingSymbols.has(typeName)) continue;
+      symbols.add(typeName);
+      globalExistingSymbols.add(typeName);
+      dirExports.get(dirName)!.push(`export * from './${stem}';`);
+    }
+  }
+
   for (const [dirName, exports] of dirExports) {
     const exportSet = new Set(exports);
+    const isDirOwned = ownedDirNames.has(dirName);
 
     // When integrating into an existing SDK, include baseline exports from
     // the api-surface so the barrel is comprehensive.  This ensures stale
     // entries (e.g., renamed files from previous generations) are removed
     // when overwriteExisting replaces the barrel.
-    if (ctx.apiSurface) {
+    if (ctx.apiSurface && !isDirOwned) {
       const addBaselineExports = (items: Record<string, any> | undefined) => {
         if (!items) return;
         for (const item of Object.values(items)) {
@@ -288,7 +405,7 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
       // corresponding file still exists on disk.  This prevents dropping
       // hand-written types (e.g., Factor in multi-factor-auth) when a
       // generated model in the same file causes a symbol collision.
-      if (ctx.targetDir) {
+      if (ctx.targetDir && !isDirOwned) {
         const interfacesDir = path.join(ctx.targetDir, 'src', dirName, 'interfaces');
         try {
           const barrelPath = path.join(interfacesDir, 'index.ts');
