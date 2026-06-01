@@ -311,7 +311,9 @@ function renderOptionsParam(param: OptionsObjectParam): string {
 }
 
 function autoPaginatableItemType(returnType: string | undefined): string | undefined {
-  return returnType?.match(/\bAutoPaginatable<\s*([A-Za-z_$][\w$]*)/)?.[1];
+  // Match both AutoPaginatable<T> and the legacy List<T> pattern so baseline
+  // item types are extracted even when the hand-written code predates AutoPaginatable.
+  return returnType?.match(/\b(?:AutoPaginatable|List)<\s*([A-Za-z_$][\w$]*)/)?.[1];
 }
 
 function baselineTypeSourceFile(ctx: EmitterContext, typeName: string): string | undefined {
@@ -347,9 +349,15 @@ function preferredBaselineTypeName(ctx: EmitterContext, typeName: string | undef
 }
 
 function preferredBaselineReturnType(ctx: EmitterContext, returnType: string | undefined): string | undefined {
+  if (!returnType) return undefined;
+  // Only preserve baseline return types that already use AutoPaginatable.
+  // Legacy patterns like List<T> can't be used as-is since the generated
+  // method body returns new AutoPaginatable(...).
+  if (!/\bAutoPaginatable\b/.test(returnType)) return undefined;
   const itemType = autoPaginatableItemType(returnType);
+  if (!itemType) return undefined;
   const preferred = preferredBaselineTypeName(ctx, itemType);
-  if (!returnType || !itemType || !preferred || preferred === itemType) return returnType;
+  if (!preferred || preferred === itemType) return returnType;
   return returnType.replace(new RegExp(`\\b${itemType}\\b`, 'g'), preferred);
 }
 
@@ -1146,7 +1154,11 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
           // extension fields land on top and the camelCase keys don't also
           // leak into the query string.
           lines.push('  const wire: Record<string, unknown> = {');
+          const baselineFields = (
+            ctx.apiSurface?.interfaces as Record<string, { fields?: Record<string, unknown> }> | undefined
+          )?.[optionsName]?.fields;
           for (const p of PAGINATION_PARAM_NAMES) {
+            if (baselineFields && !(p in baselineFields) && !baselineFields[toCamelCase(p)]) continue;
             lines.push(`    ${p}: options.${p},`);
           }
           lines.push('  };');
@@ -1503,7 +1515,9 @@ function renderMethod(
         const unwrapped = unwrapListModel(pModel, modelMap);
         if (unwrapped) itemRawName = unwrapped.name;
       }
-      const itemTypeName = resolveInterfaceName(itemRawName, ctx);
+      const baselineItemType =
+        autoPaginatableItemType(baselineClassMethod?.returnType) ?? autoPaginatableItemType(overlayMethod?.returnType);
+      const itemTypeName = preferredBaselineTypeName(ctx, baselineItemType) ?? resolveInterfaceName(itemRawName, ctx);
       docParts.push(`@returns {Promise<AutoPaginatable<${itemTypeName}>>}`);
     } else if (responseModel) {
       const returnTypeDoc = plan.isArrayResponse ? `${responseModel}[]` : responseModel;
@@ -1667,7 +1681,7 @@ function renderOptionsObjectMethod(
       ? `options ? serialize${optionParam.type}(options) : undefined`
       : 'paginationOptions';
     lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): ${returnType} {`);
-    renderOptionsObjectDestructure(lines, pathBindings, 'paginationOptions');
+    renderOptionsObjectDestructure(lines, pathBindings, needsWireSerializer ? undefined : 'paginationOptions');
     lines.push(`    return new AutoPaginatable(`);
     lines.push(`      await fetchAndDeserialize<${wireType}, ${itemType}>(`);
     lines.push(`        this.workos,`);
@@ -1682,7 +1696,7 @@ function renderOptionsObjectMethod(
     lines.push(`          deserialize${itemType},`);
     lines.push(`          params,`);
     lines.push(`        ),`);
-    lines.push(`      paginationOptions,`);
+    lines.push(`      ${listOptionsExpr},`);
     lines.push(`    );`);
     lines.push('  }');
     return true;
@@ -1888,7 +1902,7 @@ function renderPaginatedMethod(
   lines.push(`          deserialize${itemType},`);
   lines.push(`          params,`);
   lines.push(`        ),`);
-  lines.push(`      options,`);
+  lines.push(`      ${serializeCall},`);
   lines.push(`    );`);
   lines.push('  }');
 }

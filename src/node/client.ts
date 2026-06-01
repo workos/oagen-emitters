@@ -191,7 +191,14 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   const ownedDirNames = new Set<string>();
   for (const service of spec.services) {
     if (isNodeOwnedService(ctx, service.name)) {
-      ownedDirNames.add(resolveDir(service.name));
+      const dir = resolveDir(service.name);
+      ownedDirNames.add(dir);
+      // Ensure owned directories always get a barrel entry, even if no
+      // model interfaces are generated (hand-written files still need it).
+      if (!dirExports.has(dir)) {
+        dirExports.set(dir, []);
+        if (!dirSymbols.has(dir)) dirSymbols.set(dir, new Set());
+      }
     }
   }
 
@@ -463,6 +470,38 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
         } catch {
           // Directory doesn't exist in target — nothing to scan
         }
+      }
+    }
+
+    // For owned directories, scan the interfaces directory for hand-written
+    // files that still need to be in the barrel (e.g., options interfaces
+    // preserved from the baseline).
+    const ownedScanRoot = ctx.targetDir ?? ctx.outputDir;
+    if (ownedScanRoot && isDirOwned) {
+      const interfacesDir = path.join(ownedScanRoot, 'src', dirName, 'interfaces');
+      const symbols = dirSymbols.get(dirName) ?? new Set<string>();
+      try {
+        for (const entry of fs.readdirSync(interfacesDir)) {
+          if (entry === 'index.ts') continue;
+          if (!entry.endsWith('.ts')) continue;
+          const stem = entry.replace(/\.ts$/, '');
+          const exportLine = `export * from './${stem}';`;
+          if (exportSet.has(exportLine)) continue;
+          const content = fs.readFileSync(path.join(interfacesDir, entry), 'utf-8');
+          const exportedNames: string[] = [];
+          for (const m of content.matchAll(/export\s+(?:interface|type|enum|class|const|function)\s+(\w+)/g)) {
+            exportedNames.push(m[1]);
+          }
+          const hasCollision = exportedNames.some((name) => globalExistingSymbols.has(name));
+          if (hasCollision) continue;
+          for (const name of exportedNames) {
+            symbols.add(name);
+            globalExistingSymbols.add(name);
+          }
+          exportSet.add(exportLine);
+        }
+      } catch {
+        // Directory doesn't exist in target
       }
     }
 
