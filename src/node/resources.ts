@@ -1673,10 +1673,13 @@ function renderOptionsObjectMethod(
       (itemRawName ? resolveInterfaceName(itemRawName, ctx) : responseModel);
     if (!itemType) return false;
     const wireType = wireInterfaceName(itemType);
-    const returnType =
-      preferredBaselineReturnType(ctx, baselineMethod?.returnType) ?? `Promise<AutoPaginatable<${itemType}>>`;
     const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
     const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
+    const paginationType = needsWireSerializer ? 'PaginationOptions' : optionParam.type;
+    const returnType = needsWireSerializer
+      ? `Promise<AutoPaginatable<${itemType}, ${paginationType}>>`
+      : (preferredBaselineReturnType(ctx, baselineMethod?.returnType) ??
+        `Promise<AutoPaginatable<${itemType}, ${paginationType}>>`);
     const listOptionsExpr = needsWireSerializer
       ? `options ? serialize${optionParam.type}(options) : undefined`
       : 'paginationOptions';
@@ -1887,7 +1890,8 @@ function renderPaginatedMethod(
   const wireType = wireInterfaceName(itemType);
   const serializeCall = serializerArg ? `options ? serialize${optionsType}(options) : undefined` : 'options';
 
-  lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${optionsType}>> {`);
+  const paginationType = needsWireSerializer ? 'PaginationOptions' : optionsType;
+  lines.push(`  async ${method}(${allParams}): Promise<AutoPaginatable<${itemType}, ${paginationType}>> {`);
   lines.push(`    return new AutoPaginatable(`);
   lines.push(`      await fetchAndDeserialize<${wireType}, ${itemType}>(`);
   lines.push(`        this.workos,`);
