@@ -101,7 +101,9 @@ describe('generateResources', () => {
     expect(resourceFile).toBeDefined();
     expect(resourceFile!.content).toContain('export class Organizations');
     expect(resourceFile!.content).toContain('constructor(private readonly workos: WorkOS)');
-    expect(resourceFile!.content).toContain('async getOrganization(id: string): Promise<Organization>');
+    expect(resourceFile!.content).toContain(
+      'async getOrganization(options: GetOrganizationOptions): Promise<Organization>',
+    );
     expect(resourceFile!.content).toContain('deserializeOrganization(data)');
   });
 
