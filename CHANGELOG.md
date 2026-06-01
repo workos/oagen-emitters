@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/workos/oagen-emitters/compare/v0.14.4...v0.15.0) (2026-06-01)
+
+
+### Features
+
+* owned services, URL builders, unions, and fixes ([#131](https://github.com/workos/oagen-emitters/issues/131)) ([146113f](https://github.com/workos/oagen-emitters/commit/146113f440359e9648dae4a41bb5359784649b7e))
+
+
+### Bug Fixes
+
+* **renovate:** explicitly enable minor and patch updates ([#129](https://github.com/workos/oagen-emitters/issues/129)) ([4d5df35](https://github.com/workos/oagen-emitters/commit/4d5df35e2e4314acbbfb61f3b409fe88a9e404bf))
+
 ## [0.14.4](https://github.com/workos/oagen-emitters/compare/v0.14.3...v0.14.4) (2026-05-26)
 
 
