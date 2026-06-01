@@ -456,6 +456,8 @@ function resolveRef(schema: RawSchema, rawSchemas: Record<string, RawSchema>): R
 export interface DiscriminatedPlan {
   shape: DiscriminatedShape;
   modelDir: string;
+  /** Maps raw spec schema names to their resolved service directories. */
+  depDirMap: Map<string, string>;
 }
 
 export function planDiscriminatedModels(models: Model[], ctx: EmitterContext): Map<string, DiscriminatedPlan> {
@@ -464,11 +466,47 @@ export function planDiscriminatedModels(models: Model[], ctx: EmitterContext): M
   if (!spec?.components?.schemas) return plans;
   const rawSchemas = spec.components.schemas as Record<string, RawSchema>;
   const { modelToService, resolveDir } = createServiceDirResolver(models, ctx.spec.services, ctx);
+
+  // Build a lookup from IR model names to their resolved service directories.
+  const irModelDir = new Map<string, string>();
+  for (const model of models) {
+    irModelDir.set(model.name, resolveDir(modelToService.get(model.name)));
+  }
+
+  // Map raw spec schema names to service directories so discriminated model
+  // imports can point to the correct cross-service path. Raw names may differ
+  // from IR names due to schemaNameTransform (e.g. Dto stripping).
+  const depDirMap = new Map<string, string>();
+  for (const rawName of Object.keys(rawSchemas)) {
+    if (irModelDir.has(rawName)) {
+      depDirMap.set(rawName, irModelDir.get(rawName)!);
+      continue;
+    }
+    const stripped = rawName.replace(/Dto/g, '').replace(/DTO/g, '').replace(/Json$/, '');
+    if (stripped !== rawName && irModelDir.has(stripped)) {
+      depDirMap.set(rawName, irModelDir.get(stripped)!);
+    }
+  }
+
   for (const model of models) {
     const shape = detectDiscriminatedShape(model.name, rawSchemas);
     if (!shape) continue;
+    // Skip models whose variant field dependencies can't all be resolved to
+    // existing interface files. EventSchema, for instance, references models
+    // from many services that may not have generated files yet.
+    const allDeps = new Set<string>();
+    for (const field of shape.baseFields) {
+      for (const d of field.modelDeps) allDeps.add(d);
+    }
+    for (const variant of shape.variants) {
+      for (const field of variant.fields) {
+        for (const d of field.modelDeps) allDeps.add(d);
+      }
+    }
+    const hasUnresolvableDeps = [...allDeps].some((dep) => !depDirMap.has(dep) && !irModelDir.has(dep));
+    if (hasUnresolvableDeps) continue;
     const modelDir = resolveDir(modelToService.get(model.name));
-    plans.set(model.name, { shape, modelDir });
+    plans.set(model.name, { shape, modelDir, depDirMap });
   }
   return plans;
 }
@@ -526,8 +564,13 @@ function buildInterfaceFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gene
 function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: VariantSpec, isWire: boolean): string[] {
   const lines: string[] = [];
   lines.push(`export interface ${name} {`);
-  // Base fields
+  // Variant fields override base fields when both define the same property
+  // (variants have narrower types, e.g. `event: 'foo'` vs base `event: string`).
+  // The discriminator is also emitted separately as a const literal below.
+  const variantFieldNames = new Set(variant.fields.map((f) => f.name));
   for (const field of shape.baseFields) {
+    if (variantFieldNames.has(field.name)) continue;
+    if (field.name === shape.discriminatorProperty) continue;
     pushFieldLine(lines, field, isWire);
   }
   // Discriminator (typed as the variant's const value)
@@ -569,31 +612,24 @@ function collectImports(plan: DiscriminatedPlan): ImportSpec[] {
       for (const d of field.modelDeps) deps.add(d);
     }
   }
-  // Group by directory — all deps under the same modelDir get one import.
-  // We assume all deps live in the same service for now (same dir as this
-  // model). Cross-service imports would need ctx.spec.services lookups; the
-  // current discriminated-shape cases (ConnectApplication) are all
-  // intra-service.
-  const symbols: string[] = [];
+  const result: ImportSpec[] = [];
   for (const dep of [...deps].sort()) {
     const domain = toPascalCase(dep);
-    symbols.push(domain);
     const wire = wireInterfaceName(domain);
-    if (wire !== domain) symbols.push(wire);
+    const symbols = wire !== domain ? [domain, wire] : [domain];
+    const depDir = plan.depDirMap.get(dep);
+    const baseName = fileName(toSnakeFromPascal(domain));
+    let importPath: string;
+    if (!depDir || depDir === plan.modelDir) {
+      importPath = `./${baseName}.interface`;
+    } else {
+      importPath = `../../${depDir}/interfaces/${baseName}.interface`;
+    }
+    const existing = result.find((a) => a.path === importPath);
+    if (existing) existing.symbols.push(...symbols);
+    else result.push({ path: importPath, symbols });
   }
-  if (symbols.length === 0) return [];
-  // Single import block from sibling files in the same interfaces directory.
-  return symbols
-    .map((sym) => {
-      const fname = fileName(toSnakeFromPascal(sym.replace(/Response$/, '')));
-      return { path: `./${fname}.interface`, symbols: [sym] };
-    })
-    .reduce((acc, cur) => {
-      const existing = acc.find((a) => a.path === cur.path);
-      if (existing) existing.symbols.push(...cur.symbols);
-      else acc.push(cur);
-      return acc;
-    }, [] as ImportSpec[]);
+  return result;
 }
 
 function toSnakeFromPascal(s: string): string {
