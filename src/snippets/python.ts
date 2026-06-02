@@ -1,41 +1,40 @@
-import type { EmitterContext } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
-import { buildExportedClassNameSet, fieldName, resolveServiceTarget, safeParamName } from '../ruby/naming.js';
+import { fieldName, safeParamName } from '../python/naming.js';
 import { collectSnippetArgs, collectWrapperArgs, type SnippetArg } from './shared.js';
 import type { SnippetEmitter } from './types.js';
+import { toSnakeCase } from '@workos/oagen';
 
-const INDENT = '  ';
+const INDENT = '    ';
 
-export const rubySnippetEmitter: SnippetEmitter = {
-  language: 'ruby',
-  fileExtension: 'rb',
+export const pythonSnippetEmitter: SnippetEmitter = {
+  language: 'python',
+  fileExtension: 'py',
 
   renderOperation(resolved, ctx, examples) {
     if (resolved.urlBuilder) return null;
 
-    const accessor = serviceAccessor(resolved.mountOn, ctx);
+    const accessor = toSnakeCase(resolved.mountOn);
 
     if (resolved.wrappers && resolved.wrappers.length > 0) {
       const wrapper = resolved.wrappers[0]!;
       const args = collectWrapperArgs(wrapper, ctx, examples);
-      return renderCall(accessor, wrapper.name, toRubyArgs(args, new Set()));
+      return renderCall(accessor, wrapper.name, toPyArgs(args, new Set()));
     }
 
     const { args, collisionNames } = collectSnippetArgs(resolved, ctx, examples);
-    return renderCall(accessor, resolved.methodName, toRubyArgs(args, collisionNames));
+    return renderCall(accessor, resolved.methodName, toPyArgs(args, collisionNames));
   },
 };
 
-interface RubyArg {
+interface PyArg {
   keyword: string;
   value: string;
 }
 
-function toRubyArgs(args: SnippetArg[], collisionNames: Set<string>): RubyArg[] {
+function toPyArgs(args: SnippetArg[], collisionNames: Set<string>): PyArg[] {
   const seen = new Set<string>();
-  const out: RubyArg[] = [];
+  const out: PyArg[] = [];
   for (const a of args) {
-    const keyword = rubyKeyword(a, collisionNames);
+    const keyword = pythonKeyword(a, collisionNames);
     if (seen.has(keyword)) continue;
     seen.add(keyword);
     out.push({ keyword, value: renderValue(a.value) });
@@ -43,33 +42,30 @@ function toRubyArgs(args: SnippetArg[], collisionNames: Set<string>): RubyArg[] 
   return out;
 }
 
-function rubyKeyword(arg: SnippetArg, collisions: Set<string>): string {
+function pythonKeyword(arg: SnippetArg, collisions: Set<string>): string {
   if (arg.source === 'body') {
     const base = fieldName(arg.wireName);
     return collisions.has(arg.wireName) ? `body_${base}` : base;
   }
-  // path / query
   return safeParamName(arg.wireName);
 }
 
-function renderCall(accessor: string, method: string, args: RubyArg[]): string {
+function renderCall(accessor: string, method: string, args: PyArg[]): string {
   const lines: string[] = [];
-  lines.push('require "workos"');
+  lines.push('from workos import WorkOSClient');
   lines.push('');
-  lines.push('WorkOS.configure do |config|');
-  lines.push(`${INDENT}config.api_key = "sk_example_123456789"`);
-  lines.push('end');
+  lines.push('client = WorkOSClient(api_key="sk_example_123456789", client_id="client_123456789")');
   lines.push('');
 
-  const target = `WorkOS.client.${accessor}.${method}`;
+  const target = `client.${accessor}.${method}`;
   if (args.length === 0) {
-    lines.push(target);
+    lines.push(`${target}()`);
     return lines.join('\n');
   }
 
   if (args.length === 1 && !args[0]!.value.includes('\n')) {
     const a = args[0]!;
-    lines.push(`${target}(${a.keyword}: ${a.value})`);
+    lines.push(`${target}(${a.keyword}=${a.value})`);
     return lines.join('\n');
   }
 
@@ -78,35 +74,27 @@ function renderCall(accessor: string, method: string, args: RubyArg[]): string {
     const a = args[i]!;
     const trailing = i < args.length - 1 ? ',' : '';
     const valueIndented = indentContinuationLines(a.value, INDENT);
-    lines.push(`${INDENT}${a.keyword}: ${valueIndented}${trailing}`);
+    lines.push(`${INDENT}${a.keyword}=${valueIndented}${trailing}`);
   }
   lines.push(')');
-
   return lines.join('\n');
 }
 
-function serviceAccessor(mountOn: string, ctx: EmitterContext): string {
-  // The accessor uses the raw mount target (no `Service` suffix) to match
-  // the `client.organization_membership` style documented in workos-ruby.
-  void resolveServiceTarget(mountOn, buildExportedClassNameSet(ctx));
-  return toSnakeCase(mountOn);
-}
-
 // ---------------------------------------------------------------------------
-// Ruby literal rendering
+// Python literal rendering
 // ---------------------------------------------------------------------------
 
 function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return 'nil';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value === null || value === undefined) return 'None';
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
   if (typeof value === 'number') return String(value);
-  if (typeof value === 'string') return rubyString(value);
+  if (typeof value === 'string') return pythonString(value);
   if (Array.isArray(value)) return renderArray(value);
-  if (typeof value === 'object') return renderHash(value as Record<string, unknown>);
-  return 'nil';
+  if (typeof value === 'object') return renderDict(value as Record<string, unknown>);
+  return 'None';
 }
 
-function rubyString(s: string): string {
+function pythonString(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
@@ -124,27 +112,21 @@ function renderArray(items: unknown[]): string {
   return lines.join('\n');
 }
 
-function renderHash(obj: Record<string, unknown>): string {
+function renderDict(obj: Record<string, unknown>): string {
   const entries = Object.entries(obj);
   if (entries.length === 0) return '{}';
   const rendered = entries.map(([k, v]) => ({ key: k, value: renderValue(v) }));
-  const oneLineParts = rendered.map((e) => `${formatInlineKey(e.key)} ${e.value}`);
-  const oneline = `{ ${oneLineParts.join(', ')} }`;
+  const oneline = `{${rendered.map((e) => `"${e.key}": ${e.value}`).join(', ')}}`;
   if (oneline.length <= 80 && rendered.every((e) => !e.value.includes('\n'))) return oneline;
 
   const lines: string[] = ['{'];
   for (let i = 0; i < rendered.length; i++) {
     const e = rendered[i]!;
     const trailing = i < rendered.length - 1 ? ',' : '';
-    lines.push(`${INDENT}${formatInlineKey(e.key)} ${indentContinuationLines(e.value, INDENT)}${trailing}`);
+    lines.push(`${INDENT}"${e.key}": ${indentContinuationLines(e.value, INDENT)}${trailing}`);
   }
   lines.push('}');
   return lines.join('\n');
-}
-
-function formatInlineKey(name: string): string {
-  if (/^[a-z_][a-zA-Z0-9_]*$/.test(name)) return `${name}:`;
-  return `"${name.replace(/"/g, '\\"')}" =>`;
 }
 
 function indentContinuationLines(s: string, indent: string): string {

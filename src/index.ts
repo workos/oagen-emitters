@@ -25,5 +25,11 @@ export {
   runSnippetEmitters,
   snippetResultsToFiles,
   rubySnippetEmitter,
+  pythonSnippetEmitter,
+  phpSnippetEmitter,
+  goSnippetEmitter,
+  dotnetSnippetEmitter,
+  kotlinSnippetEmitter,
+  rustSnippetEmitter,
   workosSnippetsPlugin,
 } from './snippets/index.js';
