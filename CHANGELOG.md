@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/workos/oagen-emitters/compare/v0.15.1...v0.15.2) (2026-06-01)
+
+
+### Bug Fixes
+
+* **node:** align AutoPaginatable type param with serialized runtime shape ([#134](https://github.com/workos/oagen-emitters/issues/134)) ([43ddd64](https://github.com/workos/oagen-emitters/commit/43ddd64d5d56b4ff2e7ae19bfa1ee895d24cb60d))
+
 ## [0.15.1](https://github.com/workos/oagen-emitters/compare/v0.15.0...v0.15.1) (2026-06-01)
 
 
