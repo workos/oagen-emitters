@@ -1,8 +1,6 @@
-import type { EmitterContext, ResolvedOperation } from '@workos/oagen';
+import type { EmitterContext, ExampleBuilder, ResolvedOperation, SnippetArg, SnippetEmitter } from '@workos/oagen';
+import { collectSnippetArgs, collectWrapperArgs } from '@workos/oagen';
 import { apiClassName, methodName, packageSegment, propertyName } from '../kotlin/naming.js';
-import type { ExampleBuilder } from './example-builder.js';
-import { collectSnippetArgs, collectWrapperArgs, type SnippetArg } from './shared.js';
-import type { SnippetEmitter } from './types.js';
 
 const INDENT = '    ';
 

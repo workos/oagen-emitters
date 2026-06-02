@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ApiSpec, EmitterContext, Model, Operation, ResolvedOperation, Service } from '@workos/oagen';
-import { defaultSdkBehavior, toPascalCase, toSnakeCase } from '@workos/oagen';
-import { runSnippetEmitters } from '../../src/snippets/runner.js';
+import { defaultSdkBehavior, runSnippetEmitters, toPascalCase, toSnakeCase } from '@workos/oagen';
 import { rubySnippetEmitter } from '../../src/snippets/ruby.js';
 
 function makeSpec(services: Service[], models: Model[] = []): ApiSpec {

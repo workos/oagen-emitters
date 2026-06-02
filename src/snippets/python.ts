@@ -1,7 +1,6 @@
+import type { SnippetArg, SnippetEmitter } from '@workos/oagen';
+import { collectSnippetArgs, collectWrapperArgs, toSnakeCase } from '@workos/oagen';
 import { fieldName, safeParamName } from '../python/naming.js';
-import { collectSnippetArgs, collectWrapperArgs, type SnippetArg } from './shared.js';
-import type { SnippetEmitter } from './types.js';
-import { toSnakeCase } from '@workos/oagen';
 
 const INDENT = '    ';
 

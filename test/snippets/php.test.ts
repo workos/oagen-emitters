@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Model, Service } from '@workos/oagen';
+import { runSnippetEmitters } from '@workos/oagen';
 import { phpSnippetEmitter } from '../../src/snippets/php.js';
-import { runSnippetEmitters } from '../../src/snippets/runner.js';
 import { makeCtx, makeOp, makeSpec, makeStringField } from './_helpers.js';
 
 function runPhp(services: Service[], models: Model[] = []): string {

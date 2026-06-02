@@ -1,8 +1,6 @@
-import type { EmitterContext } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
+import type { EmitterContext, SnippetArg, SnippetEmitter } from '@workos/oagen';
+import { collectSnippetArgs, collectWrapperArgs, toSnakeCase } from '@workos/oagen';
 import { buildExportedClassNameSet, fieldName, resolveServiceTarget, safeParamName } from '../ruby/naming.js';
-import { collectSnippetArgs, collectWrapperArgs, type SnippetArg } from './shared.js';
-import type { SnippetEmitter } from './types.js';
 
 const INDENT = '  ';
 

@@ -1,6 +1,6 @@
+import type { SnippetArg, SnippetEmitter } from '@workos/oagen';
+import { collectSnippetArgs, collectWrapperArgs } from '@workos/oagen';
 import { fieldName, servicePropertyName } from '../php/naming.js';
-import { collectSnippetArgs, collectWrapperArgs, type SnippetArg } from './shared.js';
-import type { SnippetEmitter } from './types.js';
 
 const INDENT = '    ';
 

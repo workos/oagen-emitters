@@ -19,11 +19,11 @@ export { elixirExtractor } from './compat/extractors/elixir.js';
 
 export { workosEmittersPlugin } from './plugin.js';
 
-export type { SnippetEmitter, SnippetResult, ExampleBuilder } from './snippets/index.js';
+// Language-specific snippet emitters. The framework primitives
+// (SnippetEmitter, runSnippetEmitters, snippetResultsToFiles,
+// createExampleBuilder, collectSnippetArgs, collectWrapperArgs, etc.)
+// live upstream in @workos/oagen — consumers import those from there.
 export {
-  createExampleBuilder,
-  runSnippetEmitters,
-  snippetResultsToFiles,
   rubySnippetEmitter,
   pythonSnippetEmitter,
   phpSnippetEmitter,

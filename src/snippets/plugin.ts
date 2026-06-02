@@ -1,3 +1,4 @@
+import type { SnippetEmitter } from '@workos/oagen';
 import { dotnetSnippetEmitter } from './dotnet.js';
 import { goSnippetEmitter } from './go.js';
 import { kotlinSnippetEmitter } from './kotlin.js';
@@ -5,7 +6,6 @@ import { phpSnippetEmitter } from './php.js';
 import { pythonSnippetEmitter } from './python.js';
 import { rubySnippetEmitter } from './ruby.js';
 import { rustSnippetEmitter } from './rust.js';
-import type { SnippetEmitter } from './types.js';
 
 /**
  * Bundle of snippet emitters for every WorkOS SDK language we currently

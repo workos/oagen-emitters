@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Model, Service } from '@workos/oagen';
+import { runSnippetEmitters } from '@workos/oagen';
 import { dotnetSnippetEmitter } from '../../src/snippets/dotnet.js';
-import { runSnippetEmitters } from '../../src/snippets/runner.js';
 import { makeCtx, makeOp, makeSpec, makeStringField } from './_helpers.js';
 
 function runDotnet(services: Service[], models: Model[] = []): string {

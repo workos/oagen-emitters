@@ -25,10 +25,15 @@ The plugin bundle registers all emitters, extractors, and smoke runners provided
 
 Snippet emitters render one short, runnable call-site sample per resolved SDK operation — the kind of "how do I call this?" block that lives in REST API documentation pages. They are intentionally a separate runtime from the full SDK emitters: snippet emitters do not generate models, clients, or tests, and they are not invoked by `oagen generate`. Consumers (the WorkOS docs build, partner integrations) import them directly and write the results wherever they need.
 
-Snippet emitters ship for **ruby, python, php, go, dotnet, kotlin (rendered as `.java`), and rust** — every WorkOS SDK that lives in this package except Node. Node is intentionally absent; the WorkOS docs build continues to author its TypeScript samples by hand.
+The **framework plumbing lives upstream in `@workos/oagen`** (`SnippetEmitter` interface, `runSnippetEmitters` runner, `snippetResultsToFiles` file helper, `createExampleBuilder`, `collectSnippetArgs`, `collectWrapperArgs`, `hiddenParamSet`, etc.). This package ships the **language-specific emitters** for **ruby, python, php, go, dotnet, kotlin (rendered as `.java`), and rust** — every WorkOS SDK that lives in this package except Node. Node is intentionally absent; the WorkOS docs build continues to author its TypeScript samples by hand.
 
 ```ts
-import { parseSpec, resolveOperations } from "@workos/oagen";
+import {
+  parseSpec,
+  resolveOperations,
+  runSnippetEmitters,
+  snippetResultsToFiles,
+} from "@workos/oagen";
 import {
   operationHints,
   mountRules,
@@ -37,11 +42,7 @@ import {
   transformSpec,
   nestjsOperationIdTransform,
 } from "@workos/openapi-spec/policy";
-import {
-  runSnippetEmitters,
-  snippetResultsToFiles,
-  workosSnippetsPlugin,
-} from "@workos/oagen-emitters";
+import { workosSnippetsPlugin } from "@workos/oagen-emitters";
 
 const spec = await parseSpec("spec/open-api-spec.yaml", {
   operationIdTransform: nestjsOperationIdTransform,
@@ -65,11 +66,7 @@ const files = snippetResultsToFiles(results, "snippets");
 
 Each snippet emitter reuses its sibling SDK emitter's naming helpers (`src/<lang>/naming.ts`), so generated samples stay in lockstep with the SDK they document. Method names, mount-target casing, parameter names, and reserved-word handling all match what the real SDK exposes.
 
-Snippet emitters live in `src/snippets/<lang>.ts`. They share three small helpers:
-
-- `src/snippets/types.ts` — the `SnippetEmitter` interface and the `SnippetResult` output shape.
-- `src/snippets/example-builder.ts` — walks IR types to produce illustrative argument values, preferring `example`/`default` fields when the spec provides them.
-- `src/snippets/shared.ts` — argument-collection helpers (`collectSnippetArgs`, `collectWrapperArgs`) shared across every language emitter so required-only filtering, hidden-param suppression, and split-operation wrapper handling stay consistent.
+Language emitters live in `src/snippets/<lang>.ts` and delegate every framework concern (the `SnippetEmitter` interface, the `ExampleBuilder`, the required-only / hidden-param / split-wrapper argument collection) to `@workos/oagen`. Each file is just the language-specific call-site template plus a small literal renderer.
 
 When adding a snippet emitter for a new language, mirror an existing one (`src/snippets/python.ts` is the smallest reference) and add focused tests in `test/snippets/<lang>.test.ts` using the shared scaffolding in `test/snippets/_helpers.ts`.
 
