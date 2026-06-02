@@ -21,6 +21,37 @@ const config: OagenConfig = {
 
 The plugin bundle registers all emitters, extractors, and smoke runners provided by this package.
 
+## Snippet emitters
+
+Snippet emitters render one short, runnable call-site sample per resolved SDK operation — the kind of "how do I call this?" block that lives in REST API documentation pages. They are intentionally a separate runtime from the full SDK emitters: snippet emitters do not generate models, clients, or tests, and they are not invoked by `oagen generate`. Consumers (the WorkOS docs build, partner integrations) import them directly and write the results wherever they need.
+
+```ts
+import { parseSpec, resolveOperations } from "@workos/oagen";
+import {
+  runSnippetEmitters,
+  snippetResultsToFiles,
+  workosSnippetsPlugin,
+} from "@workos/oagen-emitters";
+
+const spec = await parseSpec("spec/open-api-spec.yaml");
+const ctx = {
+  namespace: "workos",
+  namespacePascal: "WorkOS",
+  spec,
+  resolvedOperations: resolveOperations(spec, operationHints, mountRules),
+};
+
+const results = runSnippetEmitters(workosSnippetsPlugin.snippets, ctx);
+// results[i] = { language, fileExtension, operationId, mountTarget, methodName, content }
+
+// Optional: write `<outputDir>/<language>/<methodName>-request.<ext>` files.
+const files = snippetResultsToFiles(results, "snippets");
+```
+
+Each snippet emitter reuses its sibling SDK emitter's naming helpers (`src/<lang>/naming.ts`), so generated samples stay in lockstep with the SDK they document. Method names, mount-target casing, parameter names, and reserved-word handling all match what the real SDK exposes.
+
+Snippet emitters live in `src/snippets/<lang>.ts`. They share an `ExampleBuilder` (`src/snippets/example-builder.ts`) that walks IR types to produce illustrative argument values (preferring spec `example`/`default` fields when present).
+
 ## Development
 
 ```bash

@@ -18,3 +18,12 @@ export { dotnetExtractor } from './compat/extractors/dotnet.js';
 export { elixirExtractor } from './compat/extractors/elixir.js';
 
 export { workosEmittersPlugin } from './plugin.js';
+
+export type { SnippetEmitter, SnippetResult, ExampleBuilder } from './snippets/index.js';
+export {
+  createExampleBuilder,
+  runSnippetEmitters,
+  snippetResultsToFiles,
+  rubySnippetEmitter,
+  workosSnippetsPlugin,
+} from './snippets/index.js';
