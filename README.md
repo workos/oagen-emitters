@@ -1,6 +1,6 @@
 # oagen-emitters
 
-Language emitters, extractors, and smoke runners for [oagen](../oagen). This package is a **plugin library** -- it provides SDK generation capabilities but does not own the consumer config. The canonical generation config lives in the spec-consuming project (e.g. https://github.com/workos/openapi-spec/oagen.config.ts`).
+Language emitters, extractors, smoke runners, and documentation snippet emitters for [oagen](../oagen). This package is a **plugin library** -- it provides SDK generation and call-site snippet rendering capabilities but does not own the consumer config. The canonical generation policy lives in the spec-consuming project (e.g. https://github.com/workos/openapi-spec/blob/main/src/policy.ts).
 
 ## Plugin export
 
@@ -20,6 +20,53 @@ const config: OagenConfig = {
 ```
 
 The plugin bundle registers all emitters, extractors, and smoke runners provided by this package.
+
+## Snippet emitters
+
+Snippet emitters render one short, runnable call-site sample per resolved SDK operation. They are intentionally a separate runtime from the full SDK emitters: snippet emitters do not generate models, clients, or tests, and they are not invoked by `oagen generate`. Consumers import them directly and write the results wherever they need.
+
+The framework plumbing lives upstream in `@workos/oagen`:
+
+```ts
+import {
+  parseSpec,
+  resolveOperations,
+  runSnippetEmitters,
+  snippetResultsToFiles,
+} from "@workos/oagen";
+import {
+  operationHints,
+  mountRules,
+  modelHints,
+  schemaNameTransform,
+  transformSpec,
+  nestjsOperationIdTransform,
+} from "@workos/openapi-spec/policy";
+import { workosSnippetsPlugin } from "@workos/oagen-emitters";
+
+const spec = await parseSpec("spec/open-api-spec.yaml", {
+  operationIdTransform: nestjsOperationIdTransform,
+  schemaNameTransform,
+  transformSpec,
+});
+const ctx = {
+  namespace: "workos",
+  namespacePascal: "WorkOS",
+  spec,
+  modelHints,
+  resolvedOperations: resolveOperations(spec, operationHints, mountRules),
+};
+
+const results = runSnippetEmitters(workosSnippetsPlugin.snippets, ctx);
+// results[i] = { language, fileExtension, operationId, mountTarget, methodName, content }
+
+// Optional: write `<outputDir>/<language>/<methodName>-request.<ext>` files.
+const files = snippetResultsToFiles(results, "snippets");
+```
+
+Each snippet emitter reuses its sibling SDK emitter's naming helpers (`src/<lang>/naming.ts`), so generated samples stay in lockstep with the SDK they document. Method names, mount-target casing, parameter names, and reserved-word handling all match what the real SDK exposes.
+
+When adding a snippet emitter for a new language, mirror an existing one (`src/snippets/python.ts` is the smallest reference) and add focused tests in `test/snippets/<lang>.test.ts` using the shared scaffolding in `test/snippets/_helpers.ts`.
 
 ## Development
 

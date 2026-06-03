@@ -157,7 +157,7 @@ function wordsMatch(left: string, right: string): boolean {
   return singularize(left.toLowerCase()) === singularize(right.toLowerCase());
 }
 
-function trimMountedResourceFromMethod(method: string, mountName: string): string {
+export function trimMountedResourceFromMethod(method: string, mountName: string): string {
   const methodWords = splitPascalWords(method);
   if (methodWords.length < 2) return method;
 
