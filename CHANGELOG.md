@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/workos/oagen-emitters/compare/v0.15.2...v0.16.0) (2026-06-03)
+
+
+### Features
+
+* **snippets:** add snippet emitter family for seven languages ([#137](https://github.com/workos/oagen-emitters/issues/137)) ([1b4ee64](https://github.com/workos/oagen-emitters/commit/1b4ee640d47e8353726005b3fc953ffa0d160973))
+
+
+### Bug Fixes
+
+* **node:** improve test generation for owned services with hand-owned types ([#136](https://github.com/workos/oagen-emitters/issues/136)) ([3307621](https://github.com/workos/oagen-emitters/commit/3307621fbdfc3e719893a7691997fcbfc4a107d4))
+
 ## [0.15.2](https://github.com/workos/oagen-emitters/compare/v0.15.1...v0.15.2) (2026-06-01)
 
 
