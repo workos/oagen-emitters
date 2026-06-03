@@ -1,6 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ApiSpec, Service, Operation, Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
+import type {
+  ApiSpec,
+  Service,
+  Operation,
+  Model,
+  TypeRef,
+  Parameter,
+  EmitterContext,
+  GeneratedFile,
+} from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
@@ -333,6 +342,20 @@ function pathParamTestValue(param: { type: TypeRef; name?: string } | undefined,
   return 'test_id';
 }
 
+function queryParamTestValue(param: Parameter, modelMap?: Map<string, Model>): string {
+  if (param.example !== undefined) {
+    if (Array.isArray(param.example)) {
+      return `[${param.example.map((v: unknown) => (typeof v === 'string' ? `'${v}'` : String(v))).join(', ')}]`;
+    }
+    const isDateTime = param.type.kind === 'primitive' && param.type.format === 'date-time';
+    if (isDateTime && typeof param.example === 'string') {
+      return `new Date('${param.example}')`;
+    }
+    return typeof param.example === 'string' ? `'${param.example}'` : String(param.example);
+  }
+  return fixtureValueForType(param.type, param.name, 'Options', modelMap) ?? "'test'";
+}
+
 /** Build test arguments for all path params (handles multiple path params). */
 function buildTestPathArgs(op: Operation): string {
   // Detect path template variables (may be more than op.pathParams if spec is incomplete)
@@ -372,7 +395,10 @@ function renderPaginatedTest(
   const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
   const baselineItemType = autoPaginatableItemType(baselineMethod?.returnType);
   const generatedItemType = ctx ? resolveInterfaceName(itemModelName, ctx) : null;
-  const skipFieldAssertions = Boolean(baselineItemType && generatedItemType && baselineItemType !== generatedItemType);
+  const baselineHasNonPaginatableReturn = Boolean(baselineMethod?.returnType && !baselineItemType);
+  const skipFieldAssertions =
+    baselineHasNonPaginatableReturn ||
+    Boolean(baselineItemType && generatedItemType && baselineItemType !== generatedItemType);
 
   lines.push("    it('returns paginated results', async () => {");
   lines.push(`      fetchOnce(list${itemModelName}Fixture);`);
@@ -649,7 +675,7 @@ function buildOptionsObjectTestArg(
     : op.queryParams;
   for (const param of queryParams) {
     const localName = fieldName(param.name);
-    const value = fixtureValueForType(param.type, param.name, 'Options', modelMap) ?? "'test'";
+    const value = queryParamTestValue(param, modelMap);
     entries.push(`${localName}: ${value}`);
   }
 
