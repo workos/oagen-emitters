@@ -466,6 +466,104 @@ describe('generateResources', () => {
   });
 });
 
+describe('body-less POST/PUT operations', () => {
+  // The WorkOS client's `post(path, entity, options?)` and `put(path, entity, options?)`
+  // REQUIRE the entity argument. Operations with no request body must still pass `{}`
+  // or the generated call fails with TS2554 "Expected 2-3 arguments, but got 1".
+  const domainModel: Model = {
+    name: 'OrganizationDomain',
+    fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+  };
+
+  it('passes an empty object body for a body-less POST with a response model', () => {
+    const services: Service[] = [
+      {
+        name: 'OrganizationDomains',
+        operations: [
+          {
+            name: 'verifyOrganizationDomain',
+            httpMethod: 'post',
+            path: '/organization_domains/{id}/verify',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationDomain' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [domainModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('organization-domains.ts'));
+    expect(resourceFile).toBeDefined();
+    // The post() call must pass `{}` as the required entity argument.
+    expect(resourceFile!.content).toMatch(/await this\.workos\.post<[^>]+>\(`[^`]+`, \{\}\);/);
+    expect(resourceFile!.content).not.toMatch(/await this\.workos\.post<[^>]+>\(`[^`]+`\);/);
+  });
+
+  it('passes an empty object body for a body-less PUT with a response model', () => {
+    const flagModel: Model = {
+      name: 'FeatureFlag',
+      fields: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const services: Service[] = [
+      {
+        name: 'FeatureFlags',
+        operations: [
+          {
+            name: 'enableFeatureFlag',
+            httpMethod: 'put',
+            path: '/feature_flags/{slug}/enable',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'FeatureFlag' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [flagModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('feature-flags.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toMatch(/await this\.workos\.put<[^>]+>\(`[^`]+`, \{\}\);/);
+    expect(resourceFile!.content).not.toMatch(/await this\.workos\.put<[^>]+>\(`[^`]+`\);/);
+  });
+
+  it('does not add a body argument to body-less GET calls', () => {
+    const services: Service[] = [
+      {
+        name: 'OrganizationDomains',
+        operations: [
+          {
+            name: 'getOrganizationDomain',
+            httpMethod: 'get',
+            path: '/organization_domains/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationDomain' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [domainModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('organization-domains.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toMatch(/await this\.workos\.get<[^>]+>\(`[^`]+`\);/);
+  });
+});
+
 describe('resolveResourceClassName', () => {
   it('uses overlay name when baseline has compatible constructor', () => {
     const service: Service = { name: 'Organizations', operations: [] };

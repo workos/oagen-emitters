@@ -1793,7 +1793,13 @@ function renderOptionsObjectMethod(
 
     lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): ${methodReturnType} {`);
     renderOptionsObjectDestructure(lines, pathBindings);
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}${queryOptionsArg});`);
+    // POST/PUT/PATCH require the entity argument even without a request body —
+    // the client signature is `post(path, entity, options?)`, so a body-less
+    // call must still pass `{}` or the generated code fails with TS2554.
+    const emptyBodyArg = httpMethodNeedsBody(op.httpMethod) ? ', {}' : '';
+    lines.push(
+      `    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}${emptyBodyArg}${queryOptionsArg});`,
+    );
     if (override?.returnExpression) {
       lines.push(`    const result = ${returnExpr};`);
       lines.push(`    return ${override.returnExpression};`);
