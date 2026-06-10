@@ -564,6 +564,187 @@ describe('body-less POST/PUT operations', () => {
   });
 });
 
+describe('paginated list methods and path params (AutoPaginatable typing)', () => {
+  // List methods with PATH parameters destructure those params out of the
+  // options object (`const { actionName, ...paginationOptions } = options;`)
+  // and pass the REST object to AutoPaginatable/fetchAndDeserialize. The
+  // declared second type argument must therefore be the rest type
+  // (Omit<FullOptions, pathFields>) — declaring the full options interface
+  // fails TS2322 because the rest object lacks the required path-param fields.
+  const schemaModel: Model = {
+    name: 'AuditLogSchema',
+    fields: [{ name: 'version', type: { kind: 'primitive', type: 'number' }, required: true }],
+  };
+
+  const paginationQueryParams = [
+    { name: 'limit', type: { kind: 'primitive' as const, type: 'number' as const }, required: false },
+    { name: 'after', type: { kind: 'primitive' as const, type: 'string' as const }, required: false },
+  ];
+
+  const cursorPagination = {
+    strategy: 'cursor' as const,
+    param: 'after',
+    itemType: { kind: 'model' as const, name: 'AuditLogSchema' },
+  };
+
+  it('types AutoPaginatable over the rest options when one path param is destructured', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'listActionSchemas',
+            httpMethod: 'get',
+            path: '/audit_logs/actions/{actionName}/schemas',
+            pathParams: [{ name: 'actionName', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'AuditLogSchema' } },
+            pagination: cursorPagination,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [schemaModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('audit-logs.ts'));
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    // The declaration, the constructed value, and the re-fetch lambda must all
+    // agree on the rest type actually passed (paginationOptions).
+    const expectedMethod = [
+      "  async listActionSchemas(options: ListActionSchemasOptions): Promise<AutoPaginatable<AuditLogSchema, Omit<ListActionSchemasOptions, 'actionName'>>> {",
+      '    const { actionName, ...paginationOptions } = options;',
+      '    return new AutoPaginatable(',
+      '      await fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '        this.workos,',
+      '        `/audit_logs/actions/${encodeURIComponent(actionName)}/schemas`,',
+      '        deserializeAuditLogSchema,',
+      '        paginationOptions,',
+      '      ),',
+      '      (params) =>',
+      '        fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '          this.workos,',
+      '          `/audit_logs/actions/${encodeURIComponent(actionName)}/schemas`,',
+      '          deserializeAuditLogSchema,',
+      '          params,',
+      '        ),',
+      '      paginationOptions,',
+      '    );',
+      '  }',
+    ].join('\n');
+    expect(content).toContain(expectedMethod);
+    // The full options interface (which requires actionName) must never be the
+    // second AutoPaginatable type argument — that is the TS2322 shape.
+    expect(content).not.toContain('AutoPaginatable<AuditLogSchema, ListActionSchemasOptions>');
+  });
+
+  it('keeps the full options type when no path params are destructured (regression)', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'listActions',
+            httpMethod: 'get',
+            path: '/audit_logs/actions',
+            pathParams: [],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'AuditLogSchema' } },
+            pagination: cursorPagination,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [schemaModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('audit-logs.ts'));
+    expect(resourceFile).toBeDefined();
+
+    // Byte-identical to the pre-fix output: no Omit, no path destructure.
+    const expectedMethod = [
+      '  async listActions(options?: ListActionsOptions): Promise<AutoPaginatable<AuditLogSchema, ListActionsOptions>> {',
+      '    const paginationOptions = options;',
+      '    return new AutoPaginatable(',
+      '      await fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '        this.workos,',
+      "        '/audit_logs/actions',",
+      '        deserializeAuditLogSchema,',
+      '        paginationOptions,',
+      '      ),',
+      '      (params) =>',
+      '        fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '          this.workos,',
+      "          '/audit_logs/actions',",
+      '          deserializeAuditLogSchema,',
+      '          params,',
+      '        ),',
+      '      paginationOptions,',
+      '    );',
+      '  }',
+    ].join('\n');
+    expect(resourceFile!.content).toContain(expectedMethod);
+    expect(resourceFile!.content).not.toContain('Omit<');
+  });
+
+  it('omits every destructured path param when there are multiple', () => {
+    const memberModel: Model = {
+      name: 'GroupMember',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const services: Service[] = [
+      {
+        name: 'Groups',
+        operations: [
+          {
+            name: 'listGroupMembers',
+            httpMethod: 'get',
+            path: '/organizations/{organizationId}/groups/{groupId}/members',
+            pathParams: [
+              { name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'groupId', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'GroupMember' } },
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              itemType: { kind: 'model', name: 'GroupMember' },
+            },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [memberModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('groups.ts'));
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    expect(content).toContain(
+      'async listGroupMembers(options: ListGroupMembersOptions): ' +
+        "Promise<AutoPaginatable<GroupMember, Omit<ListGroupMembersOptions, 'organizationId' | 'groupId'>>> {",
+    );
+    expect(content).toContain('const { organizationId, groupId, ...paginationOptions } = options;');
+    expect(content).toContain(
+      '`/organizations/${encodeURIComponent(organizationId)}/groups/${encodeURIComponent(groupId)}/members`',
+    );
+    expect(content).not.toContain('AutoPaginatable<GroupMember, ListGroupMembersOptions>');
+  });
+});
+
 describe('inline object-literal baseline parameter types', () => {
   // The hand-written workos-node AdminPortal method uses an inline object-literal
   // parameter TYPE (`generateLink({ ... }: { intent: GenerateLinkIntent; ... })`).

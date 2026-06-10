@@ -1695,7 +1695,17 @@ function renderOptionsObjectMethod(
     const wireType = wireInterfaceName(itemType);
     const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
     const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
-    const paginationType = needsWireSerializer ? 'PaginationOptions' : optionParam.type;
+    // When path params are destructured out of the options object, the value
+    // passed to AutoPaginatable (and to fetchAndDeserialize) is the REST
+    // object — typed Omit<FullOptions, pathFields> — not the full options
+    // interface. Declaring the full interface as the second type argument
+    // fails TS2322 because the rest object lacks the required path-param
+    // fields, so parameterize over the rest type actually passed.
+    const restOptionsType =
+      pathBindings.length > 0
+        ? `Omit<${optionParam.type}, ${pathBindings.map((b) => `'${b}'`).join(' | ')}>`
+        : optionParam.type;
+    const paginationType = needsWireSerializer ? 'PaginationOptions' : restOptionsType;
     const returnType = needsWireSerializer
       ? `Promise<AutoPaginatable<${itemType}, ${paginationType}>>`
       : (preferredBaselineReturnType(ctx, baselineMethod?.returnType) ??
