@@ -645,6 +645,110 @@ describe('inline object-literal baseline parameter types', () => {
   });
 });
 
+describe('@oagen-ignore region method filtering', () => {
+  // `ignoredResourceMethodNames` scans @oagen-ignore-start/end regions in the
+  // existing on-disk resource file and the plan filter drops matching method
+  // names so user-preserved legacy methods are not re-emitted as duplicates.
+  // Generic methods (`name<T>(...)`, including multi-line type-parameter lists
+  // with constraints/defaults and nested angle brackets) must be caught too —
+  // on the SSO pass, region-protected getProfile<T>/getProfileAndToken<T> were
+  // re-appended as duplicates on every regen.
+  const ssoOp = (name: string, opPath: string) =>
+    ({
+      name,
+      httpMethod: 'get',
+      path: opPath,
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model', name: 'Profile' },
+      errors: [],
+      injectIdempotencyKey: false,
+    }) as Service['operations'][number];
+
+  it('filters region-protected generic methods (single-line and multi-line type params)', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-ignore-region-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'sso'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'sso', 'sso.ts'),
+        [
+          "import type { WorkOS } from '../workos';",
+          '',
+          'export class Sso {',
+          '  constructor(private readonly workos: WorkOS) {}',
+          '',
+          '  // @oagen-ignore-start',
+          '  async getProfile<T extends Record<string, unknown> = Record<string, unknown>>(accessToken: string): Promise<T> {',
+          '    return {} as T;',
+          '  }',
+          '  // @oagen-ignore-end',
+          '',
+          '  // @oagen-ignore-start',
+          '  async getProfileAndToken<',
+          '    T extends Record<string, unknown> = Record<string, unknown>,',
+          '  >(payload: { code: string }): Promise<T> {',
+          '    return {} as T;',
+          '  }',
+          '  // @oagen-ignore-end',
+          '',
+          '  // @oagen-ignore-start',
+          '  getAuthorizationUrl(options: { provider: string }): string {',
+          "    return '';",
+          '  }',
+          '  // @oagen-ignore-end',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const service: Service = {
+        name: 'Sso',
+        operations: [
+          ssoOp('getProfile', '/sso/profile'),
+          ssoOp('getProfileAndToken', '/sso/token'),
+          ssoOp('getAuthorizationUrl', '/sso/authorize'),
+          {
+            name: 'deleteConnection',
+            httpMethod: 'delete',
+            path: '/connections/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      };
+      const profileModel: Model = {
+        name: 'Profile',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      };
+      const spec: ApiSpec = { ...emptySpec, services: [service], models: [profileModel] };
+
+      const result = generateResources([service], {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Sso'] },
+      } as EmitterContext);
+
+      const resourceFile = result.find((f) => f.path === 'src/sso/sso.ts');
+      expect(resourceFile).toBeDefined();
+      const content = resourceFile!.content;
+      // The non-protected method is still emitted…
+      expect(content).toContain('async deleteConnection');
+      // …but region-protected methods are not re-emitted, generic or not.
+      expect(content).not.toContain('async getProfile(');
+      expect(content).not.toContain('async getProfileAndToken(');
+      expect(content).not.toContain('getAuthorizationUrl(');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('resolveResourceClassName', () => {
   it('uses overlay name when baseline has compatible constructor', () => {
     const service: Service = { name: 'Organizations', operations: [] };

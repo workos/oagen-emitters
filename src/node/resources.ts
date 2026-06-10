@@ -225,7 +225,12 @@ function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): 
   const methods = new Set<string>();
   for (const block of content.matchAll(/@oagen-ignore-start[\s\S]*?@oagen-ignore-end/g)) {
     for (const line of block[0].split('\n')) {
-      const match = line.match(/^\s{2}(?:(?:public|private|protected)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/);
+      // Match the method name followed by `(` or by `<` — the latter covers
+      // generic methods (`getProfile<T extends ...>(...)`), including
+      // multi-line type-parameter lists where the line ends right after `<`.
+      // Matching only up to the opening bracket sidesteps balancing nested
+      // angle brackets like `<T extends Record<string, unknown> = ...>`.
+      const match = line.match(/^\s{2}(?:(?:public|private|protected)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*[<(]/);
       if (match) methods.add(match[1]);
     }
   }
