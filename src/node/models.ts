@@ -370,7 +370,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
             const eDir = resolveDir(eService);
             const bEnum = ctx.apiSurface?.enums?.[irEnumName];
             const bAlias = ctx.apiSurface?.typeAliases?.[irEnumName];
-            const bSrc = (bEnum as any)?.sourceFile ?? (bAlias as any)?.sourceFile;
+            // Same owned-service exception as the `deps.enums` loop below:
+            // `generateEnums` emits the canonical module for owned services
+            // even when the baseline declares the name elsewhere (usually in
+            // the very file being overwritten), so import planning must
+            // target the canonical path to agree with that emission.
+            const eEnumIsOwned = isNodeOwnedService(ctx, eService);
+            const bSrc = eEnumIsOwned ? undefined : ((bEnum as any)?.sourceFile ?? (bAlias as any)?.sourceFile);
             const gPath = `src/${eDir}/interfaces/${fileName(irEnumName)}.interface.ts`;
             const cPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
             if (bSrc === cPath) {
@@ -446,13 +452,21 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
 
       const baselineEnum = ctx.apiSurface?.enums?.[dep];
       const baselineAlias = ctx.apiSurface?.typeAliases?.[dep];
+      const depService = enumToService.get(dep);
+      const depEnumIsOwned = isNodeOwnedService(ctx, depService);
       // Fall back to the live-surface declaration path: `generateEnums` skips
       // emission when the enum is already declared elsewhere in the SDK (same
       // fallback, see enums.ts), so the import must follow that declaration —
       // the canonical per-service file will never exist.
-      const baselineSrc =
-        (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile ?? liveSurfaceInterfacePath(dep);
-      const depService = enumToService.get(dep);
+      //
+      // OWNED services are the exception, mirroring enums.ts: the on-disk
+      // declaration usually lives in a file this very regeneration
+      // overwrites, `generateEnums` emits the canonical module anyway, and
+      // the import must agree with that emission — otherwise the generated
+      // interface references a name that is declared nowhere.
+      const baselineSrc = depEnumIsOwned
+        ? undefined
+        : ((baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile ?? liveSurfaceInterfacePath(dep));
       const depDir = resolveDir(depService);
       const generatedPath = `src/${depDir}/interfaces/${fileName(dep)}.interface.ts`;
       const currentFilePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
@@ -607,6 +621,17 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
             if (generatedNames.has(name)) continue;
             const sepPath = `src/${dirName}/interfaces/${fileName(name)}.interface.ts`;
             if (sepPath !== filePath && files.some((f) => f.path === sepPath)) continue;
+            // Owned-service enums get their canonical per-service module
+            // emitted by `generateEnums` this run, and this file imports the
+            // name (see the deps.enums loop above). Preserving the legacy
+            // inline declaration would collide with that import (TS2440).
+            if (
+              !isInlineEnum(name) &&
+              ctx.spec.enums.some((e) => e.name === name) &&
+              isNodeOwnedService(ctx, enumToService.get(name))
+            ) {
+              continue;
+            }
             inlineNames.add(name);
           }
         };

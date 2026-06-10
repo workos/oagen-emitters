@@ -169,4 +169,76 @@ describe('createServiceDirResolver owned-service dependency reassignment', () =>
     const { modelToService, resolveDir } = createServiceDirResolver([retentionModel], services, testCtx);
     expect(resolveDir(modelToService.get('AuditLogsRetention'))).toBe('organizations');
   });
+
+  it('reassigns the full transitive closure when ops are re-mounted onto an owned service', () => {
+    // Real instance: GET/PUT /organizations/{organizationId}/audit_logs_retention
+    // live on the IR Organizations service but are MOUNTED on AuditLogs via
+    // resolvedOperations. Walking only IR services misses them entirely, so
+    // `AuditLogsRetention` (and everything it references) stays assigned to
+    // the unemittable organizations dir and is never emitted anywhere.
+    const nestedModel: Model = {
+      name: 'RetentionPolicy',
+      fields: [{ name: 'kind', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const retentionWithNested: Model = {
+      ...retentionModel,
+      fields: [
+        ...retentionModel.fields,
+        { name: 'policy', type: { kind: 'model', name: 'RetentionPolicy' }, required: true },
+      ],
+    };
+    const listOrgsOp = {
+      name: 'listOrganizations',
+      httpMethod: 'get' as const,
+      path: '/organizations',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const mountedRetentionOp = retentionOp(
+      'getAuditLogsRetention',
+      '/organizations/{organizationId}/audit_logs_retention',
+    );
+    const orgService: Service = { name: 'Organizations', operations: [listOrgsOp, mountedRetentionOp] };
+    const mountedServices: Service[] = [orgService];
+
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts'); // existing SDK
+    setActiveLiveSurface(surface);
+    try {
+      const testCtx = {
+        ...ctx,
+        spec: { ...emptySpec, models: [retentionWithNested, nestedModel], services: mountedServices },
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+        resolvedOperations: [
+          {
+            operation: listOrgsOp,
+            service: orgService,
+            methodName: 'list_organizations',
+            mountOn: 'Organizations',
+          },
+          {
+            operation: mountedRetentionOp,
+            service: orgService,
+            methodName: 'get_audit_logs_retention',
+            mountOn: 'AuditLogs',
+          },
+        ],
+      } as unknown as EmitterContext;
+      const { modelToService, resolveDir } = createServiceDirResolver(
+        [retentionWithNested, nestedModel],
+        mountedServices,
+        testCtx,
+      );
+      expect(resolveDir(modelToService.get('AuditLogsRetention'))).toBe('audit-logs');
+      // Nested dependency N follows M into the owned dir — the closure must
+      // not stop at the directly-referenced model.
+      expect(resolveDir(modelToService.get('RetentionPolicy'))).toBe('audit-logs');
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
 });

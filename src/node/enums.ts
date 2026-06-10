@@ -3,6 +3,7 @@ import { collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oag
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
+import { isNodeOwnedService } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -30,7 +31,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     if (dirName === 'common' && !baselineSourceFile && (ctx.outputDir || ctx.targetDir || ctx.apiSurface)) {
       continue;
     }
-    if (baselineSourceFile && baselineSourceFile !== generatedPath) {
+    // The declared-elsewhere skip must not fire for OWNED services: the
+    // "elsewhere" is typically the very interface file the owned-service
+    // regeneration is simultaneously overwriting (e.g. legacy enums declared
+    // inline in organization-domain.interface.ts), so skipping here leaves
+    // the names referenced by generated code but declared nowhere. Under
+    // ownership the canonical per-service module is the source of truth —
+    // emit it; the model emitter plans its import from the same path.
+    const isOwnedEnumService = isNodeOwnedService(ctx, service, service ? serviceNameMap.get(service) : undefined);
+    if (baselineSourceFile && baselineSourceFile !== generatedPath && !isOwnedEnumService) {
       continue;
     }
 
