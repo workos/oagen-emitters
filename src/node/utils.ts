@@ -16,7 +16,7 @@ import {
   resolveMethodName,
   buildServiceNameMap,
 } from './naming.js';
-import { getMountTarget } from '../shared/resolved-ops.js';
+import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
 import { assignModelsToServices, collectModelRefs, collectFieldDependencies } from '@workos/oagen';
 import { isNodeOwnedService } from './options.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasFile } from './live-surface.js';
@@ -306,7 +306,18 @@ function reassignOwnedServiceDependencies(
   ctx: EmitterContext,
 ): void {
   const serviceNameMap = buildServiceNameMap(services, ctx);
-  const ownedServices = services.filter((s) => isNodeOwnedService(ctx, s.name, serviceNameMap.get(s.name)));
+  // Ownership is a property of the MOUNT target, not the IR service: an op
+  // can live on a non-owned IR service (e.g. Organizations, because its path
+  // starts with /organizations) while being mounted on an owned service via
+  // `resolvedOperations` (e.g. AuditLogs' retention endpoints). Walking only
+  // IR services misses such ops entirely, so the models they reference stay
+  // assigned to the unemittable IR directory and are never emitted anywhere.
+  // Regroup by mount target when resolved operations exist — same as
+  // `buildGeneratedResourceModelUsage` and `computeOwnedServiceDirs`.
+  const mountGroups = groupByMount(ctx);
+  const candidateServices: Service[] =
+    mountGroups.size > 0 ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations })) : services;
+  const ownedServices = candidateServices.filter((s) => isNodeOwnedService(ctx, s.name, serviceNameMap.get(s.name)));
   if (ownedServices.length === 0) return;
   // Greenfield generation emits every directory; nothing is unemittable.
   if (!liveSurfaceHasExistingSdk()) return;
