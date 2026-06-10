@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Enum } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateEnums } from '../../src/node/enums.js';
+import { emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -124,5 +125,67 @@ describe('generateEnums', () => {
 
     expect(result[0].content).toContain('No longer supported.\n   * @deprecated');
     expect(result[0].content).toContain('/** @deprecated */');
+  });
+});
+
+describe('assignEnumsToServices owned-service dependency reassignment', () => {
+  it('follows a reassigned dependency model into the owned service', () => {
+    // The enum is referenced only through `AuditLogsRetention`, whose
+    // first-reference assignment is Organizations (unemittable this run).
+    // When the owned AuditLogs service pulls the model into `audit-logs/`,
+    // the enum must follow — otherwise the model file imports an enum file
+    // that is emitted nowhere.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts'); // existing SDK
+    setActiveLiveSurface(surface);
+    try {
+      const enums: Enum[] = [
+        {
+          name: 'RetentionPeriod',
+          values: [
+            { name: 'THIRTY_DAYS', value: '30d' },
+            { name: 'NINETY_DAYS', value: '90d' },
+          ],
+        },
+      ];
+      const models = [
+        {
+          name: 'AuditLogsRetention',
+          fields: [
+            {
+              name: 'period',
+              type: { kind: 'enum' as const, name: 'RetentionPeriod', values: ['30d', '90d'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const retentionOp = (name: string, path: string) => ({
+        name,
+        httpMethod: 'get' as const,
+        path,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      });
+      const services = [
+        { name: 'Organizations', operations: [retentionOp('getRetention', '/organizations/{id}/retention')] },
+        { name: 'AuditLogs', operations: [retentionOp('getAuditLogsRetention', '/audit_logs/retention')] },
+      ];
+      const ctxOwned: EmitterContext = {
+        ...ctx,
+        spec: { ...emptySpec, enums, models, services },
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+      } as EmitterContext;
+
+      const result = generateEnums(enums, ctxOwned);
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('src/audit-logs/interfaces/retention-period.interface.ts');
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
   });
 });

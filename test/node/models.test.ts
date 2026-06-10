@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Model, GeneratedFile } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels, generateSerializers } from '../../src/node/models.js';
-import { nodeEmitter } from '../../src/node/index.js';
+import { nodeEmitter, enforceEmittedImportInvariant } from '../../src/node/index.js';
 import { buildLiveSurface, emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
 import { setBaselineInterfaceNames, setBaselineSerializedNames } from '../../src/node/naming.js';
 import * as fs from 'node:fs';
@@ -830,5 +830,259 @@ describe('generateSerializers', () => {
     );
     expect(orgSerializer).toBeDefined();
     expect(orgSerializer!.content).toContain('export const deserializeOrganization');
+  });
+});
+
+describe('owned-service dependency model emission', () => {
+  it('emits dependency models into the owned service directory instead of an unemittable one', () => {
+    // Real instance: the AuditLogs ownership pass generated audit-logs.ts
+    // importing `../organizations/interfaces/audit-logs-retention.interface`,
+    // but the retention models were assigned to the (non-owned) Organizations
+    // dir and therefore never emitted — an unresolvable import (TS2307).
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-dep-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'AuditLogsRetention',
+          fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+        },
+      ];
+      const retentionOp = (name: string, opPath: string) => ({
+        name,
+        httpMethod: 'get' as const,
+        path: opPath,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      });
+      const spec = makeSpec(models, [
+        { name: 'Organizations', operations: [retentionOp('getRetention', '/organizations/{id}/retention')] },
+        { name: 'AuditLogs', operations: [retentionOp('getAuditLogsRetention', '/audit_logs/retention')] },
+      ]);
+
+      const files = nodeEmitter.generateModels(models, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+      } as EmitterContext);
+
+      // The dependency model lands in the importing (owned) service's dir…
+      expect(files.some((f) => f.path === 'src/audit-logs/interfaces/audit-logs-retention.interface.ts')).toBe(true);
+      // …and nothing is planned for the unemittable organizations dir.
+      expect(files.some((f) => f.path.startsWith('src/organizations/'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('enforceEmittedImportInvariant', () => {
+  it('rewrites serializer imports to the legacy on-disk file exporting the function', () => {
+    // Real instance: audit-logs.ts imported the canonical (never-emitted)
+    // `./serializers/audit-log-schema-input.serializer` while the function
+    // lives in a legacy hand serializer under a different filename.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-schema.serializer.ts');
+    surface.functions.set('serializeAuditLogSchemaInput', 'src/audit-logs/serializers/audit-log-schema.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeAuditLogSchemaInput } from './serializers/audit-log-schema-input.serializer';",
+        '',
+        'export class AuditLogs {',
+        '  use = serializeAuditLogSchemaInput;',
+        '}',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(file.content).toContain(
+      "import { serializeAuditLogSchemaInput } from './serializers/audit-log-schema.serializer';",
+    );
+    expect(file.content).not.toContain('audit-log-schema-input.serializer');
+  });
+
+  it('rewrites barrel re-exports to the on-disk declaration of the symbol', () => {
+    // Real instance: admin-portal's interfaces/index.ts exported the
+    // module-local `./generate-link-intent.interface`, but the enum lives in
+    // src/common/interfaces and the module-local file is never emitted.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/common/interfaces/generate-link-intent.interface.ts');
+    surface.interfaces.set('GenerateLinkIntent', {
+      filePath: 'src/common/interfaces/generate-link-intent.interface.ts',
+      fields: new Set(),
+    });
+
+    const barrel: GeneratedFile = {
+      path: 'src/admin-portal/interfaces/index.ts',
+      content: "export * from './generate-link-intent.interface';\n",
+    };
+
+    const warnings = enforceEmittedImportInvariant([barrel], new Set([barrel.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(barrel.content).toContain("export * from '../../common/interfaces/generate-link-intent.interface';");
+  });
+
+  it('drops barrel exports whose target exists nowhere, with a warning', () => {
+    // Real instance: the MultiFactorAuth barrel exported
+    // `./authentication-challenge.interface` — never emitted, not on disk.
+    const surface = emptyLiveSurface();
+
+    const barrel: GeneratedFile = {
+      path: 'src/mfa/interfaces/index.ts',
+      content: ["export * from './factor.interface';", "export * from './authentication-challenge.interface';", ''].join(
+        '\n',
+      ),
+    };
+
+    const warnings = enforceEmittedImportInvariant(
+      [barrel],
+      new Set([barrel.path, 'src/mfa/interfaces/factor.interface.ts']),
+      surface,
+    );
+    expect(barrel.content).toContain("export * from './factor.interface';");
+    expect(barrel.content).not.toContain('authentication-challenge');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('authentication-challenge.interface');
+  });
+
+  it('leaves imports that resolve to same-run emissions or on-disk files untouched', () => {
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts');
+    surface.files.add('src/common/interfaces/pagination-options.interface.ts');
+
+    const content = [
+      "import type { WorkOS } from '../workos';",
+      "import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';",
+      "import type { Widget } from './interfaces/widget.interface';",
+      '',
+      'export class Widgets {}',
+    ].join('\n');
+    const file: GeneratedFile = { path: 'src/widgets/widgets.ts', content };
+
+    const warnings = enforceEmittedImportInvariant(
+      [file],
+      new Set([file.path, 'src/widgets/interfaces/widget.interface.ts']),
+      surface,
+    );
+    expect(warnings).toEqual([]);
+    expect(file.content).toBe(content);
+  });
+
+  it('splits an unresolvable import whose symbols live in different existing files', () => {
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.files.add('src/audit-logs/serializers/audit-log-export.serializer.ts');
+    surface.functions.set('serializeEvent', 'src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.functions.set('deserializeExport', 'src/audit-logs/serializers/audit-log-export.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeEvent, deserializeExport } from './serializers/combined.serializer';",
+        '',
+        'export const x = [serializeEvent, deserializeExport];',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(file.content).toContain("import { serializeEvent } from './serializers/audit-log-event.serializer';");
+    expect(file.content).toContain("import { deserializeExport } from './serializers/audit-log-export.serializer';");
+  });
+
+  it('runs as a final pass over all files emitted during the run (wired via generateTests)', () => {
+    // Stale api-surface scenario: the baseline claims a dependency interface
+    // lives at a sourceFile that is not on disk (and is never emitted). The
+    // planned import would be unresolvable; the end-of-run pass must repair
+    // or drop it — across emitter hooks, since imports are planned in one
+    // hook and the dependency may be (not) emitted in another.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-import-invariant-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'Widget',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'part', type: { kind: 'model', name: 'WidgetPart' }, required: false },
+          ],
+        },
+        {
+          name: 'WidgetPart',
+          fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ];
+      const spec = makeSpec(models, [
+        {
+          name: 'Widgets',
+          operations: [
+            {
+              name: 'getWidget',
+              httpMethod: 'get',
+              path: '/widgets/{id}',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Widget' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ]);
+      const runCtx = {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Widgets'] },
+        apiSurface: {
+          language: 'node',
+          extractedFrom: tmpRoot,
+          extractedAt: '2026-06-09T00:00:00Z',
+          classes: {},
+          interfaces: {
+            // Stale: this sourceFile does not exist on disk.
+            WidgetPart: {
+              name: 'WidgetPart',
+              fields: { id: { type: 'string', optional: false } },
+              extends: [],
+              sourceFile: 'src/parts/interfaces/widget-part.interface.ts',
+            },
+          },
+          typeAliases: {},
+          enums: {},
+          exports: {},
+        } as any,
+      } as EmitterContext;
+
+      const modelFiles = nodeEmitter.generateModels(models, runCtx);
+      const widgetFile = modelFiles.find((f) => f.path === 'src/widgets/interfaces/widget.interface.ts');
+      expect(widgetFile).toBeDefined();
+      // Import planned against the stale baseline path…
+      expect(widgetFile!.content).toContain('../../parts/interfaces/widget-part.interface');
+
+      nodeEmitter.generateTests(spec, runCtx);
+
+      // …must not survive the end-of-run invariant pass.
+      expect(widgetFile!.content).not.toContain('../../parts/interfaces/widget-part.interface');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -1,7 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile, Model, Service } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oagen';
+import { collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
-import { docComment } from './utils.js';
+import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 
@@ -160,7 +160,11 @@ export function assignEnumsToServices(
   }
 
   if (models.length > 0) {
-    const modelToService = assignModelsToServices(models, services, ctx?.modelHints);
+    // Use the emittable-services assignment (not the raw engine one) so an
+    // enum referenced through a model that was re-homed into an owned
+    // service directory follows the model — `generateEnums` emission and the
+    // model's enum imports must agree on the directory.
+    const modelToService = assignModelsToEmittableServices(models, services, ctx);
     for (const model of models) {
       const service = modelToService.get(model.name);
       if (!service) continue;
