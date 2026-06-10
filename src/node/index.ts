@@ -28,6 +28,7 @@ import {
 import {
   setBaselineSerializedNames,
   setBaselineInterfaceNames,
+  setBaselineDeclaredNames,
   setAdoptedModelNames,
   setDiscriminatedModelNames,
   setStructurallyRenamedDomainNames,
@@ -107,6 +108,18 @@ function getSurface(ctx: EmitterContext): LiveSurface {
   }
   for (const name of surface.interfaces.keys()) allInterfaces.add(name);
   setBaselineInterfaceNames(allInterfaces);
+
+  // Every DECLARED baseline name — interfaces and type aliases, from both
+  // the api-surface JSON and the disk walk (whose `interfaces` map already
+  // includes `export type` aliases). `resolveInterfaceName` uses this to
+  // let exact-name declarations preempt structural renames: an alias-form
+  // file (`export type X = Y;`) carries no fields, so the engine's
+  // structural matcher would otherwise re-point IR model X at a similarly
+  // shaped interface and emit renamed duplicates that flip the file's form
+  // on every regeneration.
+  const declaredNames = new Set<string>(allInterfaces);
+  for (const name of Object.keys(ctx.apiSurface?.typeAliases ?? {})) declaredNames.add(name);
+  setBaselineDeclaredNames(declaredNames);
 
   // Inline-enum optimization is intentionally disabled. workos-node emits the
   // dual `const X = {...} as const; type X = ...` pattern so callers can use
