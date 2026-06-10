@@ -18,7 +18,13 @@ import { generateClient } from './client.js';
 import { generateTests as generateTestFiles } from './tests.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { planDiscriminatedModels, generateDiscriminatedFiles } from './discriminated-models.js';
-import { buildLiveSurface, emptyLiveSurface, setActiveLiveSurface, type LiveSurface } from './live-surface.js';
+import {
+  buildLiveSurface,
+  emptyLiveSurface,
+  mergeGeneratedClassMethodsIntoExisting,
+  setActiveLiveSurface,
+  type LiveSurface,
+} from './live-surface.js';
 import {
   setBaselineSerializedNames,
   setBaselineInterfaceNames,
@@ -342,6 +348,16 @@ function isOwnedPath(relPath: string, policy: LiveSurfacePolicy): boolean {
   return dir !== undefined && policy.ownedServiceDirs.has(dir);
 }
 
+/** Read the current on-disk content of a live-surface file, if present. */
+function readExistingSurfaceFile(surface: LiveSurface, relPath: string): string | null {
+  if (!surface.rootDir) return null;
+  try {
+    return fs.readFileSync(path.join(surface.rootDir, relPath), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 function extractRelativeImportPaths(content: string, fromPath: string): string[] {
   const dir = path.dirname(fromPath);
   const paths: string[] = [];
@@ -438,7 +454,26 @@ function applyLiveSurface(files: GeneratedFile[], ctx: EmitterContext, surface: 
     // `@oagen-ignore-start`/`@oagen-ignore-end` regions inside the file
     // are still preserved by `overwriteWithPreservedRegions` in the
     // engine.
+    //
+    // Exception: a NOT-owned, NOT-adopted service can receive a PARTIAL
+    // resource emission — resources.ts filters out operations already
+    // covered by the baseline class, leaving only the new methods (see
+    // generateResourceClass). Forcing a full overwrite with that partial
+    // class deletes the existing public methods (workos-node's
+    // api-keys.ts lost four methods when the spec gained one operation).
+    // When the generated class would drop methods that the on-disk class
+    // declares, merge instead: keep the existing file text verbatim and
+    // append only the new methods plus the imports they need.
     if (surface.autogenFiles.has(f.path) || ownedPath) {
+      const dir = topLevelDir(f.path);
+      const isAdoptedDirPath = dir !== undefined && policy.adoptedServiceDirs.has(dir);
+      if (!ownedPath && !isAdoptedDirPath && surface.autogenFiles.has(f.path)) {
+        const existingText = readExistingSurfaceFile(surface, f.path);
+        if (existingText !== null) {
+          const merged = mergeGeneratedClassMethodsIntoExisting(existingText, f.content);
+          if (merged !== null) f.content = merged;
+        }
+      }
       f.overwriteExisting = true;
       f.skipIfExists = false;
     }
