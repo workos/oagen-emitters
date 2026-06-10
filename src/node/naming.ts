@@ -62,6 +62,26 @@ export function setBaselineInterfaceNames(names: Set<string>): void {
 }
 
 /**
+ * Every name DECLARED by the live SDK or baseline api-surface — interfaces
+ * AND type aliases. Exact-name declarations preempt structural renames in
+ * `resolveInterfaceName`: when the IR model's own name is already declared,
+ * the structural matcher must not re-point it at a different declaration.
+ *
+ * This matters for alias-form files (`export type X = Y;`): the engine's
+ * api-surface records X under `typeAliases` with no fields, so its
+ * exact-name pass cannot claim X and the Jaccard fallback "renames" IR
+ * model X to whatever interface looks similar. Propagating that rename
+ * emitted duplicate, renamed declarations whose form flip-flopped on every
+ * regeneration (workos-node ApiKeyOwner / UserManagement model files).
+ *
+ * Set by `index.ts` immediately after `getSurface(ctx)` runs.
+ */
+let baselineDeclaredNames: Set<string> = new Set();
+export function setBaselineDeclaredNames(names: Set<string>): void {
+  baselineDeclaredNames = names;
+}
+
+/**
  * IR models that belong to newly-adopted services should not be renamed by
  * structural baseline matches from unrelated hand-written services.
  */
@@ -240,6 +260,14 @@ export function resolveInterfaceName(name: string, ctx: EmitterContext, opts?: {
     adoptedModelNames.has(name) || discriminatedModelNames.has(name)
       ? undefined
       : ctx.overlayLookup?.modelNameByIR?.get(name);
+  // Exact-name declarations preempt structural renames: when the live SDK
+  // already declares `name` (interface or type alias), a non-identity
+  // structural match is a misfire — the alias/typeAlias resolution below
+  // (or the name itself) is the canonical answer. See
+  // `setBaselineDeclaredNames` for the alias-form feedback loop this breaks.
+  if (inferred && inferred !== name && baselineDeclaredNames.has(name)) {
+    inferred = undefined;
+  }
   if (inferred) {
     if (inferred.startsWith('Serialized')) {
       const stripped = inferred.slice('Serialized'.length);
