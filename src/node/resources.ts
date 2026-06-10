@@ -310,6 +310,18 @@ function renderOptionsParam(param: OptionsObjectParam): string {
   return `options${param.optional ? '?' : ''}: ${param.type}`;
 }
 
+/**
+ * Whether a baseline-derived type reference is a plain TypeScript identifier
+ * that can appear in a named import. Baseline (live-SDK) method params can
+ * carry inline object-literal TYPES (e.g. `{ intent: GenerateLinkIntent; ... }`);
+ * treating that literal text as a type NAME would slugify it into a filename
+ * and emit a named import of a brace-expression — both invalid. Literal types
+ * are kept inline in the emitted signature instead and never imported.
+ */
+function isValidTypeIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(name);
+}
+
 function autoPaginatableItemType(returnType: string | undefined): string | undefined {
   // Match both AutoPaginatable<T> and the legacy List<T> pattern so baseline
   // item types are extracted even when the hand-written code predates AutoPaginatable.
@@ -933,6 +945,9 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   const importedTypeNames = new Set<string>();
   for (const optionType of optionObjectTypes) {
+    // Inline object-literal types from the baseline surface are rendered
+    // inline in the method signature — they have no importable name or file.
+    if (!isValidTypeIdentifier(optionType)) continue;
     if (importedTypeNames.has(optionType)) continue;
     importedTypeNames.add(optionType);
     const sourceFile = baselineTypeSourceFile(ctx, optionType);

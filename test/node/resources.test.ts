@@ -564,6 +564,87 @@ describe('body-less POST/PUT operations', () => {
   });
 });
 
+describe('inline object-literal baseline parameter types', () => {
+  // The hand-written workos-node AdminPortal method uses an inline object-literal
+  // parameter TYPE (`generateLink({ ... }: { intent: GenerateLinkIntent; ... })`).
+  // When the baseline surface reports that literal text as the param "type name",
+  // the emitter must keep it inline in the signature and must NOT slugify it into
+  // an interface filename or emit a named import of a brace-expression.
+  it('keeps the literal type inline and never imports it', () => {
+    const literalType = '{ intent: GenerateLinkIntent; organization: string; returnUrl?: string }';
+    const service: Service = {
+      name: 'AdminPortal',
+      operations: [
+        {
+          name: 'generateLink',
+          httpMethod: 'post',
+          path: '/portal/generate_link',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          requestBody: { kind: 'model', name: 'GenerateLinkBody' },
+          response: { kind: 'model', name: 'PortalLink' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const spec: ApiSpec = {
+      ...emptySpec,
+      services: [service],
+      models: [
+        {
+          name: 'GenerateLinkBody',
+          fields: [
+            { name: 'intent', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'organization', type: { kind: 'primitive', type: 'string' }, required: true },
+          ],
+        },
+        {
+          name: 'PortalLink',
+          fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ],
+    };
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['AdminPortal'] },
+      apiSurface: {
+        classes: {
+          AdminPortal: {
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
+            methods: {
+              generateLink: [
+                {
+                  name: 'generateLink',
+                  params: [{ name: 'options', type: literalType, passingStyle: 'options_object' }],
+                  returnType: 'Promise<{ link: string }>',
+                  async: true,
+                },
+              ],
+            },
+          },
+        },
+      } as any,
+    };
+
+    const result = generateResources([service], ctxWithBaseline);
+    const resourceFile = result.find((f) => f.path === 'src/admin-portal/admin-portal.ts');
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    // The literal type stays inline in the method signature.
+    expect(content).toContain(`async generateLink(options: ${literalType})`);
+    // No named import of a brace-expression…
+    expect(content).not.toContain('import type { {');
+    // …and no import path derived from slugifying the literal type's text.
+    expect(content).not.toContain('intent-generate-link-intent');
+    // No interface file is emitted for the literal type either.
+    expect(result.some((f) => f.path.includes('intent-generate-link-intent'))).toBe(false);
+  });
+});
+
 describe('resolveResourceClassName', () => {
   it('uses overlay name when baseline has compatible constructor', () => {
     const service: Service = { name: 'Organizations', operations: [] };
