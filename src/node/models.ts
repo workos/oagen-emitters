@@ -41,7 +41,7 @@ import {
   emitSerializerBody,
   hasDateTimeConversion,
 } from './field-plan.js';
-import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile } from './live-surface.js';
+import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
 import { isNodeOwnedService } from './options.js';
 import { unwrapListModel } from './fixtures.js';
 import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
@@ -446,7 +446,12 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
 
       const baselineEnum = ctx.apiSurface?.enums?.[dep];
       const baselineAlias = ctx.apiSurface?.typeAliases?.[dep];
-      const baselineSrc = (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile;
+      // Fall back to the live-surface declaration path: `generateEnums` skips
+      // emission when the enum is already declared elsewhere in the SDK (same
+      // fallback, see enums.ts), so the import must follow that declaration —
+      // the canonical per-service file will never exist.
+      const baselineSrc =
+        (baselineEnum as any)?.sourceFile ?? (baselineAlias as any)?.sourceFile ?? liveSurfaceInterfacePath(dep);
       const depService = enumToService.get(dep);
       const depDir = resolveDir(depService);
       const generatedPath = `src/${depDir}/interfaces/${fileName(dep)}.interface.ts`;
@@ -1164,6 +1169,16 @@ function baselineTypeResolvable(typeStr: string, importableNames: Set<string>): 
 }
 
 function baselineFieldCompatible(baselineField: { type: string; optional: boolean }, irField: Field): boolean {
+  // A baseline `any` is the footprint of a previously-broken generation:
+  // api-surface extraction types a field as `any` when its import failed to
+  // resolve (e.g. the enum file hadn't been emitted yet in that run). Copying
+  // it forward would freeze the degradation — once `state: any` lands in the
+  // SDK, every later regen sees it as the baseline and re-emits it. When the
+  // IR knows the real model/enum name, always re-derive from the IR instead.
+  if (baselineTypeIsDegradedAny(baselineField.type) && hasNamedTypeReference(irField.type)) {
+    return false;
+  }
+
   const irNullable = irField.type.kind === 'nullable';
   const baselineHasNull = baselineField.type.includes('null');
 
@@ -1180,6 +1195,32 @@ function baselineFieldCompatible(baselineField: { type: string; optional: boolea
   }
 
   return true;
+}
+
+/** `any`, `any[]`, `any | null`, … — shapes api-surface extraction degrades to. */
+function baselineTypeIsDegradedAny(typeStr: string): boolean {
+  const stripped = typeStr
+    .replace(/\s*\|\s*(?:null|undefined)\b/g, '')
+    .replace(/\[\]$/, '')
+    .trim();
+  return stripped === 'any';
+}
+
+/** Does the IR type reference a named model/enum anywhere (incl. arrays)? */
+function hasNamedTypeReference(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'model':
+    case 'enum':
+      return true;
+    case 'array':
+      return hasNamedTypeReference(ref.items);
+    case 'nullable':
+      return hasNamedTypeReference(ref.inner);
+    case 'union':
+      return ref.variants.some((v) => hasNamedTypeReference(v));
+    default:
+      return false;
+  }
 }
 
 function hasSpecificIRType(ref: TypeRef): boolean {

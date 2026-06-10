@@ -8,6 +8,7 @@ import type {
   Enum,
   Service,
 } from '@workos/oagen';
+import { toPascalCase } from '@workos/oagen';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -31,7 +32,7 @@ import { withNodeOperationOverrides } from './node-overrides.js';
 import { isNodeOwnedService, nodeOptions } from './options.js';
 import { setInlineEnumUnions, setDomainNameResolver } from './type-map.js';
 import { groupByMount } from '../shared/resolved-ops.js';
-import { assignModelsToServices, createServiceDirResolver } from './utils.js';
+import { assignModelsToServices, createServiceDirResolver, relativeImport } from './utils.js';
 import { fileName } from './naming.js';
 
 /**
@@ -56,6 +57,24 @@ function getEmittedPaths(ctx: EmitterContext): Set<string> {
     emittedPathsCache.set(ctx, set);
   }
   return set;
+}
+
+/**
+ * Every `GeneratedFile` the node emitter has produced so far in this ctx,
+ * keyed by path. All emitter hooks share one ctx (and the engine only reads
+ * file contents after the last hook returns), so the final hook can run a
+ * whole-run pass over files emitted by earlier hooks — see
+ * `enforceEmittedImportInvariant`.
+ */
+const emittedFilesCache = new WeakMap<EmitterContext, Map<string, GeneratedFile>>();
+
+function getEmittedFiles(ctx: EmitterContext): Map<string, GeneratedFile> {
+  let map = emittedFilesCache.get(ctx);
+  if (!map) {
+    map = new Map();
+    emittedFilesCache.set(ctx, map);
+  }
+  return map;
 }
 
 function getSurface(ctx: EmitterContext): LiveSurface {
@@ -449,8 +468,188 @@ function applyLiveSurface(files: GeneratedFile[], ctx: EmitterContext, surface: 
     out.push(f);
   }
   const emitted = getEmittedPaths(ctx);
-  for (const f of out) emitted.add(f.path);
+  const emittedFiles = getEmittedFiles(ctx);
+  for (const f of out) {
+    emitted.add(f.path);
+    emittedFiles.set(f.path, f);
+  }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Import-resolution invariant
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches single-line `import`/`export … from './relative'` statements — the
+ * only form the node emitter produces. Captures: keyword, optional ` type`
+ * modifier, the binding clause (`* [as ns]` or `{ … }`), and the module path.
+ */
+const RELATIVE_FROM_STMT_RE =
+  /^(import|export)(\s+type)?\s+(\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s+from\s+['"](\.[^'"]+)['"];?\s*$/;
+
+const EXPORTED_DECL_RE =
+  /^export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:interface|class|enum|function|const|let|var|type)\s+([A-Za-z_$][\w$]*)/gm;
+const EXPORTED_CLAUSE_RE = /^export\s+(?:type\s+)?\{([^}]*)\}/gm;
+
+/** Repo-relative paths a relative import specifier may resolve to. */
+function importTargetCandidates(fromPath: string, spec: string): string[] {
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromPath), spec));
+  return [base, `${base}.ts`, `${base}/index.ts`];
+}
+
+/** Index exported symbol → file path across this run's emitted contents. */
+function indexEmittedExports(files: GeneratedFile[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const f of files) {
+    if (!f.path.endsWith('.ts') || !f.content) continue;
+    for (const m of f.content.matchAll(EXPORTED_DECL_RE)) {
+      if (!index.has(m[1])) index.set(m[1], f.path);
+    }
+    for (const m of f.content.matchAll(EXPORTED_CLAUSE_RE)) {
+      for (const raw of m[1].split(',')) {
+        const entry = raw.trim();
+        if (!entry) continue;
+        const parts = entry.split(/\s+as\s+/);
+        const exported = (parts[1] ?? parts[0]).replace(/^type\s+/, '').trim();
+        if (exported && !index.has(exported)) index.set(exported, f.path);
+      }
+    }
+  }
+  return index;
+}
+
+/**
+ * Enforce: every relative import/re-export path in emitted code resolves to
+ * either (i) a file emitted in the same run, or (ii) a file that already
+ * exists on disk in the target SDK.
+ *
+ * Violations observed in real generations (all TS2307 in otherwise-valid
+ * output): serializer imports pointing at canonical paths while the function
+ * lives in a legacy hand serializer under a different filename; barrels
+ * re-exporting a module-local enum file whose declaration lives under
+ * `src/common/interfaces`; barrels exporting interface files that no run
+ * emits at all.
+ *
+ * Repair strategy, per statement whose target is neither emitted nor on
+ * disk:
+ *  1. Locate each imported symbol (this run's emissions first, then the
+ *     live-surface declaration maps) and rewrite the path to where the
+ *     symbol actually lives — splitting into one statement per location
+ *     when symbols are spread across files.
+ *  2. `export * from` / namespace imports carry no symbol list, so derive
+ *     the expected symbol from the file stem (`foo-bar.interface` →
+ *     `FooBar`, `foo.serializer` → `deserializeFoo`/`serializeFoo`).
+ *  3. When a symbol exists nowhere, drop the statement and warn — a missing
+ *     named export fails loudly at the usage site instead of as a phantom
+ *     module, and a barrel line for a never-emitted file is pure noise.
+ *
+ * Mutates `f.content` in place and returns the warnings issued.
+ */
+export function enforceEmittedImportInvariant(
+  files: Iterable<GeneratedFile>,
+  emittedPaths: Set<string>,
+  surface: LiveSurface,
+): string[] {
+  const fileList = [...files];
+  const emittedSymbols = indexEmittedExports(fileList);
+  const warnings: string[] = [];
+
+  const targetExists = (fromPath: string, spec: string): boolean =>
+    importTargetCandidates(fromPath, spec).some((p) => emittedPaths.has(p) || surface.files.has(p));
+
+  const locateSymbol = (name: string): string | undefined =>
+    emittedSymbols.get(name) ??
+    surface.functions.get(name) ??
+    surface.interfaces.get(name)?.filePath ??
+    surface.classes.get(name)?.filePath;
+
+  for (const f of fileList) {
+    if (!f.path.endsWith('.ts') || !f.content) continue;
+    let changed = false;
+    const outLines: string[] = [];
+    for (const line of f.content.split('\n')) {
+      const m = line.match(RELATIVE_FROM_STMT_RE);
+      if (!m || targetExists(f.path, m[4])) {
+        outLines.push(line);
+        continue;
+      }
+      const [, keyword, typeMod, clause, spec] = m;
+      const repaired = repairUnresolvableStatement(f.path, keyword, typeMod ?? '', clause, spec, locateSymbol);
+      changed = true;
+      outLines.push(...repaired.lines);
+      if (repaired.warning) warnings.push(repaired.warning);
+    }
+    if (changed) f.content = outLines.join('\n');
+  }
+
+  for (const w of warnings) console.warn(w);
+  return warnings;
+}
+
+function repairUnresolvableStatement(
+  fromPath: string,
+  keyword: string,
+  typeMod: string,
+  clause: string,
+  spec: string,
+  locateSymbol: (name: string) => string | undefined,
+): { lines: string[]; warning?: string } {
+  if (clause.startsWith('{')) {
+    const entries = clause
+      .slice(1, -1)
+      .split(',')
+      .map((e) => e.trim())
+      .filter(Boolean);
+    const byLocation = new Map<string, string[]>();
+    const missing: string[] = [];
+    for (const entry of entries) {
+      const source = entry
+        .split(/\s+as\s+/)[0]
+        .replace(/^type\s+/, '')
+        .trim();
+      const location = locateSymbol(source);
+      if (!location) {
+        missing.push(source);
+        continue;
+      }
+      if (location === fromPath) continue; // declared locally — no import needed
+      const group = byLocation.get(location);
+      if (group) {
+        group.push(entry);
+      } else {
+        byLocation.set(location, [entry]);
+      }
+    }
+    if (missing.length > 0) {
+      return {
+        lines: [],
+        warning: `oagen(node): dropped unresolvable ${keyword} in ${fromPath}: '${spec}' — symbol(s) found neither in this run's output nor in the target SDK: ${missing.join(', ')}`,
+      };
+    }
+    const lines = [...byLocation].map(
+      ([location, group]) =>
+        `${keyword}${typeMod} { ${group.join(', ')} } from '${relativeImport(fromPath, location)}';`,
+    );
+    return { lines };
+  }
+
+  // `* [as ns]` — no symbol list; derive the expected symbol from the stem.
+  const stem = spec.split('/').pop() ?? '';
+  let location: string | undefined;
+  if (stem.endsWith('.interface')) {
+    location = locateSymbol(toPascalCase(stem.slice(0, -'.interface'.length)));
+  } else if (stem.endsWith('.serializer')) {
+    const base = toPascalCase(stem.slice(0, -'.serializer'.length));
+    location = locateSymbol(`deserialize${base}`) ?? locateSymbol(`serialize${base}`);
+  }
+  if (location && location !== fromPath) {
+    return { lines: [`${keyword}${typeMod} ${clause} from '${relativeImport(fromPath, location)}';`] };
+  }
+  return {
+    lines: [],
+    warning: `oagen(node): dropped unresolvable ${keyword} in ${fromPath}: '${spec}' — module is neither emitted this run nor present in the target SDK`,
+  };
 }
 
 /**
@@ -593,7 +792,18 @@ export const nodeEmitter: Emitter = {
     const testFiles = nodeOptions(nodeCtx).regenerateOwnedTests
       ? applyLiveSurface(generateTestFiles(spec, nodeCtx), nodeCtx, surface)
       : [];
-    return [...testFiles, ...carryForwardManagedFiles(nodeCtx, surface)];
+    const result = [...testFiles, ...carryForwardManagedFiles(nodeCtx, surface)];
+
+    // Final whole-run pass: this is the last generate hook, every hook shares
+    // `nodeCtx`, and the engine reads contents only after all hooks return —
+    // so the emitted-files cache now covers the complete run and repairs here
+    // reach files produced by earlier hooks. Greenfield runs are exempt: with
+    // no SDK on disk, "resolves to an existing file" has no meaning and the
+    // SDK core (workos.ts, common/) is intentionally not emitted.
+    if (managedPathsFor(nodeCtx, surface).size > 0) {
+      enforceEmittedImportInvariant(getEmittedFiles(nodeCtx).values(), getEmittedPaths(nodeCtx), surface);
+    }
+    return result;
   },
 
   // No operations map needed — the manifest belongs to the staging+target flow,
