@@ -337,6 +337,127 @@ describe('generateModels', () => {
     }
   });
 
+  it('does not preserve an owned-service enum inline next to its canonical import', () => {
+    // Companion to the owned-service enum emission fix (see enums.test.ts):
+    // once `generateEnums` emits the canonical module and this file imports
+    // the name, the targetDir preservation pass must not also copy the
+    // legacy inline declaration forward — `import type { X }` plus a local
+    // `export type X` is a TS2440 collision.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-enum-preserve-'));
+    try {
+      const ifaceDir = path.join(tmpRoot, 'src', 'organization-domains', 'interfaces');
+      fs.mkdirSync(ifaceDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ifaceDir, 'organization-domain.interface.ts'),
+        [
+          "export type OrganizationDomainState = 'verified' | 'pending';",
+          '',
+          'export interface OrganizationDomain {',
+          '  id: string;',
+          '  state: OrganizationDomainState;',
+          '}',
+        ].join('\n'),
+      );
+
+      const models: Model[] = [
+        {
+          name: 'OrganizationDomain',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            {
+              name: 'state',
+              type: { kind: 'enum', name: 'OrganizationDomainState', values: ['verified', 'pending'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const spec: ApiSpec = {
+        ...makeSpec(models, [
+          {
+            name: 'OrganizationDomains',
+            operations: [
+              {
+                name: 'getOrganizationDomain',
+                httpMethod: 'get',
+                path: '/organization_domains/{id}',
+                pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+                queryParams: [],
+                headerParams: [],
+                response: { kind: 'model', name: 'OrganizationDomain' },
+                errors: [],
+                injectIdempotencyKey: false,
+              },
+            ],
+          },
+        ]),
+        enums: [
+          {
+            name: 'OrganizationDomainState',
+            values: [
+              { name: 'VERIFIED', value: 'verified' },
+              { name: 'PENDING', value: 'pending' },
+            ],
+          },
+        ],
+      };
+      const runCtx = {
+        ...ctx,
+        spec,
+        targetDir: tmpRoot,
+        emitterOptions: { ownedServices: ['OrganizationDomains'] },
+        apiSurface: {
+          language: 'node',
+          extractedFrom: tmpRoot,
+          extractedAt: '2026-06-10T00:00:00Z',
+          classes: {},
+          interfaces: {
+            OrganizationDomain: {
+              name: 'OrganizationDomain',
+              fields: {
+                id: { type: 'string', optional: false },
+                state: { type: 'OrganizationDomainState', optional: false },
+              },
+              extends: [],
+              sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+            },
+          },
+          typeAliases: {
+            OrganizationDomainState: {
+              name: 'OrganizationDomainState',
+              value: "'verified' | 'pending'",
+              sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+            },
+          },
+          enums: {},
+          exports: {},
+        },
+      } as unknown as EmitterContext;
+
+      const surface = emptyLiveSurface();
+      surface.files.add('src/workos.ts');
+      surface.files.add('src/organization-domains/interfaces/organization-domain.interface.ts');
+      surface.interfaces.set('OrganizationDomainState', {
+        filePath: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+        fields: new Set(),
+      });
+      setActiveLiveSurface(surface);
+      try {
+        const files = generateModels(models, runCtx);
+        const modelFile = files.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+        expect(modelFile).toBeDefined();
+        expect(modelFile!.content).toContain(
+          "import type { OrganizationDomainState } from './organization-domain-state.interface';",
+        );
+        expect(modelFile!.content).not.toContain("export type OrganizationDomainState = 'verified' | 'pending';");
+      } finally {
+        setActiveLiveSurface(emptyLiveSurface());
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('renders @deprecated on fields', () => {
     const models: Model[] = [
       {
