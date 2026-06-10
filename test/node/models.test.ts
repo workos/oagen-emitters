@@ -152,6 +152,191 @@ describe('generateModels', () => {
     expect(file.content).toContain('export interface PortalSessionsCreateResponseWire {');
   });
 
+  it('re-derives enum-typed fields instead of copying a degraded baseline `any`', () => {
+    // Regression: a prior generation referenced inline-enum names before the
+    // enum files existed, so api-surface extraction typed the fields as `any`.
+    // On the next regen the baseline `any` must not shadow the enum name the
+    // emitter knows from the IR — otherwise `state: any` persists forever.
+    const models: Model[] = [
+      {
+        name: 'OrganizationDomain',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'state',
+            type: { kind: 'enum', name: 'OrganizationDomainState', values: ['pending', 'verified'] },
+            required: true,
+          },
+          {
+            name: 'verification_strategy',
+            type: { kind: 'enum', name: 'OrganizationDomainVerificationStrategy', values: ['dns', 'manual'] },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = {
+      ...makeSpec(models, [
+        {
+          name: 'OrganizationDomains',
+          operations: [
+            {
+              name: 'getOrganizationDomain',
+              httpMethod: 'get',
+              path: '/organization_domains/{id}',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'OrganizationDomain' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ]),
+      enums: [
+        {
+          name: 'OrganizationDomainState',
+          values: [
+            { name: 'PENDING', value: 'pending' },
+            { name: 'VERIFIED', value: 'verified' },
+          ],
+        },
+        {
+          name: 'OrganizationDomainVerificationStrategy',
+          values: [
+            { name: 'DNS', value: 'dns' },
+            { name: 'MANUAL', value: 'manual' },
+          ],
+        },
+      ],
+    };
+
+    const ctxWithModels: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['OrganizationDomains'] },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: '/tmp/sdk',
+        extractedAt: '2026-06-09T00:00:00Z',
+        classes: {},
+        interfaces: {
+          OrganizationDomain: {
+            name: 'OrganizationDomain',
+            fields: {
+              id: { type: 'string', optional: false },
+              state: { type: 'any', optional: false },
+              verificationStrategy: { type: 'any', optional: false },
+            },
+            extends: [],
+            sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+          },
+          OrganizationDomainResponse: {
+            name: 'OrganizationDomainResponse',
+            fields: {
+              id: { type: 'string', optional: false },
+              state: { type: 'any', optional: false },
+              verification_strategy: { type: 'any', optional: false },
+            },
+            extends: [],
+            sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+          },
+        },
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      } as any,
+    } as EmitterContext;
+
+    const result = generateModels(models, ctxWithModels);
+    const file = result.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+    expect(file).toBeDefined();
+
+    // Domain interface re-derives the enum names from the IR.
+    expect(file!.content).toContain('state: OrganizationDomainState;');
+    expect(file!.content).toContain('verificationStrategy: OrganizationDomainVerificationStrategy;');
+    expect(file!.content).not.toContain(': any;');
+
+    // Wire interface too.
+    expect(file!.content).toContain('state: OrganizationDomainState;');
+    expect(file!.content).toContain('verification_strategy: OrganizationDomainVerificationStrategy;');
+
+    // And the imports are planned so the references resolve.
+    expect(file!.content).toContain(
+      "import type { OrganizationDomainState } from './organization-domain-state.interface';",
+    );
+    expect(file!.content).toContain(
+      "import type { OrganizationDomainVerificationStrategy } from './organization-domain-verification-strategy.interface';",
+    );
+  });
+
+  it('plans enum imports against the live-surface declaration path when it differs from the canonical one', () => {
+    // `generateEnums` skips emitting an enum whose declaration already lives
+    // elsewhere in the SDK (e.g. hand-written under src/common/interfaces).
+    // The interface emitter must point its import at that same location, not
+    // at the canonical per-service path that will never be emitted.
+    const surface = emptyLiveSurface();
+    surface.interfaces.set('OrganizationDomainState', {
+      filePath: 'src/common/interfaces/organization-domain-state.interface.ts',
+      fields: new Set(),
+    });
+    setActiveLiveSurface(surface);
+    try {
+      const models: Model[] = [
+        {
+          name: 'OrganizationDomain',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            {
+              name: 'state',
+              type: { kind: 'enum', name: 'OrganizationDomainState', values: ['pending', 'verified'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const spec: ApiSpec = {
+        ...makeSpec(models, [
+          {
+            name: 'OrganizationDomains',
+            operations: [
+              {
+                name: 'getOrganizationDomain',
+                httpMethod: 'get',
+                path: '/organization_domains/{id}',
+                pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+                queryParams: [],
+                headerParams: [],
+                response: { kind: 'model', name: 'OrganizationDomain' },
+                errors: [],
+                injectIdempotencyKey: false,
+              },
+            ],
+          },
+        ]),
+        enums: [
+          {
+            name: 'OrganizationDomainState',
+            values: [
+              { name: 'PENDING', value: 'pending' },
+              { name: 'VERIFIED', value: 'verified' },
+            ],
+          },
+        ],
+      };
+      const ctxWithModels: EmitterContext = { ...ctx, spec };
+      const result = generateModels(models, ctxWithModels);
+      const file = result.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+      expect(file?.content).toContain(
+        "import type { OrganizationDomainState } from '../../common/interfaces/organization-domain-state.interface';",
+      );
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+
   it('renders @deprecated on fields', () => {
     const models: Model[] = [
       {
