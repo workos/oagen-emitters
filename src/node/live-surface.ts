@@ -409,11 +409,25 @@ function extractMethodBlock(lines: string[], cls: ParsedClassLines, method: stri
       else break;
     }
 
-    // The member ends at the first two-space-indented closing brace.
+    // The member ends where the brace depth opened by its signature returns
+    // to zero. Depth tracking (the same technique `sliceClassBody` uses below)
+    // is robust to inner closures, object literals, and template interpolation
+    // nested at any indentation; the previous "first two-space-indented `}`"
+    // heuristic would clip the block at a nested brace that happened to sit at
+    // method-close indentation, appending a truncated body and orphaning the
+    // real closing brace.
+    let depth = 0;
+    let opened = false;
     for (let end = j; end < cls.closeLine; end++) {
-      if (/^ {2}\}[,;]?\s*$/.test(lines[end])) {
-        return lines.slice(start, end + 1);
+      for (const ch of lines[end]) {
+        if (ch === '{') {
+          depth++;
+          opened = true;
+        } else if (ch === '}') {
+          depth--;
+        }
       }
+      if (opened && depth <= 0) return lines.slice(start, end + 1);
     }
     return null;
   }

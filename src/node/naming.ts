@@ -169,6 +169,16 @@ function inferStructuralRename(name: string, ctx: EmitterContext): string | unde
  * name → the single IR model name allowed to claim it. Built lazily from
  * `ctx.spec.models` on first use and cached per ctx.
  *
+ * Cache-correctness invariant (relied on, not assumed): the `ctx` reaching
+ * this function is always the memoized `nodeCtx` from `withNodeOperationOverrides`
+ * — every emitter hook derives it as its first step and threads it through
+ * `getSurface`/`resolveInterfaceName`, and that helper returns one stable
+ * object per run. `nodeCtx.spec` is built once via spread and `spec.models` is
+ * never reassigned or mutated in place anywhere (enrichment pushes only onto a
+ * pre-enrichment local collector). So the cached value can never drift from
+ * the `spec.models` it was computed from. Do not begin mutating `spec.models`
+ * under a live ctx without invalidating this cache.
+ *
  * Without it, the structural fallback could map two distinct IR models onto
  * one live declaration. workos-node AuditLogs evidence: IR
  * `AuditLogEventActor` and `AuditLogEventTarget` (near-identical shapes) both
