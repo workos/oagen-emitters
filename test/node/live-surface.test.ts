@@ -400,7 +400,13 @@ describe('mergeGeneratedClassMethodsIntoExisting', () => {
     // renames and emitter improvements propagate.
     const supersetEmission = existingFile.replace(
       '  async deleteApiKey(id: string): Promise<void> {',
-      ['  async createApiKeyExpire(id: string): Promise<void> {', '    return;', '  }', '', '  async deleteApiKey(id: string): Promise<void> {'].join('\n'),
+      [
+        '  async createApiKeyExpire(id: string): Promise<void> {',
+        '    return;',
+        '  }',
+        '',
+        '  async deleteApiKey(id: string): Promise<void> {',
+      ].join('\n'),
     );
     expect(mergeGeneratedClassMethodsIntoExisting(existingFile, supersetEmission)).toBeNull();
   });
@@ -812,9 +818,7 @@ describe('structural-match injectivity across emitted model files', () => {
 
       // The target file must declare ITS OWN derived name — never the
       // actor's claimed name.
-      const targetFile = result.find(
-        (f) => f.path === 'src/audit-logs/interfaces/audit-log-event-target.interface.ts',
-      );
+      const targetFile = result.find((f) => f.path === 'src/audit-logs/interfaces/audit-log-event-target.interface.ts');
       expect(targetFile).toBeDefined();
       expect(targetFile!.content).toContain('export interface AuditLogEventTarget {');
       expect(targetFile!.content).toContain('export interface AuditLogEventTargetResponse {');
@@ -825,7 +829,10 @@ describe('structural-match injectivity across emitted model files', () => {
       const declared = new Map<string, string>();
       for (const file of result) {
         for (const m of file.content.matchAll(/^export (?:interface|class|function|const) (\w+)/gm)) {
-          expect(declared.get(m[1]), `duplicate declaration of ${m[1]} in ${declared.get(m[1])} and ${file.path}`).toBeUndefined();
+          expect(
+            declared.get(m[1]),
+            `duplicate declaration of ${m[1]} in ${declared.get(m[1])} and ${file.path}`,
+          ).toBeUndefined();
           declared.set(m[1], file.path);
         }
       }

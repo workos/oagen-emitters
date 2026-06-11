@@ -1207,9 +1207,11 @@ describe('enforceEmittedImportInvariant', () => {
 
     const barrel: GeneratedFile = {
       path: 'src/mfa/interfaces/index.ts',
-      content: ["export * from './factor.interface';", "export * from './authentication-challenge.interface';", ''].join(
-        '\n',
-      ),
+      content: [
+        "export * from './factor.interface';",
+        "export * from './authentication-challenge.interface';",
+        '',
+      ].join('\n'),
     };
 
     const warnings = enforceEmittedImportInvariant(

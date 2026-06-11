@@ -522,7 +522,10 @@ export function mergeGeneratedClassMethodsIntoExisting(existingText: string, gen
   if (importStatements.length > 0) {
     let lastImportLine = -1;
     for (let i = 0; i < existingLines.length; i++) {
-      if (/from\s+['"][^'"]+['"];?\s*$/.test(existingLines[i]) || /^import\s+['"][^'"]+['"];?\s*$/.test(existingLines[i])) {
+      if (
+        /from\s+['"][^'"]+['"];?\s*$/.test(existingLines[i]) ||
+        /^import\s+['"][^'"]+['"];?\s*$/.test(existingLines[i])
+      ) {
         lastImportLine = i;
       }
     }

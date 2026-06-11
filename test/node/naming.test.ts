@@ -104,7 +104,13 @@ describe('resolveInterfaceName structural injectivity', () => {
   });
 
   // Shape ~ { id?, name, type?, metadata? } — matches the live AuditLogActor.
-  const eventShape = (extra: string) => [field('id'), field('name', true), field('type'), field('metadata'), field(extra)];
+  const eventShape = (extra: string) => [
+    field('id'),
+    field('name', true),
+    field('type'),
+    field('metadata'),
+    field(extra),
+  ];
 
   const liveActorFields = {
     id: { type: 'string', optional: true },
