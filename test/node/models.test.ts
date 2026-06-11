@@ -1270,6 +1270,34 @@ describe('enforceEmittedImportInvariant', () => {
     expect(file.content).toContain("import { deserializeExport } from './serializers/audit-log-export.serializer';");
   });
 
+  it('preserves the relocatable symbols of a clause when only some are missing', () => {
+    // A clause mixing a relocatable symbol with a genuinely-missing one must
+    // still emit the import for the relocatable symbol; dropping the whole
+    // clause would fail the resolvable symbol with TS2305 at its usage site.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.functions.set('serializeEvent', 'src/audit-logs/serializers/audit-log-event.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeEvent, serializeGhost } from './serializers/combined.serializer';",
+        '',
+        'export const x = [serializeEvent, serializeGhost];',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(file.content).toContain("import { serializeEvent } from './serializers/audit-log-event.serializer';");
+    expect(file.content).not.toContain('combined.serializer');
+    // The missing symbol is dropped from the import but left in the body so it
+    // fails at its usage site, not as a phantom-module error.
+    expect(file.content).not.toMatch(/import[^\n]*serializeGhost/);
+    expect(file.content).toContain('export const x = [serializeEvent, serializeGhost];');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('serializeGhost');
+  });
+
   it('runs as a final pass over all files emitted during the run (wired via generateTests)', () => {
     // Stale api-surface scenario: the baseline claims a dependency interface
     // lives at a sourceFile that is not on disk (and is never emitted). The

@@ -139,7 +139,7 @@ describe('resolveInterfaceName structural injectivity', () => {
         classes: {},
         interfaces: {
           AuditLogActor: { fields: liveActorFields },
-          ...(opts.extraInterfaces ?? {}),
+          ...opts.extraInterfaces,
         },
         typeAliases: {},
         enums: {},

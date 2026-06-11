@@ -669,17 +669,19 @@ function repairUnresolvableStatement(
         byLocation.set(location, [entry]);
       }
     }
-    if (missing.length > 0) {
-      return {
-        lines: [],
-        warning: `oagen(node): dropped unresolvable ${keyword} in ${fromPath}: '${spec}' — symbol(s) found neither in this run's output nor in the target SDK: ${missing.join(', ')}`,
-      };
-    }
+    // Emit the symbols we *can* relocate; only the genuinely-missing ones are
+    // dropped (and warned about). Returning [] for the whole clause when any
+    // one symbol is missing would also discard the resolvable symbols, failing
+    // them with TS2305 at their usage sites — the breakage this pass prevents.
     const lines = [...byLocation].map(
       ([location, group]) =>
         `${keyword}${typeMod} { ${group.join(', ')} } from '${relativeImport(fromPath, location)}';`,
     );
-    return { lines };
+    const warning =
+      missing.length > 0
+        ? `oagen(node): dropped unresolvable symbol(s) from ${keyword} in ${fromPath}: '${spec}' — found neither in this run's output nor in the target SDK: ${missing.join(', ')}`
+        : undefined;
+    return { lines, warning };
   }
 
   // `* [as ns]` — no symbol list; derive the expected symbol from the stem.
