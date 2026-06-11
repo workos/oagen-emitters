@@ -353,27 +353,106 @@ interface ParsedClassLines {
 const CLASS_MEMBER_RE =
   /^ {2}(?:(?:public|private|protected|readonly|static)\s+)*(?:async\s+)?([a-zA-Z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/;
 
+interface BraceScan {
+  /** Net code-brace balance accumulated so far. */
+  depth: number;
+  /** Whether any code `{` has been seen — distinguishes "not yet opened" from "balanced and closed". */
+  opened: boolean;
+  /** Whether we are mid `/* … *​/` block comment (spans lines). */
+  inBlockComment: boolean;
+  /**
+   * Interpolation-brace depth for each active template literal; a non-empty
+   * stack means we are inside a template, and the top being 0 means we are in
+   * its raw text (vs. inside a `${ … }` interpolation).
+   */
+  templates: number[];
+}
+
+/**
+ * Advance a brace-balance scan across one `line`, mutating `s`. Counts only
+ * braces that live in *code* — including template `${ … }` interpolation,
+ * whose braces are self-balancing — and ignores braces inside string/template
+ * text, line comments, and block comments. State threads across lines so block
+ * comments and multi-line template literals are tracked correctly.
+ *
+ * Naive character counting (the prior approach) would clip a method block at a
+ * `}` that merely sat inside a comment (`// returns when done }`) or a string
+ * (`'closing brace: }'`), appending a truncated, unbalanced body. Regex
+ * literals are intentionally not modelled: distinguishing `/` division from a
+ * regex needs full tokenization, and a regex whose braces are net-unbalanced
+ * does not occur in generated or hand-edited SDK code (`{n,m}` quantifiers are
+ * always balanced).
+ */
+function advanceBraceScan(line: string, s: BraceScan): void {
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (s.inBlockComment) {
+      if (c === '*' && line[i + 1] === '/') {
+        s.inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    const tdepth = s.templates.length;
+    if (tdepth > 0 && s.templates[tdepth - 1] === 0) {
+      // Raw template text: only an escape, a closing backtick, or the start of
+      // an interpolation matters; everything else (braces included) is literal.
+      if (c === '\\') {
+        i++;
+      } else if (c === '`') {
+        s.templates.pop();
+      } else if (c === '$' && line[i + 1] === '{') {
+        s.templates[tdepth - 1] = 1;
+        s.depth++;
+        s.opened = true;
+        i++;
+      }
+      continue;
+    }
+    // Code context: top level, or inside a template interpolation.
+    if (c === '/' && line[i + 1] === '/') break; // line comment runs to EOL
+    if (c === '/' && line[i + 1] === '*') {
+      s.inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      i++;
+      while (i < line.length && line[i] !== quote) {
+        if (line[i] === '\\') i++;
+        i++;
+      }
+      continue;
+    }
+    if (c === '`') {
+      s.templates.push(0);
+      continue;
+    }
+    if (c === '{') {
+      s.depth++;
+      s.opened = true;
+      if (tdepth > 0) s.templates[tdepth - 1]++;
+    } else if (c === '}') {
+      s.depth--;
+      if (tdepth > 0) s.templates[tdepth - 1]--;
+    }
+  }
+}
+
 function parseClassesByLine(lines: string[]): ParsedClassLines[] {
   const classes: ParsedClassLines[] = [];
   for (let i = 0; i < lines.length; i++) {
     const decl = lines[i].match(/^export\s+(?:abstract\s+)?class\s+([A-Z][\w$]*)/);
     if (!decl) continue;
 
-    let depth = 0;
-    let started = false;
+    const scan: BraceScan = { depth: 0, opened: false, inBlockComment: false, templates: [] };
     let closeLine = -1;
-    for (let j = i; j < lines.length && closeLine < 0; j++) {
-      for (const ch of lines[j]) {
-        if (ch === '{') {
-          depth++;
-          started = true;
-        } else if (ch === '}') {
-          depth--;
-          if (started && depth === 0) {
-            closeLine = j;
-            break;
-          }
-        }
+    for (let j = i; j < lines.length; j++) {
+      advanceBraceScan(lines[j], scan);
+      if (scan.opened && scan.depth <= 0) {
+        closeLine = j;
+        break;
       }
     }
     if (closeLine < 0) continue;
@@ -409,25 +488,19 @@ function extractMethodBlock(lines: string[], cls: ParsedClassLines, method: stri
       else break;
     }
 
-    // The member ends where the brace depth opened by its signature returns
-    // to zero. Depth tracking (the same technique `sliceClassBody` uses below)
-    // is robust to inner closures, object literals, and template interpolation
-    // nested at any indentation; the previous "first two-space-indented `}`"
-    // heuristic would clip the block at a nested brace that happened to sit at
-    // method-close indentation, appending a truncated body and orphaning the
-    // real closing brace.
-    let depth = 0;
-    let opened = false;
+    // The member ends where the brace depth opened by its signature returns to
+    // zero. `advanceBraceScan` counts only code braces — ignoring those inside
+    // strings, template text, and comments — so it is robust to inner closures,
+    // object literals, and template interpolation nested at any indentation, as
+    // well as a stray `}` in a comment or string. The previous "first
+    // two-space-indented `}`" heuristic clipped the block at a nested brace at
+    // method-close indentation; raw character counting clipped it at a `}` that
+    // merely sat in a comment or string. Either appends a truncated body and
+    // orphans the real closing brace.
+    const scan: BraceScan = { depth: 0, opened: false, inBlockComment: false, templates: [] };
     for (let end = j; end < cls.closeLine; end++) {
-      for (const ch of lines[end]) {
-        if (ch === '{') {
-          depth++;
-          opened = true;
-        } else if (ch === '}') {
-          depth--;
-        }
-      }
-      if (opened && depth <= 0) return lines.slice(start, end + 1);
+      advanceBraceScan(lines[end], scan);
+      if (scan.opened && scan.depth <= 0) return lines.slice(start, end + 1);
     }
     return null;
   }
