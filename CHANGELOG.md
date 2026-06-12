@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/workos/oagen-emitters/compare/v0.16.0...v0.16.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **node:** emitter correctness fixes from SDK ownership rebuilds ([#139](https://github.com/workos/oagen-emitters/issues/139)) ([30010eb](https://github.com/workos/oagen-emitters/commit/30010eb8fa9882f5a731870d2d26a486f74dfe4e))
+
 ## [0.16.0](https://github.com/workos/oagen-emitters/compare/v0.15.2...v0.16.0) (2026-06-03)
 
 
