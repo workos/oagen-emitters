@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
+import { describe, it, expect, vi } from 'vitest';
+import type { EmitterContext, ApiSpec, Model, GeneratedFile } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels, generateSerializers } from '../../src/node/models.js';
-import { nodeEmitter } from '../../src/node/index.js';
+import { nodeEmitter, enforceEmittedImportInvariant } from '../../src/node/index.js';
 import { buildLiveSurface, emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
 import { setBaselineInterfaceNames, setBaselineSerializedNames } from '../../src/node/naming.js';
 import * as fs from 'node:fs';
@@ -150,6 +150,312 @@ describe('generateModels', () => {
 
     const file = result[0];
     expect(file.content).toContain('export interface PortalSessionsCreateResponseWire {');
+  });
+
+  it('re-derives enum-typed fields instead of copying a degraded baseline `any`', () => {
+    // Regression: a prior generation referenced inline-enum names before the
+    // enum files existed, so api-surface extraction typed the fields as `any`.
+    // On the next regen the baseline `any` must not shadow the enum name the
+    // emitter knows from the IR — otherwise `state: any` persists forever.
+    const models: Model[] = [
+      {
+        name: 'OrganizationDomain',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'state',
+            type: { kind: 'enum', name: 'OrganizationDomainState', values: ['pending', 'verified'] },
+            required: true,
+          },
+          {
+            name: 'verification_strategy',
+            type: { kind: 'enum', name: 'OrganizationDomainVerificationStrategy', values: ['dns', 'manual'] },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = {
+      ...makeSpec(models, [
+        {
+          name: 'OrganizationDomains',
+          operations: [
+            {
+              name: 'getOrganizationDomain',
+              httpMethod: 'get',
+              path: '/organization_domains/{id}',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'OrganizationDomain' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ]),
+      enums: [
+        {
+          name: 'OrganizationDomainState',
+          values: [
+            { name: 'PENDING', value: 'pending' },
+            { name: 'VERIFIED', value: 'verified' },
+          ],
+        },
+        {
+          name: 'OrganizationDomainVerificationStrategy',
+          values: [
+            { name: 'DNS', value: 'dns' },
+            { name: 'MANUAL', value: 'manual' },
+          ],
+        },
+      ],
+    };
+
+    const ctxWithModels: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['OrganizationDomains'] },
+      apiSurface: {
+        language: 'node',
+        extractedFrom: '/tmp/sdk',
+        extractedAt: '2026-06-09T00:00:00Z',
+        classes: {},
+        interfaces: {
+          OrganizationDomain: {
+            name: 'OrganizationDomain',
+            fields: {
+              id: { type: 'string', optional: false },
+              state: { type: 'any', optional: false },
+              verificationStrategy: { type: 'any', optional: false },
+            },
+            extends: [],
+            sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+          },
+          OrganizationDomainResponse: {
+            name: 'OrganizationDomainResponse',
+            fields: {
+              id: { type: 'string', optional: false },
+              state: { type: 'any', optional: false },
+              verification_strategy: { type: 'any', optional: false },
+            },
+            extends: [],
+            sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+          },
+        },
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      } as any,
+    } as EmitterContext;
+
+    const result = generateModels(models, ctxWithModels);
+    const file = result.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+    expect(file).toBeDefined();
+
+    // Domain interface re-derives the enum names from the IR.
+    expect(file!.content).toContain('state: OrganizationDomainState;');
+    expect(file!.content).toContain('verificationStrategy: OrganizationDomainVerificationStrategy;');
+    expect(file!.content).not.toContain(': any;');
+
+    // Wire interface too.
+    expect(file!.content).toContain('state: OrganizationDomainState;');
+    expect(file!.content).toContain('verification_strategy: OrganizationDomainVerificationStrategy;');
+
+    // And the imports are planned so the references resolve.
+    expect(file!.content).toContain(
+      "import type { OrganizationDomainState } from './organization-domain-state.interface';",
+    );
+    expect(file!.content).toContain(
+      "import type { OrganizationDomainVerificationStrategy } from './organization-domain-verification-strategy.interface';",
+    );
+  });
+
+  it('plans enum imports against the live-surface declaration path when it differs from the canonical one', () => {
+    // `generateEnums` skips emitting an enum whose declaration already lives
+    // elsewhere in the SDK (e.g. hand-written under src/common/interfaces).
+    // The interface emitter must point its import at that same location, not
+    // at the canonical per-service path that will never be emitted.
+    const surface = emptyLiveSurface();
+    surface.interfaces.set('OrganizationDomainState', {
+      filePath: 'src/common/interfaces/organization-domain-state.interface.ts',
+      fields: new Set(),
+    });
+    setActiveLiveSurface(surface);
+    try {
+      const models: Model[] = [
+        {
+          name: 'OrganizationDomain',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            {
+              name: 'state',
+              type: { kind: 'enum', name: 'OrganizationDomainState', values: ['pending', 'verified'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const spec: ApiSpec = {
+        ...makeSpec(models, [
+          {
+            name: 'OrganizationDomains',
+            operations: [
+              {
+                name: 'getOrganizationDomain',
+                httpMethod: 'get',
+                path: '/organization_domains/{id}',
+                pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+                queryParams: [],
+                headerParams: [],
+                response: { kind: 'model', name: 'OrganizationDomain' },
+                errors: [],
+                injectIdempotencyKey: false,
+              },
+            ],
+          },
+        ]),
+        enums: [
+          {
+            name: 'OrganizationDomainState',
+            values: [
+              { name: 'PENDING', value: 'pending' },
+              { name: 'VERIFIED', value: 'verified' },
+            ],
+          },
+        ],
+      };
+      const ctxWithModels: EmitterContext = { ...ctx, spec };
+      const result = generateModels(models, ctxWithModels);
+      const file = result.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+      expect(file?.content).toContain(
+        "import type { OrganizationDomainState } from '../../common/interfaces/organization-domain-state.interface';",
+      );
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+
+  it('does not preserve an owned-service enum inline next to its canonical import', () => {
+    // Companion to the owned-service enum emission fix (see enums.test.ts):
+    // once `generateEnums` emits the canonical module and this file imports
+    // the name, the targetDir preservation pass must not also copy the
+    // legacy inline declaration forward — `import type { X }` plus a local
+    // `export type X` is a TS2440 collision.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-enum-preserve-'));
+    try {
+      const ifaceDir = path.join(tmpRoot, 'src', 'organization-domains', 'interfaces');
+      fs.mkdirSync(ifaceDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ifaceDir, 'organization-domain.interface.ts'),
+        [
+          "export type OrganizationDomainState = 'verified' | 'pending';",
+          '',
+          'export interface OrganizationDomain {',
+          '  id: string;',
+          '  state: OrganizationDomainState;',
+          '}',
+        ].join('\n'),
+      );
+
+      const models: Model[] = [
+        {
+          name: 'OrganizationDomain',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            {
+              name: 'state',
+              type: { kind: 'enum', name: 'OrganizationDomainState', values: ['verified', 'pending'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const spec: ApiSpec = {
+        ...makeSpec(models, [
+          {
+            name: 'OrganizationDomains',
+            operations: [
+              {
+                name: 'getOrganizationDomain',
+                httpMethod: 'get',
+                path: '/organization_domains/{id}',
+                pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+                queryParams: [],
+                headerParams: [],
+                response: { kind: 'model', name: 'OrganizationDomain' },
+                errors: [],
+                injectIdempotencyKey: false,
+              },
+            ],
+          },
+        ]),
+        enums: [
+          {
+            name: 'OrganizationDomainState',
+            values: [
+              { name: 'VERIFIED', value: 'verified' },
+              { name: 'PENDING', value: 'pending' },
+            ],
+          },
+        ],
+      };
+      const runCtx = {
+        ...ctx,
+        spec,
+        targetDir: tmpRoot,
+        emitterOptions: { ownedServices: ['OrganizationDomains'] },
+        apiSurface: {
+          language: 'node',
+          extractedFrom: tmpRoot,
+          extractedAt: '2026-06-10T00:00:00Z',
+          classes: {},
+          interfaces: {
+            OrganizationDomain: {
+              name: 'OrganizationDomain',
+              fields: {
+                id: { type: 'string', optional: false },
+                state: { type: 'OrganizationDomainState', optional: false },
+              },
+              extends: [],
+              sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+            },
+          },
+          typeAliases: {
+            OrganizationDomainState: {
+              name: 'OrganizationDomainState',
+              value: "'verified' | 'pending'",
+              sourceFile: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+            },
+          },
+          enums: {},
+          exports: {},
+        },
+      } as unknown as EmitterContext;
+
+      const surface = emptyLiveSurface();
+      surface.files.add('src/workos.ts');
+      surface.files.add('src/organization-domains/interfaces/organization-domain.interface.ts');
+      surface.interfaces.set('OrganizationDomainState', {
+        filePath: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+        fields: new Set(),
+      });
+      setActiveLiveSurface(surface);
+      try {
+        const files = generateModels(models, runCtx);
+        const modelFile = files.find((f) => f.path.endsWith('organization-domain.interface.ts'));
+        expect(modelFile).toBeDefined();
+        expect(modelFile!.content).toContain(
+          "import type { OrganizationDomainState } from './organization-domain-state.interface';",
+        );
+        expect(modelFile!.content).not.toContain("export type OrganizationDomainState = 'verified' | 'pending';");
+      } finally {
+        setActiveLiveSurface(emptyLiveSurface());
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('renders @deprecated on fields', () => {
@@ -645,5 +951,434 @@ describe('generateSerializers', () => {
     );
     expect(orgSerializer).toBeDefined();
     expect(orgSerializer!.content).toContain('export const deserializeOrganization');
+  });
+});
+
+describe('owned-service dependency model emission', () => {
+  it('emits dependency models into the owned service directory instead of an unemittable one', () => {
+    // Real instance: the AuditLogs ownership pass generated audit-logs.ts
+    // importing `../organizations/interfaces/audit-logs-retention.interface`,
+    // but the retention models were assigned to the (non-owned) Organizations
+    // dir and therefore never emitted — an unresolvable import (TS2307).
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-dep-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'AuditLogsRetention',
+          fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+        },
+      ];
+      const retentionOp = (name: string, opPath: string) => ({
+        name,
+        httpMethod: 'get' as const,
+        path: opPath,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      });
+      const spec = makeSpec(models, [
+        { name: 'Organizations', operations: [retentionOp('getRetention', '/organizations/{id}/retention')] },
+        { name: 'AuditLogs', operations: [retentionOp('getAuditLogsRetention', '/audit_logs/retention')] },
+      ]);
+
+      const files = nodeEmitter.generateModels(models, {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+      } as EmitterContext);
+
+      // The dependency model lands in the importing (owned) service's dir…
+      expect(files.some((f) => f.path === 'src/audit-logs/interfaces/audit-logs-retention.interface.ts')).toBe(true);
+      // …and nothing is planned for the unemittable organizations dir.
+      expect(files.some((f) => f.path.startsWith('src/organizations/'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('emits interfaces AND serializers for the full closure of ops re-mounted onto an owned service', () => {
+    // Real instance (AuditLogs rebuild): GET/PUT
+    // /organizations/{organizationId}/audit_logs_retention live on the IR
+    // Organizations service but are MOUNTED on AuditLogs via
+    // resolvedOperations. Walking only IR services missed them, so
+    // `AuditLogsRetention` / `UpdateAuditLogsRetention` stayed assigned to
+    // the (non-owned) Organizations dir: their interfaces and serializers
+    // were never emitted ANYWHERE, while the generated retention methods
+    // referenced `deserializeAuditLogsRetention` /
+    // `serializeUpdateAuditLogsRetention` — imports the invariant pass then
+    // had to drop, leaving non-compiling method bodies.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-mount-dep-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'AuditLogsRetention',
+          fields: [
+            { name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true },
+            // Nested dependency: the closure must not stop at the
+            // directly-referenced model.
+            { name: 'policy', type: { kind: 'model', name: 'RetentionPolicy' }, required: true },
+          ],
+        },
+        {
+          name: 'RetentionPolicy',
+          fields: [{ name: 'kind', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+        {
+          name: 'UpdateAuditLogsRetention',
+          fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+        },
+      ];
+      const listOrgsOp = {
+        name: 'listOrganizations',
+        httpMethod: 'get' as const,
+        path: '/organizations',
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'primitive' as const, type: 'unknown' as const },
+        errors: [],
+        injectIdempotencyKey: false,
+      };
+      const orgIdParam = {
+        name: 'organizationId',
+        type: { kind: 'primitive' as const, type: 'string' as const },
+        required: true,
+      };
+      const getRetentionOp = {
+        name: 'getAuditLogsRetention',
+        httpMethod: 'get' as const,
+        path: '/organizations/{organizationId}/audit_logs_retention',
+        pathParams: [orgIdParam],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      };
+      const updateRetentionOp = {
+        name: 'updateAuditLogsRetention',
+        httpMethod: 'put' as const,
+        path: '/organizations/{organizationId}/audit_logs_retention',
+        pathParams: [orgIdParam],
+        queryParams: [],
+        headerParams: [],
+        requestBody: { kind: 'model' as const, name: 'UpdateAuditLogsRetention' },
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      };
+      const orgService = { name: 'Organizations', operations: [listOrgsOp, getRetentionOp, updateRetentionOp] };
+      const spec = { ...emptySpec, models, services: [orgService] };
+      const resolved = (operation: unknown, methodName: string, mountOn: string) => ({
+        operation,
+        service: orgService,
+        methodName,
+        mountOn,
+        defaults: {},
+        inferFromClient: [],
+        urlBuilder: false,
+      });
+      const runCtx = {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+        resolvedOperations: [
+          resolved(listOrgsOp, 'list_organizations', 'Organizations'),
+          resolved(getRetentionOp, 'get_audit_logs_retention', 'AuditLogs'),
+          resolved(updateRetentionOp, 'update_audit_logs_retention', 'AuditLogs'),
+        ],
+      } as unknown as EmitterContext;
+
+      const modelFiles = nodeEmitter.generateModels(models, runCtx);
+      const paths = modelFiles.map((f) => f.path);
+
+      // Interfaces for M, its nested dependency N, and the request body —
+      // all in the owned service's dir.
+      expect(paths).toContain('src/audit-logs/interfaces/audit-logs-retention.interface.ts');
+      expect(paths).toContain('src/audit-logs/interfaces/retention-policy.interface.ts');
+      expect(paths).toContain('src/audit-logs/interfaces/update-audit-logs-retention.interface.ts');
+      // …and serializer emission follows the re-homed assignment.
+      expect(paths).toContain('src/audit-logs/serializers/audit-logs-retention.serializer.ts');
+      expect(paths).toContain('src/audit-logs/serializers/retention-policy.serializer.ts');
+      expect(paths).toContain('src/audit-logs/serializers/update-audit-logs-retention.serializer.ts');
+      expect(paths.some((p) => p.startsWith('src/organizations/'))).toBe(false);
+
+      // The resource's serializer/interface imports must resolve: run the
+      // remaining hooks so the final whole-run import-invariant pass sees
+      // everything, and assert it drops nothing.
+      const resourceFiles = nodeEmitter.generateResources(spec.services, runCtx);
+      const resourceFile = resourceFiles.find((f) => f.path === 'src/audit-logs/audit-logs.ts');
+      expect(resourceFile).toBeDefined();
+      expect(resourceFile!.content).toContain('deserializeAuditLogsRetention');
+      expect(resourceFile!.content).toContain('serializeUpdateAuditLogsRetention');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        nodeEmitter.generateTests(spec, runCtx);
+        const dropped = warnSpy.mock.calls.filter((call) => String(call[0]).includes('dropped unresolvable'));
+        expect(dropped).toEqual([]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+      const emittedPaths = new Set([...modelFiles, ...resourceFiles].map((f) => f.path));
+      const resolvable = (relPath: string) => emittedPaths.has(relPath) || fs.existsSync(path.join(tmpRoot, relPath));
+      for (const importMatch of resourceFile!.content.matchAll(/from '(\.[^']+)'/g)) {
+        const resolvedPath = path.posix.normalize(path.posix.join('src/audit-logs', importMatch[1]));
+        const candidates = [`${resolvedPath}.ts`, `${resolvedPath}/index.ts`];
+        expect(
+          candidates.some(resolvable),
+          `resource import '${importMatch[1]}' resolves to an emitted or on-disk file`,
+        ).toBe(true);
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('enforceEmittedImportInvariant', () => {
+  it('rewrites serializer imports to the legacy on-disk file exporting the function', () => {
+    // Real instance: audit-logs.ts imported the canonical (never-emitted)
+    // `./serializers/audit-log-schema-input.serializer` while the function
+    // lives in a legacy hand serializer under a different filename.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-schema.serializer.ts');
+    surface.functions.set('serializeAuditLogSchemaInput', 'src/audit-logs/serializers/audit-log-schema.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeAuditLogSchemaInput } from './serializers/audit-log-schema-input.serializer';",
+        '',
+        'export class AuditLogs {',
+        '  use = serializeAuditLogSchemaInput;',
+        '}',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(file.content).toContain(
+      "import { serializeAuditLogSchemaInput } from './serializers/audit-log-schema.serializer';",
+    );
+    expect(file.content).not.toContain('audit-log-schema-input.serializer');
+  });
+
+  it('rewrites barrel re-exports to the on-disk declaration of the symbol', () => {
+    // Real instance: admin-portal's interfaces/index.ts exported the
+    // module-local `./generate-link-intent.interface`, but the enum lives in
+    // src/common/interfaces and the module-local file is never emitted.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/common/interfaces/generate-link-intent.interface.ts');
+    surface.interfaces.set('GenerateLinkIntent', {
+      filePath: 'src/common/interfaces/generate-link-intent.interface.ts',
+      fields: new Set(),
+    });
+
+    const barrel: GeneratedFile = {
+      path: 'src/admin-portal/interfaces/index.ts',
+      content: "export * from './generate-link-intent.interface';\n",
+    };
+
+    const warnings = enforceEmittedImportInvariant([barrel], new Set([barrel.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(barrel.content).toContain("export * from '../../common/interfaces/generate-link-intent.interface';");
+  });
+
+  it('drops barrel exports whose target exists nowhere, with a warning', () => {
+    // Real instance: the MultiFactorAuth barrel exported
+    // `./authentication-challenge.interface` — never emitted, not on disk.
+    const surface = emptyLiveSurface();
+
+    const barrel: GeneratedFile = {
+      path: 'src/mfa/interfaces/index.ts',
+      content: [
+        "export * from './factor.interface';",
+        "export * from './authentication-challenge.interface';",
+        '',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant(
+      [barrel],
+      new Set([barrel.path, 'src/mfa/interfaces/factor.interface.ts']),
+      surface,
+    );
+    expect(barrel.content).toContain("export * from './factor.interface';");
+    expect(barrel.content).not.toContain('authentication-challenge');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('authentication-challenge.interface');
+  });
+
+  it('leaves imports that resolve to same-run emissions or on-disk files untouched', () => {
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts');
+    surface.files.add('src/common/interfaces/pagination-options.interface.ts');
+
+    const content = [
+      "import type { WorkOS } from '../workos';",
+      "import type { PaginationOptions } from '../common/interfaces/pagination-options.interface';",
+      "import type { Widget } from './interfaces/widget.interface';",
+      '',
+      'export class Widgets {}',
+    ].join('\n');
+    const file: GeneratedFile = { path: 'src/widgets/widgets.ts', content };
+
+    const warnings = enforceEmittedImportInvariant(
+      [file],
+      new Set([file.path, 'src/widgets/interfaces/widget.interface.ts']),
+      surface,
+    );
+    expect(warnings).toEqual([]);
+    expect(file.content).toBe(content);
+  });
+
+  it('splits an unresolvable import whose symbols live in different existing files', () => {
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.files.add('src/audit-logs/serializers/audit-log-export.serializer.ts');
+    surface.functions.set('serializeEvent', 'src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.functions.set('deserializeExport', 'src/audit-logs/serializers/audit-log-export.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeEvent, deserializeExport } from './serializers/combined.serializer';",
+        '',
+        'export const x = [serializeEvent, deserializeExport];',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(warnings).toEqual([]);
+    expect(file.content).toContain("import { serializeEvent } from './serializers/audit-log-event.serializer';");
+    expect(file.content).toContain("import { deserializeExport } from './serializers/audit-log-export.serializer';");
+  });
+
+  it('preserves the relocatable symbols of a clause when only some are missing', () => {
+    // A clause mixing a relocatable symbol with a genuinely-missing one must
+    // still emit the import for the relocatable symbol; dropping the whole
+    // clause would fail the resolvable symbol with TS2305 at its usage site.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/audit-logs/serializers/audit-log-event.serializer.ts');
+    surface.functions.set('serializeEvent', 'src/audit-logs/serializers/audit-log-event.serializer.ts');
+
+    const file: GeneratedFile = {
+      path: 'src/audit-logs/audit-logs.ts',
+      content: [
+        "import { serializeEvent, serializeGhost } from './serializers/combined.serializer';",
+        '',
+        'export const x = [serializeEvent, serializeGhost];',
+      ].join('\n'),
+    };
+
+    const warnings = enforceEmittedImportInvariant([file], new Set([file.path]), surface);
+    expect(file.content).toContain("import { serializeEvent } from './serializers/audit-log-event.serializer';");
+    expect(file.content).not.toContain('combined.serializer');
+    // The missing symbol is dropped from the import but left in the body so it
+    // fails at its usage site, not as a phantom-module error.
+    expect(file.content).not.toMatch(/import[^\n]*serializeGhost/);
+    expect(file.content).toContain('export const x = [serializeEvent, serializeGhost];');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('serializeGhost');
+  });
+
+  it('runs as a final pass over all files emitted during the run (wired via generateTests)', () => {
+    // Stale api-surface scenario: the baseline claims a dependency interface
+    // lives at a sourceFile that is not on disk (and is never emitted). The
+    // planned import would be unresolvable; the end-of-run pass must repair
+    // or drop it — across emitter hooks, since imports are planned in one
+    // hook and the dependency may be (not) emitted in another.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-import-invariant-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const models: Model[] = [
+        {
+          name: 'Widget',
+          fields: [
+            { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'part', type: { kind: 'model', name: 'WidgetPart' }, required: false },
+          ],
+        },
+        {
+          name: 'WidgetPart',
+          fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ];
+      const spec = makeSpec(models, [
+        {
+          name: 'Widgets',
+          operations: [
+            {
+              name: 'getWidget',
+              httpMethod: 'get',
+              path: '/widgets/{id}',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'Widget' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ]);
+      const runCtx = {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Widgets'] },
+        apiSurface: {
+          language: 'node',
+          extractedFrom: tmpRoot,
+          extractedAt: '2026-06-09T00:00:00Z',
+          classes: {},
+          interfaces: {
+            // Stale: this sourceFile does not exist on disk.
+            WidgetPart: {
+              name: 'WidgetPart',
+              fields: { id: { type: 'string', optional: false } },
+              extends: [],
+              sourceFile: 'src/parts/interfaces/widget-part.interface.ts',
+            },
+          },
+          typeAliases: {},
+          enums: {},
+          exports: {},
+        } as any,
+      } as EmitterContext;
+
+      const modelFiles = nodeEmitter.generateModels(models, runCtx);
+      const widgetFile = modelFiles.find((f) => f.path === 'src/widgets/interfaces/widget.interface.ts');
+      expect(widgetFile).toBeDefined();
+      // Import planned against the stale baseline path…
+      expect(widgetFile!.content).toContain('../../parts/interfaces/widget-part.interface');
+
+      nodeEmitter.generateTests(spec, runCtx);
+
+      // …must not survive the end-of-run invariant pass.
+      expect(widgetFile!.content).not.toContain('../../parts/interfaces/widget-part.interface');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -225,7 +225,12 @@ function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): 
   const methods = new Set<string>();
   for (const block of content.matchAll(/@oagen-ignore-start[\s\S]*?@oagen-ignore-end/g)) {
     for (const line of block[0].split('\n')) {
-      const match = line.match(/^\s{2}(?:(?:public|private|protected)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/);
+      // Match the method name followed by `(` or by `<` — the latter covers
+      // generic methods (`getProfile<T extends ...>(...)`), including
+      // multi-line type-parameter lists where the line ends right after `<`.
+      // Matching only up to the opening bracket sidesteps balancing nested
+      // angle brackets like `<T extends Record<string, unknown> = ...>`.
+      const match = line.match(/^\s{2}(?:(?:public|private|protected)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*[<(]/);
       if (match) methods.add(match[1]);
     }
   }
@@ -308,6 +313,18 @@ function optionsObjectInfo(
 
 function renderOptionsParam(param: OptionsObjectParam): string {
   return `options${param.optional ? '?' : ''}: ${param.type}`;
+}
+
+/**
+ * Whether a baseline-derived type reference is a plain TypeScript identifier
+ * that can appear in a named import. Baseline (live-SDK) method params can
+ * carry inline object-literal TYPES (e.g. `{ intent: GenerateLinkIntent; ... }`);
+ * treating that literal text as a type NAME would slugify it into a filename
+ * and emit a named import of a brace-expression — both invalid. Literal types
+ * are kept inline in the emitted signature instead and never imported.
+ */
+function isValidTypeIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(name);
 }
 
 function autoPaginatableItemType(returnType: string | undefined): string | undefined {
@@ -933,6 +950,9 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   const importedTypeNames = new Set<string>();
   for (const optionType of optionObjectTypes) {
+    // Inline object-literal types from the baseline surface are rendered
+    // inline in the method signature — they have no importable name or file.
+    if (!isValidTypeIdentifier(optionType)) continue;
     if (importedTypeNames.has(optionType)) continue;
     importedTypeNames.add(optionType);
     const sourceFile = baselineTypeSourceFile(ctx, optionType);
@@ -1675,7 +1695,17 @@ function renderOptionsObjectMethod(
     const wireType = wireInterfaceName(itemType);
     const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
     const needsWireSerializer = extraParams.some((p) => fieldName(p.name) !== wireFieldName(p.name));
-    const paginationType = needsWireSerializer ? 'PaginationOptions' : optionParam.type;
+    // When path params are destructured out of the options object, the value
+    // passed to AutoPaginatable (and to fetchAndDeserialize) is the REST
+    // object — typed Omit<FullOptions, pathFields> — not the full options
+    // interface. Declaring the full interface as the second type argument
+    // fails TS2322 because the rest object lacks the required path-param
+    // fields, so parameterize over the rest type actually passed.
+    const restOptionsType =
+      pathBindings.length > 0
+        ? `Omit<${optionParam.type}, ${pathBindings.map((b) => `'${b}'`).join(' | ')}>`
+        : optionParam.type;
+    const paginationType = needsWireSerializer ? 'PaginationOptions' : restOptionsType;
     const returnType = needsWireSerializer
       ? `Promise<AutoPaginatable<${itemType}, ${paginationType}>>`
       : (preferredBaselineReturnType(ctx, baselineMethod?.returnType) ??
@@ -1793,7 +1823,13 @@ function renderOptionsObjectMethod(
 
     lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): ${methodReturnType} {`);
     renderOptionsObjectDestructure(lines, pathBindings);
-    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}${queryOptionsArg});`);
+    // POST/PUT/PATCH require the entity argument even without a request body —
+    // the client signature is `post(path, entity, options?)`, so a body-less
+    // call must still pass `{}` or the generated code fails with TS2554.
+    const emptyBodyArg = httpMethodNeedsBody(op.httpMethod) ? ', {}' : '';
+    lines.push(
+      `    const { data } = await this.workos.${op.httpMethod}<${wireType}>(${pathStr}${emptyBodyArg}${queryOptionsArg});`,
+    );
     if (override?.returnExpression) {
       lines.push(`    const result = ${returnExpr};`);
       lines.push(`    return ${override.returnExpression};`);

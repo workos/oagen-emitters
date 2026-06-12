@@ -11,12 +11,15 @@ import { mapTypeRef } from './type-map.js';
 import {
   resolveInterfaceName,
   fieldName,
+  fileName,
   resolveServiceDir,
   resolveMethodName,
   buildServiceNameMap,
 } from './naming.js';
-import { getMountTarget } from '../shared/resolved-ops.js';
-import { assignModelsToServices } from '@workos/oagen';
+import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
+import { assignModelsToServices, collectModelRefs, collectFieldDependencies } from '@workos/oagen';
+import { isNodeOwnedService } from './options.js';
+import { liveSurfaceHasExistingSdk, liveSurfaceHasFile } from './live-surface.js';
 
 /**
  * Compute a relative import path between two files within the generated SDK.
@@ -203,7 +206,7 @@ export function createServiceDirResolver(
   serviceNameMap: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
 } {
-  const modelToService = assignModelsToServices(models, services, ctx.modelHints);
+  const modelToService = assignModelsToEmittableServices(models, services, ctx);
   const serviceNameMap = buildServiceNameMap(services, ctx);
 
   // Per-name → directory override, harvested from the live SDK surface.
@@ -212,25 +215,7 @@ export function createServiceDirResolver(
   // baseline directory string (e.g., "user-management"). The override map is
   // attached by tagging the model name with a directory prefix that bypasses
   // the IR-service lookup. Concretely we keep a side map.
-  const baselineDirByModel = new Map<string, string>();
-  const recordSource = (name: string, info: { sourceFile?: string } | undefined) => {
-    const sourceFile = info?.sourceFile;
-    if (!sourceFile) return;
-    const m = sourceFile.match(/^src\/([^/]+)\//);
-    if (!m) return;
-    baselineDirByModel.set(name, m[1]);
-  };
-  // Both interfaces and type aliases can shadow IR model names — e.g.
-  // `type Role = EnvironmentRole | OrganizationRole;` is the live SDK's
-  // canonical Role definition even though the IR represents Role as a model.
-  for (const [name, info] of Object.entries(ctx.apiSurface?.interfaces ?? {})) {
-    recordSource(name, info as { sourceFile?: string });
-  }
-  for (const [name, info] of Object.entries(ctx.apiSurface?.typeAliases ?? {})) {
-    if (!baselineDirByModel.has(name)) {
-      recordSource(name, info as { sourceFile?: string });
-    }
-  }
+  const baselineDirByModel = harvestBaselineDirByModel(ctx);
 
   // Override modelToService for any IR model that has a baseline sourceFile.
   // We invent a synthetic IR-service key that maps directly to the baseline
@@ -253,6 +238,139 @@ export function createServiceDirResolver(
     return resolveServiceDir(serviceNameMap.get(irService) ?? irService);
   };
   return { modelToService, serviceNameMap, resolveDir };
+}
+
+/**
+ * Map baseline interface / type-alias names to the top-level `src/<dir>/`
+ * their `sourceFile` lives in. Both kinds can shadow IR model names — e.g.
+ * `type Role = EnvironmentRole | OrganizationRole;` is the live SDK's
+ * canonical Role definition even though the IR represents Role as a model.
+ */
+function harvestBaselineDirByModel(ctx: EmitterContext): Map<string, string> {
+  const baselineDirByModel = new Map<string, string>();
+  const recordSource = (name: string, info: { sourceFile?: string } | undefined) => {
+    const sourceFile = info?.sourceFile;
+    if (!sourceFile) return;
+    const m = sourceFile.match(/^src\/([^/]+)\//);
+    if (!m) return;
+    baselineDirByModel.set(name, m[1]);
+  };
+  for (const [name, info] of Object.entries(ctx.apiSurface?.interfaces ?? {})) {
+    recordSource(name, info as { sourceFile?: string });
+  }
+  for (const [name, info] of Object.entries(ctx.apiSurface?.typeAliases ?? {})) {
+    if (!baselineDirByModel.has(name)) {
+      recordSource(name, info as { sourceFile?: string });
+    }
+  }
+  return baselineDirByModel;
+}
+
+/**
+ * `assignModelsToServices` plus an owned-service correction pass.
+ *
+ * The engine's assignment is first-reference-wins: a model referenced by both
+ * Organizations and AuditLogs lands in `organizations/` even when only
+ * AuditLogs is owned this run. Against an existing SDK, `applyLiveSurface`
+ * then drops the model file (a non-owned, non-adopted directory cannot
+ * receive new paths) while the owned resource still imports
+ * `../organizations/interfaces/<model>.interface` — an import that resolves
+ * to nothing (TS2307).
+ *
+ * The correction re-homes such models to the owned service that references
+ * them, so emission and import planning agree on a directory that is allowed
+ * to receive files. It only fires when:
+ *  1. `ownedServices` is configured and the run targets an existing SDK;
+ *  2. the model has no baseline `sourceFile` (otherwise the baseline-dir
+ *     override keeps imports pointing at the on-disk location);
+ *  3. the model's computed interface path does not already exist on disk;
+ *  4. the assigned service is neither owned itself nor sharing a directory
+ *     with an owned service.
+ */
+export function assignModelsToEmittableServices(
+  models: Model[],
+  services: Service[],
+  ctx?: EmitterContext,
+): Map<string, string> {
+  const modelToService = assignModelsToServices(models, services, ctx?.modelHints);
+  if (ctx) {
+    reassignOwnedServiceDependencies(modelToService, models, services, ctx);
+  }
+  return modelToService;
+}
+
+function reassignOwnedServiceDependencies(
+  modelToService: Map<string, string>,
+  models: Model[],
+  services: Service[],
+  ctx: EmitterContext,
+): void {
+  const serviceNameMap = buildServiceNameMap(services, ctx);
+  // Ownership is a property of the MOUNT target, not the IR service: an op
+  // can live on a non-owned IR service (e.g. Organizations, because its path
+  // starts with /organizations) while being mounted on an owned service via
+  // `resolvedOperations` (e.g. AuditLogs' retention endpoints). Walking only
+  // IR services misses such ops entirely, so the models they reference stay
+  // assigned to the unemittable IR directory and are never emitted anywhere.
+  // Regroup by mount target when resolved operations exist — same as
+  // `buildGeneratedResourceModelUsage` and `computeOwnedServiceDirs`.
+  const mountGroups = groupByMount(ctx);
+  const candidateServices: Service[] =
+    mountGroups.size > 0 ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations })) : services;
+  const ownedServices = candidateServices.filter((s) => isNodeOwnedService(ctx, s.name, serviceNameMap.get(s.name)));
+  if (ownedServices.length === 0) return;
+  // Greenfield generation emits every directory; nothing is unemittable.
+  if (!liveSurfaceHasExistingSdk()) return;
+
+  const dirOf = (irService: string | undefined): string =>
+    irService ? resolveServiceDir(serviceNameMap.get(irService) ?? irService) : 'common';
+  const ownedDirs = new Set(ownedServices.map((s) => dirOf(s.name)));
+  const baselineDirByModel = harvestBaselineDirByModel(ctx);
+  const modelsByName = new Map(models.map((m) => [m.name, m]));
+
+  for (const service of ownedServices) {
+    for (const name of collectServiceModelClosure(service, modelsByName)) {
+      if (!modelsByName.has(name)) continue;
+      if (baselineDirByModel.has(name)) continue; // declared in the baseline → on disk
+      const assigned = modelToService.get(name);
+      if (assigned && isNodeOwnedService(ctx, assigned, serviceNameMap.get(assigned))) continue;
+      const assignedDir = dirOf(assigned);
+      if (ownedDirs.has(assignedDir)) continue;
+      if (liveSurfaceHasFile(`src/${assignedDir}/interfaces/${fileName(name)}.interface.ts`)) continue;
+      modelToService.set(name, service.name);
+    }
+  }
+}
+
+/** Model names referenced by a service's operations, expanded through fields. */
+function collectServiceModelClosure(service: Service, modelsByName: Map<string, Model>): Set<string> {
+  const referenced = new Set<string>();
+  const add = (ref: TypeRef | undefined): void => {
+    if (!ref) return;
+    for (const name of collectModelRefs(ref)) referenced.add(name);
+  };
+  for (const op of service.operations) {
+    add(op.requestBody);
+    add(op.response);
+    for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      add(param.type);
+    }
+    if (op.pagination) add(op.pagination.itemType);
+  }
+
+  const queue = [...referenced];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    const model = modelsByName.get(name);
+    if (!model) continue;
+    for (const dep of collectFieldDependencies(model).models) {
+      if (!referenced.has(dep)) {
+        referenced.add(dep);
+        queue.push(dep);
+      }
+    }
+  }
+  return referenced;
 }
 
 /**

@@ -324,6 +324,315 @@ const METHOD_KEYWORD_BLOCKLIST = new Set([
   'constructor', // tracked separately if needed
 ]);
 
+// ---------------------------------------------------------------------------
+// Partial-emission merge
+//
+// For a service that is NOT owned and NOT a missing-service adoption,
+// `resources.ts` intentionally emits a PARTIAL resource class: operations
+// already covered by the baseline class are filtered out, leaving only the
+// new methods. Overwriting the on-disk file with that partial class would
+// delete every existing public method (this deleted four methods from
+// workos-node's api-keys.ts when the spec gained one operation). The helpers
+// below let `applyLiveSurface` detect that case and merge instead: keep the
+// existing file text verbatim and append only the generated-only methods
+// (plus any imports they need).
+// ---------------------------------------------------------------------------
+
+interface ParsedClassLines {
+  name: string;
+  /** Line index of the `export class` declaration. */
+  declLine: number;
+  /** Line index of the line containing the class body's closing brace. */
+  closeLine: number;
+  /** Method names declared directly on the class body, in source order. */
+  methods: string[];
+}
+
+// Class members sit at exactly two-space indent in both generated output and
+// prettier-formatted SDK files; deeper-indented lines are method bodies.
+const CLASS_MEMBER_RE =
+  /^ {2}(?:(?:public|private|protected|readonly|static)\s+)*(?:async\s+)?([a-zA-Z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/;
+
+interface BraceScan {
+  /** Net code-brace balance accumulated so far. */
+  depth: number;
+  /** Whether any code `{` has been seen — distinguishes "not yet opened" from "balanced and closed". */
+  opened: boolean;
+  /** Whether we are mid `/* … *​/` block comment (spans lines). */
+  inBlockComment: boolean;
+  /**
+   * Interpolation-brace depth for each active template literal; a non-empty
+   * stack means we are inside a template, and the top being 0 means we are in
+   * its raw text (vs. inside a `${ … }` interpolation).
+   */
+  templates: number[];
+}
+
+/**
+ * Advance a brace-balance scan across one `line`, mutating `s`. Counts only
+ * braces that live in *code* — including template `${ … }` interpolation,
+ * whose braces are self-balancing — and ignores braces inside string/template
+ * text, line comments, and block comments. State threads across lines so block
+ * comments and multi-line template literals are tracked correctly.
+ *
+ * Naive character counting (the prior approach) would clip a method block at a
+ * `}` that merely sat inside a comment (`// returns when done }`) or a string
+ * (`'closing brace: }'`), appending a truncated, unbalanced body. Regex
+ * literals are intentionally not modelled: distinguishing `/` division from a
+ * regex needs full tokenization, and a regex whose braces are net-unbalanced
+ * does not occur in generated or hand-edited SDK code (`{n,m}` quantifiers are
+ * always balanced).
+ */
+function advanceBraceScan(line: string, s: BraceScan): void {
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (s.inBlockComment) {
+      if (c === '*' && line[i + 1] === '/') {
+        s.inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    const tdepth = s.templates.length;
+    if (tdepth > 0 && s.templates[tdepth - 1] === 0) {
+      // Raw template text: only an escape, a closing backtick, or the start of
+      // an interpolation matters; everything else (braces included) is literal.
+      if (c === '\\') {
+        i++;
+      } else if (c === '`') {
+        s.templates.pop();
+      } else if (c === '$' && line[i + 1] === '{') {
+        s.templates[tdepth - 1] = 1;
+        s.depth++;
+        s.opened = true;
+        i++;
+      }
+      continue;
+    }
+    // Code context: top level, or inside a template interpolation.
+    if (c === '/' && line[i + 1] === '/') break; // line comment runs to EOL
+    if (c === '/' && line[i + 1] === '*') {
+      s.inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      i++;
+      while (i < line.length && line[i] !== quote) {
+        if (line[i] === '\\') i++;
+        i++;
+      }
+      continue;
+    }
+    if (c === '`') {
+      s.templates.push(0);
+      continue;
+    }
+    if (c === '{') {
+      s.depth++;
+      s.opened = true;
+      if (tdepth > 0) s.templates[tdepth - 1]++;
+    } else if (c === '}') {
+      s.depth--;
+      if (tdepth > 0) s.templates[tdepth - 1]--;
+    }
+  }
+}
+
+function parseClassesByLine(lines: string[]): ParsedClassLines[] {
+  const classes: ParsedClassLines[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const decl = lines[i].match(/^export\s+(?:abstract\s+)?class\s+([A-Z][\w$]*)/);
+    if (!decl) continue;
+
+    const scan: BraceScan = { depth: 0, opened: false, inBlockComment: false, templates: [] };
+    let closeLine = -1;
+    for (let j = i; j < lines.length; j++) {
+      advanceBraceScan(lines[j], scan);
+      if (scan.opened && scan.depth <= 0) {
+        closeLine = j;
+        break;
+      }
+    }
+    if (closeLine < 0) continue;
+
+    const methods: string[] = [];
+    for (let j = i + 1; j < closeLine; j++) {
+      const member = lines[j].match(CLASS_MEMBER_RE);
+      if (!member) continue;
+      const name = member[1];
+      if (name === 'constructor' || METHOD_KEYWORD_BLOCKLIST.has(name)) continue;
+      if (!methods.includes(name)) methods.push(name);
+    }
+    classes.push({ name: decl[1], declLine: i, closeLine, methods });
+    i = closeLine;
+  }
+  return classes;
+}
+
+/**
+ * Extract the full source block of `method` (attached comments included) from
+ * a parsed class. Returns null if the block cannot be delimited.
+ */
+function extractMethodBlock(lines: string[], cls: ParsedClassLines, method: string): string[] | null {
+  for (let j = cls.declLine + 1; j < cls.closeLine; j++) {
+    const member = lines[j].match(CLASS_MEMBER_RE);
+    if (!member || member[1] !== method) continue;
+
+    // Pull in the contiguous comment block directly above the signature.
+    let start = j;
+    while (start > cls.declLine + 1) {
+      const above = lines[start - 1].trim();
+      if (above.startsWith('//') || above.startsWith('/*') || above.startsWith('*')) start--;
+      else break;
+    }
+
+    // The member ends where the brace depth opened by its signature returns to
+    // zero. `advanceBraceScan` counts only code braces — ignoring those inside
+    // strings, template text, and comments — so it is robust to inner closures,
+    // object literals, and template interpolation nested at any indentation, as
+    // well as a stray `}` in a comment or string. The previous "first
+    // two-space-indented `}`" heuristic clipped the block at a nested brace at
+    // method-close indentation; raw character counting clipped it at a `}` that
+    // merely sat in a comment or string. Either appends a truncated body and
+    // orphans the real closing brace.
+    const scan: BraceScan = { depth: 0, opened: false, inBlockComment: false, templates: [] };
+    for (let end = j; end < cls.closeLine; end++) {
+      advanceBraceScan(lines[end], scan);
+      if (scan.opened && scan.depth <= 0) return lines.slice(start, end + 1);
+    }
+    return null;
+  }
+  return null;
+}
+
+// Multi-line tolerant: prettier wraps long named-import lists across lines.
+const IMPORT_STMT_RE =
+  /^import\s+(type\s+)?(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\{([\s\S]*?)\}\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)\s+)?from\s+['"]([^'"]+)['"];?/gm;
+
+function importLocalName(entry: string): string {
+  const asMatch = entry.match(/\s+as\s+([A-Za-z_$][\w$]*)\s*$/);
+  if (asMatch) return asMatch[1];
+  return entry.replace(/^type\s+/, '').trim();
+}
+
+function collectImportedLocalNames(text: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of text.matchAll(IMPORT_STMT_RE)) {
+    if (m[2]) names.add(m[2]);
+    if (m[4]) names.add(m[4]);
+    for (const entry of (m[3] ?? '').split(',')) {
+      const trimmed = entry.trim();
+      if (trimmed) names.add(importLocalName(trimmed));
+    }
+  }
+  return names;
+}
+
+/** Import statements from `generatedText` whose names `existingText` lacks. */
+function missingImportStatements(existingText: string, generatedText: string): string[] {
+  const existingNames = collectImportedLocalNames(existingText);
+  const statements: string[] = [];
+  for (const m of generatedText.matchAll(IMPORT_STMT_RE)) {
+    const [stmt, typeOnly, defaultName, named, namespaceName, moduleSpec] = m;
+    if (defaultName || namespaceName) {
+      // Default/namespace imports: append verbatim when the local is missing.
+      const local = defaultName ?? namespaceName;
+      if (local && !existingNames.has(local)) statements.push(stmt.endsWith(';') ? stmt : `${stmt};`);
+      continue;
+    }
+    const missing = (named ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && !existingNames.has(importLocalName(entry)));
+    if (missing.length === 0) continue;
+    statements.push(`import ${typeOnly ? 'type ' : ''}{ ${missing.join(', ')} } from '${moduleSpec}';`);
+  }
+  return statements;
+}
+
+/**
+ * Merge a partial class emission into the existing on-disk file content.
+ *
+ * Acts only when a class declared in BOTH texts has methods on disk that the
+ * generated content drops — the signature of a "new operations only" partial
+ * emission. Returns the existing text with the generated-only methods appended
+ * to the class body (and missing imports added), preserving every existing
+ * method and import verbatim.
+ *
+ * Returns null when the generated content does not drop any existing method;
+ * callers should then proceed with their normal (overwrite) path so full
+ * regenerations keep propagating emitter improvements and spec renames.
+ */
+export function mergeGeneratedClassMethodsIntoExisting(existingText: string, generatedText: string): string | null {
+  const existingLines = existingText.split('\n');
+  const generatedLines = generatedText.split('\n');
+  const existingClasses = parseClassesByLine(existingLines);
+  if (existingClasses.length === 0) return null;
+  const generatedClasses = new Map(parseClassesByLine(generatedLines).map((cls) => [cls.name, cls]));
+
+  let dropsExistingMethod = false;
+  const insertions: Array<{ atLine: number; blocks: string[][] }> = [];
+  for (const existing of existingClasses) {
+    const generated = generatedClasses.get(existing.name);
+    if (!generated) continue;
+    const generatedMethods = new Set(generated.methods);
+    if (!existing.methods.some((method) => !generatedMethods.has(method))) continue;
+    dropsExistingMethod = true;
+
+    const existingMethods = new Set(existing.methods);
+    const blocks: string[][] = [];
+    for (const method of generated.methods) {
+      if (existingMethods.has(method)) continue;
+      const block = extractMethodBlock(generatedLines, generated, method);
+      if (block) blocks.push(block);
+    }
+    if (blocks.length > 0) insertions.push({ atLine: existing.closeLine, blocks });
+  }
+  if (!dropsExistingMethod) return null;
+
+  const merged = [...existingLines];
+  // Bottom-up so earlier insertions don't shift later line indices. Imports
+  // sit above every class body, so the import insertion point (computed on
+  // the original text) stays valid after these splices.
+  insertions.sort((a, b) => b.atLine - a.atLine);
+  for (const insertion of insertions) {
+    const blockLines: string[] = [];
+    for (const block of insertion.blocks) {
+      blockLines.push('', ...block);
+    }
+    merged.splice(insertion.atLine, 0, ...blockLines);
+  }
+
+  const importStatements = missingImportStatements(existingText, generatedText);
+  if (importStatements.length > 0) {
+    let lastImportLine = -1;
+    for (let i = 0; i < existingLines.length; i++) {
+      if (
+        /from\s+['"][^'"]+['"];?\s*$/.test(existingLines[i]) ||
+        /^import\s+['"][^'"]+['"];?\s*$/.test(existingLines[i])
+      ) {
+        lastImportLine = i;
+      }
+    }
+    if (lastImportLine >= 0) {
+      merged.splice(lastImportLine + 1, 0, ...importStatements);
+    } else {
+      // No imports yet: place them after the leading comment block.
+      let insertAt = 0;
+      while (insertAt < existingLines.length) {
+        const line = existingLines[insertAt].trim();
+        if (line === '' || line.startsWith('//') || line.startsWith('/*') || line.startsWith('*')) insertAt++;
+        else break;
+      }
+      merged.splice(insertAt, 0, ...importStatements, '');
+    }
+  }
+
+  return merged.join('\n');
+}
+
 /**
  * Given the start index of a class declaration, return the brace-delimited body
  * as a substring. Returns '' if the body cannot be located.

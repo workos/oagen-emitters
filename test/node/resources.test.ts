@@ -466,6 +466,470 @@ describe('generateResources', () => {
   });
 });
 
+describe('body-less POST/PUT operations', () => {
+  // The WorkOS client's `post(path, entity, options?)` and `put(path, entity, options?)`
+  // REQUIRE the entity argument. Operations with no request body must still pass `{}`
+  // or the generated call fails with TS2554 "Expected 2-3 arguments, but got 1".
+  const domainModel: Model = {
+    name: 'OrganizationDomain',
+    fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+  };
+
+  it('passes an empty object body for a body-less POST with a response model', () => {
+    const services: Service[] = [
+      {
+        name: 'OrganizationDomains',
+        operations: [
+          {
+            name: 'verifyOrganizationDomain',
+            httpMethod: 'post',
+            path: '/organization_domains/{id}/verify',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationDomain' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [domainModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('organization-domains.ts'));
+    expect(resourceFile).toBeDefined();
+    // The post() call must pass `{}` as the required entity argument.
+    expect(resourceFile!.content).toMatch(/await this\.workos\.post<[^>]+>\(`[^`]+`, \{\}\);/);
+    expect(resourceFile!.content).not.toMatch(/await this\.workos\.post<[^>]+>\(`[^`]+`\);/);
+  });
+
+  it('passes an empty object body for a body-less PUT with a response model', () => {
+    const flagModel: Model = {
+      name: 'FeatureFlag',
+      fields: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const services: Service[] = [
+      {
+        name: 'FeatureFlags',
+        operations: [
+          {
+            name: 'enableFeatureFlag',
+            httpMethod: 'put',
+            path: '/feature_flags/{slug}/enable',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'FeatureFlag' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [flagModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('feature-flags.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toMatch(/await this\.workos\.put<[^>]+>\(`[^`]+`, \{\}\);/);
+    expect(resourceFile!.content).not.toMatch(/await this\.workos\.put<[^>]+>\(`[^`]+`\);/);
+  });
+
+  it('does not add a body argument to body-less GET calls', () => {
+    const services: Service[] = [
+      {
+        name: 'OrganizationDomains',
+        operations: [
+          {
+            name: 'getOrganizationDomain',
+            httpMethod: 'get',
+            path: '/organization_domains/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationDomain' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [domainModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('organization-domains.ts'));
+    expect(resourceFile).toBeDefined();
+    expect(resourceFile!.content).toMatch(/await this\.workos\.get<[^>]+>\(`[^`]+`\);/);
+  });
+});
+
+describe('paginated list methods and path params (AutoPaginatable typing)', () => {
+  // List methods with PATH parameters destructure those params out of the
+  // options object (`const { actionName, ...paginationOptions } = options;`)
+  // and pass the REST object to AutoPaginatable/fetchAndDeserialize. The
+  // declared second type argument must therefore be the rest type
+  // (Omit<FullOptions, pathFields>) — declaring the full options interface
+  // fails TS2322 because the rest object lacks the required path-param fields.
+  const schemaModel: Model = {
+    name: 'AuditLogSchema',
+    fields: [{ name: 'version', type: { kind: 'primitive', type: 'number' }, required: true }],
+  };
+
+  const paginationQueryParams = [
+    { name: 'limit', type: { kind: 'primitive' as const, type: 'number' as const }, required: false },
+    { name: 'after', type: { kind: 'primitive' as const, type: 'string' as const }, required: false },
+  ];
+
+  const cursorPagination = {
+    strategy: 'cursor' as const,
+    param: 'after',
+    itemType: { kind: 'model' as const, name: 'AuditLogSchema' },
+  };
+
+  it('types AutoPaginatable over the rest options when one path param is destructured', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'listActionSchemas',
+            httpMethod: 'get',
+            path: '/audit_logs/actions/{actionName}/schemas',
+            pathParams: [{ name: 'actionName', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'AuditLogSchema' } },
+            pagination: cursorPagination,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [schemaModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('audit-logs.ts'));
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    // The declaration, the constructed value, and the re-fetch lambda must all
+    // agree on the rest type actually passed (paginationOptions).
+    const expectedMethod = [
+      "  async listActionSchemas(options: ListActionSchemasOptions): Promise<AutoPaginatable<AuditLogSchema, Omit<ListActionSchemasOptions, 'actionName'>>> {",
+      '    const { actionName, ...paginationOptions } = options;',
+      '    return new AutoPaginatable(',
+      '      await fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '        this.workos,',
+      '        `/audit_logs/actions/${encodeURIComponent(actionName)}/schemas`,',
+      '        deserializeAuditLogSchema,',
+      '        paginationOptions,',
+      '      ),',
+      '      (params) =>',
+      '        fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '          this.workos,',
+      '          `/audit_logs/actions/${encodeURIComponent(actionName)}/schemas`,',
+      '          deserializeAuditLogSchema,',
+      '          params,',
+      '        ),',
+      '      paginationOptions,',
+      '    );',
+      '  }',
+    ].join('\n');
+    expect(content).toContain(expectedMethod);
+    // The full options interface (which requires actionName) must never be the
+    // second AutoPaginatable type argument — that is the TS2322 shape.
+    expect(content).not.toContain('AutoPaginatable<AuditLogSchema, ListActionSchemasOptions>');
+  });
+
+  it('keeps the full options type when no path params are destructured (regression)', () => {
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'listActions',
+            httpMethod: 'get',
+            path: '/audit_logs/actions',
+            pathParams: [],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'AuditLogSchema' } },
+            pagination: cursorPagination,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [schemaModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('audit-logs.ts'));
+    expect(resourceFile).toBeDefined();
+
+    // Byte-identical to the pre-fix output: no Omit, no path destructure.
+    const expectedMethod = [
+      '  async listActions(options?: ListActionsOptions): Promise<AutoPaginatable<AuditLogSchema, ListActionsOptions>> {',
+      '    const paginationOptions = options;',
+      '    return new AutoPaginatable(',
+      '      await fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '        this.workos,',
+      "        '/audit_logs/actions',",
+      '        deserializeAuditLogSchema,',
+      '        paginationOptions,',
+      '      ),',
+      '      (params) =>',
+      '        fetchAndDeserialize<AuditLogSchemaResponse, AuditLogSchema>(',
+      '          this.workos,',
+      "          '/audit_logs/actions',",
+      '          deserializeAuditLogSchema,',
+      '          params,',
+      '        ),',
+      '      paginationOptions,',
+      '    );',
+      '  }',
+    ].join('\n');
+    expect(resourceFile!.content).toContain(expectedMethod);
+    expect(resourceFile!.content).not.toContain('Omit<');
+  });
+
+  it('omits every destructured path param when there are multiple', () => {
+    const memberModel: Model = {
+      name: 'GroupMember',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const services: Service[] = [
+      {
+        name: 'Groups',
+        operations: [
+          {
+            name: 'listGroupMembers',
+            httpMethod: 'get',
+            path: '/organizations/{organizationId}/groups/{groupId}/members',
+            pathParams: [
+              { name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'groupId', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: paginationQueryParams,
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'GroupMember' } },
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              itemType: { kind: 'model', name: 'GroupMember' },
+            },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models: [memberModel] };
+    const result = generateResources(services, { ...ctx, spec });
+    const resourceFile = result.find((f) => f.path.includes('groups.ts'));
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    expect(content).toContain(
+      'async listGroupMembers(options: ListGroupMembersOptions): ' +
+        "Promise<AutoPaginatable<GroupMember, Omit<ListGroupMembersOptions, 'organizationId' | 'groupId'>>> {",
+    );
+    expect(content).toContain('const { organizationId, groupId, ...paginationOptions } = options;');
+    expect(content).toContain(
+      '`/organizations/${encodeURIComponent(organizationId)}/groups/${encodeURIComponent(groupId)}/members`',
+    );
+    expect(content).not.toContain('AutoPaginatable<GroupMember, ListGroupMembersOptions>');
+  });
+});
+
+describe('inline object-literal baseline parameter types', () => {
+  // The hand-written workos-node AdminPortal method uses an inline object-literal
+  // parameter TYPE (`generateLink({ ... }: { intent: GenerateLinkIntent; ... })`).
+  // When the baseline surface reports that literal text as the param "type name",
+  // the emitter must keep it inline in the signature and must NOT slugify it into
+  // an interface filename or emit a named import of a brace-expression.
+  it('keeps the literal type inline and never imports it', () => {
+    const literalType = '{ intent: GenerateLinkIntent; organization: string; returnUrl?: string }';
+    const service: Service = {
+      name: 'AdminPortal',
+      operations: [
+        {
+          name: 'generateLink',
+          httpMethod: 'post',
+          path: '/portal/generate_link',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          requestBody: { kind: 'model', name: 'GenerateLinkBody' },
+          response: { kind: 'model', name: 'PortalLink' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const spec: ApiSpec = {
+      ...emptySpec,
+      services: [service],
+      models: [
+        {
+          name: 'GenerateLinkBody',
+          fields: [
+            { name: 'intent', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'organization', type: { kind: 'primitive', type: 'string' }, required: true },
+          ],
+        },
+        {
+          name: 'PortalLink',
+          fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ],
+    };
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['AdminPortal'] },
+      apiSurface: {
+        classes: {
+          AdminPortal: {
+            constructorParams: [{ name: 'workos', type: 'WorkOS' }],
+            methods: {
+              generateLink: [
+                {
+                  name: 'generateLink',
+                  params: [{ name: 'options', type: literalType, passingStyle: 'options_object' }],
+                  returnType: 'Promise<{ link: string }>',
+                  async: true,
+                },
+              ],
+            },
+          },
+        },
+      } as any,
+    };
+
+    const result = generateResources([service], ctxWithBaseline);
+    const resourceFile = result.find((f) => f.path === 'src/admin-portal/admin-portal.ts');
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    // The literal type stays inline in the method signature.
+    expect(content).toContain(`async generateLink(options: ${literalType})`);
+    // No named import of a brace-expression…
+    expect(content).not.toContain('import type { {');
+    // …and no import path derived from slugifying the literal type's text.
+    expect(content).not.toContain('intent-generate-link-intent');
+    // No interface file is emitted for the literal type either.
+    expect(result.some((f) => f.path.includes('intent-generate-link-intent'))).toBe(false);
+  });
+});
+
+describe('@oagen-ignore region method filtering', () => {
+  // `ignoredResourceMethodNames` scans @oagen-ignore-start/end regions in the
+  // existing on-disk resource file and the plan filter drops matching method
+  // names so user-preserved legacy methods are not re-emitted as duplicates.
+  // Generic methods (`name<T>(...)`, including multi-line type-parameter lists
+  // with constraints/defaults and nested angle brackets) must be caught too —
+  // on the SSO pass, region-protected getProfile<T>/getProfileAndToken<T> were
+  // re-appended as duplicates on every regen.
+  const ssoOp = (name: string, opPath: string) =>
+    ({
+      name,
+      httpMethod: 'get',
+      path: opPath,
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model', name: 'Profile' },
+      errors: [],
+      injectIdempotencyKey: false,
+    }) as Service['operations'][number];
+
+  it('filters region-protected generic methods (single-line and multi-line type params)', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-ignore-region-'));
+    try {
+      fs.mkdirSync(path.join(tmpRoot, 'src', 'sso'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpRoot, 'src', 'sso', 'sso.ts'),
+        [
+          "import type { WorkOS } from '../workos';",
+          '',
+          'export class Sso {',
+          '  constructor(private readonly workos: WorkOS) {}',
+          '',
+          '  // @oagen-ignore-start',
+          '  async getProfile<T extends Record<string, unknown> = Record<string, unknown>>(accessToken: string): Promise<T> {',
+          '    return {} as T;',
+          '  }',
+          '  // @oagen-ignore-end',
+          '',
+          '  // @oagen-ignore-start',
+          '  async getProfileAndToken<',
+          '    T extends Record<string, unknown> = Record<string, unknown>,',
+          '  >(payload: { code: string }): Promise<T> {',
+          '    return {} as T;',
+          '  }',
+          '  // @oagen-ignore-end',
+          '',
+          '  // @oagen-ignore-start',
+          '  getAuthorizationUrl(options: { provider: string }): string {',
+          "    return '';",
+          '  }',
+          '  // @oagen-ignore-end',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const service: Service = {
+        name: 'Sso',
+        operations: [
+          ssoOp('getProfile', '/sso/profile'),
+          ssoOp('getProfileAndToken', '/sso/token'),
+          ssoOp('getAuthorizationUrl', '/sso/authorize'),
+          {
+            name: 'deleteConnection',
+            httpMethod: 'delete',
+            path: '/connections/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      };
+      const profileModel: Model = {
+        name: 'Profile',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      };
+      const spec: ApiSpec = { ...emptySpec, services: [service], models: [profileModel] };
+
+      const result = generateResources([service], {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Sso'] },
+      } as EmitterContext);
+
+      const resourceFile = result.find((f) => f.path === 'src/sso/sso.ts');
+      expect(resourceFile).toBeDefined();
+      const content = resourceFile!.content;
+      // The non-protected method is still emitted…
+      expect(content).toContain('async deleteConnection');
+      // …but region-protected methods are not re-emitted, generic or not.
+      expect(content).not.toContain('async getProfile(');
+      expect(content).not.toContain('async getProfileAndToken(');
+      expect(content).not.toContain('getAuthorizationUrl(');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('resolveResourceClassName', () => {
   it('uses overlay name when baseline has compatible constructor', () => {
     const service: Service = { name: 'Organizations', operations: [] };

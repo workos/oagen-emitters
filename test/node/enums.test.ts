@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec, Enum } from '@workos/oagen';
+import { describe, it, expect, vi } from 'vitest';
+import type { EmitterContext, ApiSpec, Enum, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateEnums } from '../../src/node/enums.js';
+import { nodeEmitter } from '../../src/node/index.js';
+import { emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -124,5 +130,236 @@ describe('generateEnums', () => {
 
     expect(result[0].content).toContain('No longer supported.\n   * @deprecated');
     expect(result[0].content).toContain('/** @deprecated */');
+  });
+});
+
+describe('assignEnumsToServices owned-service dependency reassignment', () => {
+  it('follows a reassigned dependency model into the owned service', () => {
+    // The enum is referenced only through `AuditLogsRetention`, whose
+    // first-reference assignment is Organizations (unemittable this run).
+    // When the owned AuditLogs service pulls the model into `audit-logs/`,
+    // the enum must follow — otherwise the model file imports an enum file
+    // that is emitted nowhere.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts'); // existing SDK
+    setActiveLiveSurface(surface);
+    try {
+      const enums: Enum[] = [
+        {
+          name: 'RetentionPeriod',
+          values: [
+            { name: 'THIRTY_DAYS', value: '30d' },
+            { name: 'NINETY_DAYS', value: '90d' },
+          ],
+        },
+      ];
+      const models = [
+        {
+          name: 'AuditLogsRetention',
+          fields: [
+            {
+              name: 'period',
+              type: { kind: 'enum' as const, name: 'RetentionPeriod', values: ['30d', '90d'] },
+              required: true,
+            },
+          ],
+        },
+      ];
+      const retentionOp = (name: string, path: string) => ({
+        name,
+        httpMethod: 'get' as const,
+        path,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: 'AuditLogsRetention' },
+        errors: [],
+        injectIdempotencyKey: false,
+      });
+      const services = [
+        { name: 'Organizations', operations: [retentionOp('getRetention', '/organizations/{id}/retention')] },
+        { name: 'AuditLogs', operations: [retentionOp('getAuditLogsRetention', '/audit_logs/retention')] },
+      ];
+      const ctxOwned: EmitterContext = {
+        ...ctx,
+        spec: { ...emptySpec, enums, models, services },
+        emitterOptions: { ownedServices: ['AuditLogs'] },
+      } as EmitterContext;
+
+      const result = generateEnums(enums, ctxOwned);
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('src/audit-logs/interfaces/retention-period.interface.ts');
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+});
+
+describe('owned-service enum emission under the live-surface skip', () => {
+  function ownedDomainSpec(enums: Enum[], models: Model[]): ApiSpec {
+    return {
+      ...emptySpec,
+      enums,
+      models,
+      services: [
+        {
+          name: 'OrganizationDomains',
+          operations: [
+            {
+              name: 'getOrganizationDomain',
+              httpMethod: 'get',
+              path: '/organization_domains/{id}',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: 'OrganizationDomain' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  const stateEnum: Enum = {
+    name: 'OrganizationDomainState',
+    values: [
+      { name: 'VERIFIED', value: 'verified' },
+      { name: 'PENDING', value: 'pending' },
+    ],
+  };
+  const domainModel: Model = {
+    name: 'OrganizationDomain',
+    fields: [
+      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'state',
+        type: { kind: 'enum', name: 'OrganizationDomainState', values: ['verified', 'pending'] },
+        required: true,
+      },
+    ],
+  };
+
+  it('still emits the union module when the name is declared in a file the owned regeneration overwrites', () => {
+    // Real instance (OrganizationDomains rebuild, service OWNED): the
+    // on-disk organization-domain.interface.ts declared the enum names, so
+    // the live-surface skip suppressed emitting the canonical modules — but
+    // that very file was simultaneously being OVERWRITTEN by the owned
+    // regeneration, leaving the names declared nowhere.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts'); // existing SDK
+    surface.files.add('src/organization-domains/interfaces/organization-domain.interface.ts');
+    surface.interfaces.set('OrganizationDomainState', {
+      filePath: 'src/organization-domains/interfaces/organization-domain.interface.ts',
+      fields: new Set(),
+    });
+    setActiveLiveSurface(surface);
+    try {
+      const ctxOwned: EmitterContext = {
+        ...ctx,
+        spec: ownedDomainSpec([stateEnum], [domainModel]),
+        emitterOptions: { ownedServices: ['OrganizationDomains'] },
+      } as EmitterContext;
+
+      const result = generateEnums([stateEnum], ctxOwned);
+      const enumFile = result.find(
+        (f) => f.path === 'src/organization-domains/interfaces/organization-domain-state.interface.ts',
+      );
+      expect(enumFile).toBeDefined();
+      expect(enumFile!.content).toContain('export const OrganizationDomainState = {');
+      expect(enumFile!.content).toContain('export type OrganizationDomainState =');
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+
+  it('keeps the skip for non-owned services whose enum genuinely lives elsewhere', () => {
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts');
+    surface.interfaces.set('OrganizationDomainState', {
+      filePath: 'src/common/interfaces/organization-domain-state.interface.ts',
+      fields: new Set(),
+    });
+    setActiveLiveSurface(surface);
+    try {
+      const ctxNotOwned: EmitterContext = {
+        ...ctx,
+        spec: ownedDomainSpec([stateEnum], [domainModel]),
+      } as EmitterContext;
+
+      const result = generateEnums([stateEnum], ctxNotOwned);
+      expect(result).toHaveLength(0);
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+
+  it('emits the module, resolves the barrel export, and imports the name in the model file', () => {
+    // End-to-end shape of the OrganizationDomains failure: generated
+    // organization-domain.interface.ts used `OrganizationDomainState` with
+    // NO import, and interfaces/index.ts exported
+    // ./organization-domain-state.interface — a module no hook ever emitted.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-owned-enum-'));
+    try {
+      const ifaceDir = path.join(tmpRoot, 'src', 'organization-domains', 'interfaces');
+      fs.mkdirSync(ifaceDir, { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), 'export class WorkOS {}\n');
+      fs.writeFileSync(
+        path.join(ifaceDir, 'organization-domain.interface.ts'),
+        [
+          "export type OrganizationDomainState = 'verified' | 'pending';",
+          '',
+          'export interface OrganizationDomain {',
+          '  id: string;',
+          '  state: OrganizationDomainState;',
+          '}',
+        ].join('\n'),
+      );
+      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+      const spec = ownedDomainSpec([stateEnum], [domainModel]);
+      const runCtx = {
+        ...ctx,
+        spec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['OrganizationDomains'] },
+      } as EmitterContext;
+
+      const modelFiles = nodeEmitter.generateModels([domainModel], runCtx);
+      const enumFiles = nodeEmitter.generateEnums([stateEnum], runCtx);
+      const clientFiles = nodeEmitter.generateClient(spec, runCtx);
+
+      // The canonical union module IS emitted…
+      const enumPath = 'src/organization-domains/interfaces/organization-domain-state.interface.ts';
+      expect(enumFiles.some((f) => f.path === enumPath)).toBe(true);
+
+      // …the model file imports the name from it…
+      const modelFile = modelFiles.find(
+        (f) => f.path === 'src/organization-domains/interfaces/organization-domain.interface.ts',
+      );
+      expect(modelFile).toBeDefined();
+      expect(modelFile!.content).toContain(
+        "import type { OrganizationDomainState } from './organization-domain-state.interface';",
+      );
+
+      // …and the barrel export resolves to an emitted module instead of a
+      // phantom the import-invariant pass has to drop.
+      const barrel = clientFiles.find((f) => f.path === 'src/organization-domains/interfaces/index.ts');
+      expect(barrel).toBeDefined();
+      expect(barrel!.content).toContain("export * from './organization-domain-state.interface';");
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        nodeEmitter.generateTests(spec, runCtx);
+        const dropped = warnSpy.mock.calls.filter((call) => String(call[0]).includes('dropped unresolvable'));
+        expect(dropped).toEqual([]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
