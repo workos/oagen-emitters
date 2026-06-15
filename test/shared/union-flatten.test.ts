@@ -109,6 +109,60 @@ describe('flattenDiscriminatedUnionFields', () => {
     expect(out.find((m) => m.name === 'Envelope')!.fields[0].type).toBe(union);
   });
 
+  it('does not throw when the same union is referenced by multiple container fields', () => {
+    // Re-planning the same union (canonical re-seen with an identical merge) is
+    // harmless and must not trip the collision guard.
+    const models = baseModels(ownerUnion());
+    models.push({ name: 'ApiKeyList', fields: [{ name: 'owner', type: ownerUnion(), required: false }] });
+    const out = flattenDiscriminatedUnionFields(models);
+    expect(out.find((m) => m.name === 'ApiKey')!.fields[0].type).toEqual({ kind: 'model', name: 'ApiKeyOwner' });
+    expect(out.find((m) => m.name === 'ApiKeyList')!.fields[0].type).toEqual({ kind: 'model', name: 'ApiKeyOwner' });
+  });
+
+  it('throws when two distinct unions share a first variant with differing merges', () => {
+    const unionA: UnionType = {
+      kind: 'union',
+      discriminator: { property: 'type', mapping: { shared: 'Shared', a: 'VariantA' } },
+      variants: [
+        { kind: 'model', name: 'Shared' },
+        { kind: 'model', name: 'VariantA' },
+      ],
+    };
+    const unionB: UnionType = {
+      kind: 'union',
+      discriminator: { property: 'type', mapping: { shared: 'Shared', b: 'VariantB' } },
+      variants: [
+        { kind: 'model', name: 'Shared' },
+        { kind: 'model', name: 'VariantB' },
+      ],
+    };
+    const models: Model[] = [
+      { name: 'C1', fields: [{ name: 'value', type: unionA, required: true }] },
+      { name: 'C2', fields: [{ name: 'value', type: unionB, required: true }] },
+      {
+        name: 'Shared',
+        fields: [{ name: 'type', type: { kind: 'literal', value: 'shared' }, required: true }],
+      },
+      {
+        name: 'VariantA',
+        fields: [{ name: 'foo', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'VariantB',
+        fields: [{ name: 'bar', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    expect(() => flattenDiscriminatedUnionFields(models)).toThrow(/first variant of two distinct/);
+  });
+
+  it('throws when a field shared across variants has conflicting types', () => {
+    const models = baseModels(ownerUnion());
+    // Make `id` diverge: string on the org variant, number on the user variant.
+    const user = models.find((m) => m.name === 'UserApiKeyOwner')!;
+    user.fields = user.fields.map((f) => (f.name === 'id' ? { ...f, type: { kind: 'primitive', type: 'number' } } : f));
+    expect(() => flattenDiscriminatedUnionFields(models)).toThrow(/conflicting types/);
+  });
+
   it('does not mutate the input models', () => {
     const models = baseModels(ownerUnion());
     const canonicalBefore = models.find((m) => m.name === 'ApiKeyOwner')!;

@@ -56,7 +56,23 @@ export function flattenDiscriminatedUnionFields(models: Model[]): Model[] {
     }
 
     const canonical = (variantNames as string[])[0];
-    mergedFieldsByCanonical.set(canonical, mergeVariantFields(variantModels as Model[], union.discriminator.property));
+    const merged = mergeVariantFields(variantModels as Model[], union.discriminator.property);
+
+    // The merge map is keyed by the first-variant model name. The same union
+    // referenced by several container fields re-plans to an identical merge
+    // (harmless). But two *distinct* unions that share a first variant would
+    // each want a different superset on that one model — pass 2 can apply only
+    // one, silently dropping the other's fields. Fail loudly instead; the spec
+    // must disambiguate (rename one union's leading variant).
+    const existing = mergedFieldsByCanonical.get(canonical);
+    if (existing && fieldListSignature(existing) !== fieldListSignature(merged)) {
+      throw new Error(
+        `flattenDiscriminatedUnionFields: model "${canonical}" is the first variant of two distinct ` +
+          'discriminated unions that merge to different field sets. Flattening both onto one model would ' +
+          'silently drop fields; disambiguate the variants in the spec (rename the leading variant of one union).',
+      );
+    }
+    mergedFieldsByCanonical.set(canonical, merged);
     return canonical;
   }
 
@@ -67,10 +83,16 @@ export function flattenDiscriminatedUnionFields(models: Model[]): Model[] {
         const canonical = planUnion(ref);
         return canonical ? { kind: 'model', name: canonical } : ref;
       }
-      case 'nullable':
-        return { kind: 'nullable', inner: rewriteRef(ref.inner) };
-      case 'array':
-        return { kind: 'array', items: rewriteRef(ref.items) };
+      case 'nullable': {
+        // Preserve reference identity when nothing inside changed, so pass 1's
+        // `type === field.type` check doesn't flag (and rebuild) union-free fields.
+        const inner = rewriteRef(ref.inner);
+        return inner === ref.inner ? ref : { kind: 'nullable', inner };
+      }
+      case 'array': {
+        const items = rewriteRef(ref.items);
+        return items === ref.items ? ref : { kind: 'array', items };
+      }
       default:
         return ref;
     }
@@ -120,9 +142,19 @@ function mergeVariantFields(variants: Model[], discriminatorProp: string): Field
 
   for (const variant of variants) {
     for (const field of variant.fields) {
-      if (!defByName.has(field.name)) {
+      const seen = defByName.get(field.name);
+      if (!seen) {
         defByName.set(field.name, field);
         order.push(field.name);
+      } else if (field.name !== discriminatorProp && !sameTypeRef(seen.type, field.type)) {
+        // Only the first-seen definition is kept, so a shared field whose type
+        // differs across variants would be merged with the wrong type for the
+        // other variants. The discriminator is exempt (it is widened below).
+        throw new Error(
+          `flattenDiscriminatedUnionFields: field "${field.name}" has conflicting types across variants ` +
+            'of a discriminated union; a flat superset model cannot represent both. Align the field type ' +
+            'across variants in the spec.',
+        );
       }
       presence.set(field.name, (presence.get(field.name) ?? 0) + 1);
       if (field.required) requiredCount.set(field.name, (requiredCount.get(field.name) ?? 0) + 1);
@@ -143,6 +175,16 @@ function mergeVariantFields(variants: Model[], discriminatorProp: string): Field
     const required = presence.get(name) === total && requiredCount.get(name) === total;
     return required === def.required ? def : { ...def, required };
   });
+}
+
+/** Structural equality of two TypeRefs (IR refs have a stable, deterministic shape). */
+function sameTypeRef(a: TypeRef, b: TypeRef): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Stable signature of a merged field list, used to detect canonical collisions. */
+function fieldListSignature(fields: Field[]): string {
+  return JSON.stringify(fields.map((f) => [f.name, f.required, f.type]));
 }
 
 /** Deduplicate literal TypeRefs by value, preserving first-seen order. */
