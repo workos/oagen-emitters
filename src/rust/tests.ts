@@ -14,6 +14,7 @@ import { methodName, moduleName, typeName } from './naming.js';
 import { groupByMount } from '../shared/resolved-ops.js';
 import { exampleFor, generateFixtures } from './fixtures.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { isInlineEnvelopeList } from './resources.js';
 
 /**
  * Generate integration tests under `tests/`. Each mount group gets one
@@ -163,7 +164,11 @@ function renderRegularTest(
   const m = methodName(resolved.methodName);
   const literalPath = op.path.replace(/\{[^}]+\}/g, 'test_id');
   const httpMethod = op.httpMethod.toUpperCase();
-  const responseExpr = responseBodyExpr(op.response, modelMap, enumMap);
+  // Inline-envelope lists decode via crate::pagination::Page<T>, so the mock
+  // must serve the envelope even though the IR types the response as an array.
+  const responseExpr = isInlineEnvelopeList(op)
+    ? JSON.stringify('{"object":"list","data":[],"list_metadata":{"before":null,"after":null}}')
+    : responseBodyExpr(op.response, modelMap, enumMap);
   const isUrlBuilder = resolved.urlBuilder === true;
 
   const callArgs = buildCallArgs(op, resolved, crate, accessor, modelMap, enumMap).join(', ');
@@ -413,7 +418,12 @@ function emptyPageTest(op: Operation, shape: CallShape, accessor: string): strin
   const responseKind = op.response.kind;
   let body: string;
   let dataAccessor: string;
-  if (responseKind === 'array') {
+  if (isInlineEnvelopeList(op)) {
+    // Inline-envelope paginated response: SDK returns crate::pagination::Page<T>,
+    // so the mock must serve the envelope and assertions go through `.data`.
+    body = '{"object":"list","data":[],"list_metadata":{"before":null,"after":null}}';
+    dataAccessor = 'resp.data';
+  } else if (responseKind === 'array') {
     // Bare-array paginated response: SDK returns Vec<T>.
     body = '[]';
     dataAccessor = 'resp';
@@ -558,9 +568,10 @@ function encodesQueryParamsTest(
 /** Body expression for the encoding-test response (success, ignored). */
 function encodingResponseExpr(op: Operation, modelMap: Map<string, Model>, enumMap: Map<string, Enum>): string {
   // For paginated ops we serve an empty page so the call succeeds. Use the
-  // bare-array shape for `Vec<T>` responses, the wrapper shape otherwise.
+  // bare-array shape for `Vec<T>` responses, the wrapper shape for named
+  // wrapper models and inline envelopes (decoded via Page<T>).
   if (op.pagination) {
-    if (op.response.kind === 'array') return JSON.stringify('[]');
+    if (op.response.kind === 'array' && !isInlineEnvelopeList(op)) return JSON.stringify('[]');
     return JSON.stringify('{"object":"list","data":[],"list_metadata":{"before":null,"after":null}}');
   }
   return responseBodyExpr(op.response, modelMap, enumMap);

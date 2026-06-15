@@ -670,6 +670,95 @@ describe('rust/resources', () => {
     expect(f.content).not.toContain('list_events_auto_paging');
   });
 
+  it('decodes inline-envelope list responses into Page<T> instead of Vec<T>', () => {
+    // Spec responses shaped `{ object, data: [...], list_metadata }` without a
+    // named component reach the IR as a bare array plus `pagination.dataPath`.
+    // The wire format is still the envelope, so the method must decode
+    // `crate::pagination::Page<T>` — `Vec<T>` fails with a serde type error.
+    const services: Service[] = [
+      {
+        name: 'Memberships',
+        operations: [
+          {
+            name: 'listMemberships',
+            httpMethod: 'get',
+            path: '/memberships',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'after',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'Membership' } },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Membership' },
+            },
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      spec: { ...baseCtx.spec, models: [{ name: 'Membership', fields: [] }] },
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find(
+      (x) => x.path === 'src/resources/memberships.rs',
+    )!;
+    expect(f.content).toContain('Result<crate::pagination::Page<Membership>, Error>');
+    expect(f.content).not.toContain('Result<Vec<Membership>, Error>');
+    // Page<T> carries `data` + `list_metadata.after`, so auto-paging works too.
+    expect(f.content).toContain('list_memberships_auto_paging');
+    expect(f.content).toContain('Ok((page.data, page.list_metadata.after))');
+  });
+
+  it('keeps Vec<T> for true bare-array responses without an envelope', () => {
+    // A response that really is a JSON array (e.g. /users/{id}/identities)
+    // has no pagination dataPath — it must keep decoding into Vec<T>.
+    const services: Service[] = [
+      {
+        name: 'Identities',
+        operations: [
+          {
+            name: 'getUserIdentities',
+            httpMethod: 'get',
+            path: '/users/{id}/identities',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'Identity' } },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      spec: { ...baseCtx.spec, models: [{ name: 'Identity', fields: [] }] },
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find(
+      (x) => x.path === 'src/resources/identities.rs',
+    )!;
+    expect(f.content).toContain('Result<Vec<Identity>, Error>');
+    expect(f.content).not.toContain('crate::pagination::Page');
+  });
+
   it('adds serialize_with attribute on Vec query params with explode=false', () => {
     const services: Service[] = [
       {

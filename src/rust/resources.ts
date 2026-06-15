@@ -886,29 +886,40 @@ function renderAutoPagingMethod(
   // need a different stream wrapper.
   if (op.pagination.strategy !== 'cursor') return null;
   if (resolved.urlBuilder) return null;
-  if (op.response.kind !== 'model') return null;
-
-  const responseModel = ctx.spec.models.find((m) => m.name === (op.response as { name: string }).name);
-  if (!responseModel) return null;
 
   const cursorParam = op.pagination.param;
   const dataPath = op.pagination.dataPath ?? 'data';
-  const dataField = responseModel.fields.find((f) => f.name === dataPath);
-  if (!dataField || dataField.type.kind !== 'array') return null;
-  const listMetadataField = responseModel.fields.find((f) => f.name === 'list_metadata');
-  if (!listMetadataField || listMetadataField.type.kind !== 'model') return null;
+  let itemType: string;
 
-  // The response cursor lives on the list-metadata model under the same name
-  // as the request param. Bail if it doesn't — that would mean a spec/IR
-  // mismatch and a hand-written wrapper is safer than a broken generated one.
-  const metadataModel = ctx.spec.models.find((m) => m.name === (listMetadataField.type as { name: string }).name);
-  if (!metadataModel) return null;
-  if (!metadataModel.fields.some((f) => f.name === cursorParam)) return null;
+  if (op.response.kind === 'model') {
+    const responseModel = ctx.spec.models.find((m) => m.name === (op.response as { name: string }).name);
+    if (!responseModel) return null;
 
-  // The IR's `pagination.itemType` is the response wrapper model (e.g.
-  // `OrganizationList`), so reach into the model's `data: Vec<T>` field to
-  // pull out the actual element type.
-  const itemType = mapTypeRef(dataField.type.items);
+    const dataField = responseModel.fields.find((f) => f.name === dataPath);
+    if (!dataField || dataField.type.kind !== 'array') return null;
+    const listMetadataField = responseModel.fields.find((f) => f.name === 'list_metadata');
+    if (!listMetadataField || listMetadataField.type.kind !== 'model') return null;
+
+    // The response cursor lives on the list-metadata model under the same name
+    // as the request param. Bail if it doesn't — that would mean a spec/IR
+    // mismatch and a hand-written wrapper is safer than a broken generated one.
+    const metadataModel = ctx.spec.models.find((m) => m.name === (listMetadataField.type as { name: string }).name);
+    if (!metadataModel) return null;
+    if (!metadataModel.fields.some((f) => f.name === cursorParam)) return null;
+
+    // The IR's `pagination.itemType` is the response wrapper model (e.g.
+    // `OrganizationList`), so reach into the model's `data: Vec<T>` field to
+    // pull out the actual element type.
+    itemType = mapTypeRef(dataField.type.items);
+  } else if (isInlineEnvelopeList(op) && cursorParam === 'after') {
+    // Inline-envelope responses decode into `crate::pagination::Page<T>`,
+    // which declares `data` + `list_metadata.after` by construction — only
+    // the request-side cursor param needs to exist.
+    if (!op.queryParams.some((p) => p.name === cursorParam)) return null;
+    itemType = mapTypeRef((op.response as { items: TypeRef }).items);
+  } else {
+    return null;
+  }
 
   const cursorField = fieldName(cursorParam);
   const dataAccessor = fieldName(dataPath);
@@ -1274,7 +1285,22 @@ function methodDocLines(op: Operation): string[] {
 
 function renderResponseType(op: Operation): string {
   if (isEmptyResponse(op)) return '()';
+  if (isInlineEnvelopeList(op)) {
+    return `crate::pagination::Page<${mapTypeRef((op.response as { items: TypeRef }).items)}>`;
+  }
   return mapTypeRef(op.response!);
+}
+
+/**
+ * True when the spec declared this response as an inline pagination envelope
+ * (`{ object, data: [...], list_metadata }` without a named component). The IR
+ * models these as a bare array plus `pagination.dataPath`, but the wire format
+ * is still the envelope — decoding the body straight into `Vec<T>` fails, so
+ * these ops decode into the hand-maintained `crate::pagination::Page<T>`
+ * instead. Restricted to `data` because that's the field `Page<T>` declares.
+ */
+export function isInlineEnvelopeList(op: Operation): boolean {
+  return op.response?.kind === 'array' && op.pagination?.dataPath === 'data';
 }
 
 /**
