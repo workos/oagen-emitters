@@ -2308,8 +2308,9 @@ function renderUrlBuilderMethod(
   // Invariant: any visible query param forces the options-object branch above
   // (operationHasOptionsInput is true whenever one exists), so a positional
   // builder never declares query params in its signature. Fail loudly if a
-  // future spec breaks that — otherwise the queryParts loop below would emit
-  // references to camelCase variables that were never declared.
+  // future spec breaks that — its query value would have to come from an
+  // undeclared parameter. Past this guard the query is assembled solely from
+  // injected defaults and inferFromClient fields.
   if (visibleQueryParams.length > 0) {
     throw new Error(
       `renderUrlBuilderMethod: positional url builder "${method}" has visible query params ` +
@@ -2321,11 +2322,6 @@ function renderUrlBuilderMethod(
   lines.push(`  ${method}(${params}): string {`);
   if (hasQuery) {
     const queryParts: string[] = [];
-    for (const param of visibleQueryParams) {
-      const camel = fieldName(param.name);
-      const snake = wireFieldName(param.name);
-      queryParts.push(param.required ? `${snake}: ${camel}` : `...(${camel} !== undefined && { ${snake}: ${camel} })`);
-    }
     for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
       queryParts.push(`${key}: ${tsLiteral(value)}`);
     }
