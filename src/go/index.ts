@@ -11,6 +11,7 @@ import type {
 
 import { generateModels } from './models.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
@@ -47,7 +48,11 @@ export const goEmitter: Emitter = {
       }
       return m;
     });
-    return ensureTrailingNewlines(generateModels(goModels, ctx));
+    // Go has no sum types: a discriminated-union field (e.g. ApiKey.owner)
+    // renders as its first variant, dropping fields that only exist on later
+    // variants (organization_id on the user owner). Flatten such unions into a
+    // single superset struct so every variant field survives.
+    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(goModels), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

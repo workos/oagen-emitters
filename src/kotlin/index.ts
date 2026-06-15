@@ -18,6 +18,7 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 
 /** Ensure every generated file ends with a trailing newline. */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
@@ -49,7 +50,11 @@ export const kotlinEmitter: Emitter = {
       }
       return m;
     });
-    return ensureTrailingNewlines(generateModels(kotlinModels, ctx));
+    // Kotlin renders a discriminated-union field as its first variant's data
+    // class, so fields unique to later variants (organization_id on the user
+    // owner) are lost. Flatten such unions into one superset data class so
+    // every variant field is reachable.
+    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(kotlinModels), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -78,8 +83,9 @@ export const kotlinEmitter: Emitter = {
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     // Pass enriched models so round-trip tests see the full field set
-    // (including optional oneOf-enriched fields) and can filter accurately.
-    const enrichedModels = enrichModelsFromSpec(spec.models);
+    // (including optional oneOf-enriched fields and flattened discriminated-
+    // union owner fields) and can filter accurately.
+    const enrichedModels = flattenDiscriminatedUnionFields(enrichModelsFromSpec(spec.models));
     const enrichedSpec: ApiSpec = { ...spec, models: enrichedModels };
     return ensureTrailingNewlines(generateTests(enrichedSpec, { ...ctx, spec: enrichedSpec }));
   },

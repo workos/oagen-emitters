@@ -18,6 +18,7 @@ import { generateResources, resolveResourceClassName, resolveResourceDir } from 
 import { generateClient } from './client.js';
 import { generateTests as generateTestFiles } from './tests.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { planDiscriminatedModels, generateDiscriminatedFiles } from './discriminated-models.js';
 import {
   buildLiveSurface,
@@ -766,7 +767,7 @@ function carryForwardManagedFiles(ctx: EmitterContext, surface: LiveSurface): Ge
 function enrichModelsForNode(models: Model[]): Model[] {
   const enriched = enrichModelsFromSpec(models);
   const originalByName = new Map(models.map((m) => [m.name, m]));
-  return enriched.map((m) => {
+  const restored = enriched.map((m) => {
     if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
       const original = originalByName.get(m.name);
       if (original && original.fields.length > 0) {
@@ -775,6 +776,11 @@ function enrichModelsForNode(models: Model[]): Model[] {
     }
     return m;
   });
+  // Field-level discriminated unions (e.g. ApiKey.owner) otherwise render as
+  // `FirstVariant | SecondVariant`; collapse them to one flat superset
+  // interface so callers see every variant field (organization_id on the user
+  // owner) on a single type — parity with the other flat-emit languages.
+  return flattenDiscriminatedUnionFields(restored);
 }
 
 export const nodeEmitter: Emitter = {
