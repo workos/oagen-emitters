@@ -886,29 +886,40 @@ function renderAutoPagingMethod(
   // need a different stream wrapper.
   if (op.pagination.strategy !== 'cursor') return null;
   if (resolved.urlBuilder) return null;
-  if (op.response.kind !== 'model') return null;
-
-  const responseModel = ctx.spec.models.find((m) => m.name === (op.response as { name: string }).name);
-  if (!responseModel) return null;
 
   const cursorParam = op.pagination.param;
   const dataPath = op.pagination.dataPath ?? 'data';
-  const dataField = responseModel.fields.find((f) => f.name === dataPath);
-  if (!dataField || dataField.type.kind !== 'array') return null;
-  const listMetadataField = responseModel.fields.find((f) => f.name === 'list_metadata');
-  if (!listMetadataField || listMetadataField.type.kind !== 'model') return null;
+  let itemType: string;
 
-  // The response cursor lives on the list-metadata model under the same name
-  // as the request param. Bail if it doesn't — that would mean a spec/IR
-  // mismatch and a hand-written wrapper is safer than a broken generated one.
-  const metadataModel = ctx.spec.models.find((m) => m.name === (listMetadataField.type as { name: string }).name);
-  if (!metadataModel) return null;
-  if (!metadataModel.fields.some((f) => f.name === cursorParam)) return null;
+  if (op.response.kind === 'model') {
+    const responseModel = ctx.spec.models.find((m) => m.name === (op.response as { name: string }).name);
+    if (!responseModel) return null;
 
-  // The IR's `pagination.itemType` is the response wrapper model (e.g.
-  // `OrganizationList`), so reach into the model's `data: Vec<T>` field to
-  // pull out the actual element type.
-  const itemType = mapTypeRef(dataField.type.items);
+    const dataField = responseModel.fields.find((f) => f.name === dataPath);
+    if (!dataField || dataField.type.kind !== 'array') return null;
+    const listMetadataField = responseModel.fields.find((f) => f.name === 'list_metadata');
+    if (!listMetadataField || listMetadataField.type.kind !== 'model') return null;
+
+    // The response cursor lives on the list-metadata model under the same name
+    // as the request param. Bail if it doesn't — that would mean a spec/IR
+    // mismatch and a hand-written wrapper is safer than a broken generated one.
+    const metadataModel = ctx.spec.models.find((m) => m.name === (listMetadataField.type as { name: string }).name);
+    if (!metadataModel) return null;
+    if (!metadataModel.fields.some((f) => f.name === cursorParam)) return null;
+
+    // The IR's `pagination.itemType` is the response wrapper model (e.g.
+    // `OrganizationList`), so reach into the model's `data: Vec<T>` field to
+    // pull out the actual element type.
+    itemType = mapTypeRef(dataField.type.items);
+  } else if (isInlineEnvelopeList(op) && cursorParam === 'after') {
+    // Inline-envelope responses decode into `crate::pagination::Page<T>`,
+    // which declares `data` + `list_metadata.after` by construction — only
+    // the request-side cursor param needs to exist.
+    if (!op.queryParams.some((p) => p.name === cursorParam)) return null;
+    itemType = mapTypeRef((op.response as { items: TypeRef }).items);
+  } else {
+    return null;
+  }
 
   const cursorField = fieldName(cursorParam);
   const dataAccessor = fieldName(dataPath);
@@ -1144,19 +1155,27 @@ function renderWrapperMethod(
 
   sig.push(`        let method = http::Method::${op.httpMethod.toUpperCase()};`);
 
-  // Build the JSON body inline: defaults + inferFromClient (read from the
-  // client at request time) + each exposed param.
-  sig.push('        let body = serde_json::json!({');
+  // Build the JSON body inline: defaults + each exposed param. inferFromClient
+  // fields (read from the client at request time) are added afterwards, and
+  // only when non-empty — a client configured without an API key (e.g. a
+  // public client running a PKCE flow) must omit `client_secret` entirely
+  // rather than send `""`, which the API rejects. Mirrors the Go emitter's
+  // `omitempty` on inferred fields.
+  const inferredFields = wrapper.inferFromClient ?? [];
+  sig.push(`        let ${inferredFields.length > 0 ? 'mut ' : ''}body = serde_json::json!({`);
   for (const [k, v] of Object.entries(wrapper.defaults ?? {})) {
     sig.push(`            ${JSON.stringify(k)}: ${JSON.stringify(v)},`);
-  }
-  for (const k of wrapper.inferFromClient ?? []) {
-    sig.push(`            ${JSON.stringify(k)}: ${clientFieldExpression(k)},`);
   }
   for (const rp of params) {
     sig.push(`            ${JSON.stringify(rp.paramName)}: params.${fieldName(rp.paramName)},`);
   }
   sig.push('        });');
+  for (const k of inferredFields) {
+    const expr = clientFieldExpression(k);
+    sig.push(`        if !${expr}.is_empty() {`);
+    sig.push(`            body[${JSON.stringify(k)}] = serde_json::Value::String(${expr}.to_string());`);
+    sig.push('        }');
+  }
 
   sig.push('        #[derive(Serialize)]');
   sig.push('        struct EmptyQuery {}');
@@ -1170,8 +1189,11 @@ function renderWrapperMethod(
 
 /**
  * Rust expression for reading a client-config field at request time. Mirrors
- * the Go emitter's `clientFieldExpression`. Falls back to an empty literal
- * for unknown fields so the body still compiles.
+ * the Go emitter's `clientFieldExpression`. Throws on unknown fields rather
+ * than falling back to an empty literal: with the `if !expr.is_empty()` guard
+ * in `renderWrapperMethod`, an empty literal would silently drop the field from
+ * every request body (and emit dead `if !"".is_empty()` Rust). Failing loud at
+ * generation time surfaces a missing case instead of shipping a broken SDK.
  */
 function clientFieldExpression(field: string): string {
   switch (field) {
@@ -1180,7 +1202,10 @@ function clientFieldExpression(field: string): string {
     case 'client_secret':
       return 'self.client.api_key()';
     default:
-      return '""';
+      throw new Error(
+        `Rust emitter: no client-config accessor for inferFromClient field "${field}". ` +
+          'Add a case to clientFieldExpression.',
+      );
   }
 }
 
@@ -1266,7 +1291,31 @@ function methodDocLines(op: Operation): string[] {
 
 function renderResponseType(op: Operation): string {
   if (isEmptyResponse(op)) return '()';
+  if (isInlineEnvelopeList(op)) {
+    return `crate::pagination::Page<${mapTypeRef((op.response as { items: TypeRef }).items)}>`;
+  }
   return mapTypeRef(op.response!);
+}
+
+/**
+ * True when the spec declared this response as an inline pagination envelope
+ * (`{ object, data: [...], list_metadata }` without a named component). The IR
+ * models these as a bare array plus `pagination.dataPath`, but the wire format
+ * is still the envelope — decoding the body straight into `Vec<T>` fails, so
+ * these ops decode into the hand-maintained `crate::pagination::Page<T>`
+ * instead. Restricted to `data` because that's the field `Page<T>` declares.
+ *
+ * The `=== 'data'` is a strict equality on purpose — deliberately *not* the
+ * `?? 'data'` fallback used elsewhere. `dataPath` is the only signal that
+ * separates an inline envelope (decoded as `Page<T>`) from a genuine paginated
+ * bare array (decoded as `Vec<T>`, see the `responseKind === 'array'` branch in
+ * tests.ts). This therefore relies on the IR setting `dataPath: 'data'`
+ * explicitly for envelope responses and leaving it unset for bare arrays. If
+ * the IR ever omitted it for an envelope op, this would return `false` and the
+ * op would decode into `Vec<T>` and fail — so that invariant must hold upstream.
+ */
+export function isInlineEnvelopeList(op: Operation): boolean {
+  return op.response?.kind === 'array' && op.pagination?.dataPath === 'data';
 }
 
 /**

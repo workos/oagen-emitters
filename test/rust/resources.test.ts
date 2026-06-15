@@ -214,13 +214,64 @@ describe('rust/resources', () => {
     const f = generateResources(services, ctxWithWrapper, new UnionRegistry()).find(
       (x) => x.path === 'src/resources/user_management.rs',
     )!;
-    // Inferred fields read from the runtime client, not empty literals.
-    expect(f.content).toContain('"client_id": self.client.client_id()');
-    expect(f.content).toContain('"client_secret": self.client.api_key()');
+    // Inferred fields read from the runtime client and inserted only when
+    // non-empty, so secretless clients (PKCE flows) omit them entirely.
+    expect(f.content).toContain('let mut body = serde_json::json!({');
+    expect(f.content).toContain('if !self.client.client_id().is_empty() {');
+    expect(f.content).toContain('body["client_id"] = serde_json::Value::String(self.client.client_id().to_string());');
+    expect(f.content).toContain('if !self.client.api_key().is_empty() {');
+    expect(f.content).toContain(
+      'body["client_secret"] = serde_json::Value::String(self.client.api_key().to_string());',
+    );
     expect(f.content).not.toContain('"client_id": "",');
     expect(f.content).not.toContain('"client_secret": "",');
+    expect(f.content).not.toContain('"client_secret": self.client.api_key()');
     // Defaults are still emitted as literal JSON values.
     expect(f.content).toContain('"grant_type": "authorization_code"');
+  });
+
+  it('throws on an unrecognized inferFromClient field instead of dropping it', () => {
+    // With the `if !expr.is_empty()` guard, an unknown field falling back to an
+    // empty literal would silently vanish from every request body (and emit
+    // dead `if !"".is_empty()` Rust). Generation must fail loud instead so a
+    // missing accessor is caught at build time, not shipped in a broken SDK.
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuthenticateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctxWithWrapper: EmitterContext = {
+      ...baseCtx,
+      resolvedOperations: baseCtx.resolvedOperations!.map((r) => ({
+        ...r,
+        wrappers: [
+          {
+            name: 'authenticate_with_code',
+            targetVariant: 'AuthorizationCodeSessionAuthenticateRequest',
+            defaults: { grant_type: 'authorization_code' },
+            inferFromClient: ['client_id', 'tenant_id'],
+            exposedParams: ['code'],
+            optionalParams: [],
+            responseModelName: null,
+          },
+        ],
+      })),
+    };
+    expect(() => generateResources(services, ctxWithWrapper, new UnionRegistry())).toThrow(/tenant_id/);
   });
 
   it('renders spec-level parameter defaults as doc comments', () => {
@@ -661,6 +712,95 @@ describe('rust/resources', () => {
     };
     const f = generateResources(services, ctx, new UnionRegistry()).find((x) => x.path === 'src/resources/events.rs')!;
     expect(f.content).not.toContain('list_events_auto_paging');
+  });
+
+  it('decodes inline-envelope list responses into Page<T> instead of Vec<T>', () => {
+    // Spec responses shaped `{ object, data: [...], list_metadata }` without a
+    // named component reach the IR as a bare array plus `pagination.dataPath`.
+    // The wire format is still the envelope, so the method must decode
+    // `crate::pagination::Page<T>` — `Vec<T>` fails with a serde type error.
+    const services: Service[] = [
+      {
+        name: 'Memberships',
+        operations: [
+          {
+            name: 'listMemberships',
+            httpMethod: 'get',
+            path: '/memberships',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'after',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'Membership' } },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Membership' },
+            },
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      spec: { ...baseCtx.spec, models: [{ name: 'Membership', fields: [] }] },
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find(
+      (x) => x.path === 'src/resources/memberships.rs',
+    )!;
+    expect(f.content).toContain('Result<crate::pagination::Page<Membership>, Error>');
+    expect(f.content).not.toContain('Result<Vec<Membership>, Error>');
+    // Page<T> carries `data` + `list_metadata.after`, so auto-paging works too.
+    expect(f.content).toContain('list_memberships_auto_paging');
+    expect(f.content).toContain('Ok((page.data, page.list_metadata.after))');
+  });
+
+  it('keeps Vec<T> for true bare-array responses without an envelope', () => {
+    // A response that really is a JSON array (e.g. /users/{id}/identities)
+    // has no pagination dataPath — it must keep decoding into Vec<T>.
+    const services: Service[] = [
+      {
+        name: 'Identities',
+        operations: [
+          {
+            name: 'getUserIdentities',
+            httpMethod: 'get',
+            path: '/users/{id}/identities',
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'array', items: { kind: 'model', name: 'Identity' } },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      spec: { ...baseCtx.spec, models: [{ name: 'Identity', fields: [] }] },
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find(
+      (x) => x.path === 'src/resources/identities.rs',
+    )!;
+    expect(f.content).toContain('Result<Vec<Identity>, Error>');
+    expect(f.content).not.toContain('crate::pagination::Page');
   });
 
   it('adds serialize_with attribute on Vec query params with explode=false', () => {
