@@ -933,6 +933,20 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     lines.push("import { AutoPaginatable } from '../common/utils/pagination';");
     lines.push("import { fetchAndDeserialize } from '../common/utils/fetch-and-deserialize';");
   }
+  // URL-builder methods serialize their query string client-side via toQueryString.
+  const needsQueryStringImport = plans.some((p) => {
+    const r = lookupResolved(p.op, resolvedLookup);
+    if (!r?.urlBuilder) return false;
+    const hidden = hiddenParamsFor(r);
+    return (
+      p.op.queryParams.some((qp) => !hidden.has(qp.name)) ||
+      Object.keys(getOpDefaults(r)).length > 0 ||
+      getOpInferFromClient(r).length > 0
+    );
+  });
+  if (needsQueryStringImport) {
+    lines.push("import { toQueryString } from '../common/utils/query-string';");
+  }
   const shouldEmitVaultCryptoHelpers =
     serviceClass === 'Vault' && !ignoredMethodNames.has('encrypt') && !ignoredMethodNames.has('decrypt');
   if (shouldEmitVaultCryptoHelpers) {
@@ -1333,6 +1347,16 @@ function renderMethod(
   const httpKey = `${op.httpMethod.toUpperCase()} ${op.path}`;
   const baselineClassMethod = baselineMethodFor(service, method, ctx);
   const optionInfo = optionsObjectInfo(service, method, op, plan, ctx, baselineClassMethod, resolvedOp);
+
+  // URL-builder operations (e.g. GET /sso/authorize) are spec-marked client-side
+  // URL constructors: emit a synchronous method that returns the request URL as
+  // a string without performing any I/O. This bypasses the HTTP method dispatch
+  // and the Promise-typed JSDoc below.
+  if (resolvedOp?.urlBuilder) {
+    renderUrlBuilderMethod(lines, op, method, pathStr, optionInfo, specEnumNames, resolvedOp);
+    return lines;
+  }
+
   const overlayMethod = ctx.overlayLookup?.methodByOperation?.get(httpKey) ?? baselineClassMethod;
   let validParamNames: Set<string> | null = null;
   if (optionInfo) {
@@ -2207,6 +2231,101 @@ function clientFieldExpression(field: string): string {
     default:
       return `this.workos.${toCamelCase(field)}`;
   }
+}
+
+/**
+ * Compose a `` `${this.workos.baseURL}<path>[?${query}]` `` template literal from
+ * a path expression produced by {@link buildPathStr}. The path expression is
+ * either a single-quoted static literal (`'/sso/authorize'`) or a backtick
+ * template with interpolated path params; either way its inner body is spliced
+ * into the URL template.
+ */
+function urlTemplateLiteral(pathExpr: string, hasQuery: boolean): string {
+  let inner: string;
+  if ((pathExpr.startsWith('`') && pathExpr.endsWith('`')) || (pathExpr.startsWith("'") && pathExpr.endsWith("'"))) {
+    inner = pathExpr.slice(1, -1);
+  } else {
+    inner = '${' + pathExpr + '}';
+  }
+  return '`${this.workos.baseURL}' + inner + (hasQuery ? '?${query}' : '') + '`';
+}
+
+/**
+ * Emit a URL-builder method for an operation marked with the `urlBuilder` hint
+ * (OAuth-style redirect endpoints such as `/sso/authorize`). The method is
+ * synchronous, returns the constructed URL as a string, and makes no HTTP call.
+ * Visible query params, constant `defaults`, and `inferFromClient` fields are
+ * serialized via `toQueryString` (wire-name keyed), matching the SDK's
+ * hand-written URL builders.
+ */
+function renderUrlBuilderMethod(
+  lines: string[],
+  op: Operation,
+  method: string,
+  pathStr: string,
+  optionInfo: OptionsObjectParam | undefined,
+  specEnumNames: Set<string> | undefined,
+  resolvedOp: ResolvedOperation | undefined,
+): void {
+  const hidden = hiddenParamsFor(resolvedOp);
+  const visibleQueryParams = op.queryParams.filter((p) => !hidden.has(p.name));
+  const hasQuery =
+    visibleQueryParams.length > 0 ||
+    Object.keys(getOpDefaults(resolvedOp)).length > 0 ||
+    getOpInferFromClient(resolvedOp).length > 0;
+
+  // Concise JSDoc — url builders return a string, not a Promise.
+  {
+    const docParts: string[] = [];
+    if (op.description) docParts.push(op.description);
+    docParts.push('@returns {string} The constructed URL.');
+    if (op.deprecated) docParts.push('@deprecated');
+    const allLines = docParts.flatMap((p) => p.split('\n'));
+    if (allLines.length === 1) {
+      lines.push(`  /** ${allLines[0]} */`);
+    } else {
+      lines.push('  /**');
+      for (const line of allLines) lines.push(line === '' ? '   *' : `   * ${line}`);
+      lines.push('   */');
+    }
+  }
+
+  if (optionInfo) {
+    // Options-object convention (matches the surrounding generated methods).
+    lines.push(`  ${method}(${renderOptionsParam(optionInfo)}): string {`);
+    if (hasQuery) {
+      const queryExpr = renderQueryExprWithOptions(visibleQueryParams, optionInfo.optional, resolvedOp);
+      lines.push(`    const query = toQueryString(${queryExpr});`);
+      lines.push(`    return ${urlTemplateLiteral(pathStr, true)};`);
+    } else {
+      lines.push(`    return ${urlTemplateLiteral(pathStr, false)};`);
+    }
+    lines.push('  }');
+    return;
+  }
+
+  // Positional convention (path-only url builders, possibly with injected fields).
+  const params = buildPathParams(op, specEnumNames);
+  lines.push(`  ${method}(${params}): string {`);
+  if (hasQuery) {
+    const queryParts: string[] = [];
+    for (const param of visibleQueryParams) {
+      const camel = fieldName(param.name);
+      const snake = wireFieldName(param.name);
+      queryParts.push(param.required ? `${snake}: ${camel}` : `...(${camel} !== undefined && { ${snake}: ${camel} })`);
+    }
+    for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
+      queryParts.push(`${key}: ${tsLiteral(value)}`);
+    }
+    for (const field of getOpInferFromClient(resolvedOp)) {
+      queryParts.push(`${field}: ${clientFieldExpression(field)}`);
+    }
+    lines.push(`    const query = toQueryString({ ${queryParts.join(', ')} });`);
+    lines.push(`    return ${urlTemplateLiteral(pathStr, true)};`);
+  } else {
+    lines.push(`    return ${urlTemplateLiteral(pathStr, false)};`);
+  }
+  lines.push('  }');
 }
 
 function renderVoidMethod(

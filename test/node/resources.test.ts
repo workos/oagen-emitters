@@ -186,6 +186,63 @@ describe('generateResources', () => {
     expect(resourceFile!.content).toContain('async listGroupsForOrganizationMembership');
   });
 
+  it('urlBuilder: emits a synchronous string method that builds the URL via toQueryString', () => {
+    // Operations marked `urlBuilder` (e.g. GET /sso/authorize) are client-side
+    // URL constructors: the generated method must return a string synchronously,
+    // serialize visible query params + defaults + inferred client fields via
+    // toQueryString, and concatenate onto the client base URL — no HTTP call.
+    const operation = {
+      name: 'getAuthorizationUrl',
+      httpMethod: 'get' as const,
+      path: '/sso/authorize',
+      pathParams: [],
+      queryParams: [
+        { name: 'connection', type: { kind: 'primitive' as const, type: 'string' as const }, required: false },
+        { name: 'organization', type: { kind: 'primitive' as const, type: 'string' as const }, required: false },
+      ],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = { name: 'Sso', operations: [operation] };
+    const spec: ApiSpec = { ...emptySpec, services: [service] };
+    const ctxWithResolved: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['Sso'] },
+      resolvedOperations: [
+        {
+          operation,
+          service,
+          methodName: 'get_authorization_url',
+          mountOn: 'Sso',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+          urlBuilder: true,
+        },
+      ],
+    };
+
+    const result = nodeEmitter.generateResources(spec.services, ctxWithResolved);
+    const resourceFile = result.find((f) => f.path === 'src/sso/sso.ts');
+    expect(resourceFile).toBeDefined();
+    const content = resourceFile!.content;
+
+    // Synchronous, string-returning — not an async HTTP wrapper.
+    expect(content).toMatch(/getAuthorizationUrl\(options\??: [^)]*\): string \{/);
+    expect(content).not.toContain('async getAuthorizationUrl');
+    expect(content).not.toContain('this.workos.get(');
+    // Query assembled client-side: visible params + constant default + inferred field.
+    expect(content).toContain('const query = toQueryString(');
+    expect(content).toContain("response_type: 'code'");
+    expect(content).toContain('client_id: this.workos.options.clientId');
+    // URL is base URL + path + query.
+    expect(content).toContain('return `${this.workos.baseURL}/sso/authorize?${query}`;');
+    // The serializer helper is imported.
+    expect(content).toContain("import { toQueryString } from '../common/utils/query-string';");
+  });
+
   it('options-object: URL template binds to the SDK field name, not the spec path-param name', () => {
     // When the spec uses `omId` as a path-param name but the baseline options
     // interface exposes `organizationMembershipId`, both the destructure and
