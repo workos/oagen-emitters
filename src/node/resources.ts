@@ -2305,6 +2305,18 @@ function renderUrlBuilderMethod(
   }
 
   // Positional convention (path-only url builders, possibly with injected fields).
+  // Invariant: any visible query param forces the options-object branch above
+  // (operationHasOptionsInput is true whenever one exists), so a positional
+  // builder never declares query params in its signature. Fail loudly if a
+  // future spec breaks that — otherwise the queryParts loop below would emit
+  // references to camelCase variables that were never declared.
+  if (visibleQueryParams.length > 0) {
+    throw new Error(
+      `renderUrlBuilderMethod: positional url builder "${method}" has visible query params ` +
+        `(${visibleQueryParams.map((p) => p.name).join(', ')}) but no options object; they would be ` +
+        'referenced without being declared. Expected the options-object convention.',
+    );
+  }
   const params = buildPathParams(op, specEnumNames);
   lines.push(`  ${method}(${params}): string {`);
   if (hasQuery) {

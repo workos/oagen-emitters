@@ -243,6 +243,96 @@ describe('generateResources', () => {
     expect(content).toContain("import { toQueryString } from '../common/utils/query-string';");
   });
 
+  it('urlBuilder: positional convention emits a no-arg method when only injected fields supply the query', () => {
+    // A url builder with no path params and no visible query params takes the
+    // positional branch (operationHasOptionsInput is false), so the signature
+    // is argument-less; the query is assembled purely from inferFromClient
+    // (and defaults) rather than a options object.
+    const operation = {
+      name: 'getLogoutUrl',
+      httpMethod: 'get' as const,
+      path: '/sso/logout',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = { name: 'Sso', operations: [operation] };
+    const spec: ApiSpec = { ...emptySpec, services: [service] };
+    const ctxWithResolved: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['Sso'] },
+      resolvedOperations: [
+        {
+          operation,
+          service,
+          methodName: 'get_logout_url',
+          mountOn: 'Sso',
+          defaults: {},
+          inferFromClient: ['client_id'],
+          urlBuilder: true,
+        },
+      ],
+    };
+
+    const result = nodeEmitter.generateResources(spec.services, ctxWithResolved);
+    const content = result.find((f) => f.path === 'src/sso/sso.ts')!.content;
+
+    // No options object and no path params: the signature takes no arguments.
+    expect(content).toMatch(/getLogoutUrl\(\): string \{/);
+    expect(content).not.toContain('async getLogoutUrl');
+    // Query built entirely from the injected client field.
+    expect(content).toContain('const query = toQueryString(');
+    expect(content).toContain('client_id: this.workos.options.clientId');
+    expect(content).toContain('return `${this.workos.baseURL}/sso/logout?${query}`;');
+  });
+
+  it('urlBuilder: with no query at all returns the bare base URL + path and skips the toQueryString import', () => {
+    // hasQuery is false (no visible params, defaults, or inferFromClient), so
+    // the method returns base URL + path with no `?${query}` segment, and the
+    // serializer import must not appear when nothing in the service uses it.
+    const operation = {
+      name: 'getJwksUrl',
+      httpMethod: 'get' as const,
+      path: '/sso/jwks',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive' as const, type: 'unknown' as const },
+      errors: [],
+      injectIdempotencyKey: false,
+    };
+    const service: Service = { name: 'Sso', operations: [operation] };
+    const spec: ApiSpec = { ...emptySpec, services: [service] };
+    const ctxWithResolved: EmitterContext = {
+      ...ctx,
+      spec,
+      emitterOptions: { ownedServices: ['Sso'] },
+      resolvedOperations: [
+        {
+          operation,
+          service,
+          methodName: 'get_jwks_url',
+          mountOn: 'Sso',
+          defaults: {},
+          inferFromClient: [],
+          urlBuilder: true,
+        },
+      ],
+    };
+
+    const result = nodeEmitter.generateResources(spec.services, ctxWithResolved);
+    const content = result.find((f) => f.path === 'src/sso/sso.ts')!.content;
+
+    expect(content).toMatch(/getJwksUrl\(\): string \{/);
+    expect(content).toContain('return `${this.workos.baseURL}/sso/jwks`;');
+    expect(content).not.toContain('toQueryString');
+    expect(content).not.toContain("import { toQueryString } from '../common/utils/query-string';");
+  });
+
   it('options-object: URL template binds to the SDK field name, not the spec path-param name', () => {
     // When the spec uses `omId` as a path-param name but the baseline options
     // interface exposes `organizationMembershipId`, both the destructure and
