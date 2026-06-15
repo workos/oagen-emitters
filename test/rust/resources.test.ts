@@ -230,6 +230,50 @@ describe('rust/resources', () => {
     expect(f.content).toContain('"grant_type": "authorization_code"');
   });
 
+  it('throws on an unrecognized inferFromClient field instead of dropping it', () => {
+    // With the `if !expr.is_empty()` guard, an unknown field falling back to an
+    // empty literal would silently vanish from every request body (and emit
+    // dead `if !"".is_empty()` Rust). Generation must fail loud instead so a
+    // missing accessor is caught at build time, not shipped in a broken SDK.
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'authenticate',
+            httpMethod: 'post',
+            path: '/user_management/authenticate',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuthenticateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctxWithWrapper: EmitterContext = {
+      ...baseCtx,
+      resolvedOperations: baseCtx.resolvedOperations!.map((r) => ({
+        ...r,
+        wrappers: [
+          {
+            name: 'authenticate_with_code',
+            targetVariant: 'AuthorizationCodeSessionAuthenticateRequest',
+            defaults: { grant_type: 'authorization_code' },
+            inferFromClient: ['client_id', 'tenant_id'],
+            exposedParams: ['code'],
+            optionalParams: [],
+            responseModelName: null,
+          },
+        ],
+      })),
+    };
+    expect(() => generateResources(services, ctxWithWrapper, new UnionRegistry())).toThrow(/tenant_id/);
+  });
+
   it('renders spec-level parameter defaults as doc comments', () => {
     const services: Service[] = [
       {

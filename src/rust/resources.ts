@@ -1189,8 +1189,11 @@ function renderWrapperMethod(
 
 /**
  * Rust expression for reading a client-config field at request time. Mirrors
- * the Go emitter's `clientFieldExpression`. Falls back to an empty literal
- * for unknown fields so the body still compiles.
+ * the Go emitter's `clientFieldExpression`. Throws on unknown fields rather
+ * than falling back to an empty literal: with the `if !expr.is_empty()` guard
+ * in `renderWrapperMethod`, an empty literal would silently drop the field from
+ * every request body (and emit dead `if !"".is_empty()` Rust). Failing loud at
+ * generation time surfaces a missing case instead of shipping a broken SDK.
  */
 function clientFieldExpression(field: string): string {
   switch (field) {
@@ -1199,7 +1202,10 @@ function clientFieldExpression(field: string): string {
     case 'client_secret':
       return 'self.client.api_key()';
     default:
-      return '""';
+      throw new Error(
+        `Rust emitter: no client-config accessor for inferFromClient field "${field}". ` +
+          'Add a case to clientFieldExpression.',
+      );
   }
 }
 
@@ -1298,6 +1304,15 @@ function renderResponseType(op: Operation): string {
  * is still the envelope — decoding the body straight into `Vec<T>` fails, so
  * these ops decode into the hand-maintained `crate::pagination::Page<T>`
  * instead. Restricted to `data` because that's the field `Page<T>` declares.
+ *
+ * The `=== 'data'` is a strict equality on purpose — deliberately *not* the
+ * `?? 'data'` fallback used elsewhere. `dataPath` is the only signal that
+ * separates an inline envelope (decoded as `Page<T>`) from a genuine paginated
+ * bare array (decoded as `Vec<T>`, see the `responseKind === 'array'` branch in
+ * tests.ts). This therefore relies on the IR setting `dataPath: 'data'`
+ * explicitly for envelope responses and leaving it unset for bare arrays. If
+ * the IR ever omitted it for an envelope op, this would return `false` and the
+ * op would decode into `Vec<T>` and fail — so that invariant must hold upstream.
  */
 export function isInlineEnvelopeList(op: Operation): boolean {
   return op.response?.kind === 'array' && op.pagination?.dataPath === 'data';
