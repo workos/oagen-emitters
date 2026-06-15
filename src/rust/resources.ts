@@ -1144,19 +1144,27 @@ function renderWrapperMethod(
 
   sig.push(`        let method = http::Method::${op.httpMethod.toUpperCase()};`);
 
-  // Build the JSON body inline: defaults + inferFromClient (read from the
-  // client at request time) + each exposed param.
-  sig.push('        let body = serde_json::json!({');
+  // Build the JSON body inline: defaults + each exposed param. inferFromClient
+  // fields (read from the client at request time) are added afterwards, and
+  // only when non-empty — a client configured without an API key (e.g. a
+  // public client running a PKCE flow) must omit `client_secret` entirely
+  // rather than send `""`, which the API rejects. Mirrors the Go emitter's
+  // `omitempty` on inferred fields.
+  const inferredFields = wrapper.inferFromClient ?? [];
+  sig.push(`        let ${inferredFields.length > 0 ? 'mut ' : ''}body = serde_json::json!({`);
   for (const [k, v] of Object.entries(wrapper.defaults ?? {})) {
     sig.push(`            ${JSON.stringify(k)}: ${JSON.stringify(v)},`);
-  }
-  for (const k of wrapper.inferFromClient ?? []) {
-    sig.push(`            ${JSON.stringify(k)}: ${clientFieldExpression(k)},`);
   }
   for (const rp of params) {
     sig.push(`            ${JSON.stringify(rp.paramName)}: params.${fieldName(rp.paramName)},`);
   }
   sig.push('        });');
+  for (const k of inferredFields) {
+    const expr = clientFieldExpression(k);
+    sig.push(`        if !${expr}.is_empty() {`);
+    sig.push(`            body[${JSON.stringify(k)}] = serde_json::Value::String(${expr}.to_string());`);
+    sig.push('        }');
+  }
 
   sig.push('        #[derive(Serialize)]');
   sig.push('        struct EmptyQuery {}');

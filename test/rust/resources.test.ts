@@ -214,11 +214,18 @@ describe('rust/resources', () => {
     const f = generateResources(services, ctxWithWrapper, new UnionRegistry()).find(
       (x) => x.path === 'src/resources/user_management.rs',
     )!;
-    // Inferred fields read from the runtime client, not empty literals.
-    expect(f.content).toContain('"client_id": self.client.client_id()');
-    expect(f.content).toContain('"client_secret": self.client.api_key()');
+    // Inferred fields read from the runtime client and inserted only when
+    // non-empty, so secretless clients (PKCE flows) omit them entirely.
+    expect(f.content).toContain('let mut body = serde_json::json!({');
+    expect(f.content).toContain('if !self.client.client_id().is_empty() {');
+    expect(f.content).toContain('body["client_id"] = serde_json::Value::String(self.client.client_id().to_string());');
+    expect(f.content).toContain('if !self.client.api_key().is_empty() {');
+    expect(f.content).toContain(
+      'body["client_secret"] = serde_json::Value::String(self.client.api_key().to_string());',
+    );
     expect(f.content).not.toContain('"client_id": "",');
     expect(f.content).not.toContain('"client_secret": "",');
+    expect(f.content).not.toContain('"client_secret": self.client.api_key()');
     // Defaults are still emitted as literal JSON values.
     expect(f.content).toContain('"grant_type": "authorization_code"');
   });
