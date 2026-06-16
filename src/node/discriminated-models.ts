@@ -531,6 +531,15 @@ export function planDiscriminatedModels(models: Model[], ctx: EmitterContext): M
       depDirMap.set(rawName, irModelDir.get(stripped)!);
     }
   }
+  // Synthetic IR models — e.g. inline-object variant fields like the token
+  // response's nested `access_token` — have PascalCase names that never appear
+  // in rawSchemas, so the loop above misses them. Seed their directories from
+  // irModelDir so `collectImports` (which only receives `depDirMap` via the
+  // plan) can resolve a cross-service inline-object dep instead of defaulting
+  // to a possibly-wrong same-dir import.
+  for (const [irName, dir] of irModelDir) {
+    if (!depDirMap.has(irName)) depDirMap.set(irName, dir);
+  }
 
   for (const model of models) {
     const shape = detectDiscriminatedShape(model.name, rawSchemas);
@@ -697,8 +706,16 @@ function discLiteral(variant: VariantSpec): string {
   return variant.discriminatorIsBoolean ? variant.discriminatorValue : `'${variant.discriminatorValue}'`;
 }
 
-/** Field type for an inline-union member: literal union for inline string
- *  enums, otherwise the resolved domain/wire type. */
+/**
+ * Field type for an inline-union member: a literal union for inline string
+ * enums, otherwise the resolved domain/wire type.
+ *
+ * The `enumValues` branch deliberately ignores `isWire`: `enumValues` is only
+ * populated for string enums (see `buildField`), whose domain and wire
+ * representations are identical literal unions. Any field whose domain/wire
+ * types actually differ (model refs, dates, non-string enums) leaves
+ * `enumValues` undefined and falls through to the type-specific branch.
+ */
 function inlineFieldType(field: FieldSpec, isWire: boolean): string {
   if (field.enumValues) {
     return field.enumValues.map((v) => `'${v}'`).join(' | ');
@@ -736,7 +753,10 @@ function collectImports(plan: DiscriminatedPlan): ImportSpec[] {
     const domain = toPascalCase(dep);
     const wire = wireInterfaceName(domain);
     const symbols = wire !== domain ? [domain, wire] : [domain];
-    const depDir = plan.depDirMap.get(dep);
+    // `dep` may be a raw spec name or a synthetic inline-object name in snake
+    // form (`Parent_field`); `depDirMap` keys the latter under its PascalCase IR
+    // name, so fall back to that spelling before defaulting to a same-dir path.
+    const depDir = plan.depDirMap.get(dep) ?? plan.depDirMap.get(domain);
     const baseName = fileName(toSnakeFromPascal(domain));
     let importPath: string;
     if (!depDir || depDir === plan.modelDir) {

@@ -88,4 +88,21 @@ describe('detectDiscriminatedShape — pure oneOf with boolean discriminator', (
     expect(ser.content).toContain('case true:');
     expect(ser.content).toContain('case false:');
   });
+
+  it('resolves a cross-service inline-object dep to a relative import path', () => {
+    // The nested `access_token` object is a synthetic IR model. Its dep is
+    // carried in snake form (`Parent_field`) but keyed in depDirMap under the
+    // PascalCase IR name. When that model resolves to a different service dir,
+    // collectImports must emit a cross-service path rather than defaulting to
+    // a same-dir import.
+    const shape = detectDiscriminatedShape('DataIntegrationAccessTokenResponse', rawSchemas)!;
+    const depDirMap = new Map<string, string>([['DataIntegrationAccessTokenResponseAccessToken', 'connect']]);
+    const plan: DiscriminatedPlan = { shape, modelDir: 'pipes', depDirMap };
+    const files = generateDiscriminatedFiles(new Map([['DataIntegrationAccessTokenResponse', plan]]), ctx);
+
+    const iface = files.find((f) => f.path.endsWith('.interface.ts'))!;
+    expect(iface.content).toContain(
+      "from '../../connect/interfaces/data-integration-access-token-response-access-token.interface'",
+    );
+  });
 });
