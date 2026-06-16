@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/workos/oagen-emitters/compare/v0.16.1...v0.17.0) (2026-06-15)
+
+
+### Features
+
+* **node:** honor urlBuilder operation hint ([#146](https://github.com/workos/oagen-emitters/issues/146)) ([96bea6c](https://github.com/workos/oagen-emitters/commit/96bea6ca9807bca3ddeb96e1d7d20447c69bab97))
+
+
+### Bug Fixes
+
+* **go,kotlin,node:** preserve all variant fields on discriminated-union fields ([#148](https://github.com/workos/oagen-emitters/issues/148)) ([a4bd537](https://github.com/workos/oagen-emitters/commit/a4bd53769ef650b1df5dbd7d795760be0ecb3be3))
+* **rust:** correct inline-envelope list decoding and empty inferred fields ([#145](https://github.com/workos/oagen-emitters/issues/145)) ([0a2b357](https://github.com/workos/oagen-emitters/commit/0a2b357788ebdd92b69534309c723beadb9b4240))
+
 ## [0.16.1](https://github.com/workos/oagen-emitters/compare/v0.16.0...v0.16.1) (2026-06-12)
 
 
