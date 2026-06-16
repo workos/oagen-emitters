@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/workos/oagen-emitters/compare/v0.17.0...v0.18.0) (2026-06-16)
+
+
+### Features
+
+* **node:** emit discriminated unions for pure oneOf token response ([#150](https://github.com/workos/oagen-emitters/issues/150)) ([1433bcc](https://github.com/workos/oagen-emitters/commit/1433bcc2f61db52aeadd7b947b79bb90c184c0a1))
+
 ## [0.17.0](https://github.com/workos/oagen-emitters/compare/v0.16.1...v0.17.0) (2026-06-15)
 
 
