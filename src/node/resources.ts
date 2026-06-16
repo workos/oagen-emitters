@@ -303,9 +303,26 @@ function optionsObjectInfo(
 
   if (!operationHasOptionsInput(op, plan, resolvedOp)) return undefined;
 
+  const resolvedService = resolveResourceClassName(service, ctx);
+  let optionsType = methodOptionsName(method, resolvedService);
+  // A bare `${Method}Options` name (e.g. `GetGroupOptions`) can collide with a
+  // same-named baseline type owned by a DIFFERENT service (for example the
+  // Groups module's `GetGroupOptions`, shaped `{ organizationId, groupId }`).
+  // Reusing it by name would import a foreign shape. When the existing
+  // declaration lives in another service directory, qualify the name with the
+  // service (mirroring the `list` -> `${Service}ListOptions` rule) so this
+  // service generates and imports its own options type.
+  if (method !== 'list') {
+    const baselineFile = baselineTypeSourceFile(ctx, optionsType);
+    const baselineDir = baselineFile?.match(/^src\/([^/]+)\//)?.[1];
+    if (baselineDir && baselineDir !== resolveResourceDir(service, ctx)) {
+      optionsType = `${toPascalCase(resolvedService)}${toPascalCase(method)}Options`;
+    }
+  }
+
   return {
     name: 'options',
-    type: methodOptionsName(method, resolveResourceClassName(service, ctx)),
+    type: optionsType,
     optional: optionsObjectShouldBeOptional(op, plan, resolvedOp),
     generated: true,
   };
@@ -1194,7 +1211,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
     const baselineMethod = baselineMethodFor(service, method, ctx);
     const optionInfo = optionsObjectInfo(service, method, op, plan, ctx, baselineMethod, resolved);
     if (plan.isPaginated) {
-      const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name));
+      // Skip deprecated query params: the typed options interface omits them
+      // (the curated baseline drops deprecated params), so the wire serializer
+      // must not reference a field that does not exist on the options type.
+      const extraParams = op.queryParams.filter((p) => !PAGINATION_PARAM_NAMES.has(p.name) && !p.deprecated);
       if (extraParams.length > 0) {
         const optionsName = optionInfo?.type ?? paginatedOptionsName(method, resolvedName);
 

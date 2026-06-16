@@ -38,6 +38,17 @@ export interface NodeEmitterOptions {
    * without affecting other languages.
    */
   operationOverrides?: Record<string, OperationOverride>;
+  /**
+   * Type/model names whose hand-written declarations are authoritative even
+   * inside an owned service. The emitter will NOT generate an interface or
+   * serializer for these names; instead it treats them like a baseline type,
+   * routing imports and barrel exports to the existing hand-written file.
+   *
+   * Use this to keep hand-owned generics the OpenAPI spec cannot express
+   * (for example `DirectoryUserWithGroups<TCustomAttributes>`) while still
+   * letting oagen own the rest of the service.
+   */
+  handOwnedTypes?: string[];
 }
 
 export function nodeOptions(ctx: EmitterContext): NodeEmitterOptions {
@@ -66,4 +77,16 @@ export function isNodeOwnedService(ctx: EmitterContext, ...names: Array<string |
   return names.some((name) =>
     name !== undefined ? ownedLookupNames(name).some((candidate) => owned.has(normalizeServiceName(candidate))) : false,
   );
+}
+
+/**
+ * True when `name` is a hand-owned type (see {@link NodeEmitterOptions.handOwnedTypes}).
+ * Hand-owned types are never generated; the emitter defers to the existing
+ * hand-written declaration and routes imports/barrel exports to it.
+ */
+export function isHandOwnedType(ctx: EmitterContext, name: string | undefined): boolean {
+  if (name === undefined) return false;
+  const configured = nodeOptions(ctx).handOwnedTypes;
+  if (!configured || configured.length === 0) return false;
+  return configured.includes(name);
 }

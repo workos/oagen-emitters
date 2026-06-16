@@ -11,6 +11,7 @@ import {
   wireInterfaceName,
   resolveMethodName,
   isAdoptedModelName,
+  buildServiceNameMap,
 } from './naming.js';
 import {
   collectFieldDependencies,
@@ -42,7 +43,7 @@ import {
   hasDateTimeConversion,
 } from './field-plan.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
-import { isNodeOwnedService } from './options.js';
+import { isNodeOwnedService, isHandOwnedType } from './options.js';
 import { unwrapListModel } from './fixtures.js';
 import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -244,6 +245,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSkip?.has(model.name)) continue;
+    // Hand-owned types are declared in a hand-written file (e.g. generics the
+    // spec cannot express). Never generate an interface for them; references
+    // route to the existing declaration via its baseline source file.
+    if (
+      isHandOwnedType(ctx, model.name) ||
+      isHandOwnedType(ctx, resolveInterfaceName(model.name, ctx, { skipTypeAlias: true }))
+    )
+      continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);
     if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerate.has(model.name)) continue;
@@ -342,6 +351,10 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     const crossServiceImports = new Map<string, { name: string; relPath: string }>();
     const unresolvableNames = new Set<string>();
     const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services, ctx.spec.models, ctx);
+    // Resolve mounted/owned service names (e.g. IR `Directories` -> `DirectorySync`)
+    // so owned-service enum-import planning matches `generateEnums`, which keys
+    // ownership off the resolved name (see enums.ts).
+    const serviceNameMap = buildServiceNameMap(ctx.spec.services, ctx);
     const resolvedEnumNames = new Map<string, string>();
     for (const e of ctx.spec.enums) {
       resolvedEnumNames.set(resolveInterfaceName(e.name, ctx), e.name);
@@ -375,7 +388,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
             // even when the baseline declares the name elsewhere (usually in
             // the very file being overwritten), so import planning must
             // target the canonical path to agree with that emission.
-            const eEnumIsOwned = isNodeOwnedService(ctx, eService);
+            const eEnumIsOwned = isNodeOwnedService(ctx, eService, eService ? serviceNameMap.get(eService) : undefined);
             const bSrc = eEnumIsOwned ? undefined : ((bEnum as any)?.sourceFile ?? (bAlias as any)?.sourceFile);
             const gPath = `src/${eDir}/interfaces/${fileName(irEnumName)}.interface.ts`;
             const cPath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
@@ -453,7 +466,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const baselineEnum = ctx.apiSurface?.enums?.[dep];
       const baselineAlias = ctx.apiSurface?.typeAliases?.[dep];
       const depService = enumToService.get(dep);
-      const depEnumIsOwned = isNodeOwnedService(ctx, depService);
+      const depEnumIsOwned = isNodeOwnedService(
+        ctx,
+        depService,
+        depService ? serviceNameMap.get(depService) : undefined,
+      );
       // Fall back to the live-surface declaration path: `generateEnums` skips
       // emission when the enum is already declared elsewhere in the SDK (same
       // fallback, see enums.ts), so the import must follow that declaration —
@@ -835,6 +852,12 @@ export function generateSerializers(
     if (isListMetadataModel(model) && !serializerListMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !serializerNonPaginatedRefs.has(model.name)) continue;
     if (discriminatedSerializerSkip?.has(model.name)) continue;
+    // Hand-owned types keep their hand-written serializer (see generateModels).
+    if (
+      isHandOwnedType(ctx, model.name) ||
+      isHandOwnedType(ctx, resolveInterfaceName(model.name, ctx, { skipTypeAlias: true }))
+    )
+      continue;
     const service = modelToService.get(model.name);
     const isOwnedModel = isNodeOwnedService(ctx, service);
     if (!isOwnedModel && !modelHasNewFields(model, ctx) && !forceGenerateSerializer.has(model.name)) continue;
@@ -979,12 +1002,28 @@ export function generateSerializers(
   }
   const liveRootForBarrel = ctx.outputDir ?? ctx.targetDir;
   for (const [dir, stems] of serializersByDir) {
-    if (liveRootForBarrel && !isNodeOwnedService(ctx, dir)) {
+    if (liveRootForBarrel) {
+      const dirIsOwned = isNodeOwnedService(ctx, dir);
       const serializersDir = path.join(liveRootForBarrel, 'src', dir, 'serializers');
       try {
         for (const entry of fs.readdirSync(serializersDir)) {
           if (!entry.endsWith('.serializer.ts')) continue;
-          stems.add(entry.replace(/\.serializer\.ts$/, ''));
+          const stem = entry.replace(/\.serializer\.ts$/, '');
+          if (stems.has(stem)) continue;
+          // Owned directories are otherwise fully regenerated. Only preserve a
+          // hand-written serializer when it belongs to a hand-owned type (i.e.
+          // exports `(de)serialize<HandOwnedType>`); stale auto-generated files
+          // should be pruned and unrelated hand-written files must not collide
+          // with generated exports.
+          if (dirIsOwned) {
+            const content = fs.readFileSync(path.join(serializersDir, entry), 'utf-8');
+            if (/auto-generated by oagen/i.test(content.slice(0, 400))) continue;
+            const serializerFns = [
+              ...content.matchAll(/export\s+(?:const|function)\s+((?:de)?serialize[A-Za-z0-9_]+)/g),
+            ].map((m) => m[1].replace(/^(?:de)?serialize/, ''));
+            if (!serializerFns.some((typeName) => isHandOwnedType(ctx, typeName))) continue;
+          }
+          stems.add(stem);
         }
       } catch {
         // Directory doesn't exist yet — only this-pass serializers will appear.

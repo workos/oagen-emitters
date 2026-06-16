@@ -670,9 +670,11 @@ function buildOptionsObjectTestArg(
   if (plan.isPaginated) {
     entries.push("order: 'desc'");
   }
-  const queryParams = plan.isPaginated
-    ? op.queryParams.filter((param) => !['limit', 'before', 'after', 'order'].includes(param.name))
-    : op.queryParams;
+  const queryParams = (
+    plan.isPaginated
+      ? op.queryParams.filter((param) => !['limit', 'before', 'after', 'order'].includes(param.name))
+      : op.queryParams
+  ).filter((param) => !param.deprecated);
   for (const param of queryParams) {
     const localName = fieldName(param.name);
     const value = queryParamTestValue(param, modelMap);
