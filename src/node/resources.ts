@@ -327,6 +327,18 @@ function isValidTypeIdentifier(name: string): boolean {
   return /^[A-Za-z_$][\w$]*$/.test(name);
 }
 
+/**
+ * Extract candidate named type references from a compound type expression such
+ * as `GetAccessTokenOptions & { provider: string }`. PascalCase tokens are type
+ * names worth importing; lowercase tokens are property keys or primitives and
+ * are skipped. The caller only imports the ones that resolve to a known source
+ * file, so unrecognized PascalCase tokens (e.g. `Date`, `Record`) are harmless.
+ */
+function extractNamedTypeRefs(typeExpr: string): string[] {
+  const matches = typeExpr.match(/\b[A-Z][A-Za-z0-9_$]*\b/g) ?? [];
+  return [...new Set(matches)];
+}
+
 function autoPaginatableItemType(returnType: string | undefined): string | undefined {
   // Match both AutoPaginatable<T> and the legacy List<T> pattern so baseline
   // item types are extracted even when the hand-written code predates AutoPaginatable.
@@ -964,16 +976,28 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   const importedTypeNames = new Set<string>();
   for (const optionType of optionObjectTypes) {
-    // Inline object-literal types from the baseline surface are rendered
-    // inline in the method signature — they have no importable name or file.
-    if (!isValidTypeIdentifier(optionType)) continue;
-    if (importedTypeNames.has(optionType)) continue;
-    importedTypeNames.add(optionType);
-    const sourceFile = baselineTypeSourceFile(ctx, optionType);
-    const relPath = sourceFile
-      ? relativeImport(resourcePath, sourceFile)
-      : `./interfaces/${fileName(optionType)}.interface`;
-    lines.push(`import type { ${optionType} } from '${relPath}';`);
+    if (isValidTypeIdentifier(optionType)) {
+      if (importedTypeNames.has(optionType)) continue;
+      importedTypeNames.add(optionType);
+      const sourceFile = baselineTypeSourceFile(ctx, optionType);
+      const relPath = sourceFile
+        ? relativeImport(resourcePath, sourceFile)
+        : `./interfaces/${fileName(optionType)}.interface`;
+      lines.push(`import type { ${optionType} } from '${relPath}';`);
+      continue;
+    }
+    // Compound option types (e.g. a baseline `GetAccessTokenOptions & { provider:
+    // string }`) keep their inline object literal inline, but the named type(s)
+    // they reference must still be imported. Only import names that resolve to a
+    // known source file — inline literals, primitives, and property keys have no
+    // importable source and are skipped.
+    for (const typeName of extractNamedTypeRefs(optionType)) {
+      if (importedTypeNames.has(typeName)) continue;
+      const sourceFile = baselineTypeSourceFile(ctx, typeName) ?? liveSurfaceInterfacePath(typeName);
+      if (!sourceFile) continue;
+      importedTypeNames.add(typeName);
+      lines.push(`import type { ${typeName} } from '${relativeImport(resourcePath, sourceFile)}';`);
+    }
   }
   for (const typeName of returnTypeImports) {
     if (importedTypeNames.has(typeName)) continue;

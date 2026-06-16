@@ -50,13 +50,17 @@ interface FieldSpec {
   modelDeps: Set<string>;
   /** Whether the field requires date parsing/formatting (format: date-time). */
   hasDateTime: boolean;
+  /** Inline string-enum values, rendered as a literal union (e.g. `'a' | 'b'`). */
+  enumValues?: string[];
 }
 
 interface VariantSpec {
   /** Domain interface name suffix, e.g. `OAuth`, `M2M`. */
   nameSuffix: string;
-  /** Discriminator string value, e.g. `oauth`, `m2m`. */
+  /** Discriminator value, e.g. `oauth`, `m2m`, or `true`/`false`. */
   discriminatorValue: string;
+  /** Whether the discriminator value is a boolean literal (emit unquoted). */
+  discriminatorIsBoolean?: boolean;
   /** Fields specific to this variant (excluding the discriminator). */
   fields: FieldSpec[];
 }
@@ -72,6 +76,13 @@ interface DiscriminatedShape {
   /** Description from the OpenAPI spec, if present. */
   discriminatorDescription?: string;
   variants: VariantSpec[];
+  /**
+   * Set for pure `oneOf` schemas (no `allOf` base wrapper). These are emitted
+   * as an inline anonymous union (`type X = { … } | { … }`) rather than as a
+   * set of named variant interfaces, which keeps two-variant unions — e.g. the
+   * boolean-discriminated `active: true | false` token response — readable.
+   */
+  inlineUnion?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,25 +94,45 @@ export function detectDiscriminatedShape(
   rawSchemas: Record<string, RawSchema>,
 ): DiscriminatedShape | null {
   const schema = rawSchemas[modelName];
-  if (!schema?.allOf) return null;
+  if (!schema) return null;
 
-  // The expected shape: allOf contains exactly one base object and one oneOf
-  // wrapper. The base contributes shared fields; the oneOf contributes
-  // variant-specific fields.
   let baseObject: RawSchema | null = null;
   let oneOfVariants: RawSchema[] | null = null;
-  for (const member of schema.allOf) {
-    const resolved = resolveRef(member, rawSchemas);
-    if (resolved.oneOf) {
-      if (oneOfVariants) return null; // unexpected: multiple oneOf branches at top
-      oneOfVariants = resolved.oneOf;
-    } else if (resolved.properties) {
-      baseObject = mergeBase(baseObject, resolved);
-    } else if (resolved.allOf) {
-      // Nested allOf at top: walk it
-      const nestedBase = flattenObjectAllOf(resolved, rawSchemas);
-      baseObject = mergeBase(baseObject, nestedBase);
+  let inlineUnion = false;
+
+  if (schema.allOf) {
+    // `allOf [base, oneOf [variant, …]]`: the base contributes shared fields;
+    // the oneOf contributes variant-specific fields. Emitted as named variant
+    // interfaces (one per variant) plus a union alias.
+    for (const member of schema.allOf) {
+      const resolved = resolveRef(member, rawSchemas);
+      if (resolved.oneOf) {
+        if (oneOfVariants) return null; // unexpected: multiple oneOf branches at top
+        oneOfVariants = resolved.oneOf;
+      } else if (resolved.properties) {
+        baseObject = mergeBase(baseObject, resolved);
+      } else if (resolved.allOf) {
+        // Nested allOf at top: walk it
+        const nestedBase = flattenObjectAllOf(resolved, rawSchemas);
+        baseObject = mergeBase(baseObject, nestedBase);
+      }
     }
+  } else if (schema.oneOf && schema.oneOf.length >= 2) {
+    // Pure `oneOf` (no base wrapper): every branch must be a plain inline
+    // object so a shared const discriminator can tell them apart. This is the
+    // discriminated-union shape the parser would otherwise flatten into a
+    // single all-optional interface (e.g. the boolean-discriminated token
+    // response `{ active: true; … } | { active: false; … }`). The
+    // mutually-exclusive-field-group oneOf (no shared discriminator) is left
+    // alone by the `findSharedDiscriminator` check below.
+    const allInlineObjects = schema.oneOf.every(
+      (v) => v.properties && !v.$ref && (v.type === 'object' || !v.type) && !v.allOf && !v.oneOf,
+    );
+    if (!allInlineObjects) return null;
+    oneOfVariants = schema.oneOf;
+    inlineUnion = true;
+  } else {
+    return null;
   }
   if (!oneOfVariants || oneOfVariants.length < 2) return null;
 
@@ -120,12 +151,13 @@ export function detectDiscriminatedShape(
 
   // Build variant specs.
   const variants: VariantSpec[] = flattenedVariants
-    .map((fv) => {
-      const discValue = readConstString(fv.alwaysProperties.get(discProp));
-      if (!discValue) return null;
+    .map((fv): VariantSpec | null => {
+      const discValue = readConst(fv.alwaysProperties.get(discProp));
+      if (discValue === null) return null;
       return {
-        nameSuffix: variantNameSuffix(discValue),
-        discriminatorValue: discValue,
+        nameSuffix: variantNameSuffix(String(discValue)),
+        discriminatorValue: String(discValue),
+        discriminatorIsBoolean: typeof discValue === 'boolean',
         fields: variantFields(fv, discProp, modelName),
       };
     })
@@ -144,6 +176,7 @@ export function detectDiscriminatedShape(
     discriminatorPropertyDomain: toCamelCase(discProp),
     discriminatorDescription,
     variants,
+    inlineUnion,
   };
 }
 
@@ -302,12 +335,12 @@ function findSharedDiscriminator(variants: FlattenedVariant[]): string | null {
     const values: string[] = [];
     for (const v of variants) {
       const schema = v.alwaysProperties.get(propName);
-      const val = readConstString(schema);
+      const val = readConst(schema);
       if (val === null) {
         allConst = false;
         break;
       }
-      values.push(val);
+      values.push(String(val));
     }
     if (allConst && new Set(values).size === values.length) {
       return propName;
@@ -316,11 +349,17 @@ function findSharedDiscriminator(variants: FlattenedVariant[]): string | null {
   return null;
 }
 
-function readConstString(schema: RawSchema | undefined | null): string | null {
+/**
+ * Read a discriminator value pinned by `const` (or a single-value `enum`).
+ * Supports string and boolean literals — the latter drives the
+ * `active: true | false` style token response union.
+ */
+function readConst(schema: RawSchema | undefined | null): string | boolean | null {
   if (!schema) return null;
-  if (typeof schema.const === 'string') return schema.const;
-  if (Array.isArray(schema.enum) && schema.enum.length === 1 && typeof schema.enum[0] === 'string') {
-    return schema.enum[0];
+  if (typeof schema.const === 'string' || typeof schema.const === 'boolean') return schema.const;
+  if (Array.isArray(schema.enum) && schema.enum.length === 1) {
+    const only = schema.enum[0];
+    if (typeof only === 'string' || typeof only === 'boolean') return only;
   }
   return null;
 }
@@ -360,6 +399,10 @@ function buildField(rawName: string, schema: RawSchema, required: boolean, paren
   const modelDeps = new Set<string>();
   const domainType = rawSchemaToTS(schema, parentName, rawName, false, modelDeps);
   const wireType = rawSchemaToTS(schema, parentName, rawName, true, modelDeps);
+  const enumValues =
+    Array.isArray(schema.enum) && schema.enum.length > 0 && schema.enum.every((e) => typeof e === 'string')
+      ? (schema.enum as string[])
+      : undefined;
   return {
     name: rawName,
     description: schema.description,
@@ -368,6 +411,7 @@ function buildField(rawName: string, schema: RawSchema, required: boolean, paren
     wireType,
     modelDeps,
     hasDateTime: schemaHasDateTime(schema),
+    enumValues,
   };
 }
 
@@ -487,6 +531,15 @@ export function planDiscriminatedModels(models: Model[], ctx: EmitterContext): M
       depDirMap.set(rawName, irModelDir.get(stripped)!);
     }
   }
+  // Synthetic IR models — e.g. inline-object variant fields like the token
+  // response's nested `access_token` — have PascalCase names that never appear
+  // in rawSchemas, so the loop above misses them. Seed their directories from
+  // irModelDir so `collectImports` (which only receives `depDirMap` via the
+  // plan) can resolve a cross-service inline-object dep instead of defaulting
+  // to a possibly-wrong same-dir import.
+  for (const [irName, dir] of irModelDir) {
+    if (!depDirMap.has(irName)) depDirMap.set(irName, dir);
+  }
 
   for (const model of models) {
     const shape = detectDiscriminatedShape(model.name, rawSchemas);
@@ -503,7 +556,17 @@ export function planDiscriminatedModels(models: Model[], ctx: EmitterContext): M
         for (const d of field.modelDeps) allDeps.add(d);
       }
     }
-    const hasUnresolvableDeps = [...allDeps].some((dep) => !depDirMap.has(dep) && !irModelDir.has(dep));
+    // `modelDeps` may carry an inline-object synthetic name in raw form
+    // (`Parent_field`) while the resolution maps are keyed by the PascalCase IR
+    // model name (`ParentField`). Resolve either spelling before deciding a dep
+    // is unreachable — otherwise inline-object variant fields (e.g. the token
+    // response's nested `access_token`) would wrongly drop the whole plan.
+    const resolvable = (dep: string): boolean =>
+      depDirMap.has(dep) ||
+      irModelDir.has(dep) ||
+      depDirMap.has(toPascalCase(dep)) ||
+      irModelDir.has(toPascalCase(dep));
+    const hasUnresolvableDeps = [...allDeps].some((dep) => !resolvable(dep));
     if (hasUnresolvableDeps) continue;
     const modelDir = resolveDir(modelToService.get(model.name));
     plans.set(model.name, { shape, modelDir, depDirMap });
@@ -525,6 +588,7 @@ export function generateDiscriminatedFiles(
 
 function buildInterfaceFile(plan: DiscriminatedPlan, _ctx: EmitterContext): GeneratedFile {
   const { shape, modelDir } = plan;
+  if (shape.inlineUnion) return buildInlineUnionFile(plan);
   const domain = toPascalCase(shape.modelName);
   const wire = wireInterfaceName(domain);
   const lines: string[] = [];
@@ -561,6 +625,53 @@ function buildInterfaceFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gene
   };
 }
 
+/**
+ * Emit a pure-`oneOf` discriminated union as a single inline type alias
+ * (`export type X = { … } | { … }`) for both the domain and wire shapes. Used
+ * instead of named per-variant interfaces, which read poorly for small
+ * (often two-variant, boolean-discriminated) unions like the token response.
+ */
+function buildInlineUnionFile(plan: DiscriminatedPlan): GeneratedFile {
+  const { shape, modelDir } = plan;
+  const domain = toPascalCase(shape.modelName);
+  const wire = wireInterfaceName(domain);
+  const lines: string[] = [];
+
+  const imports = collectImports(plan);
+  if (imports.length > 0) {
+    for (const imp of imports) {
+      lines.push(`import type { ${imp.symbols.join(', ')} } from '${imp.path}';`);
+    }
+    lines.push('');
+  }
+
+  lines.push(...buildInlineUnionAlias(domain, shape, /*isWire*/ false));
+  lines.push('');
+  lines.push(...buildInlineUnionAlias(wire, shape, /*isWire*/ true));
+
+  return {
+    path: `src/${modelDir}/interfaces/${fileName(shape.modelName)}.interface.ts`,
+    content: lines.join('\n') + '\n',
+    overwriteExisting: true,
+  };
+}
+
+function buildInlineUnionAlias(name: string, shape: DiscriminatedShape, isWire: boolean): string[] {
+  const lines: string[] = [`export type ${name} =`];
+  shape.variants.forEach((variant, idx) => {
+    const isLast = idx === shape.variants.length - 1;
+    const discKey = isWire ? shape.discriminatorProperty : shape.discriminatorPropertyDomain;
+    const members = [`${discKey}: ${discLiteral(variant)}`];
+    for (const field of variant.fields) {
+      const key = isWire ? field.name : toCamelCase(field.name);
+      const opt = field.required ? '' : '?';
+      members.push(`${key}${opt}: ${inlineFieldType(field, isWire)}`);
+    }
+    lines.push(`  | { ${members.join('; ')} }${isLast ? ';' : ''}`);
+  });
+  return lines;
+}
+
 function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: VariantSpec, isWire: boolean): string[] {
   const lines: string[] = [];
   lines.push(`export interface ${name} {`);
@@ -578,13 +689,38 @@ function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: Va
   if (shape.discriminatorDescription) {
     lines.push(`  /** ${shape.discriminatorDescription} */`);
   }
-  lines.push(`  ${discKey}: '${variant.discriminatorValue}';`);
+  lines.push(`  ${discKey}: ${discLiteral(variant)};`);
   // Variant-specific fields
   for (const field of variant.fields) {
     pushFieldLine(lines, field, isWire);
   }
   lines.push('}');
   return lines;
+}
+
+/**
+ * The discriminator value as a TS literal: quoted for strings (`'oauth'`),
+ * bare for booleans (`true`).
+ */
+function discLiteral(variant: VariantSpec): string {
+  return variant.discriminatorIsBoolean ? variant.discriminatorValue : `'${variant.discriminatorValue}'`;
+}
+
+/**
+ * Field type for an inline-union member: a literal union for inline string
+ * enums, otherwise the resolved domain/wire type.
+ *
+ * The `enumValues` branch deliberately ignores `isWire`: `enumValues` is only
+ * populated for string enums (see `buildField`), whose domain and wire
+ * representations are identical literal unions. Any field whose domain/wire
+ * types actually differ (model refs, dates, non-string enums) leaves
+ * `enumValues` undefined and falls through to the type-specific branch.
+ */
+function inlineFieldType(field: FieldSpec, isWire: boolean): string {
+  if (field.enumValues) {
+    return field.enumValues.map((v) => `'${v}'`).join(' | ');
+  }
+  return isWire ? field.wireType : field.domainType;
 }
 
 function pushFieldLine(lines: string[], field: FieldSpec, isWire: boolean): void {
@@ -617,7 +753,10 @@ function collectImports(plan: DiscriminatedPlan): ImportSpec[] {
     const domain = toPascalCase(dep);
     const wire = wireInterfaceName(domain);
     const symbols = wire !== domain ? [domain, wire] : [domain];
-    const depDir = plan.depDirMap.get(dep);
+    // `dep` may be a raw spec name or a synthetic inline-object name in snake
+    // form (`Parent_field`); `depDirMap` keys the latter under its PascalCase IR
+    // name, so fall back to that spelling before defaulting to a same-dir path.
+    const depDir = plan.depDirMap.get(dep) ?? plan.depDirMap.get(domain);
     const baseName = fileName(toSnakeFromPascal(domain));
     let importPath: string;
     if (!depDir || depDir === plan.modelDir) {
@@ -660,10 +799,16 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
   for (const variant of shape.variants)
     for (const field of variant.fields) for (const d of field.modelDeps) allDeps.add(d);
 
+  // Pure-`oneOf` unions are response shapes (e.g. the token response): they are
+  // only ever deserialized, and their inline-object fields may have no
+  // serializer generated. Emit a deserializer only and import just the
+  // deserialize helpers — mirrors the published hand-written serializer.
+  const deserializeOnly = shape.inlineUnion === true;
   for (const dep of [...allDeps].sort()) {
     const depDomain = toPascalCase(dep);
     const depFile = fileName(toSnakeFromPascal(depDomain));
-    lines.push(`import { deserialize${depDomain}, serialize${depDomain} } from './${depFile}.serializer';`);
+    const helpers = deserializeOnly ? `deserialize${depDomain}` : `deserialize${depDomain}, serialize${depDomain}`;
+    lines.push(`import { ${helpers} } from './${depFile}.serializer';`);
   }
   lines.push('');
 
@@ -671,12 +816,12 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
   lines.push(`export const deserialize${domain} = (response: ${wire}): ${domain} => {`);
   lines.push(`  switch (response.${shape.discriminatorProperty}) {`);
   for (const variant of shape.variants) {
-    lines.push(`    case '${variant.discriminatorValue}':`);
+    lines.push(`    case ${discLiteral(variant)}:`);
     lines.push(`      return {`);
     for (const field of shape.baseFields) {
       lines.push(`        ${assignmentLine(field, /*serialize*/ false, allDeps)},`);
     }
-    lines.push(`        ${shape.discriminatorPropertyDomain}: '${variant.discriminatorValue}',`);
+    lines.push(`        ${shape.discriminatorPropertyDomain}: ${discLiteral(variant)},`);
     for (const field of variant.fields) {
       lines.push(`        ${assignmentLine(field, /*serialize*/ false, allDeps)},`);
     }
@@ -684,29 +829,31 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
   }
   lines.push(`    default:`);
   lines.push(
-    `      throw new Error(\`Unknown ${shape.discriminatorProperty}: \${(response as { ${shape.discriminatorProperty}: string }).${shape.discriminatorProperty}}\`);`,
+    `      throw new Error(\`Unknown ${shape.discriminatorProperty}: \${String((response as Record<string, unknown>).${shape.discriminatorProperty})}\`);`,
   );
   lines.push(`  }`);
   lines.push(`};`);
-  lines.push('');
 
-  // Serializer
-  lines.push(`export const serialize${domain} = (model: ${domain}): ${wire} => {`);
-  lines.push(`  switch (model.${shape.discriminatorPropertyDomain}) {`);
-  for (const variant of shape.variants) {
-    lines.push(`    case '${variant.discriminatorValue}':`);
-    lines.push(`      return {`);
-    for (const field of shape.baseFields) {
-      lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
+  if (!deserializeOnly) {
+    lines.push('');
+    // Serializer
+    lines.push(`export const serialize${domain} = (model: ${domain}): ${wire} => {`);
+    lines.push(`  switch (model.${shape.discriminatorPropertyDomain}) {`);
+    for (const variant of shape.variants) {
+      lines.push(`    case ${discLiteral(variant)}:`);
+      lines.push(`      return {`);
+      for (const field of shape.baseFields) {
+        lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
+      }
+      lines.push(`        ${shape.discriminatorProperty}: ${discLiteral(variant)},`);
+      for (const field of variant.fields) {
+        lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
+      }
+      lines.push(`      };`);
     }
-    lines.push(`        ${shape.discriminatorProperty}: '${variant.discriminatorValue}',`);
-    for (const field of variant.fields) {
-      lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
-    }
-    lines.push(`      };`);
+    lines.push(`  }`);
+    lines.push(`};`);
   }
-  lines.push(`  }`);
-  lines.push(`};`);
 
   return {
     path: `src/${modelDir}/serializers/${fileName(shape.modelName)}.serializer.ts`,
