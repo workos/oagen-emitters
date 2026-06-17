@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/workos/oagen-emitters/compare/v0.18.0...v0.18.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **node:** support owning services with hand-owned generic types ([#152](https://github.com/workos/oagen-emitters/issues/152)) ([aa8223d](https://github.com/workos/oagen-emitters/commit/aa8223dbb6b56f5c2ab12ac42e5a1fc9f9e99943))
+
 ## [0.18.0](https://github.com/workos/oagen-emitters/compare/v0.17.0...v0.18.0) (2026-06-16)
 
 
