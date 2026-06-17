@@ -179,7 +179,7 @@ function exportedNamesForSource(ctx: EmitterContext, sourceFile: string): string
  */
 function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const { modelToService, resolveDir } = createServiceDirResolver(spec.models, spec.services, ctx);
+  const { modelToService, resolveDir, serviceNameMap } = createServiceDirResolver(spec.models, spec.services, ctx);
   const enumToService = assignEnumsToServices(spec.enums, spec.services, spec.models, ctx);
 
   // Group interface files by directory, tracking exported symbol names
@@ -190,7 +190,7 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
   const dirSymbols = new Map<string, Set<string>>();
   const ownedDirNames = new Set<string>();
   for (const service of spec.services) {
-    if (isNodeOwnedService(ctx, service.name)) {
+    if (isNodeOwnedService(ctx, service.name, serviceNameMap.get(service.name))) {
       const dir = resolveDir(service.name);
       ownedDirNames.add(dir);
       // Ensure owned directories always get a barrel entry, even if no
