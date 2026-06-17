@@ -186,5 +186,28 @@ export function assignEnumsToServices(
     }
   }
 
+  // A shared enum that already has a canonical declaration under `src/common/`
+  // must stay there. `common` is a shared module that owned-service
+  // regeneration never overwrites, so it is always the source of truth for
+  // these names. Without this, owning a service that references such an enum
+  // would emit a SECOND copy into the owned module's `interfaces/` dir (via the
+  // owned-service exception in `generateEnums`) while the `common` copy
+  // remains, and `src/index.ts` re-exports both barrels — a duplicate
+  // `export *` (TS2308). Unassigning the enum makes every consumer
+  // (`generateEnums`, model imports, barrels) resolve it to `common`.
+  if (ctx) {
+    const serviceNameMap = buildServiceNameMap(services, ctx);
+    const toUnassign: string[] = [];
+    for (const [name, service] of enumToService) {
+      if (!isNodeOwnedService(ctx, service, serviceNameMap.get(service))) continue;
+      const home =
+        (ctx.apiSurface?.enums?.[name] as any)?.sourceFile ??
+        (ctx.apiSurface?.typeAliases?.[name] as any)?.sourceFile ??
+        liveSurfaceInterfacePath(name);
+      if (home && home.startsWith('src/common/')) toUnassign.push(name);
+    }
+    for (const name of toUnassign) enumToService.delete(name);
+  }
+
   return enumToService;
 }
