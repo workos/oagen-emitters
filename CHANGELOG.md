@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.3](https://github.com/workos/oagen-emitters/compare/v0.18.2...v0.18.3) (2026-06-17)
+
+
+### Bug Fixes
+
+* **dotnet:** emit envelope fixture for list-wrappers returned by non-paginated ops ([#157](https://github.com/workos/oagen-emitters/issues/157)) ([76e89b5](https://github.com/workos/oagen-emitters/commit/76e89b58592cfab9af07bdfc34f93d8569c9d220))
+* **node:** only adopt named request interface for pure object-literal params ([#156](https://github.com/workos/oagen-emitters/issues/156)) ([50116e3](https://github.com/workos/oagen-emitters/commit/50116e320a9faa67691b89f97dc732f8b66405c5))
+
 ## [0.18.2](https://github.com/workos/oagen-emitters/compare/v0.18.1...v0.18.2) (2026-06-17)
 
 
