@@ -1,6 +1,7 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 import { fixtureFileName, fieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
+import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -35,9 +36,19 @@ export function generateFixtures(spec: {
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
+  // List-wrappers are normally represented only by the per-operation
+  // `list_<item>.json` fixtures generated from paginated operations below. But
+  // a wrapper returned by a NON-paginated operation (e.g.
+  // `PUT /authorization/groups/{id}/role_assignments` -> GroupRoleAssignmentList)
+  // is emitted as a real model (see models.ts) and its generated test references
+  // `testdata/<type>.json` (tests.ts). Emit that envelope fixture too, mirroring
+  // the non-wrapper `VersionListResponse` precedent — otherwise the test loads a
+  // file that was never written.
+  const nonPaginatedWrapperRefs = collectNonPaginatedResponseModelNames(spec.services);
+
   for (const model of spec.models) {
     if (isListMetadataModel(model)) continue;
-    if (isListWrapperModel(model)) continue;
+    if (isListWrapperModel(model) && !nonPaginatedWrapperRefs.has(model.name)) continue;
 
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
