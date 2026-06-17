@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { EmitterContext, ApiSpec, Enum, Model } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Enum, Model, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
-import { generateEnums } from '../../src/node/enums.js';
+import { generateEnums, assignEnumsToServices } from '../../src/node/enums.js';
 import { nodeEmitter } from '../../src/node/index.js';
 import { emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
 import * as fs from 'node:fs';
@@ -192,6 +192,142 @@ describe('assignEnumsToServices owned-service dependency reassignment', () => {
     } finally {
       setActiveLiveSurface(emptyLiveSurface());
     }
+  });
+});
+
+describe('assignEnumsToServices common-home unassignment under ownership', () => {
+  // Inverse of the reassignment case above: an enum referenced by an OWNED
+  // service is first-reference-assigned into that service, but its canonical
+  // declaration already lives under `src/common/`. The unassignment guard
+  // must drop it back to `common` so the owned-service exception in
+  // `generateEnums` does not emit a SECOND copy alongside the existing
+  // `common` one (a duplicate `export *` / TS2308).
+  const connectionType: Enum = {
+    name: 'ConnectionType',
+    values: [
+      { name: 'GOOGLE_SAML', value: 'GoogleSAML' },
+      { name: 'OKTA_SAML', value: 'OktaSAML' },
+    ],
+  };
+  const ssoService: Service = {
+    name: 'SSO',
+    operations: [
+      {
+        name: 'listConnections',
+        httpMethod: 'get',
+        path: '/connections',
+        pathParams: [],
+        queryParams: [
+          {
+            name: 'connectionType',
+            type: { kind: 'enum', name: 'ConnectionType', values: ['GoogleSAML', 'OktaSAML'] },
+            required: false,
+          },
+        ],
+        headerParams: [],
+        response: { kind: 'primitive', type: 'unknown' },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+
+  const makeCtx = (overrides: Partial<EmitterContext>): EmitterContext =>
+    ({
+      ...ctx,
+      spec: { ...emptySpec, enums: [connectionType], services: [ssoService] },
+      emitterOptions: { ownedServices: ['SSO'] },
+      ...overrides,
+    }) as EmitterContext;
+
+  it('unassigns an owned-service enum whose apiSurface sourceFile is under src/common/', () => {
+    const ctxOwned = makeCtx({
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        exports: {},
+        enums: { ConnectionType: { sourceFile: 'src/common/interfaces/connection-type.interface.ts' } },
+      },
+    } as unknown as Partial<EmitterContext>);
+
+    const map = assignEnumsToServices([connectionType], [ssoService], [], ctxOwned);
+    // Unassigned → resolves to `common`, not the owned `SSO` directory.
+    expect(map.has('ConnectionType')).toBe(false);
+  });
+
+  it('unassigns via the typeAliases sourceFile lookup (literal-union baseline form)', () => {
+    const ctxOwned = makeCtx({
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        enums: {},
+        exports: {},
+        typeAliases: {
+          ConnectionType: {
+            value: "'GoogleSAML' | 'OktaSAML'",
+            sourceFile: 'src/common/interfaces/connection-type.interface.ts',
+          },
+        },
+      },
+    } as unknown as Partial<EmitterContext>);
+
+    const map = assignEnumsToServices([connectionType], [ssoService], [], ctxOwned);
+    expect(map.has('ConnectionType')).toBe(false);
+  });
+
+  it('falls back to the live-surface interface path when no apiSurface entry exists', () => {
+    // Guards the `liveSurfaceInterfacePath(name)` fallback: with no apiSurface,
+    // the canonical home is only discoverable through the scanned live surface.
+    const surface = emptyLiveSurface();
+    surface.files.add('src/workos.ts');
+    surface.interfaces.set('ConnectionType', {
+      filePath: 'src/common/interfaces/connection-type.interface.ts',
+      fields: new Set(),
+    });
+    setActiveLiveSurface(surface);
+    try {
+      const map = assignEnumsToServices([connectionType], [ssoService], [], makeCtx({}));
+      expect(map.has('ConnectionType')).toBe(false);
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
+
+  it('keeps an owned-service enum whose canonical home is NOT under src/common/', () => {
+    // The guard is specific to `src/common/`: an enum that genuinely belongs to
+    // the owned service must stay assigned there.
+    const ctxOwned = makeCtx({
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        exports: {},
+        enums: { ConnectionType: { sourceFile: 'src/sso/interfaces/connection-type.interface.ts' } },
+      },
+    } as unknown as Partial<EmitterContext>);
+
+    const map = assignEnumsToServices([connectionType], [ssoService], [], ctxOwned);
+    expect(map.get('ConnectionType')).toBe('SSO');
+  });
+
+  it('does not unassign for a non-owned service even when the home is under src/common/', () => {
+    // The unassignment only applies under ownership — a non-owned service keeps
+    // its first-reference assignment regardless of where the enum's home is.
+    const ctxNotOwned = {
+      ...ctx,
+      spec: { ...emptySpec, enums: [connectionType], services: [ssoService] },
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        exports: {},
+        enums: { ConnectionType: { sourceFile: 'src/common/interfaces/connection-type.interface.ts' } },
+      },
+    } as unknown as EmitterContext;
+
+    const map = assignEnumsToServices([connectionType], [ssoService], [], ctxNotOwned);
+    expect(map.get('ConnectionType')).toBe('SSO');
   });
 });
 

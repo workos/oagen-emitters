@@ -289,7 +289,34 @@ function optionsObjectInfo(
   resolvedOp?: ResolvedOperation,
 ): OptionsObjectParam | undefined {
   const baseline = optionsObjectParam(baselineMethod);
-  if (baseline) return baseline;
+  if (baseline) {
+    // A baseline param whose type is a pure inline object literal
+    // (e.g. `{ intent?: GenerateLinkIntent; organization: string; ... }`)
+    // cannot be referenced as a named import and routinely diverges from the
+    // spec-derived request interface that the generated serializer expects —
+    // field renames (`adminEmails` -> `itContactEmails`), widened enums
+    // (`string` vs `'GoogleSAML'`), differing optionality — which makes the
+    // generated `serialize${Model}(payload)` call fail to typecheck. When the
+    // operation owns a named request-body model, adopt that interface so the
+    // method signature, the serializer, and the request model all agree.
+    // Named baseline types (`CreateOrganizationApiKeyOptions`) and compound
+    // intersections (`X & { ... }`) are still preserved verbatim.
+    if (
+      baseline.type.trimStart().startsWith('{') &&
+      isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx))
+    ) {
+      const body = extractRequestBodyType(op, ctx);
+      if (body?.kind === 'model') {
+        return {
+          name: 'options',
+          type: resolveInterfaceName(body.name, ctx),
+          optional: optionsObjectShouldBeOptional(op, plan, resolvedOp),
+          generated: false,
+        };
+      }
+    }
+    return baseline;
+  }
 
   const overrideType = operationOverrideFor(ctx, op)?.optionsType;
   if (overrideType) {
