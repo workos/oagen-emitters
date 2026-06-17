@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/workos/oagen-emitters/compare/v0.18.1...v0.18.2) (2026-06-17)
+
+
+### Bug Fixes
+
+* **node:** adopt spec request interface for owned inline-literal params; dedupe common enums ([#154](https://github.com/workos/oagen-emitters/issues/154)) ([71e2d4f](https://github.com/workos/oagen-emitters/commit/71e2d4f4e05441a41217286b92a555237c3fd794))
+
 ## [0.18.1](https://github.com/workos/oagen-emitters/compare/v0.18.0...v0.18.1) (2026-06-17)
 
 
