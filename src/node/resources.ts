@@ -279,6 +279,24 @@ function operationHasOptionsInput(op: Operation, plan: OperationPlan, resolvedOp
   );
 }
 
+// True only when the type is a SINGLE closed object literal (`{ ... }`), not
+// the head of a compound type such as `{ ... } & X` or `{ ... } | Y`. Counting
+// brace depth locates the literal's matching close brace (handling nesting like
+// `{ a: { b: string } }`); any non-whitespace after it means the type is not a
+// pure literal and must be preserved verbatim rather than replaced by a named
+// request interface.
+function isClosedObjectLiteral(type: string): boolean {
+  const t = type.trim();
+  if (!t.startsWith('{')) return false;
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return i === t.length - 1;
+  }
+  return false;
+}
+
 function optionsObjectInfo(
   service: Service,
   method: string,
@@ -300,9 +318,10 @@ function optionsObjectInfo(
     // operation owns a named request-body model, adopt that interface so the
     // method signature, the serializer, and the request model all agree.
     // Named baseline types (`CreateOrganizationApiKeyOptions`) and compound
-    // intersections (`X & { ... }`) are still preserved verbatim.
+    // intersections (`X & { ... }` or `{ ... } & X`) are still preserved
+    // verbatim — only a single, closed object literal is eligible for adoption.
     if (
-      baseline.type.trimStart().startsWith('{') &&
+      isClosedObjectLiteral(baseline.type) &&
       isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx))
     ) {
       const body = extractRequestBodyType(op, ctx);

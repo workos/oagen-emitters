@@ -921,7 +921,7 @@ describe('inline object-literal baseline parameter types', () => {
     ],
   });
 
-  const baselineCtx = (service: Service, models: any[]): EmitterContext => ({
+  const baselineCtx = (service: Service, models: any[], paramType: string = literalType): EmitterContext => ({
     ...ctx,
     spec: { ...emptySpec, services: [service], models },
     emitterOptions: { ownedServices: ['AdminPortal'] },
@@ -933,7 +933,7 @@ describe('inline object-literal baseline parameter types', () => {
             generateLink: [
               {
                 name: 'generateLink',
-                params: [{ name: 'options', type: literalType, passingStyle: 'options_object' }],
+                params: [{ name: 'options', type: paramType, passingStyle: 'options_object' }],
                 returnType: 'Promise<{ link: string }>',
                 async: true,
               },
@@ -1005,6 +1005,35 @@ describe('inline object-literal baseline parameter types', () => {
     const content = result.find((f) => f.path === 'src/admin-portal/admin-portal.ts')!.content;
 
     expect(content).toContain(`async generateLink(options: ${literalType})`);
+    expect(content).not.toContain('import type { {');
+  });
+
+  it('keeps a `{ ... } & X` compound intersection inline even with a named request model', () => {
+    // The adoption guard targets a PURE object literal. A baseline param that
+    // LEADS with a literal but is actually a compound intersection
+    // (`{ ... } & WithMetadata`) carries the hand-authored `& X` portion, which
+    // a named-interface swap would silently drop. It must be preserved verbatim
+    // even though the operation has a single named request-body model.
+    const compoundType = `${literalType} & WithMetadata`;
+    const service = adminPortalService({ kind: 'model', name: 'GenerateLinkBody' });
+    const models = [
+      {
+        name: 'GenerateLinkBody',
+        fields: [
+          { name: 'intent', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'organization', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      { name: 'PortalLink', fields: [{ name: 'link', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+
+    const result = generateResources([service], baselineCtx(service, models, compoundType));
+    const content = result.find((f) => f.path === 'src/admin-portal/admin-portal.ts')!.content;
+
+    // The compound type (including the `& WithMetadata` tail) survives intact;
+    // it is NOT replaced by the named `GenerateLinkBody` interface.
+    expect(content).toContain(`async generateLink(options: ${compoundType})`);
+    expect(content).not.toContain('async generateLink(options: GenerateLinkBody)');
     expect(content).not.toContain('import type { {');
   });
 });
