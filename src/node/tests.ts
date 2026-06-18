@@ -1032,7 +1032,7 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
 
   for (const field of model.fields) {
     if (!field.required) continue;
-    const domainField = fieldName(field.name);
+    const domainField = fieldName(field.domainName ?? field.name);
     // `string` + `format: 'date-time'` is deserialized to `Date` by the
     // serializer (see `mapPrimitive` in type-map.ts). Asserting against a
     // string literal would fail Object.is — compare via `.toISOString()`.

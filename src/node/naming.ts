@@ -32,6 +32,16 @@ export function fieldName(name: string): string {
   return toCamelCase(name);
 }
 
+/**
+ * camelCase domain field name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier name. The wire name (see {@link wireFieldName}) still derives
+ * from `field.name`.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return toCamelCase(field.domainName ?? field.name);
+}
+
 /** snake_case field name for wire/response interfaces. */
 export function wireFieldName(name: string): string {
   return toSnakeCase(name);

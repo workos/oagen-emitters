@@ -527,7 +527,9 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     } else {
       lines.push(`export interface ${domainName}${typeParams} {`);
       for (const field of model.fields) {
-        const domainFieldName = fieldName(field.name);
+        // Domain identifier honors a `fieldHints` override (e.g. connection_type
+        // → type); the wire name below still derives from `field.name`.
+        const domainFieldName = fieldName(field.domainName ?? field.name);
         if (seenDomainFields.has(domainFieldName)) continue;
         seenDomainFields.add(domainFieldName);
         if (field.description || field.deprecated || field.readOnly || field.writeOnly || field.default !== undefined) {
