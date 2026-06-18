@@ -211,7 +211,7 @@ function baselineMethodFor(service: Service, method: string, ctx: EmitterContext
   return ctx.apiSurface?.classes?.[serviceClass]?.methods?.[method]?.[0] as BaselineMethod | undefined;
 }
 
-function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): Set<string> {
+export function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): Set<string> {
   const root = ctx.outputDir ?? ctx.targetDir;
   if (!root) return new Set();
 
