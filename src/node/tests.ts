@@ -829,9 +829,10 @@ function buildOptionsObjectTestArg(
   if (!optionParam) return null;
 
   const entries: string[] = [];
+  const pathFieldMap = ctx ? operationOverrideFor(ctx, op)?.pathFieldMap : undefined;
   for (const param of op.pathParams) {
     const localName = fieldName(param.name);
-    const optionField = resolveOptionsObjectField(localName, optionParam.type, ctx);
+    const optionField = resolveOptionsObjectField(localName, optionParam.type, ctx, pathFieldMap);
     entries.push(`${optionField}: ${JSON.stringify(pathParamTestValue(param, localName))}`);
   }
 
@@ -882,10 +883,17 @@ function objectLiteralEntries(literal: string): string[] {
   return body ? body.split(',').map((entry) => entry.trim()) : [];
 }
 
-function resolveOptionsObjectField(localName: string, optionType: string, ctx?: EmitterContext): string {
+function resolveOptionsObjectField(
+  localName: string,
+  optionType: string,
+  ctx?: EmitterContext,
+  pathFieldMap?: Record<string, string>,
+): string {
   const fields = ctx?.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;
+  const mapped = pathFieldMap?.[localName];
+  if (mapped && fields[mapped]) return mapped;
   if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
   return localName;
 }

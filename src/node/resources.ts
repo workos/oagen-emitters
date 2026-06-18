@@ -1954,7 +1954,20 @@ function renderOptionsObjectMethod(
     return true;
   }
 
-  return false;
+  // Body-less, response-less mutation with path params and/or query folded into
+  // the options object (e.g. POST /feature-flags/{slug}/targets/{targetId} -> 204).
+  // The DELETE equivalent is handled above; this covers POST/PUT/PATCH (and any
+  // other verb) that returns no content. Without this branch such operations
+  // fall through to the positional renderVoidMethod, which is inconsistent with
+  // the options-object surface the rest of an owned service uses.
+  {
+    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): Promise<void> {`);
+    renderOptionsObjectDestructure(lines, pathBindings);
+    const emptyBodyArg = httpMethodNeedsBody(op.httpMethod) ? ', {}' : '';
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}${emptyBodyArg}${queryOptionsArg});`);
+    lines.push('  }');
+    return true;
+  }
 }
 
 function renderOptionsObjectDestructure(lines: string[], pathBindings: string[], restName?: string): void {
@@ -1988,7 +2001,8 @@ function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: 
   // Return resolved SDK field names directly — the URL template uses these
   // names too (via the param-name map threaded into buildNodePathExpression),
   // so the destructure no longer needs `optionField: localName` renames.
-  return op.pathParams.map((param) => resolveOptionsObjectField(fieldName(param.name), optionType, ctx));
+  const pathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
+  return op.pathParams.map((param) => resolveOptionsObjectField(fieldName(param.name), optionType, ctx, pathFieldMap));
 }
 
 /**
@@ -2000,18 +2014,28 @@ function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: 
  */
 function buildOptionsObjectPathParamMap(op: Operation, optionType: string, ctx: EmitterContext): Map<string, string> {
   const map = new Map<string, string>();
+  const pathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
   for (const param of op.pathParams) {
     const localName = fieldName(param.name);
-    const sdkField = resolveOptionsObjectField(localName, optionType, ctx);
+    const sdkField = resolveOptionsObjectField(localName, optionType, ctx, pathFieldMap);
     if (sdkField !== localName) map.set(param.name, sdkField);
   }
   return map;
 }
 
-function resolveOptionsObjectField(localName: string, optionType: string, ctx: EmitterContext): string {
+function resolveOptionsObjectField(
+  localName: string,
+  optionType: string,
+  ctx: EmitterContext,
+  pathFieldMap?: Record<string, string>,
+): string {
   const fields = ctx.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;
+  // Operation-override rename (Node-scoped): honor an explicit spec-param ->
+  // SDK-field mapping when the target field exists on the options interface.
+  const mapped = pathFieldMap?.[localName];
+  if (mapped && fields[mapped]) return mapped;
   if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
   return localName;
 }
