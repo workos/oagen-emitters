@@ -12,6 +12,7 @@ import {
 import {
   articleFor,
   fieldName,
+  domainFieldName,
   humanize,
   emitXmlDoc,
   deprecationMessage,
@@ -93,7 +94,10 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
         const baseClassName = modelClassName(model.name);
         const fieldMap = new Map<string, string>();
         for (const field of model.fields) {
-          let csName = fieldName(field.name);
+          // DOMAIN identifier: the C# property name used for inheritance
+          // comparison (honors a `domainName` override). Must match the
+          // property name emitted below so variant fields dedup correctly.
+          let csName = domainFieldName(field);
           if (csName === baseClassName) csName = `${csName}Value`;
           fieldMap.set(csName, mapTypeRef(field.type));
         }
@@ -119,8 +123,16 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     // Required enums need JsonProperty / STJS; a field whose PascalCase name
     // collides with the enclosing class needs the same imports for the wire-
     // name override emitted below.
-    const hasClassNameCollision = model.fields.some((f) => fieldName(f.name) === csClassName);
-    const needsJsonAttrs = hasClassNameCollision || model.fields.some((f) => f.required && isEnumRef(f.type));
+    // DOMAIN identifier: the emitted C# property name (honors `domainName`)
+    // is what can collide with the enclosing class name.
+    const hasClassNameCollision = model.fields.some((f) => domainFieldName(f) === csClassName);
+    // A `domainName` override renames the C# property away from the wire key
+    // (e.g. wire `connection_type` surfaced as domain `Type`). The
+    // SnakeCaseLower naming policy would otherwise serialize the domain name,
+    // so these fields need an explicit pinned wire name (and thus the imports).
+    const hasDomainRename = model.fields.some((f) => domainFieldName(f) !== fieldName(f.name));
+    const needsJsonAttrs =
+      hasClassNameCollision || hasDomainRename || model.fields.some((f) => f.required && isEnumRef(f.type));
 
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -175,9 +187,16 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       // when that happens. Track the rename so we emit an explicit
       // `[JsonProperty]` attribute below — the SnakeCaseLower naming policy
       // would otherwise serialize `ErrorValue` as `error_value`, not `error`.
-      let csFieldName = fieldName(field.name);
+      // DOMAIN identifier: the C# property name, honoring a `domainName`
+      // override (e.g. wire `connection_type` → domain `Type`). The wire key
+      // passed to `emitJsonPropertyAttributes` below still derives from
+      // `field.name`.
+      let csFieldName = domainFieldName(field);
       const collidesWithClassName = csFieldName === csClassName;
       if (collidesWithClassName) csFieldName = `${csFieldName}Value`;
+      // When the domain rename diverges from the wire key, the SnakeCaseLower
+      // naming policy can't recover the wire name from the property — pin it.
+      const hasDomainOverride = domainFieldName(field) !== fieldName(field.name);
       if (seenFieldNames.has(csFieldName)) continue;
       seenFieldNames.add(csFieldName);
 
@@ -257,8 +276,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       }
 
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
+      // WIRE key: always derives from `field.name`. Pin it explicitly when the
+      // C# property name (collision suffix or `domainName` override) no longer
+      // round-trips to the wire name via the SnakeCaseLower naming policy.
       lines.push(
-        ...emitJsonPropertyAttributes(field.name, { isRequiredEnum, explicitWireName: collidesWithClassName }),
+        ...emitJsonPropertyAttributes(field.name, {
+          isRequiredEnum,
+          explicitWireName: collidesWithClassName || hasDomainOverride,
+        }),
       );
       // Discriminated-union-typed field: attach the variant-dispatching converter
       // so Newtonsoft picks the right subtype on deserialization. The converter

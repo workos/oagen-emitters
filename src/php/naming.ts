@@ -138,6 +138,16 @@ export function fieldName(name: string): string {
   return toCamelCase(name);
 }
 
+/**
+ * camelCase DOMAIN property name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier PHP property name. The wire key (see {@link wireName}) still
+ * derives from `field.name`. No-op when `domainName` is unset.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return fieldName(field.domainName ?? field.name);
+}
+
 /** snake_case name for fixtures and other snake_case contexts. */
 export function snakeName(name: string): string {
   return toSnakeCase(stripUrnPrefix(name));

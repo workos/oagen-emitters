@@ -57,6 +57,17 @@ export function propertyName(name: string): string {
   return escapeReserved(camel);
 }
 
+/**
+ * camelCase domain property name for a MODEL field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier name. The wire key (the `@JsonProperty("...")` argument) still
+ * derives from `field.name`. No-op when `domainName` is unset, so it is also
+ * safe on params. Only apply to model fields.
+ */
+export function domainPropertyName(field: { name: string; domainName?: string }): string {
+  return propertyName(field.domainName ?? field.name);
+}
+
 /** camelCase alias (kept for parity with other emitters). */
 export const fieldName = propertyName;
 export const localName = propertyName;

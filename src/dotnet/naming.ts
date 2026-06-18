@@ -39,6 +39,16 @@ export function fieldName(name: string): string {
   return toPascalCase(name);
 }
 
+/**
+ * PascalCase domain property name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier C# property name. The wire/serialization key (the
+ * `[JsonPropertyName("...")]` value) still derives from `field.name`.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return toPascalCase(field.domainName ?? field.name);
+}
+
 /** PascalCase directory name for service modules. */
 export function moduleName(name: string): string {
   return toPascalCase(name);

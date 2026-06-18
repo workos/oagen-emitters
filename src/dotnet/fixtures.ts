@@ -1,5 +1,5 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { fixtureFileName, fieldName } from './naming.js';
+import { fixtureFileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
 
@@ -155,7 +155,10 @@ export function generateModelFixture(
 
   const seenFieldNames = new Set<string>();
   const deduplicatedFields = model.fields.filter((f) => {
-    const csName = fieldName(f.name);
+    // Dedup on the DOMAIN identifier (the C# property name, honoring a
+    // `domainName` override) to mirror the dedup in models.ts. The fixture
+    // payload below still keys on the wire name (`field.name`).
+    const csName = domainFieldName(f);
     if (seenFieldNames.has(csName)) return false;
     seenFieldNames.add(csName);
     return true;

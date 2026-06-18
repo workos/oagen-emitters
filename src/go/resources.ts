@@ -9,7 +9,15 @@ import type {
 import { planOperation, toSnakeCase } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
 import { mapTypeRef, mapTypeRefValue } from './type-map.js';
-import { className, fieldName, methodName, resolveClassName, resolveMethodName, unexportedName } from './naming.js';
+import {
+  className,
+  domainFieldName,
+  fieldName,
+  methodName,
+  resolveClassName,
+  resolveMethodName,
+  unexportedName,
+} from './naming.js';
 import {
   buildResolvedLookup,
   lookupResolved,
@@ -404,7 +412,8 @@ function generateParamsStruct(
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
         if (groupedParams.has(field.name)) continue;
-        const goField = fieldName(field.name);
+        // Domain struct field; the json tag below keeps deriving from field.name.
+        const goField = domainFieldName(field);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
         const isOptional = !field.required;
@@ -942,7 +951,8 @@ function emitHiddenParamsBodyStruct(
       if (hidden.has(field.name)) continue;
       if (groupedParamNames.has(field.name)) continue;
       if (!field.required) continue;
-      const goField = fieldName(field.name);
+      // Domain struct field; the json tag below keeps deriving from field.name.
+      const goField = domainFieldName(field);
       const goType = mapTypeRef(field.type);
       lines.push(`\t${goField} ${goType} \`json:"${field.name}"\``);
     }
@@ -960,7 +970,8 @@ function emitHiddenParamsBodyStruct(
       if (hidden.has(field.name)) continue;
       if (groupedParamNames.has(field.name)) continue;
       if (field.required) continue;
-      const goField = fieldName(field.name);
+      // Domain struct field; the json tag below keeps deriving from field.name.
+      const goField = domainFieldName(field);
       const goType = makeOptional(mapTypeRef(field.type));
       lines.push(`\t${goField} ${goType} \`json:"${field.name},omitempty"\``);
     }
@@ -1007,7 +1018,8 @@ function emitBodyWithHiddenParams(
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
       if (!field.required) continue;
-      const goField = fieldName(field.name);
+      // Domain struct field on both the body literal and the params struct.
+      const goField = domainFieldName(field);
       lines.push(`\t\t${goField}: params.${goField},`);
     }
   }
@@ -1025,7 +1037,8 @@ function emitBodyWithHiddenParams(
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
       if (field.required) continue;
-      const goField = fieldName(field.name);
+      // Domain struct field on both the body struct and the params struct.
+      const goField = domainFieldName(field);
       lines.push(`\tbody.${goField} = params.${goField}`);
     }
   }

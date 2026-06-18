@@ -10,7 +10,7 @@ import type {
   TypeRef,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { fieldName, methodName, typeName, moduleName, variantName } from './naming.js';
+import { fieldName, domainFieldName, methodName, typeName, moduleName, variantName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 import { parsePathTemplate } from '../shared/path-template.js';
@@ -617,7 +617,11 @@ function registerSyntheticBody(
       if (!f.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
       rust = applySecretRedaction(rust, f.name);
       return {
-        rustName: fieldName(f.name),
+        // Domain identifier honors a `fieldHints` override (e.g. wire
+        // `connection_type` → domain `type`); `wireName` keeps `f.name`, and
+        // the `#[serde(rename = wireName)]` emitted in GroupEmitter.render
+        // fires whenever the two differ.
+        rustName: domainFieldName(f),
         wireName: f.name,
         rustType: rust,
         required: !!f.required && !rust.startsWith('Option<'),

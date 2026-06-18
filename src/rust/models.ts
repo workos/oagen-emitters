@@ -1,5 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@workos/oagen';
-import { typeName, fieldName, moduleName } from './naming.js';
+import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 
@@ -132,17 +132,20 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
 }
 
 /**
- * Resolve unique Rust identifiers for struct fields. Multiple wire names can
- * collide after `fieldName()` snake-cases them (e.g. `integration_type` and
- * `integrationType` both become `integration_type`). Subsequent collisions get
- * a numeric suffix so the struct compiles; serde `rename` preserves the
- * original wire name in every case.
+ * Resolve unique Rust identifiers for struct fields. The domain identifier
+ * honors a `fieldHints` override (`domainName`, e.g. wire `connection_type` →
+ * domain `type`); the wire name (and the `#[serde(rename = ...)]` key emitted
+ * in `renderField`) still derives from `f.name`. Multiple names can collide
+ * after snake-casing (e.g. `integration_type` and `integrationType` both
+ * become `integration_type`). Subsequent collisions get a numeric suffix so
+ * the struct compiles; serde `rename` preserves the original wire name in every
+ * case.
  */
 function resolveFieldNames(fields: Field[]): string[] {
   const used = new Set<string>();
   const out: string[] = [];
   for (const f of fields) {
-    const base = fieldName(f.name);
+    const base = domainFieldName(f);
     let candidate = base;
     let suffix = 2;
     while (used.has(candidate)) {

@@ -17,6 +17,7 @@ import {
   ktStringLiteral,
   className,
   propertyName,
+  domainPropertyName,
   buildExportedClassNameSet,
 } from './naming.js';
 import { mapTypeRef } from './type-map.js';
@@ -713,7 +714,10 @@ function buildResponseAssertions(
   for (const field of model.fields) {
     if (!field.required) continue;
     if (assertions.length >= MAX_RESPONSE_ASSERTIONS) break;
-    const ktProp = propertyName(field.name);
+    // DOMAIN identifier: the property accessor on the deserialized model.
+    // Honors a `domainName` override; the synthesized JSON above keys off
+    // `field.name` (the wire key).
+    const ktProp = domainPropertyName(field);
     const type = field.type;
     if (type.kind === 'primitive') {
       if (type.format === 'date-time') continue;

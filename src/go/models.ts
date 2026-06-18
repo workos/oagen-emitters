@@ -1,7 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { className, fieldName } from './naming.js';
+import { className, domainFieldName } from './naming.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
 
 // Import and re-export shared model detection utilities
@@ -185,7 +185,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Deduplicate fields by Go field name
     const seenFieldNames = new Set<string>();
     for (const field of model.fields) {
-      const goFieldName = fieldName(field.name);
+      // Domain identifier honors a `fieldHints` override (e.g. connection_type
+      // → type); the json struct tag below still derives from `field.name`.
+      const goFieldName = domainFieldName(field);
       if (seenFieldNames.has(goFieldName)) continue;
       seenFieldNames.add(goFieldName);
 

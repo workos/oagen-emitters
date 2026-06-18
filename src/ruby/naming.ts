@@ -58,6 +58,16 @@ export function fieldName(name: string): string {
 }
 
 /**
+ * snake_case domain field name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier name. The wire key (still derived from `field.name`) is what
+ * gets sent/received over the wire — only the domain attr/accessor name changes.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return toSnakeCase(field.domainName ?? field.name);
+}
+
+/**
  * Ruby reserved words that cannot be used as parameter names.
  * When a path/query param name collides, suffix with underscore.
  */

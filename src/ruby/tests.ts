@@ -3,6 +3,7 @@ import {
   className,
   fileName,
   fieldName,
+  domainFieldName,
   safeParamName,
   scopedGroupVariantClassName,
   servicePropertyName,
@@ -235,7 +236,9 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile {
     const dedupFields = new Set<string>();
     for (const f of model.fields) {
       const wireName = f.name;
-      const rubyFieldName = fieldName(f.name);
+      // Dedup on the DOMAIN accessor name to mirror the model's field dedup
+      // (models.ts). The fixture/assertion keys below still use the WIRE name.
+      const rubyFieldName = domainFieldName(f);
       if (dedupFields.has(rubyFieldName)) continue;
       dedupFields.add(rubyFieldName);
       const stub = roundTripStub(f.type, enumNames);

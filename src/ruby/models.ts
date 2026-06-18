@@ -1,6 +1,6 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
-import { className, fieldName, fileName, buildMountDirMap } from './naming.js';
+import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
 import {
   isListWrapperModel,
   isListMetadataModel,
@@ -131,7 +131,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Deduplicate field names that collide after snake_case.
     const seenFieldNames = new Set<string>();
     const fields = model.fields.filter((f) => {
-      const n = fieldName(f.name);
+      // Dedup on the DOMAIN accessor name (honors fieldHints override).
+      const n = domainFieldName(f);
       if (seenFieldNames.has(n)) return false;
       seenFieldNames.add(n);
       return true;
@@ -151,7 +152,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('    HASH_ATTRS = {');
     for (let i = 0; i < fields.length; i++) {
       const field = fields[i];
-      const fname = fieldName(field.name);
+      // DOMAIN attr symbol (honors fieldHints); the key below is the WIRE name.
+      const fname = domainFieldName(field);
       const sep = i === fields.length - 1 ? '' : ',';
       lines.push(`      ${rubyHashLiteralKey(field.name)} :${fname}${sep}`);
     }
@@ -162,14 +164,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (deprecatedFields.length > 0) {
       for (const f of deprecatedFields) {
         const desc = f.description ? ` ${f.description.split('\n')[0].trim()}` : '';
-        lines.push(`    # @!attribute ${fieldName(f.name)}`);
+        lines.push(`    # @!attribute ${domainFieldName(f)}`);
         lines.push(`    #   @deprecated${desc}`);
       }
       lines.push('');
     }
 
     if (accessorFields.length > 0) {
-      const attrs = accessorFields.map((f) => `:${fieldName(f.name)}`);
+      const attrs = accessorFields.map((f) => `:${domainFieldName(f)}`);
       if (attrs.length === 1) {
         lines.push(`    attr_accessor ${attrs[0]}`);
       } else {
@@ -184,7 +186,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     // Emit deprecated field accessors with runtime warnings.
     for (const f of deprecatedFields) {
-      const fname = fieldName(f.name);
+      const fname = domainFieldName(f);
       lines.push(`    def ${fname}`);
       lines.push(
         `      warn "[DEPRECATION] \\\`${fname}\\\` is deprecated and will be removed in a future version.", uplevel: 1`,
@@ -202,7 +204,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('    def initialize(json)');
     lines.push('      hash = self.class.normalize(json)');
     for (const field of fields) {
-      const fname = fieldName(field.name);
+      // DOMAIN ivar name (honors fieldHints); rawKey is the WIRE key read from the hash.
+      const fname = domainFieldName(field);
       const rawKey = field.name;
       lines.push(`      ${deserializeAssignment(fname, rawKey, field.type, field.required, enumNames, modelNames)}`);
     }

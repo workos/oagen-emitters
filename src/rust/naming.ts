@@ -77,6 +77,16 @@ export function fieldName(name: string): string {
   return escapeKeyword(toSnakeCase(name));
 }
 
+/**
+ * snake_case domain field name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier identifier. The wire name (and thus the `#[serde(rename = ...)]`
+ * key) still derives from `field.name`.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return escapeKeyword(toSnakeCase(field.domainName ?? field.name));
+}
+
 /** PascalCase enum variant. */
 export function variantName(value: string | number): string {
   const s = String(value);

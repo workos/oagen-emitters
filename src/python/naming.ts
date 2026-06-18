@@ -51,6 +51,16 @@ export function fieldName(name: string): string {
 }
 
 /**
+ * snake_case domain field name for a model field, honoring a `domainName`
+ * override (set via the `fieldHints` config) so a wire field can surface under
+ * a friendlier name. The wire name (still derived from `field.name`) is
+ * unaffected, so the API contract is preserved.
+ */
+export function domainFieldName(field: { name: string; domainName?: string }): string {
+  return toSnakeCase(field.domainName ?? field.name);
+}
+
+/**
  * Python builtins that should not be shadowed by parameter names.
  * When a path/query param name collides, suffix with underscore.
  */
