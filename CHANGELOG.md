@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.4](https://github.com/workos/oagen-emitters/compare/v0.18.3...v0.18.4) (2026-06-19)
+
+
+### Bug Fixes
+
+* comment correction ([f961fd1](https://github.com/workos/oagen-emitters/commit/f961fd138b79c29c379e4964a7ba313d82c30a36))
+* cross-emitter domainName, Node owned-service fixes, Rust unions ([#161](https://github.com/workos/oagen-emitters/issues/161)) ([67e17ec](https://github.com/workos/oagen-emitters/commit/67e17ecb611e76303d49bd7ff724ee694ed121ef))
+* cut patch release for refactor in [#159](https://github.com/workos/oagen-emitters/issues/159) ([4c4250b](https://github.com/workos/oagen-emitters/commit/4c4250bc2f2b82089f19c2b925de347dd40b9472))
+
 ## [0.18.3](https://github.com/workos/oagen-emitters/compare/v0.18.2...v0.18.3) (2026-06-17)
 
 
