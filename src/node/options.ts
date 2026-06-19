@@ -8,10 +8,13 @@ export interface OperationOverride {
   bodyFieldMap?: Record<string, string>;
   /**
    * Rename spec path parameters to the SDK options-object field they should be
-   * exposed as, keyed by the spec path-param name (e.g. `{ resourceId: 'targetId' }`).
-   * Applied to the destructure, the URL template binding, and generated tests so
-   * a published SDK field name can diverge from the spec path-param name without
-   * a global spec rewrite (which would ripple across every language).
+   * exposed as. Keys are the camelCase identifier the param resolves to via
+   * `fieldName(param.name)` — NOT the raw (possibly snake_case) spec key — since
+   * the lookup is keyed on that camelCase form (e.g. `{ resourceId: 'targetId' }`,
+   * even for a `resource_id` spec param). Applied to the destructure, the URL
+   * template binding, and generated tests so a published SDK field name can
+   * diverge from the spec path-param name without a global spec rewrite (which
+   * would ripple across every language).
    */
   pathFieldMap?: Record<string, string>;
   returnType?: string;
