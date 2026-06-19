@@ -57,8 +57,11 @@ function optionsObjectParam(method: BaselineMethod | undefined): { name: string;
   const [param] = method.params;
   if (param.name !== 'options') return undefined;
   if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
-  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
-  return { name: param.name, type: param.type };
+  // Strip the `| undefined` arm of an optional param's surface type so the
+  // bare type name is used (mirrors resources.ts optionsObjectParam).
+  const type = param.type?.replace(/(?:\s*\|\s*(?:undefined|null))+\s*$/, '').trim();
+  if (!type || /^(Record|object|any|unknown)\b/.test(type)) return undefined;
+  return { name: param.name, type };
 }
 
 function configuredOptionsMethod(ctx: EmitterContext, op: Operation): BaselineMethod | undefined {

@@ -238,8 +238,13 @@ function optionsObjectParam(method: BaselineMethod | undefined): OptionsObjectPa
   const [param] = method.params;
   if (param.name !== 'options') return undefined;
   if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
-  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
-  return { name: 'options', type: param.type, optional: param.optional === true, generated: false };
+  // An optional param's surface type is `Options | undefined`; the optionality
+  // is carried by `param.optional`, so strip the nullable arm to recover the
+  // bare type NAME (used for `serialize${type}` + imports). Leaving it in emits
+  // `serializeOptions | undefined` — a syntax error.
+  const type = param.type?.replace(/(?:\s*\|\s*(?:undefined|null))+\s*$/, '').trim();
+  if (!type || /^(Record|object|any|unknown)\b/.test(type)) return undefined;
+  return { name: 'options', type, optional: param.optional === true, generated: false };
 }
 
 function methodOptionsName(method: string, resolvedServiceName: string): string {
@@ -1041,6 +1046,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   }
 
   const importedTypeNames = new Set<string>();
+  // `PaginationOptions` is already imported once above when any method
+  // paginates; a method whose options type IS `PaginationOptions` would
+  // otherwise re-import it here (TS2300 duplicate identifier).
+  if (needsPaginationOptionsImport) importedTypeNames.add('PaginationOptions');
   for (const optionType of optionObjectTypes) {
     if (isValidTypeIdentifier(optionType)) {
       if (importedTypeNames.has(optionType)) continue;
