@@ -388,7 +388,7 @@ export function serializerHasBaselineIncompatibility(
   const irDomainFields = new Set<string>();
   for (const field of model.fields) {
     irWireFields.add(wireFieldName(field.name));
-    irDomainFields.add(fieldName(field.name));
+    irDomainFields.add(fieldName(field.domainName ?? field.name));
   }
 
   for (const [wireField2, fieldDef] of Object.entries(baselineResponse.fields)) {
@@ -463,7 +463,7 @@ export function planDeserializeField(
   skipFormatFields: Set<string>,
   ctx: EmitterContext,
 ): { line: string; skip: boolean } {
-  const domain = fieldName(field.name);
+  const domain = fieldName(field.domainName ?? field.name);
   const wire = wireFieldName(field.name);
   const wireAccess = `response.${wire}`;
   const skip = skipFormatFields.has(field.name);
@@ -543,7 +543,7 @@ export function planSerializeField(
   ctx: EmitterContext,
 ): { line: string; skip: boolean } {
   const wire = wireFieldName(field.name);
-  const domain = fieldName(field.name);
+  const domain = fieldName(field.domainName ?? field.name);
   const domainAccess = `model.${domain}`;
   const skip = skipFormatFields.has(field.name);
 

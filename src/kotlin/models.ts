@@ -1,6 +1,6 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
-import { className, propertyName, ktStringLiteral, humanize } from './naming.js';
+import { className, domainPropertyName, ktStringLiteral, humanize } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
 import {
   isListWrapperModel,
@@ -374,7 +374,10 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
 
   for (const rawField of fields) {
     const field = promoteFieldType(rawField);
-    const kotlinName = propertyName(field.name);
+    // DOMAIN identifier: the data class property name. Honors a `domainName`
+    // override (e.g. connection_type -> type); the `@JsonProperty(...)` wire
+    // key below still derives from `field.name`.
+    const kotlinName = domainPropertyName(field);
     if (seen.has(kotlinName)) continue;
     seen.add(kotlinName);
 

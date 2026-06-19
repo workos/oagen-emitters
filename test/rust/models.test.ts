@@ -119,6 +119,55 @@ describe('rust/models', () => {
     expect(unions.content).toContain('pub enum EventPayloadOneOf {');
   });
 
+  it('relaxes the discriminator field on internally-tagged union variants', () => {
+    // Mirrors the ApiKey `owner` union: serde's `#[serde(tag = "type")]`
+    // consumes `type` as the enum tag and strips it from the variant body, so
+    // a *required* `type` field on the variant struct can never be satisfied
+    // ("missing field `type`"). The emitter must mark it default+skip_serializing.
+    const owner = (name: string, extra: Model['fields'] = []): Model => ({
+      name,
+      fields: [
+        { name: 'type', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        ...extra,
+      ],
+    });
+    const models: Model[] = [
+      {
+        name: 'ApiKey',
+        fields: [
+          {
+            name: 'owner',
+            type: {
+              kind: 'union',
+              variants: [
+                { kind: 'model', name: 'ApiKeyOwner' },
+                { kind: 'model', name: 'UserApiKeyOwner' },
+              ],
+              discriminator: {
+                property: 'type',
+                mapping: { organization: 'ApiKeyOwner', user: 'UserApiKeyOwner' },
+              },
+            },
+            required: true,
+          },
+        ],
+      },
+      owner('ApiKeyOwner'),
+      owner('UserApiKeyOwner', [
+        { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+      ]),
+    ];
+    const files = generateModels(models, ctx, new UnionRegistry());
+    for (const mod of ['api_key_owner', 'user_api_key_owner']) {
+      const f = files.find((x) => x.path === `src/models/${mod}.rs`)!;
+      expect(f.content).toContain('#[serde(rename = "type", default, skip_serializing)]');
+      expect(f.content).toContain('pub type_: String,');
+      // The non-discriminator field is untouched.
+      expect(f.content).toContain('pub id: String,');
+    }
+  });
+
   it('documents Field.default as a "Defaults to" doc comment', () => {
     const models: Model[] = [
       {

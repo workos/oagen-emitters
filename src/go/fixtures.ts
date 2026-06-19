@@ -1,5 +1,5 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
-import { fileName, fieldName } from './naming.js';
+import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 
@@ -131,7 +131,9 @@ export function generateModelFixture(
 
   const seenFieldNames = new Set<string>();
   const deduplicatedFields = model.fields.filter((f) => {
-    const goName = fieldName(f.name);
+    // Dedup by the domain Go field name to mirror the struct in models.ts; the
+    // fixture key itself (wireName below) still derives from field.name.
+    const goName = domainFieldName(f);
     if (seenFieldNames.has(goName)) return false;
     seenFieldNames.add(goName);
     return true;

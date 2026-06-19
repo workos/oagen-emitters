@@ -3,6 +3,7 @@ import { planOperation } from '@workos/oagen';
 import {
   fixtureFileName,
   fieldName as csFieldName,
+  domainFieldName as csDomainFieldName,
   methodName as csMethodName,
   appendAsyncSuffix,
   modelClassName,
@@ -694,7 +695,10 @@ function buildFixtureAssertions(model: import('@workos/oagen').Model, spec: ApiS
     if (field.type.kind !== 'primitive' || field.type.type !== 'string') continue;
     if (field.type.format === 'date-time' || field.type.format === 'date') continue;
     if (field.type.format === 'binary') continue;
-    const csField = csFieldName(field.name);
+    // DOMAIN identifier: the C# property accessed on the deserialized model
+    // (honors a `domainName` override). The fixture lookup below uses the wire
+    // key (`field.name`).
+    const csField = csDomainFieldName(field);
     const val = fixture[field.name];
     if (typeof val === 'string' && val.length > 0) {
       assertions.push(`Assert.Equal(${csStringLiteral(val)}, result.${csField});`);

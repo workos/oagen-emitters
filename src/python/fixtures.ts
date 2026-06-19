@@ -1,6 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 
-import { fileName, fieldName } from './naming.js';
+import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 
@@ -104,10 +104,11 @@ export function generateModelFixture(
 ): Record<string, any> {
   const fixture: Record<string, any> = {};
 
-  // Deduplicate fields by snake_case name (matching model generation in models.ts)
+  // Deduplicate fields by DOMAIN identifier (matching model generation in
+  // models.ts, which honors `domainName`); the wire key below stays `field.name`.
   const seenFieldNames = new Set<string>();
   const deduplicatedFields = model.fields.filter((f) => {
-    const pyName = fieldName(f.name);
+    const pyName = domainFieldName(f);
     if (seenFieldNames.has(pyName)) return false;
     seenFieldNames.add(pyName);
     return true;

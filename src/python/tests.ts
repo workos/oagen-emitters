@@ -13,6 +13,7 @@ import {
   className,
   fileName,
   fieldName,
+  domainFieldName,
   moduleName,
   resolveMethodName,
   buildMountDirMap,
@@ -1026,12 +1027,13 @@ function pickAssertableFields(
       // Skip strings containing characters that are hard to represent as Python literals
       if (val.includes('"') || val.includes("'") || val.includes('{') || val.includes('\\') || val.includes('\n'))
         continue;
-      results.push({ field: fieldName(f.name), value: `"${val}"` });
+      // DOMAIN identifier: asserted as `result.<attr>` (honors `domainName`).
+      results.push({ field: domainFieldName(f), value: `"${val}"` });
     } else if (typeof val === 'boolean') {
       // Use "is True/False" to satisfy ruff E712
-      results.push({ field: fieldName(f.name), value: val ? 'True' : 'False', isBool: true });
+      results.push({ field: domainFieldName(f), value: val ? 'True' : 'False', isBool: true });
     } else if (typeof val === 'number') {
-      results.push({ field: fieldName(f.name), value: String(val) });
+      results.push({ field: domainFieldName(f), value: String(val) });
     }
   }
   return results;
@@ -1114,7 +1116,9 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
       if (plan.hasBody && op.requestBody?.kind === 'model') {
         const rbName = op.requestBody.name;
         const bodyModel = spec.models.find((m) => m.name === rbName);
-        if (bodyModel?.fields.some((f) => fieldName(f.name) === fieldName(param.name))) continue;
+        // Compare the body field's DOMAIN identifier (honors `domainName`)
+        // against the param kwarg name; the param has no domainName override.
+        if (bodyModel?.fields.some((f) => domainFieldName(f) === fieldName(param.name))) continue;
       }
       if (param.required && !pathParamNames.has(fieldName(param.name))) {
         args.push(`${fieldName(param.name)}=${generateTestValue(param.type, param.name)}`);
@@ -1511,10 +1515,11 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     // don't have a to_dict() and their round-trip semantics differ.
     if (model.fields.length === 0) continue;
     if ((model as any).discriminator) continue;
-    // Deduplicate fields that map to the same snake_case name (mirrors models.ts)
+    // Deduplicate fields by DOMAIN identifier (mirrors models.ts, which honors
+    // `domainName`); the wire key stays `field.name`.
     const seenFieldNames = new Set<string>();
     const dedupFields = model.fields.filter((f) => {
-      const pyName = fieldName(f.name);
+      const pyName = domainFieldName(f);
       if (seenFieldNames.has(pyName)) return false;
       seenFieldNames.add(pyName);
       return true;

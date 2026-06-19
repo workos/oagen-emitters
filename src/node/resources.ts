@@ -11,7 +11,7 @@ import type {
   Model,
   ResolvedOperation,
 } from '@workos/oagen';
-import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
+import { toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef, isInlineEnum } from './type-map.js';
 import {
@@ -84,7 +84,7 @@ import {
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { buildNodePathExpression } from './path-expression.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { isNodeOwnedService, nodeOptions } from './options.js';
+import { isNodeOwnedService, operationOverrideFor, planOperationFor } from './options.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -202,16 +202,12 @@ function existingInterfaceBarrelExports(ctx: EmitterContext, serviceDir: string,
   return new RegExp(`export\\s+(?:type\\s+)?(?:\\*|\\{[^}]+\\})\\s+from\\s+['"]\\./${escapedStem}['"]`).test(content);
 }
 
-function operationOverrideFor(ctx: EmitterContext, op: Operation) {
-  return nodeOptions(ctx).operationOverrides?.[`${op.httpMethod.toUpperCase()} ${op.path}`];
-}
-
 function baselineMethodFor(service: Service, method: string, ctx: EmitterContext): BaselineMethod | undefined {
   const serviceClass = resolveResourceClassName(service, ctx);
   return ctx.apiSurface?.classes?.[serviceClass]?.methods?.[method]?.[0] as BaselineMethod | undefined;
 }
 
-function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): Set<string> {
+export function ignoredResourceMethodNames(ctx: EmitterContext, resourcePath: string): Set<string> {
   const root = ctx.outputDir ?? ctx.targetDir;
   if (!root) return new Set();
 
@@ -242,8 +238,13 @@ function optionsObjectParam(method: BaselineMethod | undefined): OptionsObjectPa
   const [param] = method.params;
   if (param.name !== 'options') return undefined;
   if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
-  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
-  return { name: 'options', type: param.type, optional: param.optional === true, generated: false };
+  // An optional param's surface type is `Options | undefined`; the optionality
+  // is carried by `param.optional`, so strip the nullable arm to recover the
+  // bare type NAME (used for `serialize${type}` + imports). Leaving it in emits
+  // `serializeOptions | undefined` — a syntax error.
+  const type = param.type?.replace(/(?:\s*\|\s*(?:undefined|null))+\s*$/, '').trim();
+  if (!type || /^(Record|object|any|unknown)\b/.test(type)) return undefined;
+  return { name: 'options', type, optional: param.optional === true, generated: false };
 }
 
 function methodOptionsName(method: string, resolvedServiceName: string): string {
@@ -568,7 +569,7 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
 
   const plans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
 
@@ -577,7 +578,13 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
     const baselineMethod = baselineMethodFor(service, method, ctx);
     const optionInfo = optionsObjectInfo(service, method, op, plan, ctx, baselineMethod, resolvedOp);
     if (!optionInfo?.generated) continue;
-    if (baselineTypeSourceFile(ctx, optionInfo.type)) continue;
+    // A baseline type of the same name normally means "hand-owned / preserved —
+    // do not regenerate" (guards the alias-feedback loop). But when the op has
+    // path params, the modernized resource folds them INTO the options object
+    // (`const { organizationId, ...payload } = options`), so a body-only
+    // baseline interface (from a legacy `(pathParam, options)` signature) is
+    // definitionally incompatible. Regenerate it to include the path params.
+    if (op.pathParams.length === 0 && baselineTypeSourceFile(ctx, optionInfo.type)) continue;
 
     const optionsName = optionInfo.type;
     const optionFileStem = `${fileName(optionsName)}.interface`;
@@ -645,9 +652,10 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
       headerParts.push(`  ${name}${opt}: ${type};`);
     };
 
+    const optionsPathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
     for (const param of op.pathParams) {
       pushField(
-        fieldName(param.name),
+        optionsPathFieldMap?.[fieldName(param.name)] ?? fieldName(param.name),
         true,
         mapParamType(param.type, specEnumNames),
         param.description,
@@ -779,7 +787,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   let plans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
 
@@ -1038,6 +1046,10 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
   }
 
   const importedTypeNames = new Set<string>();
+  // `PaginationOptions` is already imported once above when any method
+  // paginates; a method whose options type IS `PaginationOptions` would
+  // otherwise re-import it here (TS2300 duplicate identifier).
+  if (needsPaginationOptionsImport) importedTypeNames.add('PaginationOptions');
   for (const optionType of optionObjectTypes) {
     if (isValidTypeIdentifier(optionType)) {
       if (importedTypeNames.has(optionType)) continue;
@@ -1954,7 +1966,20 @@ function renderOptionsObjectMethod(
     return true;
   }
 
-  return false;
+  // Body-less, response-less mutation with path params and/or query folded into
+  // the options object (e.g. POST /feature-flags/{slug}/targets/{targetId} -> 204).
+  // The DELETE equivalent is handled above; this covers POST/PUT/PATCH (and any
+  // other verb) that returns no content. Without this branch such operations
+  // fall through to the positional renderVoidMethod, which is inconsistent with
+  // the options-object surface the rest of an owned service uses.
+  {
+    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): Promise<void> {`);
+    renderOptionsObjectDestructure(lines, pathBindings);
+    const emptyBodyArg = httpMethodNeedsBody(op.httpMethod) ? ', {}' : '';
+    lines.push(`    await this.workos.${op.httpMethod}(${pathStr}${emptyBodyArg}${queryOptionsArg});`);
+    lines.push('  }');
+    return true;
+  }
 }
 
 function renderOptionsObjectDestructure(lines: string[], pathBindings: string[], restName?: string): void {
@@ -1988,7 +2013,8 @@ function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: 
   // Return resolved SDK field names directly — the URL template uses these
   // names too (via the param-name map threaded into buildNodePathExpression),
   // so the destructure no longer needs `optionField: localName` renames.
-  return op.pathParams.map((param) => resolveOptionsObjectField(fieldName(param.name), optionType, ctx));
+  const pathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
+  return op.pathParams.map((param) => resolveOptionsObjectField(fieldName(param.name), optionType, ctx, pathFieldMap));
 }
 
 /**
@@ -2000,15 +2026,27 @@ function buildOptionsObjectPathBindings(op: Operation, optionType: string, ctx: 
  */
 function buildOptionsObjectPathParamMap(op: Operation, optionType: string, ctx: EmitterContext): Map<string, string> {
   const map = new Map<string, string>();
+  const pathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
   for (const param of op.pathParams) {
     const localName = fieldName(param.name);
-    const sdkField = resolveOptionsObjectField(localName, optionType, ctx);
+    const sdkField = resolveOptionsObjectField(localName, optionType, ctx, pathFieldMap);
     if (sdkField !== localName) map.set(param.name, sdkField);
   }
   return map;
 }
 
-function resolveOptionsObjectField(localName: string, optionType: string, ctx: EmitterContext): string {
+function resolveOptionsObjectField(
+  localName: string,
+  optionType: string,
+  ctx: EmitterContext,
+  pathFieldMap?: Record<string, string>,
+): string {
+  // Operation-override rename (Node-scoped) wins unconditionally: an explicit
+  // pathFieldMap is honored even when the (freshly generated) options interface
+  // isn't in the baseline surface yet — generateOptionsInterfaces applies the
+  // same map to the emitted field, so destructure and interface stay in lockstep.
+  const mapped = pathFieldMap?.[localName];
+  if (mapped) return mapped;
   const fields = ctx.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;

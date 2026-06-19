@@ -1,6 +1,6 @@
 import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
-import { className, enumClassName, fieldName } from './naming.js';
+import { className, enumClassName, domainFieldName } from './naming.js';
 import { phpDocComment } from './utils.js';
 
 // Import and re-export shared model detection utilities
@@ -67,7 +67,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Deduplicate fields that map to the same PHP name
     const seenNames = new Set<string>();
     const allFields = [...requiredFields, ...optionalFields].filter((f) => {
-      const phpName = fieldName(f.name);
+      // DOMAIN identifier: the PHP property name (honors a `domainName` override).
+      const phpName = domainFieldName(f);
       if (seenNames.has(phpName)) return false;
       seenNames.add(phpName);
       return true;
@@ -75,7 +76,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     for (let i = 0; i < allFields.length; i++) {
       const field = allFields[i];
-      const phpName = fieldName(field.name);
+      // DOMAIN identifier: the promoted constructor property name.
+      const phpName = domainFieldName(field);
       const phpType = mapTypeRef(field.type);
       const isOptional = !field.required;
       const comma = i < allFields.length - 1 ? ',' : ',';
@@ -108,7 +110,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push(`        return new self(`);
     for (let i = 0; i < allFields.length; i++) {
       const field = allFields[i];
-      const phpName = fieldName(field.name);
+      // DOMAIN identifier: the named constructor argument (PHP property).
+      const phpName = domainFieldName(field);
+      // WIRE key: the JSON key read from `$data[...]` (stays `field.name`).
       const wireName = field.name;
       const comma = i < allFields.length - 1 ? ',' : ',';
       const accessor = generateFromArrayAccessor(field.type, wireName, field.required);
@@ -124,7 +128,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('    {');
     lines.push('        return [');
     for (const field of allFields) {
-      const phpName = fieldName(field.name);
+      // DOMAIN identifier: the `$this->...` property being serialized.
+      const phpName = domainFieldName(field);
+      // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
       const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required);
       lines.push(`            '${wireName}' => ${serialized},`);

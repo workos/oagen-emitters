@@ -10,7 +10,7 @@ import type {
   EmitterContext,
   GeneratedFile,
 } from '@workos/oagen';
-import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
+import { toCamelCase, toPascalCase } from '@workos/oagen';
 import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
@@ -24,7 +24,7 @@ import {
   wireInterfaceName,
 } from './naming.js';
 import { generateFixtures } from './fixtures.js';
-import { resolveResourceClassName, resolveResourceDir } from './resources.js';
+import { resolveResourceClassName, resolveResourceDir, ignoredResourceMethodNames } from './resources.js';
 import {
   assignModelsToServices,
   createServiceDirResolver,
@@ -35,8 +35,8 @@ import {
   modelHasNewFields,
   computeNonEventReachable,
 } from './utils.js';
-import { groupByMount } from '../shared/resolved-ops.js';
-import { isNodeOwnedService, nodeOptions } from './options.js';
+import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import { isNodeOwnedService, nodeOptions, planOperationFor } from './options.js';
 
 type BaselineMethod = {
   params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
@@ -57,8 +57,11 @@ function optionsObjectParam(method: BaselineMethod | undefined): { name: string;
   const [param] = method.params;
   if (param.name !== 'options') return undefined;
   if (param.passingStyle && param.passingStyle !== 'options_object') return undefined;
-  if (!param.type || /^(Record|object|any|unknown)\b/.test(param.type)) return undefined;
-  return { name: param.name, type: param.type };
+  // Strip the `| undefined` arm of an optional param's surface type so the
+  // bare type name is used (mirrors resources.ts optionsObjectParam).
+  const type = param.type?.replace(/(?:\s*\|\s*(?:undefined|null))+\s*$/, '').trim();
+  if (!type || /^(Record|object|any|unknown)\b/.test(type)) return undefined;
+  return { name: param.name, type };
 }
 
 function configuredOptionsMethod(ctx: EmitterContext, op: Operation): BaselineMethod | undefined {
@@ -161,6 +164,17 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     const isOwnedService = isNodeOwnedService(ctx, mountName, resolveResourceClassName(mergedService, ctx));
     const ops = isOwnedService ? operations : uncoveredOperations(mergedService, ctx);
     if (ops.length === 0) continue;
+    // Methods hand-owned inside an `@oagen-ignore` region of the resource
+    // file: resources.ts skips generating those methods, so a generated test
+    // would reference a shape that no longer matches the preserved hand-written
+    // signature (e.g. SSO's `getAuthorizationUrl` returns a string, not
+    // `{ url }`). Their `describe` blocks are skipped below, but the ops are
+    // still passed through so entity-assertion helpers their preserved
+    // hand-written test blocks rely on continue to be emitted.
+    const ignoredMethodNames = ignoredResourceMethodNames(
+      ctx,
+      `src/${resolveResourceDir(mergedService, ctx)}/${fileName(resolveResourceClassName(mergedService, ctx))}.ts`,
+    );
 
     // Skip tests for services without a WorkOS property in the baseline
     const propName = mountAccessors.get(mountName) ?? servicePropertyName(mountName);
@@ -176,7 +190,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     if (resourceClass !== mountName) continue;
 
     const testService = ops.length < operations.length ? { ...mergedService, operations: ops } : mergedService;
-    files.push(generateServiceTest(testService, spec, ctx, modelMap, mountAccessors));
+    files.push(generateServiceTest(testService, spec, ctx, modelMap, mountAccessors, ignoredMethodNames));
   }
 
   // Generate serializer round-trip tests
@@ -194,6 +208,7 @@ function generateServiceTest(
   ctx: EmitterContext,
   modelMap: Map<string, Model>,
   mountAccessors?: Map<string, string>,
+  ignoredMethodNames: Set<string> = new Set(),
 ): GeneratedFile {
   const resolvedName = resolveResourceClassName(service, ctx);
   const serviceDir = resolveResourceDir(service, ctx);
@@ -203,11 +218,31 @@ function generateServiceTest(
   const serviceProp = mountAccessors?.get(service.name) ?? servicePropertyName(resolveServiceName(service, ctx));
   const testPath = `src/${serviceDir}/${fileName(resolvedName)}.spec.ts`;
 
-  const plans = service.operations.map((op) => ({
+  const allPlans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
+  // `plans` drives everything that becomes generated text (fixture imports,
+  // test-util imports, `describe` blocks): exclude hand-owned methods so we
+  // don't emit broken tests against their preserved signatures. `allPlans`
+  // is retained only for entity-helper counting — a hand-owned method's
+  // preserved `@oagen-ignore` test block may still rely on an
+  // `expect<Model>()` helper that the generated tests would otherwise drop.
+  //
+  // URL-builder ops (e.g. `getLogoutUrl`) return a string synchronously and
+  // make no HTTP call, so the fetch-mock test shape (`fetchMethod()` etc.)
+  // throws at runtime. Skip them — like the hand-owned URL helpers.
+  const resolvedLookup = buildResolvedLookup(ctx);
+  const preservedScopes = methodsWithPreservedTestBlocks(ctx, testPath);
+  const plans = allPlans.filter((p) => {
+    // Keep the describe when a preserved hand-written `@oagen-ignore` test
+    // block is nested under it, so it isn't orphaned out of scope.
+    if (preservedScopes.has(p.method)) return true;
+    if (ignoredMethodNames.has(p.method)) return false;
+    if (lookupResolved(p.op, resolvedLookup)?.urlBuilder) return false;
+    return true;
+  });
 
   // Sort plans to match the existing file's method order (same as resources.ts).
   if (ctx.overlayLookup?.methodByOperation) {
@@ -294,8 +329,20 @@ function generateServiceTest(
 
   // Generate per-entity assertion helpers for models used in 2+ tests.
   // This deduplicates the field assertion blocks that would otherwise be
-  // copy-pasted across list/find/create/update test cases.
-  const { lines: helperLines, helpers: entityHelperNames } = generateEntityHelpers(plans, modelMap, ctx);
+  // copy-pasted across list/find/create/update test cases. Count across
+  // `allPlans` (incl. hand-owned methods) so a helper a preserved hand test
+  // block needs survives, but only emit one that an emitted `describe` or a
+  // preserved `@oagen-ignore` block actually references — otherwise it would
+  // be an unused function.
+  const ignoreRegionText = existingTestIgnoreText(ctx, testPath);
+  const { lines: helperLines, helpers: entityHelperNames } = generateEntityHelpers(
+    service,
+    allPlans,
+    plans,
+    ignoreRegionText,
+    modelMap,
+    ctx,
+  );
   for (const line of helperLines) {
     lines.push(line);
   }
@@ -325,6 +372,24 @@ function generateServiceTest(
 
   lines.push('});');
 
+  // Inject imports for real TS enums referenced as member values (e.g.
+  // `ConnectionType.ADFSSAML`). Import each from its own source file so the
+  // value's enum is the same nominal declaration the field is typed with.
+  const body = lines.join('\n');
+  const enumImportLines: string[] = [];
+  for (const [name, info] of Object.entries(ctx.apiSurface?.enums ?? {})) {
+    if (!new RegExp(`\\b${name}\\.[A-Za-z_$]`).test(body)) continue;
+    if (new RegExp(`import\\b[^;]*\\b${name}\\b[^;]*from`).test(body)) continue;
+    const sourceFile = (info as { sourceFile?: string }).sourceFile;
+    const spec = sourceFile ? relativeImport(testPath, sourceFile).replace(/\.ts$/, '') : './interfaces';
+    enumImportLines.push(`import { ${name} } from '${spec}';`);
+  }
+  if (enumImportLines.length > 0) {
+    const anchor = lines.indexOf("import { WorkOS } from '../workos';");
+    const at = anchor >= 0 ? anchor + 1 : 0;
+    lines.splice(at, 0, ...enumImportLines);
+  }
+
   return { path: testPath, content: lines.join('\n'), overwriteExisting: true };
 }
 
@@ -342,16 +407,123 @@ function pathParamTestValue(param: { type: TypeRef; name?: string } | undefined,
   return 'test_id';
 }
 
-function queryParamTestValue(param: Parameter, modelMap?: Map<string, Model>): string {
-  if (param.example !== undefined) {
-    if (Array.isArray(param.example)) {
-      return `[${param.example.map((v: unknown) => (typeof v === 'string' ? `'${v}'` : String(v))).join(', ')}]`;
+/** Render an example value as a valid TS literal expression.
+ *  Objects and nested arrays go through JSON.stringify so map-typed params
+ *  (e.g. providerQueryParams) don't coerce to the literal text `[object Object]`.
+ */
+function renderExampleLiteral(value: unknown): string {
+  if (typeof value === 'string') return `'${value}'`;
+  if (Array.isArray(value)) {
+    return `[${value.map(renderExampleLiteral).join(', ')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+/** Resolve the enum members a query-param test value must satisfy. An enum is
+ *  expressed several ways: an inline `EnumRef` with `values`, an `enum`/`model`
+ *  ref by name, or — when the IR flattened the param to a bare string but the
+ *  hand-written options interface still types the field as an enum — the
+ *  baseline options field type (e.g. `ConnectionType`). */
+/** All valid values for an enum named `name`. The extracted SDK surface is
+ *  consulted first: when an options field is typed with a hand-written enum
+ *  (e.g. `ConnectionType` from `connection-type.enum.ts`), that enum — not a
+ *  same-named IR enum that may carry extra members like `Pending` — is what
+ *  the generated test must type-check against. Falls back to the IR spec. */
+function enumValuesByName(name: string, ctx?: EmitterContext): (string | number)[] | undefined {
+  const members = ctx?.apiSurface?.enums?.[name]?.members;
+  if (members && Object.keys(members).length > 0) return Object.values(members);
+  const specValues = ctx?.spec.enums.find((e) => e.name === name)?.values;
+  if (specValues?.length) return specValues.map((v) => v.value);
+  return undefined;
+}
+
+function resolveParamEnumValues(
+  param: Parameter,
+  optionFieldType: string | undefined,
+  ctx?: EmitterContext,
+): (string | number)[] | undefined {
+  // Prefer the enum the GENERATED options field is actually typed with — the
+  // operation's own IR enum can diverge from it (e.g. the connection_type
+  // query param resolves to `ConnectionsConnectionType` whose value
+  // 'GithubOAuth' is absent from the `ConnectionType` enum the hand-written
+  // options interface uses, where the member is 'GitHubOAuth').
+  if (optionFieldType) {
+    const bare = optionFieldType
+      .replace(/\[\]/g, '')
+      .replace(/\|\s*(undefined|null)/g, '')
+      .trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(bare)) {
+      const values = enumValuesByName(bare, ctx);
+      if (values) return values;
     }
+  }
+  if ((param.type.kind === 'enum' || param.type.kind === 'model') && param.type.name) {
+    const values = enumValuesByName(param.type.name, ctx);
+    if (values) return values;
+  }
+  if (param.type.kind === 'enum' && param.type.values?.length) return param.type.values;
+  return undefined;
+}
+
+/** When an options field is typed with a real (nominal) TS `enum` from the SDK
+ *  surface, a string literal won't type-check — the value must be a member
+ *  reference (`ConnectionType.ADFSSAML`). Returns the enum's name + members so
+ *  the caller can both render the reference and import the right declaration. */
+function resolveRealEnum(
+  param: Parameter,
+  optionFieldType: string | undefined,
+  ctx?: EmitterContext,
+): { name: string; members: Record<string, string | number> } | null {
+  const candidates: string[] = [];
+  if (optionFieldType) {
+    const bare = optionFieldType
+      .replace(/\[\]/g, '')
+      .replace(/\|\s*(undefined|null)/g, '')
+      .trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(bare)) candidates.push(bare);
+  }
+  if ((param.type.kind === 'enum' || param.type.kind === 'model') && param.type.name) candidates.push(param.type.name);
+  for (const name of candidates) {
+    const members = ctx?.apiSurface?.enums?.[name]?.members;
+    if (members && Object.keys(members).length > 0) return { name, members };
+  }
+  return null;
+}
+
+function queryParamTestValue(
+  param: Parameter,
+  modelMap?: Map<string, Model>,
+  ctx?: EmitterContext,
+  optionFieldType?: string,
+): string {
+  // Fields typed with a real TS enum need a member reference, not a string
+  // literal (string enums are nominal). Pick the member whose value matches the
+  // example, else the first member — `enumImportsToInject` later adds the import.
+  const realEnum = resolveRealEnum(param, optionFieldType, ctx);
+  if (realEnum) {
+    const entries = Object.entries(realEnum.members);
+    const match = typeof param.example === 'string' ? entries.find(([, v]) => v === param.example) : undefined;
+    const [memberKey] = match ?? entries[0];
+    return `${realEnum.name}.${memberKey}`;
+  }
+  // Otherwise (string-literal-union enums, inline enum refs) emit a value. A
+  // spec `example` can drift from the enum (e.g. connection_type example
+  // 'GithubOAuth' vs member 'GitHubOAuth'); prefer the example only when valid.
+  const enumValues = resolveParamEnumValues(param, optionFieldType, ctx);
+  if (enumValues?.length) {
+    const valid =
+      typeof param.example === 'string' && enumValues.includes(param.example) ? param.example : enumValues[0];
+    return typeof valid === 'string' ? `'${valid}'` : String(valid);
+  }
+  if (param.example !== undefined) {
     const isDateTime = param.type.kind === 'primitive' && param.type.format === 'date-time';
     if (isDateTime && typeof param.example === 'string') {
       return `new Date('${param.example}')`;
     }
-    return typeof param.example === 'string' ? `'${param.example}'` : String(param.example);
+    return renderExampleLiteral(param.example);
   }
   return fixtureValueForType(param.type, param.name, 'Options', modelMap) ?? "'test'";
 }
@@ -661,9 +833,10 @@ function buildOptionsObjectTestArg(
   if (!optionParam) return null;
 
   const entries: string[] = [];
+  const pathFieldMap = ctx ? operationOverrideFor(ctx, op)?.pathFieldMap : undefined;
   for (const param of op.pathParams) {
     const localName = fieldName(param.name);
-    const optionField = resolveOptionsObjectField(localName, optionParam.type, ctx);
+    const optionField = resolveOptionsObjectField(localName, optionParam.type, ctx, pathFieldMap);
     entries.push(`${optionField}: ${JSON.stringify(pathParamTestValue(param, localName))}`);
   }
 
@@ -677,7 +850,8 @@ function buildOptionsObjectTestArg(
   ).filter((param) => !param.deprecated);
   for (const param of queryParams) {
     const localName = fieldName(param.name);
-    const value = queryParamTestValue(param, modelMap);
+    const optionFieldType = ctx?.apiSurface?.interfaces?.[optionParam.type]?.fields?.[localName]?.type;
+    const value = queryParamTestValue(param, modelMap, ctx, optionFieldType);
     entries.push(`${localName}: ${value}`);
   }
 
@@ -713,7 +887,16 @@ function objectLiteralEntries(literal: string): string[] {
   return body ? body.split(',').map((entry) => entry.trim()) : [];
 }
 
-function resolveOptionsObjectField(localName: string, optionType: string, ctx?: EmitterContext): string {
+function resolveOptionsObjectField(
+  localName: string,
+  optionType: string,
+  ctx?: EmitterContext,
+  pathFieldMap?: Record<string, string>,
+): string {
+  // An explicit pathFieldMap wins unconditionally (mirrors resources.ts) so the
+  // generated test destructures the same renamed field the resource does.
+  const mapped = pathFieldMap?.[localName];
+  if (mapped) return mapped;
   const fields = ctx?.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;
@@ -729,28 +912,109 @@ function resolveOptionsObjectField(localName: string, optionType: string, ctx?: 
  * Generate per-entity assertion helper functions for models used in 2+ tests.
  * Returns { lines, helpers } where helpers is a Set of helper function names.
  */
+/** Describe-scope names (i.e. method names) that have an `@oagen-ignore` block
+ *  nested inside them in the existing test file. Such a `describe` must keep
+ *  being emitted even when the method is hand-owned — otherwise the engine has
+ *  no `describe` to re-nest the preserved block under and orphans it to the top
+ *  of the file (out of `beforeEach` scope), which hangs at runtime. Mirrors the
+ *  engine's `findContainingDescribeScope`. */
+function methodsWithPreservedTestBlocks(ctx: EmitterContext, relPath: string): Set<string> {
+  const scopes = new Set<string>();
+  const root = ctx.outputDir ?? ctx.targetDir;
+  if (!root) return scopes;
+  let content: string;
+  try {
+    content = fs.readFileSync(path.join(root, relPath), 'utf8');
+  } catch {
+    return scopes;
+  }
+  const lines = content.split('\n');
+  const indentOf = (l: string) => l.length - l.trimStart().length;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes('@oagen-ignore-start')) continue;
+    if (/^\S/.test(lines[i])) continue; // top-level block — no enclosing describe
+    const markerIndent = indentOf(lines[i]);
+    for (let j = i - 1; j >= 0; j--) {
+      if (indentOf(lines[j]) >= markerIndent) continue;
+      const m = lines[j].match(/^\s*describe\((['"`])(.+?)\1\s*,/);
+      if (m) {
+        scopes.add(m[2]);
+        break;
+      }
+      if (/^\s*(?:export\s+)?class\s+\w+/.test(lines[j])) break;
+    }
+  }
+  return scopes;
+}
+
+/** Concatenated text of the existing test file's `@oagen-ignore` regions, so
+ *  helper generation can see which `expect<Model>()` helpers preserved
+ *  hand-written test blocks still reference. */
+function existingTestIgnoreText(ctx: EmitterContext, relPath: string): string {
+  const root = ctx.outputDir ?? ctx.targetDir;
+  if (!root) return '';
+  let content: string;
+  try {
+    content = fs.readFileSync(path.join(root, relPath), 'utf8');
+  } catch {
+    return '';
+  }
+  return [...content.matchAll(/@oagen-ignore-start[\s\S]*?@oagen-ignore-end/g)].map((m) => m[0]).join('\n');
+}
+
 function generateEntityHelpers(
-  plans: { op: Operation; plan: any; method: string }[],
+  service: Service,
+  allPlans: { op: Operation; plan: any; method: string }[],
+  renderedPlans: { op: Operation; plan: any; method: string }[],
+  ignoreRegionText: string,
   modelMap: Map<string, Model>,
   ctx: EmitterContext,
 ): { lines: string[]; helpers: Set<string> } {
-  // Count how many tests reference each response model
-  const modelUsage = new Map<string, number>();
-  for (const { op, plan } of plans) {
-    let modelName: string | null = null;
+  const responseModelOf = (entry: { op: Operation; plan: any }): string | null => {
+    const { op, plan } = entry;
     if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
-      modelName = op.pagination.itemType.name;
+      let modelName = op.pagination.itemType.name;
       const rawModel = modelMap.get(modelName);
       if (rawModel) {
         const unwrapped = unwrapListModel(rawModel, modelMap);
         if (unwrapped) modelName = unwrapped.name;
       }
-    } else if (plan.responseModelName) {
-      modelName = plan.responseModelName;
+      return modelName;
     }
-    if (modelName) {
-      modelUsage.set(modelName, (modelUsage.get(modelName) ?? 0) + 1);
+    return plan.responseModelName ?? null;
+  };
+
+  // Count how many tests reference each response model — across ALL plans so a
+  // model that a hand-owned method's preserved test block asserts on still
+  // clears the 2-use threshold.
+  const modelUsage = new Map<string, number>();
+  for (const entry of allPlans) {
+    const modelName = responseModelOf(entry);
+    if (modelName) modelUsage.set(modelName, (modelUsage.get(modelName) ?? 0) + 1);
+  }
+  // Models an emitted `describe` will actually assert on. A helper only earns
+  // its place if an emitted test references it or a preserved `@oagen-ignore`
+  // block names it — otherwise it's an unused function.
+  const renderedModels = new Set<string>();
+  for (const entry of renderedPlans) {
+    const modelName = responseModelOf(entry);
+    if (!modelName) continue;
+    // A paginated test that skips item field assertions (baseline returns a
+    // non-paginatable type, or a different item type than the spec) never
+    // invokes the per-item entity helper — mirror renderPaginatedTest's
+    // `skipFieldAssertions` here so we don't emit a helper no call site
+    // references (TS6133). A model also reached by a non-skipped test is still
+    // added via that entry, so a genuinely-called helper is never dropped.
+    if (entry.plan.isPaginated && entry.op.pagination?.itemType.kind === 'model') {
+      const baselineMethod = optionsMethodFor(service, entry.method, entry.op, entry.plan, ctx);
+      const baselineItemType = autoPaginatableItemType(baselineMethod?.returnType);
+      const generatedItemType = resolveInterfaceName(modelName, ctx);
+      const skipFieldAssertions =
+        Boolean(baselineMethod?.returnType && !baselineItemType) ||
+        Boolean(baselineItemType && generatedItemType && baselineItemType !== generatedItemType);
+      if (skipFieldAssertions) continue;
     }
+    renderedModels.add(modelName);
   }
 
   const lines: string[] = [];
@@ -765,6 +1029,8 @@ function generateEntityHelpers(
     const domainName = resolveInterfaceName(modelName, ctx);
     const helperName = `expect${domainName}`;
     if (helpers.has(helperName)) continue;
+    const referenced = renderedModels.has(modelName) || ignoreRegionText.includes(`${helperName}(`);
+    if (!referenced) continue;
     helpers.add(helperName);
 
     lines.push(`function ${helperName}(result: any) {`);
@@ -797,7 +1063,7 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
 
   for (const field of model.fields) {
     if (!field.required) continue;
-    const domainField = fieldName(field.name);
+    const domainField = fieldName(field.domainName ?? field.name);
     // `string` + `format: 'date-time'` is deserialized to `Date` by the
     // serializer (see `mapPrimitive` in type-map.ts). Asserting against a
     // string literal would fail Object.is — compare via `.toISOString()`.

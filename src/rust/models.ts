@@ -1,5 +1,5 @@
-import type { Model, EmitterContext, GeneratedFile, Field } from '@workos/oagen';
-import { typeName, fieldName, moduleName } from './naming.js';
+import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@workos/oagen';
+import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 
@@ -18,6 +18,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
   const moduleNames: string[] = [];
   const seen = new Set<string>();
 
+  // Map of variant-model name -> discriminator wire-property for every model
+  // that appears as an arm of an internally-tagged (`#[serde(tag = ...)]`)
+  // union. serde consumes that property as the enum tag and strips it from the
+  // variant body during deserialization, so a *required* field of the same
+  // name can never be satisfied ("missing field `type`"). See renderField.
+  const taggedVariantFields = collectTaggedVariantFields(models);
+
   for (const model of models) {
     // Empty-field, non-discriminator models still need to be emitted as an
     // empty struct so request bodies that reference them (e.g. an empty
@@ -29,7 +36,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
 
     const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
     const path = hintPath ?? `src/models/${mod}.rs`;
-    files.push({ path, content: renderModel(model, registry), overwriteExisting: true });
+    files.push({
+      path,
+      content: renderModel(model, registry, taggedVariantFields.get(model.name)),
+      overwriteExisting: true,
+    });
   }
 
   // Always include the unions module in the barrel so downstream stages
@@ -47,7 +58,48 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
   return files;
 }
 
-function renderModel(model: Model, registry: UnionRegistry): string {
+/**
+ * Walk every model field and record which models are arms of an
+ * internally-tagged union, mapped to that union's discriminator property.
+ */
+function collectTaggedVariantFields(models: Model[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (ref: TypeRef): void => {
+    switch (ref.kind) {
+      case 'union':
+        if (ref.discriminator?.property) {
+          for (const variant of ref.variants) {
+            const name = variantModelName(variant);
+            if (name) out.set(name, ref.discriminator.property);
+          }
+        }
+        ref.variants.forEach(visit);
+        break;
+      case 'array':
+        visit(ref.items);
+        break;
+      case 'nullable':
+        visit(ref.inner);
+        break;
+      case 'map':
+        visit(ref.valueType);
+        break;
+      default:
+        break;
+    }
+  };
+  for (const model of models) for (const field of model.fields) visit(field.type);
+  return out;
+}
+
+/** Resolve the underlying model name of a union arm, unwrapping a nullable. */
+function variantModelName(ref: TypeRef): string | null {
+  if (ref.kind === 'model') return ref.name;
+  if (ref.kind === 'nullable') return variantModelName(ref.inner);
+  return null;
+}
+
+function renderModel(model: Model, registry: UnionRegistry, tagField?: string): string {
   const lines: string[] = [];
   lines.push(HEADER_PLACEHOLDER);
   // Match rustfmt's canonical grouping: keyword-rooted paths (`super`,
@@ -65,7 +117,7 @@ function renderModel(model: Model, registry: UnionRegistry): string {
   lines.push('#[derive(Debug, Clone, Serialize, Deserialize)]');
 
   const resolvedNames = resolveFieldNames(model.fields);
-  const fieldLines = model.fields.map((f, i) => renderField(f, resolvedNames[i]!, model.name, registry));
+  const fieldLines = model.fields.map((f, i) => renderField(f, resolvedNames[i]!, model.name, registry, tagField));
 
   // rustfmt collapses zero-field structs to `pub struct Foo {}` on a single
   // line. Match that shape so `cargo fmt --check` passes.
@@ -80,17 +132,20 @@ function renderModel(model: Model, registry: UnionRegistry): string {
 }
 
 /**
- * Resolve unique Rust identifiers for struct fields. Multiple wire names can
- * collide after `fieldName()` snake-cases them (e.g. `integration_type` and
- * `integrationType` both become `integration_type`). Subsequent collisions get
- * a numeric suffix so the struct compiles; serde `rename` preserves the
- * original wire name in every case.
+ * Resolve unique Rust identifiers for struct fields. The domain identifier
+ * honors a `fieldHints` override (`domainName`, e.g. wire `connection_type` →
+ * domain `type`); the wire name (and the `#[serde(rename = ...)]` key emitted
+ * in `renderField`) still derives from `f.name`. Multiple names can collide
+ * after snake-casing (e.g. `integration_type` and `integrationType` both
+ * become `integration_type`). Subsequent collisions get a numeric suffix so
+ * the struct compiles; serde `rename` preserves the original wire name in every
+ * case.
  */
 function resolveFieldNames(fields: Field[]): string[] {
   const used = new Set<string>();
   const out: string[] = [];
   for (const f of fields) {
-    const base = fieldName(f.name);
+    const base = domainFieldName(f);
     let candidate = base;
     let suffix = 2;
     while (used.has(candidate)) {
@@ -103,7 +158,13 @@ function resolveFieldNames(fields: Field[]): string[] {
   return out;
 }
 
-function renderField(field: Field, rustField: string, modelName: string, registry: UnionRegistry): string {
+function renderField(
+  field: Field,
+  rustField: string,
+  modelName: string,
+  registry: UnionRegistry,
+  tagField?: string,
+): string {
   const lines: string[] = [];
   const hasDescription = !!field.description;
   if (hasDescription) {
@@ -128,9 +189,20 @@ function renderField(field: Field, rustField: string, modelName: string, registr
   // the value is a credential or token. Wire format is unchanged.
   baseType = applySecretRedaction(baseType, field.name);
 
-  if (rename) lines.push(`    #[serde(rename = "${rename}")]`);
-  if (baseType.startsWith('Option<')) {
-    lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
+  if (tagField === field.name) {
+    // This field is the discriminator of an internally-tagged union it belongs
+    // to. serde reads it as the enum tag and strips it from the variant body,
+    // so `default` lets the struct deserialize without it; `skip_serializing`
+    // stops the struct from re-emitting it (serde injects the tag itself,
+    // which would otherwise produce a duplicate key). Standalone uses of the
+    // struct still deserialize the value normally because the key is present.
+    const args = rename ? `rename = "${rename}", default, skip_serializing` : 'default, skip_serializing';
+    lines.push(`    #[serde(${args})]`);
+  } else {
+    if (rename) lines.push(`    #[serde(rename = "${rename}")]`);
+    if (baseType.startsWith('Option<')) {
+      lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
+    }
   }
   if (field.deprecated) lines.push('    #[deprecated]');
   lines.push(`    pub ${rustField}: ${baseType},`);

@@ -3,6 +3,7 @@ import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import {
   className,
   fieldName,
+  domainFieldName,
   fileName,
   safeParamName,
   scopedGroupVariantClassName,
@@ -92,7 +93,8 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     // Field accessors
     const seenFieldNames = new Set<string>();
     for (const f of model.fields) {
-      const fname = fieldName(f.name);
+      // DOMAIN accessor name in the .rbi (honors fieldHints override).
+      const fname = domainFieldName(f);
       if (seenFieldNames.has(fname)) continue;
       seenFieldNames.add(fname);
       const sorbetType = f.required ? mapSorbetType(f.type) : wrapNilable(mapSorbetType(f.type));

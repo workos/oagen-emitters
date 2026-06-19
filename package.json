@@ -40,7 +40,7 @@
   "devDependencies": {
     "@commitlint/cli": "^21.0.2",
     "@commitlint/config-conventional": "^21.0.2",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.0.0",
     "husky": "^9.1.7",
     "oxfmt": "^0.55.0",
     "oxlint": "^1.70.0",
@@ -54,6 +54,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.22.6"
+    "@workos/oagen": "^0.22.7"
   }
 }

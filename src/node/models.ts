@@ -527,7 +527,9 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     } else {
       lines.push(`export interface ${domainName}${typeParams} {`);
       for (const field of model.fields) {
-        const domainFieldName = fieldName(field.name);
+        // Domain identifier honors a `fieldHints` override (e.g. connection_type
+        // → type); the wire name below still derives from `field.name`.
+        const domainFieldName = fieldName(field.domainName ?? field.name);
         if (seenDomainFields.has(domainFieldName)) continue;
         seenDomainFields.add(domainFieldName);
         if (field.description || field.deprecated || field.readOnly || field.writeOnly || field.default !== undefined) {
@@ -546,6 +548,19 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
           baselineField && !baselineField.optional && responseBaselineField && responseBaselineField.optional;
         const readonlyPrefix = field.readOnly ? 'readonly ' : '';
         if (
+          genericDefaults.has(model.name) &&
+          baselineField &&
+          typeReferencesUnresolvable(baselineField.type, unresolvableNames)
+        ) {
+          // Baseline typed this field with the model's generic param (e.g.
+          // `customAttributes?: CustomAttributesType`). The emitted interface
+          // renames the param to `GenericType`; remap the field so the param is
+          // actually used — otherwise it trips TS6133 (declared, never read).
+          const opt = baselineField.optional ? '?' : '';
+          lines.push(
+            `  ${readonlyPrefix}${domainFieldName}${opt}: ${substituteGenericParam(baselineField.type, unresolvableNames)};`,
+          );
+        } else if (
           baselineField &&
           !domainResponseOptionalMismatch &&
           !hasDateTimeConversion(field.type) &&
@@ -597,6 +612,15 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
           seenWireFields.add(wireField);
           const baselineField = baselineResponse?.fields?.[wireField];
           if (
+            genericDefaults.has(model.name) &&
+            baselineField &&
+            typeReferencesUnresolvable(baselineField.type, unresolvableNames)
+          ) {
+            // Mirror the domain side: keep the generic param wired on the
+            // response interface so `GenericType` is used, not orphaned.
+            const opt = baselineField.optional ? '?' : '';
+            lines.push(`  ${wireField}${opt}: ${substituteGenericParam(baselineField.type, unresolvableNames)};`);
+          } else if (
             baselineField &&
             baselineTypeResolvable(baselineField.type, importableNames) &&
             baselineFieldCompatible(baselineField, field)
@@ -1299,6 +1323,21 @@ function hasSpecificIRType(ref: TypeRef): boolean {
     default:
       return false;
   }
+}
+
+/** True when a baseline field type references one of the model's generic
+ *  param identifiers (collected as `unresolvableNames` — bare type names that
+ *  resolve to nothing importable, which for a generic model are its params). */
+function typeReferencesUnresolvable(type: string, unresolvable: Set<string>): boolean {
+  if (unresolvable.size === 0) return false;
+  const names = type.match(/\b[A-Z][a-zA-Z0-9]*\b/g);
+  return !!names && names.some((n) => unresolvable.has(n));
+}
+
+/** Rewrite a baseline field type so references to the model's (renamed)
+ *  generic param resolve to the emitted `GenericType` param. */
+function substituteGenericParam(type: string, unresolvable: Set<string>): string {
+  return type.replace(/\b[A-Z][a-zA-Z0-9]*\b/g, (name) => (unresolvable.has(name) ? 'GenericType' : name));
 }
 
 function renderTypeParams(model: Model, genericDefaults?: Map<string, string>): string {

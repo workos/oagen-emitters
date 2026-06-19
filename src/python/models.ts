@@ -1,7 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
-import { className, fieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
+import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 
@@ -232,7 +232,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Deduplicate fields that map to the same snake_case name
     const seenFieldNames = new Set<string>();
     const deduplicatedFields = model.fields.filter((f) => {
-      const pyName = fieldName(f.name);
+      // Dedup on the DOMAIN identifier (the dataclass attribute name), which
+      // honors a `domainName` override; the wire key stays `field.name`.
+      const pyName = domainFieldName(f);
       if (seenFieldNames.has(pyName)) return false;
       seenFieldNames.add(pyName);
       return true;
@@ -343,7 +345,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     };
 
     for (const field of requiredFields) {
-      const pyFieldName = fieldName(field.name);
+      // DOMAIN identifier: the dataclass attribute name (honors `domainName`).
+      const pyFieldName = domainFieldName(field);
       const pyType = rewriteDiscriminatorType(resolveModelFieldType(field.type));
       if (field.description || field.deprecated) {
         const parts: string[] = [];
@@ -357,7 +360,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     for (const field of optionalFields) {
-      const pyFieldName = fieldName(field.name);
+      // DOMAIN identifier: the dataclass attribute name (honors `domainName`).
+      const pyFieldName = domainFieldName(field);
       const innerType =
         field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
       const pyType = `Optional[${rewriteDiscriminatorType(innerType)}]`;
@@ -383,7 +387,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const fieldAssignmentLines: string[] = [];
 
     for (const field of [...requiredFields, ...optionalFields]) {
-      const pyFieldName = fieldName(field.name);
+      // DOMAIN identifier (LHS of `cls(...)`); the wire key below stays `field.name`.
+      const pyFieldName = domainFieldName(field);
       const wireKey = field.name; // Wire keys are snake_case from the spec
       const isRequired = !isOptionalField(model.name, field, ctx);
 
@@ -424,7 +429,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('        result: Dict[str, Any] = {}');
 
     for (const field of [...requiredFields, ...optionalFields]) {
-      const pyFieldName = fieldName(field.name);
+      // DOMAIN identifier (`self.<attr>`); the wire key below stays `field.name`.
+      const pyFieldName = domainFieldName(field);
       const wireKey = field.name;
       const isRequired = !isOptionalField(model.name, field, ctx);
 

@@ -8,7 +8,14 @@ import type {
   ResolvedOperation,
 } from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
-import { className, enumClassName, resolveMethodName, snakeName, servicePropertyName } from './naming.js';
+import {
+  className,
+  enumClassName,
+  resolveMethodName,
+  snakeName,
+  servicePropertyName,
+  domainFieldName,
+} from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
 import {
@@ -503,7 +510,9 @@ function emitFieldHydrationAssertions(
 
   for (const f of assertFields) {
     if (!f) continue;
-    const phpProp = toCamelCase(f.name);
+    // DOMAIN identifier: the deserialized model's PHP property (honors `domainName`).
+    // The fixture key `f.name` is the WIRE key and stays unchanged.
+    const phpProp = domainFieldName(f);
     lines.push(`        $this->assertSame(${fixtureVar}['${f.name}'], ${resultVar}->${phpProp});`);
   }
 }
