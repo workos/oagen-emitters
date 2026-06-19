@@ -1,4 +1,5 @@
-import type { EmitterContext } from '@workos/oagen';
+import type { EmitterContext, Operation, OperationPlan } from '@workos/oagen';
+import { planOperation } from '@workos/oagen';
 
 export interface OperationOverride {
   methodName?: string;
@@ -17,6 +18,15 @@ export interface OperationOverride {
   returnDataProperty?: string;
   returnTypeImports?: string[];
   returnExpression?: string;
+  /**
+   * Override the response model the operation deserializes, by model name.
+   * Replaces the spec-derived response model so the resource (and its test)
+   * reference a different wire type / deserializer — e.g. mapping
+   * Authorization's role responses to the full `OrganizationRole` instead of
+   * the slim `Role`/`RoleResponse` shape shared with SSO and UserManagement.
+   * Node-only; never affects the global spec or other SDKs.
+   */
+  responseModel?: string;
 }
 
 export interface NodeEmitterOptions {
@@ -97,4 +107,27 @@ export function isHandOwnedType(ctx: EmitterContext, name: string | undefined): 
   const configured = nodeOptions(ctx).handOwnedTypes;
   if (!configured || configured.length === 0) return false;
   return configured.includes(name);
+}
+
+/**
+ * Resolve the Node operation override for an operation, keyed by "METHOD /path".
+ */
+export function operationOverrideFor(ctx: EmitterContext, op: Operation): OperationOverride | undefined {
+  return nodeOptions(ctx).operationOverrides?.[`${op.httpMethod.toUpperCase()} ${op.path}`];
+}
+
+/**
+ * `planOperation` plus the Node `responseModel` override. When an operation
+ * override supplies `responseModel`, the resolved response model name is
+ * replaced so the resource and its generated test reference the desired wire
+ * type and deserializer. Use this everywhere the Node emitter would otherwise
+ * call `planOperation(op)` directly so resource and test stay in lockstep.
+ */
+export function planOperationFor(op: Operation, ctx: EmitterContext): OperationPlan {
+  const plan = planOperation(op);
+  const responseModel = operationOverrideFor(ctx, op)?.responseModel;
+  if (responseModel && responseModel !== plan.responseModelName) {
+    return { ...plan, responseModelName: responseModel, isModelResponse: true };
+  }
+  return plan;
 }

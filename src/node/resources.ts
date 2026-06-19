@@ -11,7 +11,7 @@ import type {
   Model,
   ResolvedOperation,
 } from '@workos/oagen';
-import { planOperation, toPascalCase, toCamelCase } from '@workos/oagen';
+import { toPascalCase, toCamelCase } from '@workos/oagen';
 import type { OperationPlan } from '@workos/oagen';
 import { mapTypeRef, isInlineEnum } from './type-map.js';
 import {
@@ -84,7 +84,7 @@ import {
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { buildNodePathExpression } from './path-expression.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { isNodeOwnedService, nodeOptions } from './options.js';
+import { isNodeOwnedService, operationOverrideFor, planOperationFor } from './options.js';
 
 /**
  * Check whether the baseline (hand-written) class has a constructor compatible
@@ -200,10 +200,6 @@ function existingInterfaceBarrelExports(ctx: EmitterContext, serviceDir: string,
   }
   const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`export\\s+(?:type\\s+)?(?:\\*|\\{[^}]+\\})\\s+from\\s+['"]\\./${escapedStem}['"]`).test(content);
-}
-
-function operationOverrideFor(ctx: EmitterContext, op: Operation) {
-  return nodeOptions(ctx).operationOverrides?.[`${op.httpMethod.toUpperCase()} ${op.path}`];
 }
 
 function baselineMethodFor(service: Service, method: string, ctx: EmitterContext): BaselineMethod | undefined {
@@ -568,7 +564,7 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
 
   const plans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
 
@@ -577,7 +573,13 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
     const baselineMethod = baselineMethodFor(service, method, ctx);
     const optionInfo = optionsObjectInfo(service, method, op, plan, ctx, baselineMethod, resolvedOp);
     if (!optionInfo?.generated) continue;
-    if (baselineTypeSourceFile(ctx, optionInfo.type)) continue;
+    // A baseline type of the same name normally means "hand-owned / preserved —
+    // do not regenerate" (guards the alias-feedback loop). But when the op has
+    // path params, the modernized resource folds them INTO the options object
+    // (`const { organizationId, ...payload } = options`), so a body-only
+    // baseline interface (from a legacy `(pathParam, options)` signature) is
+    // definitionally incompatible. Regenerate it to include the path params.
+    if (op.pathParams.length === 0 && baselineTypeSourceFile(ctx, optionInfo.type)) continue;
 
     const optionsName = optionInfo.type;
     const optionFileStem = `${fileName(optionsName)}.interface`;
@@ -645,9 +647,10 @@ function generateOptionsInterfaces(service: Service, ctx: EmitterContext, specEn
       headerParts.push(`  ${name}${opt}: ${type};`);
     };
 
+    const optionsPathFieldMap = operationOverrideFor(ctx, op)?.pathFieldMap;
     for (const param of op.pathParams) {
       pushField(
-        fieldName(param.name),
+        optionsPathFieldMap?.[fieldName(param.name)] ?? fieldName(param.name),
         true,
         mapParamType(param.type, specEnumNames),
         param.description,
@@ -779,7 +782,7 @@ function generateResourceClass(service: Service, ctx: EmitterContext): Generated
 
   let plans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
 
@@ -2029,13 +2032,15 @@ function resolveOptionsObjectField(
   ctx: EmitterContext,
   pathFieldMap?: Record<string, string>,
 ): string {
+  // Operation-override rename (Node-scoped) wins unconditionally: an explicit
+  // pathFieldMap is honored even when the (freshly generated) options interface
+  // isn't in the baseline surface yet — generateOptionsInterfaces applies the
+  // same map to the emitted field, so destructure and interface stay in lockstep.
+  const mapped = pathFieldMap?.[localName];
+  if (mapped) return mapped;
   const fields = ctx.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;
-  // Operation-override rename (Node-scoped): honor an explicit spec-param ->
-  // SDK-field mapping when the target field exists on the options interface.
-  const mapped = pathFieldMap?.[localName];
-  if (mapped && fields[mapped]) return mapped;
   if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
   return localName;
 }

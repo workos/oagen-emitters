@@ -10,7 +10,7 @@ import type {
   EmitterContext,
   GeneratedFile,
 } from '@workos/oagen';
-import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
+import { toCamelCase, toPascalCase } from '@workos/oagen';
 import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
@@ -36,7 +36,7 @@ import {
   computeNonEventReachable,
 } from './utils.js';
 import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
-import { isNodeOwnedService, nodeOptions } from './options.js';
+import { isNodeOwnedService, nodeOptions, planOperationFor } from './options.js';
 
 type BaselineMethod = {
   params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
@@ -217,7 +217,7 @@ function generateServiceTest(
 
   const allPlans = service.operations.map((op) => ({
     op,
-    plan: planOperation(op),
+    plan: planOperationFor(op, ctx),
     method: resolveMethodName(op, service, ctx),
   }));
   // `plans` drives everything that becomes generated text (fixture imports,
@@ -333,6 +333,7 @@ function generateServiceTest(
   // be an unused function.
   const ignoreRegionText = existingTestIgnoreText(ctx, testPath);
   const { lines: helperLines, helpers: entityHelperNames } = generateEntityHelpers(
+    service,
     allPlans,
     plans,
     ignoreRegionText,
@@ -889,11 +890,13 @@ function resolveOptionsObjectField(
   ctx?: EmitterContext,
   pathFieldMap?: Record<string, string>,
 ): string {
+  // An explicit pathFieldMap wins unconditionally (mirrors resources.ts) so the
+  // generated test destructures the same renamed field the resource does.
+  const mapped = pathFieldMap?.[localName];
+  if (mapped) return mapped;
   const fields = ctx?.apiSurface?.interfaces?.[optionType]?.fields;
   if (!fields) return localName;
   if (fields[localName]) return localName;
-  const mapped = pathFieldMap?.[localName];
-  if (mapped && fields[mapped]) return mapped;
   if (localName === 'omId' && fields.organizationMembershipId) return 'organizationMembershipId';
   return localName;
 }
@@ -957,6 +960,7 @@ function existingTestIgnoreText(ctx: EmitterContext, relPath: string): string {
 }
 
 function generateEntityHelpers(
+  service: Service,
   allPlans: { op: Operation; plan: any; method: string }[],
   renderedPlans: { op: Operation; plan: any; method: string }[],
   ignoreRegionText: string,
@@ -991,7 +995,23 @@ function generateEntityHelpers(
   const renderedModels = new Set<string>();
   for (const entry of renderedPlans) {
     const modelName = responseModelOf(entry);
-    if (modelName) renderedModels.add(modelName);
+    if (!modelName) continue;
+    // A paginated test that skips item field assertions (baseline returns a
+    // non-paginatable type, or a different item type than the spec) never
+    // invokes the per-item entity helper — mirror renderPaginatedTest's
+    // `skipFieldAssertions` here so we don't emit a helper no call site
+    // references (TS6133). A model also reached by a non-skipped test is still
+    // added via that entry, so a genuinely-called helper is never dropped.
+    if (entry.plan.isPaginated && entry.op.pagination?.itemType.kind === 'model') {
+      const baselineMethod = optionsMethodFor(service, entry.method, entry.op, entry.plan, ctx);
+      const baselineItemType = autoPaginatableItemType(baselineMethod?.returnType);
+      const generatedItemType = resolveInterfaceName(modelName, ctx);
+      const skipFieldAssertions =
+        Boolean(baselineMethod?.returnType && !baselineItemType) ||
+        Boolean(baselineItemType && generatedItemType && baselineItemType !== generatedItemType);
+      if (skipFieldAssertions) continue;
+    }
+    renderedModels.add(modelName);
   }
 
   const lines: string[] = [];
