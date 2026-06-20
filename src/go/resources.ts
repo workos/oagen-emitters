@@ -21,7 +21,7 @@ import {
 import {
   buildResolvedLookup,
   lookupResolved,
-  groupByMount,
+  scopedMountGroups,
   getOpDefaults,
   getOpInferFromClient,
   buildHiddenParams,
@@ -60,11 +60,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   if (services.length === 0) return [];
 
   const files: GeneratedFile[] = [];
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
 
   // If no resolved operations, fall back to raw services
   const entries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
 

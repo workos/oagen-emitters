@@ -20,7 +20,7 @@ import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
 import {
   getMountTarget,
-  groupByMount,
+  scopedMountGroups,
   buildHiddenParams,
   getOpDefaults,
   getOpInferFromClient,
@@ -39,9 +39,12 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Collect all operations per mount target using resolved per-operation mounts.
   // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
-  const mountGroupsFromResolved = groupByMount(ctx);
+  // In a scoped (`--services`) run this returns only the selected post-mount
+  // services so we emit per-service test files for those alone. ClientTest.php
+  // and fixtures below are built from `spec` and stay full.
+  const mountGroupsFromResolved = scopedMountGroups(ctx);
   const mountGroups = new Map<string, { op: Operation; service: Service; resolvedOp?: ResolvedOperation }[]>();
-  if (mountGroupsFromResolved.size > 0) {
+  if (mountGroupsFromResolved.size > 0 || ctx.scopedServices?.size) {
     for (const [target, group] of mountGroupsFromResolved) {
       mountGroups.set(
         target,

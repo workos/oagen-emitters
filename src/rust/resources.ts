@@ -14,7 +14,7 @@ import { fieldName, domainFieldName, methodName, typeName, moduleName, variantNa
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 import { parsePathTemplate } from '../shared/path-template.js';
-import { groupByMount, buildResolvedLookup } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, isMountInScope } from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 
 /**
@@ -32,7 +32,14 @@ export function generateResources(_services: Service[], ctx: EmitterContext, reg
     if (group.operations.length === 0) continue;
     const basename = moduleName(mountName);
     const struct = mountStructName(mountName);
+    // The barrel (`src/resources/mod.rs`) must list every mount's module so
+    // Rust compiles even in a scoped run — `exports` is collected from the
+    // FULL groupByMount set regardless of scope.
     exports.push({ module: basename, struct });
+    // Only the per-service resource `.rs` FILE write is scoped. In a scoped
+    // run we skip emitting files for out-of-scope mounts, but the barrel above
+    // still references their modules (their existing `.rs` files stay on disk).
+    if (!isMountInScope(mountName, ctx)) continue;
     files.push({
       path: `src/resources/${basename}.rs`,
       content: renderMountGroup(mountName, group.resolvedOps, ctx, registry, lookup),

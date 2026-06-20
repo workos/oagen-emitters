@@ -15,6 +15,7 @@ import {
 import {
   buildResolvedLookup,
   groupByMount,
+  isMountInScope,
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
@@ -137,6 +138,10 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountTarget, group] of groups) {
+    // Scoped run: emit per-service .rbi only for selected mount targets. The
+    // client.rbi aggregate loop below intentionally stays on the FULL `groups`
+    // set so it keeps emitting sigs for every service whose .rb still exists.
+    if (!isMountInScope(mountTarget, ctx)) continue;
     const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
     const cls = className(resolvedTarget);
     const lines: string[] = [];

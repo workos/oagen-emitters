@@ -13,7 +13,7 @@ import {
 } from './naming.js';
 import {
   buildResolvedLookup,
-  groupByMount,
+  scopedMountGroups,
   lookupResolved,
   buildHiddenParams,
   collectBodyFieldTypes,
@@ -34,7 +34,7 @@ import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js'
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
-  const groups = groupByMount(ctx);
+  const groups = scopedMountGroups(ctx);
   const models = spec.models as Model[];
   const modelByName = new Map<string, Model>();
   for (const m of models) modelByName.set(m.name, m);

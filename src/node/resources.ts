@@ -78,6 +78,7 @@ import {
   buildResolvedLookup,
   lookupResolved,
   groupByMount,
+  isMountInScope,
   getOpDefaults,
   getOpInferFromClient,
 } from '../shared/resolved-ops.js';
@@ -718,11 +719,18 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // multiple IR services mount to the same resource class.
   const mountGroups = groupByMount(ctx);
   const mergedServices: Service[] =
-    mountGroups.size > 0 ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations })) : services;
+    mountGroups.size > 0 || ctx.scopedServices?.size
+      ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
+      : services;
 
   const topLevelEnumNames = new Set(ctx.spec.enums.map((e) => e.name));
 
   for (const service of mergedServices) {
+    // Scope gate: in a scoped (`--services`) run, only emit per-service resource
+    // files for the selected post-mount names. `service.name` is the mount-group
+    // key (the POST-MOUNT name that matches `ctx.scopedServices`). Applied as an
+    // additional early continue ahead of the node-owned/coverage skip logic.
+    if (!isMountInScope(service.name, ctx)) continue;
     const isOwnedService = isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx));
     if (!isOwnedService && isServiceCoveredByExisting(service, ctx)) {
       if (!hasMethodsAbsentFromBaseline(service, ctx)) {
@@ -770,6 +778,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   // stable.  Placing them under `interfaces/` lets the per-service barrel
   // pick them up automatically.
   for (const service of mergedServices) {
+    // Scope gate: keep the per-service options interfaces aligned with the
+    // resource files emitted above — only the selected post-mount names.
+    if (!isMountInScope(service.name, ctx)) continue;
     const isOwnedService = isNodeOwnedService(ctx, service.name, resolveResourceClassName(service, ctx));
     if (!isOwnedService && isServiceCoveredByExisting(service, ctx) && !hasMethodsAbsentFromBaseline(service, ctx))
       continue;

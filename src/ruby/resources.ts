@@ -15,7 +15,7 @@ import { mapTypeRefForYard } from './type-map.js';
 import {
   buildResolvedLookup,
   lookupResolved,
-  groupByMount,
+  scopedMountGroups,
   getOpDefaults,
   getOpInferFromClient,
   buildHiddenParams,
@@ -33,7 +33,7 @@ import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantCla
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
-  const groups = groupByMount(ctx);
+  const groups = scopedMountGroups(ctx);
   const lookup = buildResolvedLookup(ctx);
   const modelNames = new Set(ctx.spec.models.map((m) => m.name));
   const enumNames = new Set(ctx.spec.enums.map((e) => e.name));

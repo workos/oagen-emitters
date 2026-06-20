@@ -25,7 +25,7 @@ import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel, isListMetadataModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
 import {
-  groupByMount,
+  scopedMountGroups,
   buildResolvedLookup,
   lookupResolved,
   buildHiddenParams,
@@ -118,9 +118,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
 
   // Generate per-mount-target test files (merges all sub-services into one file)
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
   const testEntries: Array<{ name: string; operations: Operation[]; resolvedOps?: ResolvedOperation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({
           name,
           operations: group.operations,

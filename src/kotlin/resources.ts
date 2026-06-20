@@ -34,7 +34,7 @@ import {
 import {
   buildResolvedLookup,
   lookupResolved,
-  groupByMount,
+  scopedMountGroups,
   buildHiddenParams,
   getOpDefaults,
   getOpInferFromClient,
@@ -97,7 +97,7 @@ function promoteFieldType(f: Field): Field {
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
 
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
   if (mountGroups.size === 0) return [];
 
   const files: GeneratedFile[] = [];
