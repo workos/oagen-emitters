@@ -16,6 +16,7 @@ import {
   buildResolvedLookup,
   groupByMount,
   isMountInScope,
+  isModelInScope,
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
@@ -117,12 +118,17 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('  end');
     lines.push('end');
 
-    files.push({
-      path: `rbi/workos/${fileName(model.name)}.rbi`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-model .rbi only when in scope. The client.rbi
+    // aggregate (section 3) stays on the full set so sigs for out-of-scope
+    // services whose .rb/.rbi still exist keep resolving.
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `rbi/workos/${fileName(model.name)}.rbi`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
   }
 
   // 2. Generate service RBI files

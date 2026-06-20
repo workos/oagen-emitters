@@ -2,6 +2,7 @@ import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 import { className, resolveEnumName } from './naming.js';
 import { phpDocComment } from './utils.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate PHP enum files from IR enums.
@@ -16,6 +17,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const canonical = resolveEnumName(e.name);
     if (emittedCanonical.has(canonical)) continue; // skip aliases
     emittedCanonical.add(canonical);
+
+    // FR-1.4: write the per-enum FILE only when in scope. PHP dedupes
+    // value-identical enums onto a single canonical class, so the canonical
+    // file is needed when EITHER the canonical name OR any alias resolving to
+    // it is reachable from the selected services. PSR-4 (one class per file
+    // under lib/Resource/, no barrel) means an out-of-scope enum is simply
+    // left untouched on disk and stays loadable.
+    const enumInScope = enums.some(
+      (other) => resolveEnumName(other.name) === canonical && isEnumInScope(other.name, ctx),
+    );
 
     const name = className(canonical);
     const _isAllStrings = e.values.every((v) => typeof v.value === 'string');
@@ -56,11 +67,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     lines.push('}');
 
-    files.push({
-      path: `lib/Resource/${name}.php`,
-      content: lines.join('\n'),
-      overwriteExisting: true,
-    });
+    if (enumInScope) {
+      files.push({
+        path: `lib/Resource/${name}.php`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

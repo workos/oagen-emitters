@@ -3,6 +3,7 @@ import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -135,11 +136,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('    }');
     lines.push('}');
 
-    files.push({
-      path: `Enums/${typeName}.cs`,
-      content: lines.join('\n'),
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-enum FILE only when in scope. .NET uses a flat
+    // Enums/ directory with C# namespaces (no barrel/index), so an
+    // out-of-scope enum left untouched on disk stays referenceable.
+    if (isEnumInScope(enumDef.name, ctx)) {
+      files.push({
+        path: `Enums/${typeName}.cs`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

@@ -6,6 +6,7 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
 } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /** Folder under lib/workos/ for models not owned by any service. */
 export const SHARED_MODEL_DIR = 'shared';
@@ -119,12 +120,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push('module WorkOS');
       lines.push(`  ${cls} = ${canonCls}`);
       lines.push('end');
-      files.push({
-        path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
-        content: lines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads
+      // by path, so there is no barrel to keep in sync; out-of-scope alias files
+      // are left untouched on disk.
+      if (isModelInScope(model.name, ctx)) {
+        files.push({
+          path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
@@ -214,12 +220,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('  end');
     lines.push('end');
 
-    files.push({
-      path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads by
+    // path, so there is no barrel to keep in sync; out-of-scope model files are
+    // left untouched on disk.
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

@@ -1,5 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { className, ktStringLiteral } from './naming.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const ENUMS_PACKAGE = 'com.workos.types';
@@ -24,7 +25,7 @@ export const enumCanonicalMap = new Map<string, string>();
  * shortest PascalCase name becomes canonical and the rest emit `typealias`
  * files pointing at the canonical class.
  */
-export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFile[] {
+export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
   // Reset the canonical map on every generation run (guards against re-entry).
@@ -74,6 +75,11 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
 
     const typeName = canonicalEnumTypeName(enumDef);
 
+    // FR-1.4: write per-enum FILES only when in scope. Each enum is its own
+    // `.kt` file (no barrel), so an out-of-scope enum left untouched on disk
+    // stays importable.
+    const enumInScope = isEnumInScope(enumDef.name, ctx);
+
     // Non-canonical enum: emit a typealias instead of a full enum class.
     const sharedSortEmitter = sharedSortEmitters.has(enumDef.name);
     const canonicalName = sharedSortEmitter
@@ -94,11 +100,13 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
         aliasLine,
         '',
       ].join('\n');
-      files.push({
-        path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
-        content: aliasContent,
-        overwriteExisting: true,
-      });
+      if (enumInScope) {
+        files.push({
+          path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
+          content: aliasContent,
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
@@ -175,11 +183,13 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     lines.push('}');
     lines.push('');
 
-    files.push({
-      path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
-      content: lines.join('\n'),
-      overwriteExisting: true,
-    });
+    if (enumInScope) {
+      files.push({
+        path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

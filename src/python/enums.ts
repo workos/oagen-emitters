@@ -2,6 +2,7 @@ import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -38,6 +39,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
     const dirName = resolveDir(service);
+    // FR-1.4: write per-enum FILES only when in scope; the enum barrel is built
+    // separately (collectGeneratedEnumSymbolsByDir over the full set), so an
+    // out-of-scope enum left on disk stays exported and importable.
+    const enumInScope = isEnumInScope(enumDef.name, ctx);
 
     // If this enum is an alias for a canonical enum, generate a type alias file
     const canonicalName = aliasOf.get(enumDef.name);
@@ -73,12 +78,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")');
       }
       lines.push(`__all__ = ["${aliasCls}"]`);
-      files.push({
-        path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
-        content: lines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      if (enumInScope) {
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
 
       // Also generate compat alias files for dedup aliases (they may have compat aliases too)
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
@@ -107,12 +114,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
             `__all__ = ["${aliasName}"]`,
           ].join('\n');
         }
-        files.push({
-          path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: compatContent,
-          integrateTarget: true,
-          overwriteExisting: true,
-        });
+        if (enumInScope) {
+          files.push({
+            path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
+            content: compatContent,
+            integrateTarget: true,
+            overwriteExisting: true,
+          });
+        }
       }
 
       continue;
@@ -241,26 +250,28 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       );
     }
 
-    files.push({
-      path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
-
-    for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+    if (enumInScope) {
       files.push({
-        path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-        content: [
-          'from typing import TypeAlias',
-          `from .${fileName(enumDef.name)} import ${cls}`,
-          '',
-          `${aliasName}: TypeAlias = ${cls}`,
-          `__all__ = ["${aliasName}"]`,
-        ].join('\n'),
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
+        content: lines.join('\n'),
         integrateTarget: true,
         overwriteExisting: true,
       });
+
+      for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
+          content: [
+            'from typing import TypeAlias',
+            `from .${fileName(enumDef.name)} import ${cls}`,
+            '',
+            `${aliasName}: TypeAlias = ${cls}`,
+            `__all__ = ["${aliasName}"]`,
+          ].join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
     }
   }
 

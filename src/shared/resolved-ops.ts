@@ -123,6 +123,25 @@ export function isMountInScope(mountName: string, ctx: EmitterContext): boolean 
 }
 
 /**
+ * True when a MODEL's per-model FILE should be written in the current run (FR-1.4).
+ * A scoped run sets `ctx.scopedModelNames` to the models reachable from the
+ * selected services; out-of-scope models are left untouched on disk. Inactive
+ * scoping ⇒ everything is in scope. NOTE: gate only the per-model FILE write —
+ * the model must still appear in barrels/indexes (built from the full set) so the
+ * untouched on-disk file stays importable.
+ */
+export function isModelInScope(modelName: string, ctx: EmitterContext): boolean {
+  const scope = ctx.scopedModelNames;
+  return !scope || scope.has(modelName);
+}
+
+/** Like {@link isModelInScope} but for an ENUM's per-enum file (`ctx.scopedEnumNames`). */
+export function isEnumInScope(enumName: string, ctx: EmitterContext): boolean {
+  const scope = ctx.scopedEnumNames;
+  return !scope || scope.has(enumName);
+}
+
+/**
  * Get the mount target for an IR service.
  * Checks the first resolved operation that belongs to this service.
  * Falls back to PascalCase of the service name if no resolved ops exist.

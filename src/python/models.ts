@@ -4,6 +4,7 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -169,12 +170,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       dispLines.push(`            return cast("${variantTypeName}", dispatch_cls.from_dict(data))`);
       dispLines.push(`        return ${unknownClassName}.from_dict(data)`);
 
-      files.push({
-        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
-        content: dispLines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      // FR-1.4: write the file only when in scope; the barrel tracking below is
+      // unconditional so out-of-scope models (left on disk) stay exported.
+      if (isModelInScope(model.name, ctx)) {
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+          content: dispLines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
 
       if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
       emittedModelSymbolsByDir.get(dirName)!.push(model.name);
@@ -216,12 +221,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       }
       lines.push('');
       lines.push(`${modelClassName}: TypeAlias = ${canonicalClassName}`);
-      files.push({
-        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
-        content: lines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      if (isModelInScope(model.name, ctx)) {
+        files.push({
+          path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
       if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
       emittedModelSymbolsByDir.get(dirName)!.push(model.name);
       const aliasNatural = originalModelToService.get(model.name);
@@ -457,12 +464,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('        return result');
 
-    files.push({
-      path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
     if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
     emittedModelSymbolsByDir.get(dirName)!.push(model.name);
     const regularNatural = originalModelToService.get(model.name);

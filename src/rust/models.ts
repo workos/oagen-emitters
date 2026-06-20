@@ -2,6 +2,7 @@ import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@work
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 const HEADER_PLACEHOLDER = ''; // engine prepends fileHeader()
 
@@ -32,15 +33,27 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     const mod = moduleName(model.name);
     if (seen.has(mod)) continue;
     seen.add(mod);
+    // The barrel (`src/models/mod.rs`) must declare every model's module so
+    // Rust compiles even in a scoped run — `moduleNames` is collected from the
+    // FULL model set regardless of scope.
     moduleNames.push(mod);
 
+    // renderModel registers inline unions into `registry` as a side effect, and
+    // `_unions.rs` is rendered later (in generateClient) from that registry — so
+    // it MUST run for every model, even out-of-scope ones, or scoped runs drop
+    // unions. Compute content unconditionally; only the per-model `.rs` FILE write
+    // is scoped (FR-1.4). The barrel above still declares every module, and an
+    // out-of-scope model's existing `.rs` file stays untouched on disk.
     const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
     const path = hintPath ?? `src/models/${mod}.rs`;
-    files.push({
-      path,
-      content: renderModel(model, registry, taggedVariantFields.get(model.name)),
-      overwriteExisting: true,
-    });
+    const content = renderModel(model, registry, taggedVariantFields.get(model.name));
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path,
+        content,
+        overwriteExisting: true,
+      });
+    }
   }
 
   // Always include the unions module in the barrel so downstream stages

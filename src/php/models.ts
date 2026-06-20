@@ -10,6 +10,7 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 export { isListMetadataModel, isListWrapperModel };
 
 /**
@@ -140,11 +141,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('}');
 
-    files.push({
-      path: `lib/Resource/${name}.php`,
-      content: lines.join('\n'),
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-model FILE only when in scope. PHP uses PSR-4
+    // (one class per file under lib/Resource/, no barrel/index), so an
+    // out-of-scope model is simply left untouched on disk and stays loadable.
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `lib/Resource/${name}.php`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

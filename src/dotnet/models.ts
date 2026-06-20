@@ -26,6 +26,7 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
 } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -355,11 +356,16 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     lines.push('    }');
     lines.push('}');
 
-    files.push({
-      path: `Entities/${csClassName}.cs`,
-      content: lines.join('\n'),
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-model FILE only when in scope. .NET uses a flat
+    // Entities/ directory with C# namespaces (no barrel/index), so an
+    // out-of-scope model left untouched on disk stays referenceable.
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `Entities/${csClassName}.cs`,
+        content: lines.join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;
