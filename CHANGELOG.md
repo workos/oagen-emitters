@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/workos/oagen-emitters/compare/v0.18.4...v0.19.0) (2026-06-22)
+
+
+### Features
+
+* **emitters:** scope per-service emission for `--services` (all 8 emitters) ([#162](https://github.com/workos/oagen-emitters/issues/162)) ([651591b](https://github.com/workos/oagen-emitters/commit/651591bd0492b3160a12503e0a48a95b1d7ebbd7))
+
 ## [0.18.4](https://github.com/workos/oagen-emitters/compare/v0.18.3...v0.18.4) (2026-06-19)
 
 
