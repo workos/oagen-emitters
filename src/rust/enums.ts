@@ -1,5 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { typeName, moduleName, variantName } from './naming.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate one Rust source file per enum under `src/enums/`, plus a
@@ -17,7 +18,7 @@ import { typeName, moduleName, variantName } from './naming.js';
  *     variant and re-serialize as the canonical wire string.
  *   - `Display`, `FromStr`, and `AsRef<str>` are implemented for ergonomics.
  */
-export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFile[] {
+export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const seen = new Set<string>();
   const moduleNames: string[] = [];
@@ -27,8 +28,15 @@ export function generateEnums(enums: Enum[], _ctx: EmitterContext): GeneratedFil
     const mod = moduleName(e.name);
     if (seen.has(mod)) continue;
     seen.add(mod);
+    // The barrel (`src/enums/mod.rs`) must declare every enum's module so Rust
+    // compiles even in a scoped run — `moduleNames` is collected from the FULL
+    // enum set regardless of scope.
     moduleNames.push(mod);
 
+    // Only the per-enum `.rs` FILE write is scoped (FR-1.4). In a scoped run we
+    // skip emitting files for out-of-scope enums, but the barrel above still
+    // declares their modules (their existing `.rs` files stay untouched on disk).
+    if (!isEnumInScope(e.name, ctx)) continue;
     files.push({
       path: `src/enums/${mod}.rs`,
       content: renderEnum(e),

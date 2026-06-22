@@ -42,9 +42,17 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
  * classes (no sum types), so a discriminated base whose IR fields the
  * parser stripped (post-allOf-aware detection) gets its original fields
  * restored to avoid silently dropping variant data.
+ *
+ * `enums` is forwarded to seed `enrichModelsFromSpec`'s collision set: an
+ * inline oneOf enum whose synthetic name (`Parent_field`) snake-collapses
+ * onto an existing IR enum (e.g. `DataIntegrationAccessTokenResponse_error`
+ * vs `DataIntegrationAccessTokenResponseError`) must NOT spawn a duplicate
+ * synthetic. Otherwise both collapse to the same `lib/Resource/X.php` path
+ * and the later writer wins by array order — which differs between a full
+ * and a scoped (`--services`) run, producing a non-deterministic case order.
  */
-function enrichModelsForPhp(models: Model[]): Model[] {
-  const enriched = enrichModelsFromSpec(models);
+function enrichModelsForPhp(models: Model[], enums: Enum[]): Model[] {
+  const enriched = enrichModelsFromSpec(models, enums);
   const originalByName = new Map(models.map((m) => [m.name, m]));
   return enriched.map((m) => {
     if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
@@ -62,7 +70,7 @@ export const phpEmitter: Emitter = {
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     ensureNamingInitialized(ctx);
-    return ensureTrailingNewlines(generateModels(enrichModelsForPhp(models), ctx));
+    return ensureTrailingNewlines(generateModels(enrichModelsForPhp(models, ctx.spec.enums), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

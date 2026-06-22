@@ -12,7 +12,7 @@ import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, fieldName, resolveMethodName, buildExportedClassNameSet, resolveServiceTarget } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import {
-  groupByMount,
+  scopedMountGroups,
   buildResolvedLookup,
   lookupResolved,
   getOpDefaults,
@@ -44,10 +44,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   const files: GeneratedFile[] = [];
   const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
 
-  // Group operations by mount target
-  const mountGroups = groupByMount(ctx);
+  // Group operations by mount target. In a scoped (`--services`) run this
+  // returns only the selected post-mount services so we emit per-service
+  // resource files for those alone.
+  const mountGroups = scopedMountGroups(ctx);
   const entries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : services.map((s) => ({ name: className(s.name), operations: s.operations }));
 

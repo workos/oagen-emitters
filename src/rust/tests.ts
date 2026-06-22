@@ -11,7 +11,7 @@ import type {
   TypeRef,
 } from '@workos/oagen';
 import { methodName, moduleName, typeName } from './naming.js';
-import { groupByMount } from '../shared/resolved-ops.js';
+import { scopedMountGroups } from '../shared/resolved-ops.js';
 import { exampleFor, generateFixtures } from './fixtures.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isInlineEnvelopeList } from './resources.js';
@@ -43,7 +43,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     overwriteExisting: true,
   });
 
-  const groups = groupByMount(ctx);
+  const groups = scopedMountGroups(ctx);
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
 

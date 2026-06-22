@@ -8,6 +8,7 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const MODELS_PACKAGE = 'com.workos.models';
@@ -123,10 +124,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     const typeName = className(model.name);
+    // FR-1.4: write per-model FILES only when in scope. Each model is its own
+    // `.kt` file (no barrel), so an out-of-scope model left untouched on disk
+    // stays importable. The WorkOSEvent sealed interface below is an aggregate
+    // built from many event models, so it is NOT gated.
+    const modelInScope = isModelInScope(model.name, ctx);
 
     // Parent of a discriminated union: emit a sealed class.
     if (model.fields.length === 0 && discriminatedUnions.has(typeName)) {
-      files.push(emitSealedUnion(typeName, discriminatedUnions.get(typeName)!));
+      if (modelInScope) {
+        files.push(emitSealedUnion(typeName, discriminatedUnions.get(typeName)!));
+      }
       continue;
     }
 
@@ -142,15 +150,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         `typealias ${typeName} = ${canonicalType}`,
         '',
       ].join('\n');
-      files.push({
-        path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${typeName}.kt`,
-        content: aliasContent,
-        overwriteExisting: true,
-      });
+      if (modelInScope) {
+        files.push({
+          path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${typeName}.kt`,
+          content: aliasContent,
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
-    files.push(emitDataClass(model));
+    if (modelInScope) {
+      files.push(emitDataClass(model));
+    }
   }
 
   // Generate the sealed WorkOSEvent interface. Collect all event envelope

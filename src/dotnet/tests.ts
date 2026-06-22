@@ -16,7 +16,7 @@ import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassNa
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
 import {
-  groupByMount,
+  scopedMountGroups,
   buildResolvedLookup,
   lookupResolved,
   buildHiddenParams,
@@ -40,9 +40,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   }
 
   // Generate per-mount-target test files
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
   const testEntries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : spec.services.map((s) => ({
           name: resolveResourceClassName(s, ctx),

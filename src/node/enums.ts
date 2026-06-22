@@ -5,6 +5,7 @@ import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
 import { isNodeOwnedService } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
@@ -120,11 +121,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       lines.push(`  (typeof ${enumDef.name})[keyof typeof ${enumDef.name}];`);
     }
 
-    files.push({
-      path: `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`,
-      content: lines.join('\n'),
-      skipIfExists: !hasNewValues,
-    });
+    if (isEnumInScope(enumDef.name, ctx)) {
+      files.push({
+        path: `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`,
+        content: lines.join('\n'),
+        skipIfExists: !hasNewValues,
+      });
+    }
   }
 
   return files;

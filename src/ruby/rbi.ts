@@ -15,6 +15,8 @@ import {
 import {
   buildResolvedLookup,
   groupByMount,
+  isMountInScope,
+  isModelInScope,
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
@@ -116,12 +118,17 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('  end');
     lines.push('end');
 
-    files.push({
-      path: `rbi/workos/${fileName(model.name)}.rbi`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+    // FR-1.4: write the per-model .rbi only when in scope. The client.rbi
+    // aggregate (section 3) stays on the full set so sigs for out-of-scope
+    // services whose .rb/.rbi still exist keep resolving.
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: `rbi/workos/${fileName(model.name)}.rbi`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
   }
 
   // 2. Generate service RBI files
@@ -137,6 +144,10 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const exportedClasses = buildExportedClassNameSet(ctx);
 
   for (const [mountTarget, group] of groups) {
+    // Scoped run: emit per-service .rbi only for selected mount targets. The
+    // client.rbi aggregate loop below intentionally stays on the FULL `groups`
+    // set so it keeps emitting sigs for every service whose .rb still exists.
+    if (!isMountInScope(mountTarget, ctx)) continue;
     const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
     const cls = className(resolvedTarget);
     const lines: string[] = [];

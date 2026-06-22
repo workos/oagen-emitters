@@ -45,7 +45,7 @@ import {
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
 import { isNodeOwnedService, isHandOwnedType } from './options.js';
 import { unwrapListModel } from './fixtures.js';
-import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, lookupResolved, isModelInScope } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { collectWrapperResponseModels } from './wrappers.js';
 import { resolveResourceClassName } from './resources.js';
@@ -308,11 +308,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const aliasLines = importSymbols
         ? [`import type { ${importSymbols} } from '${canonRelPath}';`, '', ...aliasExports]
         : [...aliasExports];
-      files.push({
-        path: aliasPath,
-        content: aliasLines.join('\n'),
-        overwriteExisting: true,
-      });
+      if (isModelInScope(model.name, ctx)) {
+        files.push({
+          path: aliasPath,
+          content: aliasLines.join('\n'),
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
@@ -745,11 +747,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       }
     }
 
-    files.push({
-      path: filePath,
-      content: pruneUnusedImports(lines).join('\n'),
-      overwriteExisting: true,
-    });
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: filePath,
+        content: pruneUnusedImports(lines).join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;
@@ -943,11 +947,13 @@ export function generateSerializers(
           parts.push(`serialize${canonDomainName} as serialize${domainName}`);
         }
         const reexportContent = `export { ${parts.join(', ')} } from '${rel}';`;
-        files.push({
-          path: serializerPath,
-          content: reexportContent,
-          overwriteExisting: true,
-        });
+        if (isModelInScope(model.name, ctx)) {
+          files.push({
+            path: serializerPath,
+            content: reexportContent,
+            overwriteExisting: true,
+          });
+        }
         continue;
       }
       // The alias is response-reachable, but the canonical model is
@@ -997,11 +1003,13 @@ export function generateSerializers(
       ),
     ];
 
-    files.push({
-      path: serializerPath,
-      content: pruneUnusedImports(lines).join('\n'),
-      overwriteExisting: true,
-    });
+    if (isModelInScope(model.name, ctx)) {
+      files.push({
+        path: serializerPath,
+        content: pruneUnusedImports(lines).join('\n'),
+        overwriteExisting: true,
+      });
+    }
   }
 
   (ctx as any)._skippedSerializeModels = skippedSerializeModels;

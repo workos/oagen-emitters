@@ -30,7 +30,7 @@ import {
   buildResolvedLookup,
   lookupMethodName,
   lookupResolved,
-  groupByMount,
+  scopedMountGroups,
   getOpDefaults,
   getOpInferFromClient,
   buildHiddenParams as buildHiddenParamsShared,
@@ -1056,12 +1056,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   const resolvedLookup = buildResolvedLookup(ctx);
   const files: GeneratedFile[] = [];
   const mountDirMap = buildMountDirMap(ctx);
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
 
   // Build mount group entries. When resolved operations are available, group by
   // mount target. Otherwise fall back to one group per service (for tests).
   const entries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : services.map((s) => ({ name: resolveClassName(s, ctx), operations: s.operations }));
 

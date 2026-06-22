@@ -95,6 +95,53 @@ export function groupByMount(ctx: EmitterContext): Map<string, MountGroup> {
 }
 
 /**
+ * Like {@link groupByMount}, but for a scoped (`--services`) run returns ONLY the
+ * mount groups the run selected (`ctx.scopedServices`, POST-MOUNT names). When
+ * scoping is inactive the full set is returned unchanged.
+ *
+ * Use this for PER-SERVICE resource/test emission. Do NOT use it for
+ * aggregate/barrel files (Rust `mod.rs`, Ruby `client.rbi`, the root client) —
+ * those must continue to list every service, so they keep calling
+ * {@link groupByMount} over the full set; otherwise a scoped run would drop
+ * sibling modules and break the build/type-check.
+ */
+export function scopedMountGroups(ctx: EmitterContext): Map<string, MountGroup> {
+  const groups = groupByMount(ctx);
+  const scope = ctx.scopedServices;
+  if (!scope || scope.size === 0) return groups;
+  return new Map([...groups].filter(([mountName]) => scope.has(mountName)));
+}
+
+/**
+ * True when a POST-MOUNT service name should be emitted in the current run.
+ * Inactive scoping (no `ctx.scopedServices`) ⇒ everything is in scope. Use this
+ * for inline per-service gates (e.g. manifest loops keyed by `getMountTarget`).
+ */
+export function isMountInScope(mountName: string, ctx: EmitterContext): boolean {
+  const scope = ctx.scopedServices;
+  return !scope || scope.size === 0 || scope.has(mountName);
+}
+
+/**
+ * True when a MODEL's per-model FILE should be written in the current run (FR-1.4).
+ * A scoped run sets `ctx.scopedModelNames` to the models reachable from the
+ * selected services; out-of-scope models are left untouched on disk. Inactive
+ * scoping ⇒ everything is in scope. NOTE: gate only the per-model FILE write —
+ * the model must still appear in barrels/indexes (built from the full set) so the
+ * untouched on-disk file stays importable.
+ */
+export function isModelInScope(modelName: string, ctx: EmitterContext): boolean {
+  const scope = ctx.scopedModelNames;
+  return !scope || scope.has(modelName);
+}
+
+/** Like {@link isModelInScope} but for an ENUM's per-enum file (`ctx.scopedEnumNames`). */
+export function isEnumInScope(enumName: string, ctx: EmitterContext): boolean {
+  const scope = ctx.scopedEnumNames;
+  return !scope || scope.has(enumName);
+}
+
+/**
  * Get the mount target for an IR service.
  * Checks the first resolved operation that belongs to this service.
  * Falls back to PascalCase of the service name if no resolved ops exist.

@@ -1,6 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName } from './naming.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate Ruby enum class files.
@@ -9,7 +10,6 @@ import { className, fileName } from './naming.js';
  * and a frozen `ALL` array of all values.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
-  void ctx;
   if (enums.length === 0) return [];
 
   const files: GeneratedFile[] = [];
@@ -17,6 +17,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
   for (const enumDef of enums) {
     const cls = className(enumDef.name);
+    // FR-1.4: write the per-enum file only when in scope. Out-of-scope enum
+    // files are left untouched on disk; Zeitwerk autoloads them by path.
+    const enumInScope = isEnumInScope(enumDef.name, ctx);
 
     // If this enum duplicates another (by value set), emit a Ruby constant
     // alias. Zeitwerk autoloads the canonical when the alias is first
@@ -30,12 +33,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       lines.push(`    ${cls} = ${canonicalCls}`);
       lines.push('  end');
       lines.push('end');
-      files.push({
-        path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
-        content: lines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      if (enumInScope) {
+        files.push({
+          path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
@@ -60,12 +65,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       lines.push('    end');
       lines.push('  end');
       lines.push('end');
-      files.push({
-        path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
-        content: lines.join('\n'),
-        integrateTarget: true,
-        overwriteExisting: true,
-      });
+      if (enumInScope) {
+        files.push({
+          path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
       continue;
     }
 
@@ -108,12 +115,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('  end');
     lines.push('end');
 
-    files.push({
-      path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
-      content: lines.join('\n'),
-      integrateTarget: true,
-      overwriteExisting: true,
-    });
+    if (enumInScope) {
+      files.push({
+        path: `lib/workos/types/${fileName(enumDef.name)}.rb`,
+        content: lines.join('\n'),
+        integrateTarget: true,
+        overwriteExisting: true,
+      });
+    }
   }
 
   return files;

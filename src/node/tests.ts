@@ -35,7 +35,7 @@ import {
   modelHasNewFields,
   computeNonEventReachable,
 } from './utils.js';
-import { groupByMount, buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, lookupResolved, isMountInScope } from '../shared/resolved-ops.js';
 import { isNodeOwnedService, nodeOptions, planOperationFor } from './options.js';
 
 type BaselineMethod = {
@@ -137,7 +137,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   }
 
   const testEntries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
 
@@ -159,6 +159,11 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   }
 
   for (const { name: mountName, operations } of testEntries) {
+    // Scope gate: in a scoped (`--services`) run, only emit per-service test
+    // files for the selected post-mount names. `mountName` is the mount-group
+    // key (the POST-MOUNT name that matches `ctx.scopedServices`). Applied as an
+    // additional early continue ahead of the node-owned/coverage skip logic.
+    if (!isMountInScope(mountName, ctx)) continue;
     if (operations.length === 0) continue;
     const mergedService: Service = { name: mountName, operations };
     const isOwnedService = isNodeOwnedService(ctx, mountName, resolveResourceClassName(mergedService, ctx));

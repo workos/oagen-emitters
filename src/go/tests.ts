@@ -5,7 +5,7 @@ import { resolveResourceClassName, paramsStructName, sortPathParamsByTemplateOrd
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import { scopedMountGroups, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -85,9 +85,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const accessPaths = buildServiceAccessPaths(spec.services, ctx);
 
   // Generate per-mount-target test files
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
   const testEntries: Array<{ name: string; operations: Operation[] }> =
-    mountGroups.size > 0
+    mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({ name, operations: group.operations }))
       : spec.services.map((s) => ({
           name: resolveResourceClassName(s, ctx),

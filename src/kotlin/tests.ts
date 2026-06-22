@@ -22,7 +22,7 @@ import {
 } from './naming.js';
 import { mapTypeRef } from './type-map.js';
 import {
-  groupByMount,
+  scopedMountGroups,
   lookupResolved,
   buildResolvedLookup,
   buildHiddenParams,
@@ -76,7 +76,7 @@ function promoteIso8601TypeRef(type: TypeRef, description: string | undefined): 
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
-  const mountGroups = groupByMount(ctx);
+  const mountGroups = scopedMountGroups(ctx);
   const resolvedLookup = buildResolvedLookup(ctx);
 
   const exportedClasses = buildExportedClassNameSet(ctx);
