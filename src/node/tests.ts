@@ -5,6 +5,7 @@ import type {
   Service,
   Operation,
   Model,
+  Field,
   TypeRef,
   Parameter,
   EmitterContext,
@@ -15,6 +16,7 @@ import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
   wireFieldName,
+  domainFieldName,
   fileName,
   resolveServiceDir,
   servicePropertyName,
@@ -1325,6 +1327,57 @@ function fixtureIsHandOwned(fixturePath: string, ctx: EmitterContext): boolean {
 }
 
 /**
+ * A field whose value can be reconstructed from (or asserted directly against)
+ * the wire fixture without calling a nested `(de)serialize<X>` helper: scalars,
+ * enums, literals, and maps. Arrays and nested models are excluded so the
+ * strong assertions below never trip over a value that would need a nested
+ * helper the test file doesn't import.
+ */
+function isReconstructableFromWire(ref: TypeRef): boolean {
+  if (ref.kind === 'nullable') return isReconstructableFromWire(ref.inner);
+  return ref.kind === 'primitive' || ref.kind === 'enum' || ref.kind === 'literal' || ref.kind === 'map';
+}
+
+/**
+ * Build the camelCase domain value for `field`, read from a wire-fixture
+ * variable, inverting the wire→domain primitive conversions the serializer
+ * applies (`date-time` ⇒ `new Date(...)`, `int64` ⇒ `BigInt(...)`). This is
+ * what lets a serialize-only test feed the serializer the shape it actually
+ * expects instead of the snake_case wire object.
+ */
+function domainValueFromWire(field: Field, fixtureVar: string): string {
+  const access = `${fixtureVar}.${wireFieldName(field.name)}`;
+  let t = field.type;
+  if (t.kind === 'nullable') t = t.inner;
+  if (t.kind === 'primitive' && t.format === 'date-time') {
+    return field.required ? `new Date(${access})` : `${access} != null ? new Date(${access}) : undefined`;
+  }
+  if (t.kind === 'primitive' && t.format === 'int64') {
+    return field.required ? `BigInt(${access})` : `${access} != null ? BigInt(${access}) : undefined`;
+  }
+  return access;
+}
+
+/**
+ * Assertion that a deserialized domain field equals its wire-fixture source,
+ * undoing the wire→domain conversion (`Date` compared via `toISOString()`,
+ * `int64` via `BigInt(...)`). Only meaningful for reconstructable fields.
+ */
+function deserializeFieldAssertion(field: Field): string {
+  const camel = domainFieldName(field);
+  const wire = wireFieldName(field.name);
+  let t = field.type;
+  if (t.kind === 'nullable') t = t.inner;
+  if (t.kind === 'primitive' && t.format === 'date-time') {
+    return `    expect(deserialized.${camel}.toISOString()).toEqual(fixture.${wire});`;
+  }
+  if (t.kind === 'primitive' && t.format === 'int64') {
+    return `    expect(deserialized.${camel}).toEqual(BigInt(fixture.${wire}));`;
+  }
+  return `    expect(deserialized.${camel}).toEqual(fixture.${wire});`;
+}
+
+/**
  * Generate serializer round-trip tests for models that have both serialize and
  * deserialize functions and have nested types requiring non-trivial serialization.
  */
@@ -1443,20 +1496,47 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
       if (deserializeOnlyModels.has(model.name)) {
         // Deserialize-only test for hand-owned fixtures or models without a serializer.
+        // Assert the wire→domain mapping on every reconstructable required field
+        // (snake_case → camelCase, `Date`/`BigInt` conversions) rather than a
+        // bare `toBeDefined()`, which passes even when the mapping is wrong.
+        const assertableFields = model.fields.filter((f) => f.required && isReconstructableFromWire(f.type));
         lines.push(`describe('${domainName}Serializer', () => {`);
         lines.push("  it('deserializes correctly', () => {");
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
         lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
-        lines.push('    expect(deserialized).toBeDefined();');
+        if (assertableFields.length > 0) {
+          for (const field of assertableFields) lines.push(deserializeFieldAssertion(field));
+        } else {
+          lines.push('    expect(deserialized).toBeDefined();');
+        }
         lines.push('  });');
         lines.push('});');
       } else if (serializeOnlyModels.has(model.name)) {
         // Serialize-only test for request-body-only models without a deserializer.
+        // Feeding the snake_case wire fixture straight into the serializer
+        // silently maps mismatched keys (e.g. `organizationId`) to `undefined`
+        // while `toBeDefined()` still passes. Reconstruct the camelCase domain
+        // model from the fixture and assert the serialized wire output matches.
+        const reconstructable = model.fields.length > 0 && model.fields.every((f) => isReconstructableFromWire(f.type));
         lines.push(`describe('${domainName}Serializer', () => {`);
         lines.push("  it('serializes correctly', () => {");
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
-        lines.push(`    const serialized = serialize${domainName}(fixture as any);`);
-        lines.push('    expect(serialized).toBeDefined();');
+        if (reconstructable) {
+          const seen = new Set<string>();
+          lines.push('    const model = {');
+          for (const field of model.fields) {
+            const camel = domainFieldName(field);
+            if (seen.has(camel)) continue;
+            seen.add(camel);
+            lines.push(`      ${camel}: ${domainValueFromWire(field, 'fixture')},`);
+          }
+          lines.push('    };');
+          lines.push(`    const serialized = serialize${domainName}(model as any);`);
+          lines.push('    expect(serialized).toEqual(expect.objectContaining(fixture));');
+        } else {
+          lines.push(`    const serialized = serialize${domainName}(fixture as any);`);
+          lines.push('    expect(serialized).toBeDefined();');
+        }
         lines.push('  });');
         lines.push('});');
       } else {

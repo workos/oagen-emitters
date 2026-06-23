@@ -338,3 +338,105 @@ describe('node test generation ownership', () => {
     }
   });
 });
+
+describe('serializer.spec assertions are meaningful (not toBeDefined smoke tests)', () => {
+  // Request-only model (POST body): has serialize, no deserialize → serialize-only branch.
+  const createThingModel: Model = {
+    name: 'CreateThing',
+    fields: [
+      { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+    ],
+  };
+  // Response model: has deserialize, serialize skipped → deserialize-only branch.
+  const thingModel: Model = {
+    name: 'Thing',
+    fields: [
+      { name: 'object', type: { kind: 'literal', value: 'thing' }, required: true },
+      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+    ],
+  };
+  const thingsService: Service = {
+    name: 'Things',
+    operations: [
+      {
+        name: 'createThing',
+        httpMethod: 'post' as const,
+        path: '/things',
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        requestBody: { kind: 'model' as const, name: 'CreateThing' },
+        response: { kind: 'model' as const, name: 'Thing' },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+  const thingSpec: ApiSpec = { ...spec, models: [createThingModel, thingModel], services: [thingsService] };
+
+  function setup(): { content: string; cleanup: () => void } {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-serializer-spec-'));
+    fs.mkdirSync(path.join(tmpRoot, 'src', 'things', 'fixtures'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'src', 'workos.ts'), '// @oagen-ignore-file\nexport class WorkOS {}\n');
+    // Hand-owned fixtures on disk drive serializer-test generation.
+    fs.writeFileSync(
+      path.join(tmpRoot, 'src', 'things', 'fixtures', 'create-thing.json'),
+      JSON.stringify({ name: 'Acme', organization_id: 'org_123' }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(tmpRoot, 'src', 'things', 'fixtures', 'thing.json'),
+      JSON.stringify(
+        { object: 'thing', id: 'thing_1', organization_id: 'org_123', created_at: '2026-01-15T12:00:00.000Z' },
+        null,
+        2,
+      ),
+    );
+    execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+    execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+
+    const result = nodeEmitter.generateTests!(thingSpec, {
+      ...ctx,
+      spec: thingSpec,
+      outputDir: tmpRoot,
+      emitterOptions: { ownedServices: ['Things'], regenerateOwnedTests: true },
+      // Internal sets normally stashed by the models pass.
+      _responseReachableModels: new Set(['Thing']),
+      _skippedSerializeModels: new Set(['Thing']),
+      _generatedSerializerModels: new Set(['CreateThing', 'Thing']),
+    } as EmitterContext);
+
+    const testFile = result.find((f) => f.path === 'src/things/serializers.spec.ts');
+    expect(testFile).toBeDefined();
+    return { content: testFile!.content, cleanup: () => fs.rmSync(tmpRoot, { recursive: true, force: true }) };
+  }
+
+  it('feeds the serializer a reconstructed camelCase model, not the snake_case wire fixture', () => {
+    const { content, cleanup } = setup();
+    try {
+      // Builds the domain model from the wire fixture (snake → camel)…
+      expect(content).toContain('organizationId: fixture.organization_id');
+      // …and asserts the serialized output matches the wire fixture.
+      expect(content).toContain('expect(serialized).toEqual(expect.objectContaining(fixture));');
+      // The old bug: snake_case wire fixture passed straight in + a vacuous assertion.
+      expect(content).not.toContain('serializeCreateThing(fixture as any)');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('asserts the deserialized field mapping instead of toBeDefined()', () => {
+    const { content, cleanup } = setup();
+    try {
+      expect(content).toContain('expect(deserialized.organizationId).toEqual(fixture.organization_id);');
+      expect(content).toContain('expect(deserialized.createdAt.toISOString()).toEqual(fixture.created_at);');
+      // The Thing deserialize block no longer leans on a bare toBeDefined().
+      const thingBlock = content.slice(content.indexOf("describe('ThingSerializer'"));
+      expect(thingBlock).not.toContain('expect(deserialized).toBeDefined();');
+    } finally {
+      cleanup();
+    }
+  });
+});
