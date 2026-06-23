@@ -19,7 +19,11 @@ import { generateClient } from './client.js';
 import { generateTests as generateTestFiles } from './tests.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
-import { planDiscriminatedModels, generateDiscriminatedFiles } from './discriminated-models.js';
+import {
+  planDiscriminatedModels,
+  generateDiscriminatedFiles,
+  discriminatedFixtureBranches,
+} from './discriminated-models.js';
 import {
   buildLiveSurface,
   emptyLiveSurface,
@@ -33,6 +37,7 @@ import {
   setBaselineDeclaredNames,
   setAdoptedModelNames,
   setDiscriminatedModelNames,
+  setDiscriminatedFixtureBranches,
   setStructurallyRenamedDomainNames,
   resolveInterfaceName,
 } from './naming.js';
@@ -784,6 +789,57 @@ function enrichModelsForNode(models: Model[]): Model[] {
   return flattenDiscriminatedUnionFields(restored);
 }
 
+/**
+ * Add each discriminated-union serializer's `export *` line to the matching
+ * `src/<dir>/serializers/index.ts` barrel. The barrel is built inside
+ * `generateModelsAndSerializers` before `generateDiscriminatedFiles` runs, and
+ * its on-disk rescan deliberately skips auto-generated files in owned dirs, so
+ * the union serializer (e.g. `deserializeDataIntegrationAccessTokenResponse`)
+ * would otherwise never be re-exported from the barrel. Mutates `standardFiles`.
+ */
+function mergeDiscriminatedSerializersIntoBarrels(standardFiles: GeneratedFile[], discFiles: GeneratedFile[]): void {
+  const serializerRe = /^src\/([^/]+)\/serializers\/(.+)\.serializer\.ts$/;
+  const stemsByDir = new Map<string, Set<string>>();
+  for (const f of discFiles) {
+    const m = f.path.match(serializerRe);
+    if (!m) continue;
+    const [, dir, stem] = m;
+    (stemsByDir.get(dir) ?? stemsByDir.set(dir, new Set()).get(dir)!).add(stem);
+  }
+  if (stemsByDir.size === 0) return;
+
+  const barrelByDir = new Map<string, GeneratedFile>();
+  for (const f of standardFiles) {
+    const m = f.path.match(/^src\/([^/]+)\/serializers\/index\.ts$/);
+    if (m) barrelByDir.set(m[1], f);
+  }
+
+  const stemRe = /^export \* from '\.\/(.+)\.serializer';$/;
+  for (const [dir, discStems] of stemsByDir) {
+    const existing = barrelByDir.get(dir);
+    // Merge by stem and sort by stem, matching the barrel builder in
+    // `generateSerializers` (models.ts), so adding a discriminated serializer
+    // doesn't reorder the rest and regeneration stays idempotent.
+    const stems = new Set<string>(discStems);
+    if (existing) {
+      for (const line of existing.content.split('\n')) {
+        const m = line.match(stemRe);
+        if (m) stems.add(m[1]);
+      }
+    }
+    const content =
+      [...stems]
+        .sort()
+        .map((stem) => `export * from './${stem}.serializer';`)
+        .join('\n') + '\n';
+    if (existing) {
+      existing.content = content;
+    } else {
+      standardFiles.push({ path: `src/${dir}/serializers/index.ts`, content, overwriteExisting: true });
+    }
+  }
+}
+
 export const nodeEmitter: Emitter = {
   language: 'node',
 
@@ -800,8 +856,16 @@ export const nodeEmitter: Emitter = {
     const discriminatedNames = new Set(discPlans.keys());
     (nodeCtx as { _discriminatedModelNames?: Set<string> })._discriminatedModelNames = discriminatedNames;
     setDiscriminatedModelNames(discriminatedNames);
+    // The fixture pass (a separate hook) needs each union's first-branch shape
+    // to emit one valid branch instead of merging variants; share it via the
+    // same module-global channel as the discriminated name set.
+    setDiscriminatedFixtureBranches(discriminatedFixtureBranches(discPlans));
     const standardFiles = generateModelsAndSerializers(enriched, nodeCtx);
     const discFiles = generateDiscriminatedFiles(discPlans, nodeCtx);
+    // `generateModelsAndSerializers` builds the per-directory `serializers`
+    // barrel from the files IT produced, so the separately-generated
+    // discriminated-union serializers are missing from it. Splice them in.
+    mergeDiscriminatedSerializersIntoBarrels(standardFiles, discFiles);
     return applyLiveSurface([...standardFiles, ...discFiles], nodeCtx, surface);
   },
 

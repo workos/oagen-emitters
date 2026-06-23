@@ -114,6 +114,30 @@ export function setDiscriminatedModelNames(names: Set<string>): void {
 }
 
 /**
+ * Per-discriminated-model info the fixture generator needs to emit a single,
+ * VALID branch instead of merging every variant's fields into one impossible
+ * object. A top-level `oneOf` response (e.g. the token response
+ * `{ active: true; access_token } | { active: false; error }`) reaches the
+ * fixture pass as a flattened all-optional model; without this the fixture
+ * would carry both `access_token` and `error` at once. Keyed by IR model name.
+ */
+export interface DiscriminatedFixtureBranch {
+  /** Discriminator property on the wire (snake_case). */
+  discriminatorWire: string;
+  /** The first variant's discriminator value, correctly typed. */
+  discriminatorValue: string | number | boolean;
+  /** Wire field names belonging to the first branch (base + discriminator + variant). */
+  keepWire: Set<string>;
+}
+let discriminatedFixtureBranches: Map<string, DiscriminatedFixtureBranch> = new Map();
+export function setDiscriminatedFixtureBranches(branches: Map<string, DiscriminatedFixtureBranch>): void {
+  discriminatedFixtureBranches = branches;
+}
+export function getDiscriminatedFixtureBranches(): Map<string, DiscriminatedFixtureBranch> {
+  return discriminatedFixtureBranches;
+}
+
+/**
  * Domain names that `resolveInterfaceName` reached via a structural rename
  * — the resolved name differs from the IR model's own name. `wireInterfaceName`
  * consults this set to decide whether to fire the "single-form wire" case:

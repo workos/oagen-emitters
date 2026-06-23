@@ -1,7 +1,7 @@
 import type { EmitterContext, GeneratedFile, Model } from '@workos/oagen';
 import { toPascalCase, toCamelCase } from '@workos/oagen';
 import { loadRawSpec } from '../shared/model-utils.js';
-import { fileName, wireInterfaceName } from './naming.js';
+import { fileName, wireInterfaceName, type DiscriminatedFixtureBranch } from './naming.js';
 import { createServiceDirResolver } from './utils.js';
 
 /**
@@ -584,6 +584,40 @@ export function generateDiscriminatedFiles(
     files.push(buildSerializerFile(plan, ctx));
   }
   return files;
+}
+
+/**
+ * Map each discriminated model to the wire-field set + discriminator value of
+ * its FIRST variant, so the fixture generator can emit one valid branch rather
+ * than merging every variant's fields. `FieldSpec.name` and
+ * `discriminatorProperty` are raw OpenAPI keys (wire/snake_case), matching the
+ * `wireFieldName(field.name)` the fixture pass compares against.
+ *
+ * Scoped to pure `oneOf` inline unions (`inlineUnion`), where branches carry
+ * MUTUALLY EXCLUSIVE fields (e.g. `{ active: true; access_token } |
+ * { active: false; error }`) so a merged fixture is genuinely impossible. The
+ * `allOf [base, oneOf]` shapes share a common base and their merged fixture is
+ * already a valid superset of one variant; narrowing them would wrongly drop
+ * that variant's own fields, so leave those untouched.
+ */
+export function discriminatedFixtureBranches(
+  plans: Map<string, DiscriminatedPlan>,
+): Map<string, DiscriminatedFixtureBranch> {
+  const out = new Map<string, DiscriminatedFixtureBranch>();
+  for (const [name, plan] of plans) {
+    const { shape } = plan;
+    if (!shape.inlineUnion) continue;
+    if (shape.variants.length === 0) continue;
+    const first = shape.variants[0];
+    const keepWire = new Set<string>([shape.discriminatorProperty]);
+    for (const f of shape.baseFields) keepWire.add(f.name);
+    for (const f of first.fields) keepWire.add(f.name);
+    const discriminatorValue = first.discriminatorIsBoolean
+      ? first.discriminatorValue === 'true'
+      : first.discriminatorValue;
+    out.set(name, { discriminatorWire: shape.discriminatorProperty, discriminatorValue, keepWire });
+  }
+  return out;
 }
 
 function buildInterfaceFile(plan: DiscriminatedPlan, _ctx: EmitterContext): GeneratedFile {

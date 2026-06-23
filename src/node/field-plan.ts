@@ -648,7 +648,15 @@ function planSerializeGuard(
       responseBaselineField2 &&
       responseBaselineField2.optional;
     const fieldEffectivelyOptional = !field.required || !!isNewSerField || !!domainResponseMismatch;
-    if (fieldEffectivelyOptional) {
+    // Only coalesce when the wire field is REQUIRED — it must carry a value, so
+    // a nullish domain value has to become `null` (or `undefined` if the wire
+    // rejects null). When the wire field is itself optional, a passthrough is
+    // correct and compat-faithful: `undefined` omits the field (matching the
+    // hand-written serializers) and an explicit `null` is preserved. Inventing
+    // `?? null` here would send `organization_id: null` for an absent optional,
+    // non-nullable-per-spec body field — a wire behavior change.
+    const wireFieldIsRequired2 = responseBaselineField2 ? !responseBaselineField2.optional : field.required;
+    if (fieldEffectivelyOptional && wireFieldIsRequired2) {
       // The wire side may not accept `null` (e.g. `metadata?: Record<...>`).
       // Fall back to `undefined` in that case so the assignment matches the
       // baseline wire field's actual type.

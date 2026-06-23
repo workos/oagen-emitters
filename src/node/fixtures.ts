@@ -1,5 +1,5 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
-import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
+import { wireFieldName, fileName, resolveServiceDir, getDiscriminatedFixtureBranches } from './naming.js';
 import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import {
   createServiceDirResolver,
@@ -156,13 +156,26 @@ export function generateModelFixture(
 ): Record<string, any> {
   const fixture: Record<string, any> = {};
 
+  // A top-level discriminated union (e.g. the token response) reaches the
+  // fixture pass as a flattened all-optional model. Emitting every field would
+  // produce an impossible instance carrying mutually-exclusive branch fields
+  // (`access_token` AND `error`). When the model is a known union, keep only
+  // the first branch's wire fields and pin the discriminator to its value.
+  const branch = getDiscriminatedFixtureBranches().get(model.name);
+
   for (const field of model.fields) {
     const wireName = wireFieldName(field.name);
+    if (branch && !branch.keepWire.has(wireName)) continue;
     if (field.example !== undefined) {
       fixture[wireName] = field.example;
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
+  }
+
+  if (branch) {
+    fixture[branch.discriminatorWire] = branch.discriminatorValue;
+    return fixture;
   }
 
   if (model.discriminator) {
