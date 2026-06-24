@@ -1474,13 +1474,21 @@ function domainValueFromWire(field: Field, fixtureVar: string): string {
 function deserializeFieldAssertion(field: Field): string {
   const camel = domainFieldName(field);
   const wire = wireFieldName(field.name);
+  // A nullable/optional field can deserialize to null/undefined when the wire
+  // value is null, so the conversion (`.toISOString()`, `BigInt(...)`) must be
+  // guarded — otherwise the generated assertion throws on a null fixture value.
+  const mayBeAbsent = field.type.kind === 'nullable' || !field.required;
   let t = field.type;
   if (t.kind === 'nullable') t = t.inner;
   if (t.kind === 'primitive' && t.format === 'date-time') {
-    return `    expect(deserialized.${camel}.toISOString()).toEqual(fixture.${wire});`;
+    return mayBeAbsent
+      ? `    expect(deserialized.${camel}?.toISOString() ?? null).toEqual(fixture.${wire} ?? null);`
+      : `    expect(deserialized.${camel}.toISOString()).toEqual(fixture.${wire});`;
   }
   if (t.kind === 'primitive' && t.format === 'int64') {
-    return `    expect(deserialized.${camel}).toEqual(BigInt(fixture.${wire}));`;
+    return mayBeAbsent
+      ? `    expect(deserialized.${camel} ?? null).toEqual(fixture.${wire} != null ? BigInt(fixture.${wire}) : null);`
+      : `    expect(deserialized.${camel}).toEqual(BigInt(fixture.${wire}));`;
   }
   return `    expect(deserialized.${camel}).toEqual(fixture.${wire});`;
 }

@@ -167,7 +167,7 @@ export function generateModelFixture(
     const wireName = wireFieldName(field.name);
     if (branch && !branch.keepWire.has(wireName)) continue;
     if (field.example !== undefined) {
-      fixture[wireName] = field.example;
+      fixture[wireName] = normalizeExample(field.example, field.type);
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
@@ -188,7 +188,7 @@ export function generateModelFixture(
         if (!(wireName in fixture)) {
           fixture[wireName] =
             field.example !== undefined
-              ? field.example
+              ? normalizeExample(field.example, field.type)
               : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
         }
       }
@@ -217,7 +217,7 @@ export function buildBranchFixture(
     if (!branch.keepWire.has(wireName)) continue;
     fixture[wireName] =
       field.example !== undefined
-        ? field.example
+        ? normalizeExample(field.example, field.type)
         : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
   }
   fixture[branch.discriminatorWire] = branch.discriminatorValue;
@@ -267,6 +267,27 @@ function generateFieldValue(
         key: generateFieldValue(ref.valueType, 'value', modelName, modelMap, enumMap),
       };
   }
+}
+
+/** True when a type is (or nullable-wraps) a `format: date-time` string. */
+function isDateTimeType(ref: TypeRef): boolean {
+  if (ref.kind === 'nullable') return isDateTimeType(ref.inner);
+  return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
+}
+
+/** Normalize a field's spec `example` before placing it in a fixture.
+ *  `format: date-time` examples in specs are frequently non-canonical (e.g.
+ *  `2024-06-15T10:30:00Z`), but the generated serializer round-trips date-time
+ *  fields through `Date`, so a generated test asserting
+ *  `deserialized.x.toISOString()` against the raw wire value only matches when
+ *  the fixture is canonical ISO. Coerce date-time string examples accordingly;
+ *  leave everything else untouched. */
+function normalizeExample(example: unknown, type: TypeRef): unknown {
+  if (typeof example === 'string' && isDateTimeType(type)) {
+    const ms = Date.parse(example);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
+  return example;
 }
 
 function generatePrimitiveValue(type: string, format: string | undefined, name: string, modelName: string): any {

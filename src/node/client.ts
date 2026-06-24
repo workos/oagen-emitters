@@ -488,17 +488,36 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
           const exportLine = `export * from './${stem}';`;
           if (exportSet.has(exportLine)) continue;
           const content = fs.readFileSync(path.join(interfacesDir, entry), 'utf-8');
-          const exportedNames: string[] = [];
-          for (const m of content.matchAll(/export\s+(?:interface|type|enum|class|const|function)\s+(\w+)/g)) {
-            exportedNames.push(m[1]);
+          // Capture each export with its kind so a partial collision can be
+          // re-exported by name (types via `export type`, values via `export`).
+          const exported: Array<{ name: string; isType: boolean }> = [];
+          for (const m of content.matchAll(/export\s+(interface|type|enum|class|const|function)\s+(\w+)/g)) {
+            exported.push({ name: m[2], isType: m[1] === 'interface' || m[1] === 'type' });
           }
-          const hasCollision = exportedNames.some((name) => globalExistingSymbols.has(name));
-          if (hasCollision) continue;
-          for (const name of exportedNames) {
-            symbols.add(name);
-            globalExistingSymbols.add(name);
+          const fresh = exported.filter((e) => !globalExistingSymbols.has(e.name));
+          // Fully redundant — every symbol is already exported elsewhere.
+          if (fresh.length === 0) continue;
+          for (const e of fresh) {
+            symbols.add(e.name);
+            globalExistingSymbols.add(e.name);
           }
-          exportSet.add(exportLine);
+          if (fresh.length === exported.length) {
+            // No collision: re-export the whole file.
+            exportSet.add(exportLine);
+          } else {
+            // Partial collision (e.g. a regenerated options interface duplicates
+            // one symbol of a legacy combined file): re-export only the
+            // still-unique symbols by name so backward-compatible public types
+            // aren't dropped along with the colliding one.
+            const typeNames = fresh.filter((e) => e.isType).map((e) => e.name);
+            const valueNames = fresh.filter((e) => !e.isType).map((e) => e.name);
+            if (typeNames.length > 0) {
+              exportSet.add(`export type { ${typeNames.join(', ')} } from './${stem}';`);
+            }
+            if (valueNames.length > 0) {
+              exportSet.add(`export { ${valueNames.join(', ')} } from './${stem}';`);
+            }
+          }
         }
       } catch {
         // Directory doesn't exist in target
