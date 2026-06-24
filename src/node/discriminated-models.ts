@@ -1,7 +1,12 @@
 import type { EmitterContext, GeneratedFile, Model } from '@workos/oagen';
 import { toPascalCase, toCamelCase } from '@workos/oagen';
 import { loadRawSpec } from '../shared/model-utils.js';
-import { fileName, wireInterfaceName, type DiscriminatedFixtureBranch } from './naming.js';
+import {
+  fileName,
+  wireInterfaceName,
+  type DiscriminatedFixtureBranch,
+  type DiscriminatedTestBranch,
+} from './naming.js';
 import { createServiceDirResolver } from './utils.js';
 
 /**
@@ -616,6 +621,41 @@ export function discriminatedFixtureBranches(
       ? first.discriminatorValue === 'true'
       : first.discriminatorValue;
     out.set(name, { discriminatorWire: shape.discriminatorProperty, discriminatorValue, keepWire });
+  }
+  return out;
+}
+
+/**
+ * Like {@link discriminatedFixtureBranches}, but returns EVERY branch (not just
+ * the first) so the test generator can exercise each arm of a union response.
+ * Same `inlineUnion`-only scoping — the `allOf [base, oneOf]` shapes merge to a
+ * valid superset and don't need per-branch coverage. Skips unions with a single
+ * variant, since the generated happy-path test already covers that arm.
+ */
+export function discriminatedTestBranches(
+  plans: Map<string, DiscriminatedPlan>,
+): Map<string, DiscriminatedTestBranch[]> {
+  const out = new Map<string, DiscriminatedTestBranch[]>();
+  for (const [name, plan] of plans) {
+    const { shape } = plan;
+    if (!shape.inlineUnion) continue;
+    if (shape.variants.length < 2) continue;
+    const branches: DiscriminatedTestBranch[] = [];
+    for (const variant of shape.variants) {
+      const keepWire = new Set<string>([shape.discriminatorProperty]);
+      for (const f of shape.baseFields) keepWire.add(f.name);
+      for (const f of variant.fields) keepWire.add(f.name);
+      const discriminatorValue = variant.discriminatorIsBoolean
+        ? variant.discriminatorValue === 'true'
+        : variant.discriminatorValue;
+      branches.push({
+        discriminatorWire: shape.discriminatorProperty,
+        discriminatorDomain: shape.discriminatorPropertyDomain,
+        discriminatorValue,
+        keepWire,
+      });
+    }
+    out.set(name, branches);
   }
   return out;
 }

@@ -8,6 +8,7 @@ import type {
   Field,
   TypeRef,
   Parameter,
+  Enum,
   EmitterContext,
   GeneratedFile,
 } from '@workos/oagen';
@@ -24,8 +25,9 @@ import {
   resolveInterfaceName,
   resolveServiceName,
   wireInterfaceName,
+  getDiscriminatedTestBranches,
 } from './naming.js';
-import { generateFixtures } from './fixtures.js';
+import { generateFixtures, buildBranchFixture } from './fixtures.js';
 import { resolveResourceClassName, resolveResourceDir, ignoredResourceMethodNames } from './resources.js';
 import {
   assignModelsToServices,
@@ -373,6 +375,9 @@ function generateServiceTest(
     } else {
       renderVoidTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     }
+
+    renderUnionBranchTests(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
+    renderErrorPathTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
 
     lines.push('  });');
   }
@@ -827,6 +832,109 @@ function renderVoidTest(
     lines.push(`      expect(fetchBody()).toEqual(expect.objectContaining(${payload.snakeCaseObj}));`);
   }
   lines.push('    });');
+}
+
+/** Reconstruct the argument expression used to invoke a method in tests.
+ *  Mirrors the per-kind arg logic in the happy-path renderers (paginated /
+ *  delete / body / get / void) so the error-path test calls the method
+ *  identically. The five renderers all reduce to the same precedence:
+ *  an options object wins; otherwise a body-bearing op passes
+ *  `[pathArgs, ]body` and everything else passes just the path args. */
+function buildCallArgs(
+  op: Operation,
+  plan: any,
+  modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
+): string {
+  const optionsArg = buildOptionsObjectTestArg(op, plan, baselineMethod, modelMap, ctx);
+  if (optionsArg) return optionsArg;
+
+  const pathArgs = buildTestPathArgs(op);
+  if (plan.hasBody) {
+    const payload = buildTestPayload(op, modelMap);
+    const bodyArg = payload ? payload.camelCaseObj : fallbackBodyArg(op, modelMap);
+    return pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg;
+  }
+  return pathArgs;
+}
+
+/** Emit a server-error test for every method. The WorkOS client throws on any
+ *  non-2xx response, so an error fixture + `rejects.toThrow()` is valid for every
+ *  operation regardless of shape — and it restores the error-path coverage that
+ *  a single generated happy-path test otherwise drops (e.g. the inactive
+ *  branches of a discriminated-union response are never reached on a throw).
+ *
+ *  Uses a 400 rather than a 500: retryable paths (`/vault/`, `/audit_logs`)
+ *  retry the 5xx/408 codes, so a single mocked 500 would be retried and the
+ *  retry would fall through to the default mock and resolve — a `void` method
+ *  would then never reject. A 400 is never retried, so the client throws on the
+ *  first response for every method and path (and the test stays fast, with no
+ *  retry backoff). */
+function renderErrorPathTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
+): void {
+  const args = buildCallArgs(op, plan, modelMap, ctx, baselineMethod);
+  lines.push('');
+  lines.push("    it('throws when the API responds with an error', async () => {");
+  lines.push("      fetchOnce({ message: 'Bad Request' }, { status: 400 });");
+  lines.push('');
+  lines.push(`      await expect(workos.${serviceProp}.${method}(${args})).rejects.toThrow();`);
+  lines.push('    });');
+}
+
+/** Emit one test per non-happy-path branch of a discriminated-union response.
+ *  The generated happy-path test already exercises the first variant; this adds
+ *  the remaining arms (e.g. the `active: false` failure branches of the token
+ *  response) so a regression in the branch's deserializer is caught instead of
+ *  going undetected. Scoped to inline unions returned directly (not paginated /
+ *  array), with the per-branch fixture and discriminator value supplied by the
+ *  model pass via `getDiscriminatedTestBranches`. */
+function renderUnionBranchTests(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
+): void {
+  if (!ctx || !plan.responseModelName) return;
+  if (plan.isPaginated || plan.isArrayResponse) return;
+  const branches = getDiscriminatedTestBranches().get(plan.responseModelName);
+  if (!branches || branches.length < 2) return;
+  const model = modelMap.get(plan.responseModelName);
+  if (!model) return;
+
+  const enumMap = new Map<string, Enum>(ctx.spec.enums.map((e) => [e.name, e]));
+  const args = buildCallArgs(op, plan, modelMap, ctx, baselineMethod);
+
+  // branches[0] is the variant the generated happy-path test already covers.
+  for (const branch of branches.slice(1)) {
+    const fixture = buildBranchFixture(model, branch, modelMap, enumMap);
+    const valueLiteral =
+      typeof branch.discriminatorValue === 'string'
+        ? `'${branch.discriminatorValue}'`
+        : String(branch.discriminatorValue);
+    lines.push('');
+    lines.push(
+      `    it('returns the ${branch.discriminatorDomain}=${branch.discriminatorValue} response variant', async () => {`,
+    );
+    lines.push(`      fetchOnce(${JSON.stringify(fixture)});`);
+    lines.push('');
+    lines.push(`      const result = await workos.${serviceProp}.${method}(${args});`);
+    lines.push('');
+    lines.push(`      expect(result.${branch.discriminatorDomain}).toBe(${valueLiteral});`);
+    lines.push('    });');
+  }
 }
 
 function buildOptionsObjectTestArg(

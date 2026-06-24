@@ -138,6 +138,31 @@ export function getDiscriminatedFixtureBranches(): Map<string, DiscriminatedFixt
 }
 
 /**
+ * Every branch of an inline discriminated-union response, so the test pass can
+ * emit one test per branch instead of only the happy-path (first) variant the
+ * fixture pass uses. Carries both the wire discriminator (to build the mocked
+ * response) and the domain discriminator (to assert on the deserialized
+ * result). Keyed by IR model name; only populated for unions with ≥2 variants.
+ */
+export interface DiscriminatedTestBranch {
+  /** Discriminator property on the wire (snake_case) — for the mocked response. */
+  discriminatorWire: string;
+  /** Discriminator property in the domain shape (camelCase) — for `result.<x>`. */
+  discriminatorDomain: string;
+  /** This variant's discriminator value, correctly typed. */
+  discriminatorValue: string | number | boolean;
+  /** Wire field names belonging to THIS branch (base + discriminator + variant). */
+  keepWire: Set<string>;
+}
+let discriminatedTestBranches: Map<string, DiscriminatedTestBranch[]> = new Map();
+export function setDiscriminatedTestBranches(branches: Map<string, DiscriminatedTestBranch[]>): void {
+  discriminatedTestBranches = branches;
+}
+export function getDiscriminatedTestBranches(): Map<string, DiscriminatedTestBranch[]> {
+  return discriminatedTestBranches;
+}
+
+/**
  * Domain names that `resolveInterfaceName` reached via a structural rename
  * — the resolved name differs from the IR model's own name. `wireInterfaceName`
  * consults this set to decide whether to fire the "single-form wire" case:

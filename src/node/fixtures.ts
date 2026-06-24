@@ -198,6 +198,32 @@ export function generateModelFixture(
   return fixture;
 }
 
+/**
+ * Build the wire-shape fixture for ONE branch of a discriminated union, used by
+ * the test generator to mock each arm of the response. Mirrors the first-branch
+ * path in {@link generateModelFixture}: keep only this branch's wire fields and
+ * pin the discriminator to its value, so the result is a valid single-branch
+ * instance rather than a merge of mutually-exclusive variants.
+ */
+export function buildBranchFixture(
+  model: Model,
+  branch: { keepWire: Set<string>; discriminatorWire: string; discriminatorValue: string | number | boolean },
+  modelMap: Map<string, Model>,
+  enumMap: Map<string, Enum>,
+): Record<string, any> {
+  const fixture: Record<string, any> = {};
+  for (const field of model.fields) {
+    const wireName = wireFieldName(field.name);
+    if (!branch.keepWire.has(wireName)) continue;
+    fixture[wireName] =
+      field.example !== undefined
+        ? field.example
+        : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
+  }
+  fixture[branch.discriminatorWire] = branch.discriminatorValue;
+  return fixture;
+}
+
 function generateFieldValue(
   ref: TypeRef,
   fName: string,

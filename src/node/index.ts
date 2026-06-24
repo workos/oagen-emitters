@@ -23,6 +23,7 @@ import {
   planDiscriminatedModels,
   generateDiscriminatedFiles,
   discriminatedFixtureBranches,
+  discriminatedTestBranches,
 } from './discriminated-models.js';
 import {
   buildLiveSurface,
@@ -38,6 +39,7 @@ import {
   setAdoptedModelNames,
   setDiscriminatedModelNames,
   setDiscriminatedFixtureBranches,
+  setDiscriminatedTestBranches,
   setStructurallyRenamedDomainNames,
   resolveInterfaceName,
 } from './naming.js';
@@ -860,6 +862,9 @@ export const nodeEmitter: Emitter = {
     // to emit one valid branch instead of merging variants; share it via the
     // same module-global channel as the discriminated name set.
     setDiscriminatedFixtureBranches(discriminatedFixtureBranches(discPlans));
+    // The test pass needs every branch (not just the first) to emit a test per
+    // union arm; share it via the same module-global channel.
+    setDiscriminatedTestBranches(discriminatedTestBranches(discPlans));
     const standardFiles = generateModelsAndSerializers(enriched, nodeCtx);
     const discFiles = generateDiscriminatedFiles(discPlans, nodeCtx);
     // `generateModelsAndSerializers` builds the per-directory `serializers`
