@@ -35,7 +35,7 @@ import { isInlineEnvelopeList } from './resources.js';
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
-  files.push(...generateFixtures(spec));
+  files.push(...generateFixtures(spec, ctx));
 
   files.push({
     path: 'tests/common/mod.rs',

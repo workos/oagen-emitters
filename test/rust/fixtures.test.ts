@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ApiSpec, Enum, Model } from '@workos/oagen';
+import type { ApiSpec, Enum, Model, EmitterContext } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { exampleFromSpec, generateFixtures, generateModelFixture } from '../../src/rust/fixtures.js';
 
@@ -13,6 +13,12 @@ function spec(models: Model[], enums: Enum[] = []): ApiSpec {
     enums,
     sdk: defaultSdkBehavior(),
   };
+}
+
+// Minimal full-run context (no `scopedServices`): scoping is inert, so every
+// fixture is emitted — matching these tests' intent of asserting content.
+function ctx(s: ApiSpec): EmitterContext {
+  return { namespace: 'test', namespacePascal: 'Test', spec: s };
 }
 
 describe('rust/fixtures', () => {
@@ -36,7 +42,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models));
+    const files = generateFixtures(spec(models), ctx(spec(models)));
     const file = files.find((f) => f.path === 'tests/fixtures/event.json')!;
     expect(file).toBeDefined();
     const parsed = JSON.parse(file.content);
@@ -59,7 +65,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models));
+    const files = generateFixtures(spec(models), ctx(spec(models)));
     const file = files.find((f) => f.path === 'tests/fixtures/wrong.json')!;
     const parsed = JSON.parse(file.content);
     expect(parsed.count).toBe(0); // placeholder fallback
@@ -82,7 +88,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models));
+    const files = generateFixtures(spec(models), ctx(spec(models)));
     const file = files.find((f) => f.path === 'tests/fixtures/org.json')!;
     const parsed = JSON.parse(file.content);
     expect(parsed.domains).toEqual(['example.com', 'foo.com']);
@@ -120,7 +126,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models));
+    const files = generateFixtures(spec(models), ctx(spec(models)));
     const file = files.find((f) => f.path === 'tests/fixtures/outer.json')!;
     const parsed = JSON.parse(file.content);
     // The nested model is regenerated from its own fields' examples, not from
@@ -162,7 +168,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models, enums));
+    const files = generateFixtures(spec(models, enums), ctx(spec(models, enums)));
     const good = JSON.parse(files.find((f) => f.path === 'tests/fixtures/good_ex.json')!.content);
     const bad = JSON.parse(files.find((f) => f.path === 'tests/fixtures/bad_ex.json')!.content);
     expect(good.status).toBe('pending'); // valid example wins
@@ -183,7 +189,7 @@ describe('rust/fixtures', () => {
         ],
       },
     ];
-    const files = generateFixtures(spec(models));
+    const files = generateFixtures(spec(models), ctx(spec(models)));
     const parsed = JSON.parse(files.find((f) => f.path === 'tests/fixtures/nullish.json')!.content);
     expect(parsed.name).toBe('test_name');
   });

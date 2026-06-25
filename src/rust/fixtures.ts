@@ -1,12 +1,19 @@
-import type { ApiSpec, GeneratedFile, Model, Enum, TypeRef } from '@workos/oagen';
+import type { ApiSpec, GeneratedFile, Model, Enum, TypeRef, EmitterContext } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { moduleName } from './naming.js';
+import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
 
 /**
  * Generate JSON test fixture files under `tests/fixtures/`. The Rust tests
  * pull these in via `include_str!` so no I/O is required at test time.
+ *
+ * Scoped runs only emit a fixture for a model whose file will exist on disk
+ * after the run (in-scope, or already present from a prior run). Emitting a
+ * fixture for a brand-new out-of-scope model would add a stray file for a model
+ * the SDK can't even reference yet; in-scope tests only `include_str!` fixtures
+ * for in-scope models, so gating here is safe.
  */
-export function generateFixtures(spec: ApiSpec): GeneratedFile[] {
+export function generateFixtures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
@@ -17,8 +24,10 @@ export function generateFixtures(spec: ApiSpec): GeneratedFile[] {
     if (model.fields.length === 0) continue;
     seen.add(model.name);
 
-    const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
     const path = `tests/fixtures/${moduleName(model.name)}.json`;
+    if (!fileExistsAfterRun(path, isModelInScope(model.name, ctx), ctx)) continue;
+
+    const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
     files.push({
       path,
       content: JSON.stringify(fixture, null, 2) + '\n',

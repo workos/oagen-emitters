@@ -19,7 +19,7 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { generateWrapperOptionsClasses } from './wrappers.js';
-import { groupByMount } from '../shared/resolved-ops.js';
+import { groupByMount, isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { discriminatedUnions, resolveModelName } from './type-map.js';
 import { modelClassName } from './naming.js';
@@ -64,6 +64,28 @@ function prefixTestPaths(files: GeneratedFile[]): GeneratedFile[] {
     f.path = `${TEST_PREFIX}${f.path}`;
   }
   return files;
+}
+
+/**
+ * Scoped-run gate for a discriminated-union variant referenced by a generated
+ * converter (the event-registry / polymorphic dispatch aggregate). A converter
+ * may only name a variant whose per-model `Entities/<Class>.cs` file will exist
+ * on disk after the run — otherwise the `new <Class>()` / `ToObject<<Class>>`
+ * arm references a type whose file is never emitted (CS0246). The set that
+ * exists after the run is: in-scope variants (emitted this run) ∪ variants
+ * already on disk from a prior manifest (scoped runs never prune), so a
+ * renamed/removed-but-still-on-disk variant is RETAINED while a brand-new
+ * out-of-scope variant is EXCLUDED. A full run includes everything.
+ *
+ * The variant name is resolved through the model-alias map first, exactly as
+ * the converter emits it (`modelClassName(resolveModelName(name))`), and the
+ * candidate path carries the `src/WorkOS.net/` prefix so it matches the
+ * prefixed paths recorded in `priorTargetManifestPaths`.
+ */
+function variantFileExistsAfterRun(variantModelName: string, ctx: EmitterContext): boolean {
+  const canonical = resolveModelName(variantModelName);
+  const relPath = `${SRC_PREFIX}Entities/${modelClassName(canonical)}.cs`;
+  return fileExistsAfterRun(relPath, isModelInScope(canonical, ctx), ctx);
 }
 
 export const dotnetEmitter: Emitter = {
@@ -146,6 +168,11 @@ export const dotnetEmitter: Emitter = {
         lines.push('            switch (discriminatorValue)');
         lines.push('            {');
         for (const [value, modelName] of Object.entries(disc.mapping)) {
+          // Scoped-run gate: only dispatch to a variant whose `Entities/*.cs`
+          // file will exist after the run. A brand-new out-of-scope variant is
+          // skipped (its `.cs` is never emitted ⇒ CS0246); unmatched discriminator
+          // values fall through to the `default` arm below.
+          if (!variantFileExistsAfterRun(modelName, c)) continue;
           const csName = modelClassName(resolveModelName(modelName));
           lines.push(`                case "${value}": return jObject.ToObject<${csName}>(serializer);`);
         }
@@ -177,6 +204,12 @@ export const dotnetEmitter: Emitter = {
     // CanWrite is false so serialization uses the default path and never
     // re-enters WriteJson.
     for (const [baseName, disc] of modelDiscriminators) {
+      // Skip the converter entirely when the base model's own `Entities/*.cs`
+      // won't exist after a scoped run (brand-new out-of-scope base): its
+      // `new <baseClass>()` default arm and `[JsonConverter]` attribute would
+      // both dangle. When the base is already on disk we still emit it — the
+      // untouched base class references this converter by name.
+      if (!variantFileExistsAfterRun(baseName, c)) continue;
       const baseClass = modelClassName(baseName);
       const converterName = `${baseClass}DiscriminatorConverter`;
       const lines: string[] = [];
@@ -210,6 +243,14 @@ export const dotnetEmitter: Emitter = {
       lines.push('            switch (discriminatorValue)');
       lines.push('            {');
       for (const [value, variantModelName] of Object.entries(disc.mapping)) {
+        // Scoped-run gate: only construct a variant whose `Entities/*.cs` file
+        // will exist after the run. This is the event-registry aggregate
+        // (`EventSchema` enumerates every event payload model): a brand-new
+        // out-of-scope event type is skipped (its `.cs` is never emitted ⇒
+        // CS0246), while a renamed/removed-but-still-on-disk one is retained.
+        // Unmatched discriminator values fall through to the `default` arm,
+        // which deserializes into the base class.
+        if (!variantFileExistsAfterRun(variantModelName, c)) continue;
         const csName = modelClassName(variantModelName);
         lines.push(`                case "${value}": target = new ${csName}(); break;`);
       }

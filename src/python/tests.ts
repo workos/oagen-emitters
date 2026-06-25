@@ -30,6 +30,8 @@ import {
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
+  isModelInScope,
+  fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
@@ -100,7 +102,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
@@ -1461,21 +1463,38 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
 
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
-  const models = spec.models.filter(
-    (m) =>
-      !(isListWrapperModel(m) && !nonPaginatedRefs.has(m.name)) &&
-      !(isListMetadataModel(m) && !listMetadataNeeded.has(m.name)) &&
-      !requestOnlyModelNames.has(m.name),
-  );
-  if (models.length === 0) return null;
 
   // The round-trip test imports models from their *natural* (pre-relocation)
   // service so existing callers keep working — those imports resolve via the
   // BC re-exports that the model emitter writes into each service barrel.
-  const modelToService = computeSchemaPlacement(spec, ctx).originalModelToService;
+  const placement = computeSchemaPlacement(spec, ctx);
+  const modelToService = placement.originalModelToService;
+  // The per-model FILE is written to the RELOCATED dir; use it to compute the
+  // gate's relPath so it lines up with the prior manifest.
+  const relocatedModelToService = placement.modelToService;
   const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';
+
+  // Scoped runs: the round-trip test must only reference a model whose per-model
+  // file exists on disk after the run (in-scope, or already present from the
+  // prior manifest). A brand-new out-of-scope model is excluded — its file is
+  // never emitted, so importing it would raise ModuleNotFoundError. A full run
+  // keeps every model (fileExistsAfterRun ⇒ true).
+  const modelFileExists = (name: string): boolean => {
+    const dir = resolveDir(relocatedModelToService.get(name));
+    const path = `src/${ctx.namespace}/${dir}/models/${fileName(name)}.py`;
+    return fileExistsAfterRun(path, isModelInScope(name, ctx), ctx);
+  };
+
+  const models = spec.models.filter(
+    (m) =>
+      !(isListWrapperModel(m) && !nonPaginatedRefs.has(m.name)) &&
+      !(isListMetadataModel(m) && !listMetadataNeeded.has(m.name)) &&
+      !requestOnlyModelNames.has(m.name) &&
+      modelFileExists(m.name),
+  );
+  if (models.length === 0) return null;
 
   const lines: string[] = [];
   lines.push('"""Model round-trip tests: from_dict(to_dict()) preserves data."""');

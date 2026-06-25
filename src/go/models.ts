@@ -3,6 +3,8 @@ import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName } from './naming.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
+import { reconcileFlatBlocks, type NamedBlock } from './flat-merge.js';
 
 // Import and re-export shared model detection utilities
 import {
@@ -125,6 +127,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
+  // Build one NamedBlock per emitted model type. In a scoped run these blocks
+  // are reconciled against the prior models.go (see reconcileFlatBlocks): blocks
+  // for out-of-scope models that didn't exist before are dropped, and prior
+  // blocks for renamed/removed types are carried over verbatim. A full run emits
+  // every block unchanged. Tracking the IR model name(s) per block (a batched
+  // alias group declares several) is what lets the reconciler gate by scope.
+  const modelBlocks: NamedBlock[] = [];
+
   const batchedAliases = new Set<string>();
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
@@ -149,38 +159,45 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const groupNames = hashGroups.get(hash) ?? [];
       const aliases = groupNames.filter((n) => aliasOf.has(n) && className(n) !== className(aliasOf.get(n)!));
 
+      const blockLines: string[] = [];
+      const blockNames: string[] = [];
+      let blockInScope = false;
       if (aliases.length >= 5) {
         // Batch emit all aliases for this group at once
         for (const aliasName of aliases) {
           batchedAliases.add(aliasName);
         }
-        lines.push(`// The following types are structurally identical to ${canonicalStruct}.`);
-        lines.push('type (');
+        blockLines.push(`// The following types are structurally identical to ${canonicalStruct}.`);
+        blockLines.push('type (');
         for (const aliasName of aliases) {
-          lines.push(`\t${className(aliasName)} = ${canonicalStruct}`);
+          blockLines.push(`\t${className(aliasName)} = ${canonicalStruct}`);
+          blockNames.push(className(aliasName));
+          if (isModelInScope(aliasName, ctx)) blockInScope = true;
         }
-        lines.push(')');
-        lines.push('');
+        blockLines.push(')');
       } else {
-        lines.push(`// ${structName} is an alias for ${canonicalStruct}.`);
-        lines.push(`type ${structName} = ${canonicalStruct}`);
-        lines.push('');
+        blockLines.push(`// ${structName} is an alias for ${canonicalStruct}.`);
+        blockLines.push(`type ${structName} = ${canonicalStruct}`);
+        blockNames.push(structName);
+        if (isModelInScope(model.name, ctx)) blockInScope = true;
       }
+      modelBlocks.push({ names: blockNames, text: blockLines.join('\n'), inScope: blockInScope });
       continue;
     }
 
     // Emit struct
+    const blockLines: string[] = [];
     if (model.description) {
       const descLines = model.description.split('\n').filter((l) => l.trim());
-      lines.push(`// ${structName} ${lowerFirst(descLines[0])}`);
+      blockLines.push(`// ${structName} ${lowerFirst(descLines[0])}`);
       for (let i = 1; i < descLines.length; i++) {
-        lines.push(`// ${descLines[i].trim()}`);
+        blockLines.push(`// ${descLines[i].trim()}`);
       }
     } else {
       const humanized = humanize(model.name);
-      lines.push(`// ${structName} represents ${articleFor(humanized)} ${humanized}.`);
+      blockLines.push(`// ${structName} represents ${articleFor(humanized)} ${humanized}.`);
     }
-    lines.push(`type ${structName} struct {`);
+    blockLines.push(`type ${structName} struct {`);
 
     // Deduplicate fields by Go field name
     const seenFieldNames = new Set<string>();
@@ -198,20 +215,31 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
       if (field.description) {
         const fdLines = field.description.split('\n').filter((l) => l.trim());
-        lines.push(`\t// ${fieldDocComment(goFieldName, fdLines[0])}`);
+        blockLines.push(`\t// ${fieldDocComment(goFieldName, fdLines[0])}`);
         for (let i = 1; i < fdLines.length; i++) {
-          lines.push(`\t// ${fdLines[i].trim()}`);
+          blockLines.push(`\t// ${fdLines[i].trim()}`);
         }
       }
       if (field.deprecated) {
-        if (field.description) lines.push(`\t//`);
+        if (field.description) blockLines.push(`\t//`);
         const deprecationReason = extractDeprecationReason(field.description);
-        lines.push(`\t// Deprecated: ${deprecationReason}`);
+        blockLines.push(`\t// Deprecated: ${deprecationReason}`);
       }
-      lines.push(`\t${goFieldName} ${goType} \`${jsonTag}\``);
+      blockLines.push(`\t${goFieldName} ${goType} \`${jsonTag}\``);
     }
 
-    lines.push('}');
+    blockLines.push('}');
+    modelBlocks.push({ names: [structName], text: blockLines.join('\n'), inScope: isModelInScope(model.name, ctx) });
+  }
+
+  // Scoped runs: drop brand-new out-of-scope blocks; carry over prior blocks the
+  // new spec renamed/removed (still referenced by un-regenerated resource code).
+  // Full runs return every block unchanged.
+  // `PaginationParams` is emitted separately below (not part of modelBlocks),
+  // so exclude it from carry-over or the prior copy would be redeclared.
+  const reconciled = reconcileFlatBlocks(modelBlocks, 'models.go', ctx, new Set(['PaginationParams']));
+  for (const text of reconciled) {
+    lines.push(text);
     lines.push('');
   }
 
