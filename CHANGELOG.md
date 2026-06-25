@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/workos/oagen-emitters/compare/v0.19.0...v0.19.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* scope shared aggregates to emitted items in --services runs ([#164](https://github.com/workos/oagen-emitters/issues/164)) ([c137c6f](https://github.com/workos/oagen-emitters/commit/c137c6ffa16ae36237911b9778b85ca3a48e547e))
+
 ## [0.19.0](https://github.com/workos/oagen-emitters/compare/v0.18.4...v0.19.0) (2026-06-22)
 
 
