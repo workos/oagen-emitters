@@ -223,10 +223,17 @@ export function reconcileFlatBlocks(
         for (const n of pb.names) emittedNames.add(n);
       }
     } else if (uniquePrior.size > 1) {
-      // Batched-alias regrouping across multiple prior blocks — can't freeze
-      // 1:1; keep the fresh text (it still references only in-spec types).
-      out.push(block.text);
-      for (const n of block.names) emittedNames.add(n);
+      // A regrouping spread this out-of-scope block's names across several prior
+      // blocks. NEVER regenerate out-of-scope content (the fresh text could
+      // re-point an alias at a renamed canonical the scoped run didn't emit);
+      // instead freeze every distinct prior block verbatim. All names are
+      // on-disk here (the generator only puts in-scope ∪ on-disk names in an
+      // out-of-scope block), so this fully retains them.
+      for (const pb of uniquePrior) {
+        if (pb.names.some((n) => emittedNames.has(n))) continue;
+        out.push(pb.text);
+        for (const n of pb.names) emittedNames.add(n);
+      }
     }
     // uniquePrior.size === 0 → brand-new out-of-scope → drop.
   }
