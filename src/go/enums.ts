@@ -1,6 +1,8 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
+import { isEnumInScope, isScopedRun } from '../shared/resolved-ops.js';
+import { reconcileFlatBlocks, readPriorFile, type NamedBlock } from './flat-merge.js';
 
 /**
  * Generate Go typed string enum constants from IR Enum definitions.
@@ -16,12 +18,28 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (enums.length === 0) return [];
 
   const aliasOf = collectEnumAliasOf(enums);
+  // An in-scope enum alias emits `type Alias = Canonical` against the current
+  // spec; the canonical may itself be out of scope and brand-new, which the
+  // reconciler would drop, leaving the alias dangling. Force-retain any
+  // canonical referenced by an in-scope alias.
+  const forcedCanonicals = new Set<string>();
+  if (isScopedRun(ctx)) {
+    for (const [aliasName, canonical] of aliasOf) {
+      if (isEnumInScope(aliasName, ctx)) forcedCanonicals.add(canonical);
+    }
+  }
   const files: GeneratedFile[] = [];
 
   // Group all enums into a single file per SDK
   const lines: string[] = [];
   lines.push(`package ${ctx.namespace}`);
   lines.push('');
+
+  // Build one NamedBlock per emitted enum type so a scoped run can reconcile
+  // them against the prior enums.go (drop brand-new out-of-scope enums, retain
+  // renamed/removed ones still referenced by un-regenerated code). A full run
+  // emits every block unchanged.
+  const enumBlocks: NamedBlock[] = [];
 
   for (const enumDef of enums) {
     // If this enum is an alias, emit a simple type alias
@@ -33,9 +51,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // enums from enrichModelsFromSpec whose underscore names collapse to the
       // same PascalCase as the original enum).
       if (aliasType === canonicalType) continue;
-      lines.push(`// ${aliasType} is an alias for ${canonicalType}.`);
-      lines.push(`type ${aliasType} = ${canonicalType}`);
-      lines.push('');
+      enumBlocks.push({
+        names: [aliasType],
+        text: [`// ${aliasType} is an alias for ${canonicalType}.`, `type ${aliasType} = ${canonicalType}`].join('\n'),
+        inScope: isEnumInScope(enumDef.name, ctx),
+      });
       continue;
     }
 
@@ -43,9 +63,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     if (enumDef.values.length === 0) {
       const humanized = humanize(enumDef.name);
-      lines.push(`// ${typeName} represents ${humanized} values.`);
-      lines.push(`type ${typeName} = string`);
-      lines.push('');
+      enumBlocks.push({
+        names: [typeName],
+        text: [`// ${typeName} represents ${humanized} values.`, `type ${typeName} = string`].join('\n'),
+        inScope: isEnumInScope(enumDef.name, ctx) || forcedCanonicals.has(enumDef.name),
+      });
       continue;
     }
 
@@ -61,10 +83,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     }
 
     const humanized = humanize(enumDef.name);
-    lines.push(`// ${typeName} represents ${humanized} values.`);
-    lines.push(`type ${typeName} string`);
-    lines.push('');
-    lines.push('const (');
+    const blockLines: string[] = [];
+    blockLines.push(`// ${typeName} represents ${humanized} values.`);
+    blockLines.push(`type ${typeName} string`);
+    blockLines.push('');
+    blockLines.push('const (');
 
     const usedNames = new Set<string>();
     for (const v of uniqueValues) {
@@ -79,15 +102,25 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       usedNames.add(constName);
       const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
       if (v.description) {
-        lines.push(`\t// ${constName} is ${v.description}.`);
+        blockLines.push(`\t// ${constName} is ${v.description}.`);
       }
       if (v.deprecated) {
-        if (v.description) lines.push(`\t//`);
-        lines.push(`\t// Deprecated: this value is deprecated.`);
+        if (v.description) blockLines.push(`\t//`);
+        blockLines.push(`\t// Deprecated: this value is deprecated.`);
       }
-      lines.push(`\t${constName} ${typeName} = ${valueStr}`);
+      blockLines.push(`\t${constName} ${typeName} = ${valueStr}`);
     }
-    lines.push(')');
+    blockLines.push(')');
+    enumBlocks.push({
+      names: [typeName],
+      text: blockLines.join('\n'),
+      inScope: isEnumInScope(enumDef.name, ctx) || forcedCanonicals.has(enumDef.name),
+    });
+  }
+
+  const reconciled = reconcileFlatBlocks(enumBlocks, 'enums.go', ctx);
+  for (const text of reconciled) {
+    lines.push(text);
     lines.push('');
   }
 
@@ -96,7 +129,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     content: lines.join('\n'),
     overwriteExisting: true,
   });
-  const eventConstantsFile = generateEventConstantsFile(enums);
+  const eventConstantsFile = generateEventConstantsFile(enums, ctx);
   if (eventConstantsFile) files.push(eventConstantsFile);
 
   return files;
@@ -175,9 +208,27 @@ function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
   return aliasOf;
 }
 
-function generateEventConstantsFile(enums: Enum[]): GeneratedFile | null {
+const EVENTS_FILE_PATH = 'pkg/events/events.go';
+
+function generateEventConstantsFile(enums: Enum[], ctx: EmitterContext): GeneratedFile | null {
   const enumDef = findWebhookEventEnum(enums);
   if (!enumDef) return null;
+
+  // Scoped-run gate for the flat events file. Unlike models/enums, an event
+  // value can't be mapped to a single selected service, so there is no
+  // per-event "in scope" signal. The correct Option-B behavior is therefore to
+  // keep this aggregate byte-stable in a scoped run: emit only event constants
+  // that already existed in the prior events.go (dropping brand-new additions
+  // such as `session.reauthenticated` from an out-of-scope service) and never
+  // drop a constant that was present before. Equivalent to: in a scoped run,
+  // emit exactly the prior file's constant set.
+  let priorEventConsts: Set<string> | null = null;
+  if (isScopedRun(ctx)) {
+    const prior = readPriorFile(EVENTS_FILE_PATH, ctx);
+    if (prior !== null) {
+      priorEventConsts = collectPriorEventConstNames(prior);
+    }
+  }
 
   const lines: string[] = [];
   lines.push('package events');
@@ -195,6 +246,13 @@ function generateEventConstantsFile(enums: Enum[]): GeneratedFile | null {
     seenValues.add(valueStr);
 
     const constName = uniqueEventConstantName(valueStr, usedNames);
+
+    // Scoped run: skip a constant that wasn't in the prior file (a brand-new,
+    // out-of-scope event). When there's no prior file to compare against, fall
+    // through and emit everything (first generation / non-target run).
+    if (priorEventConsts !== null && !priorEventConsts.has(constName)) {
+      continue;
+    }
     usedNames.add(constName);
 
     if (value.description) {
@@ -213,10 +271,25 @@ function generateEventConstantsFile(enums: Enum[]): GeneratedFile | null {
   lines.push('');
 
   return {
-    path: 'pkg/events/events.go',
+    path: EVENTS_FILE_PATH,
     content: lines.join('\n'),
     overwriteExisting: true,
   };
+}
+
+/**
+ * Collect the constant names declared in a prior `pkg/events/events.go`. Each
+ * event constant is emitted as `\tConstName = "wire.value"` inside the single
+ * `const (...)` block, so a simple line scan recovers the prior name set used
+ * to keep the file byte-stable across scoped runs.
+ */
+function collectPriorEventConstNames(content: string): Set<string> {
+  const names = new Set<string>();
+  for (const raw of content.split('\n')) {
+    const m = raw.trim().match(/^(\w+)\s*=\s*"/);
+    if (m) names.add(m[1]);
+  }
+  return names;
 }
 
 function findWebhookEventEnum(enums: Enum[]): Enum | null {

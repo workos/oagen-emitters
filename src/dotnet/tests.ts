@@ -30,7 +30,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,

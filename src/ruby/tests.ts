@@ -1,4 +1,5 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Model, Operation, ResolvedWrapper, TypeRef } from '@workos/oagen';
+import { assignModelsToServices } from '@workos/oagen';
 import {
   className,
   fileName,
@@ -10,6 +11,7 @@ import {
   resolveMethodName,
   buildExportedClassNameSet,
   resolveServiceTarget,
+  buildMountDirMap,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -17,8 +19,11 @@ import {
   lookupResolved,
   buildHiddenParams,
   collectBodyFieldTypes,
+  isModelInScope,
+  fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { classifyUnassignedModel } from './models.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js';
 
@@ -203,7 +208,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  files.push(generateModelRoundTripTest(spec));
+  files.push(generateModelRoundTripTest(spec, ctx));
 
   return files;
 }
@@ -212,8 +217,19 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
  * Emit test/workos/model_round_trip_test.rb that round-trips every non-wrapper
  * model through `.new(json)` and `.to_json`, asserting the result is a Hash and
  * that required fields appear with the seeded values.
+ *
+ * This is a whole-suite AGGREGATE: it references `WorkOS::<Class>` for every
+ * model. Under a scoped (`--services`) run only the selected services' per-model
+ * `.rb` files are (re)written, so a test referencing a brand-new out-of-scope
+ * model whose file was never emitted would raise `NameError: uninitialized
+ * constant`. Each per-model test is therefore gated by {@link fileExistsAfterRun}
+ * on the SAME path `models.ts` writes (`lib/workos/<dir>/<file>.rb`): emit only
+ * when that file will exist on disk after the run — in-scope (emitted this run)
+ * OR already present from a prior run (`priorTargetManifestPaths`). Brand-new
+ * out-of-scope models are excluded; renamed/removed-but-on-disk models are
+ * retained. A full run (scoping inert) keeps every model.
  */
-function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile {
+function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
   const lines: string[] = [];
   lines.push(`require 'test_helper'`);
   lines.push('');
@@ -223,7 +239,24 @@ function generateModelRoundTripTest(spec: ApiSpec): GeneratedFile {
   const enumNames = new Set(spec.enums.map((e) => e.name));
   const emitted = new Set<string>();
 
+  // Resolve each model's per-model file path EXACTLY as models.ts does, so the
+  // scope gate keys on the same path the per-model FILE writer uses.
+  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
+  const mountDirMap = buildMountDirMap(ctx);
+  const dirFor = (modelName: string): string => {
+    const service = modelToService.get(modelName);
+    if (!service) return classifyUnassignedModel(modelName);
+    return mountDirMap.get(service) ?? classifyUnassignedModel(modelName);
+  };
+
   for (const model of models) {
+    // Skip models whose per-model `.rb` file will NOT exist on disk after this
+    // run (brand-new + out-of-scope under `--services`). Without this gate the
+    // aggregate would reference an undefined constant. The path mirrors
+    // models.ts's `lib/workos/${dirFor}/${fileName}.rb`.
+    const modelFilePath = `lib/workos/${dirFor(model.name)}/${fileName(model.name)}.rb`;
+    if (!fileExistsAfterRun(modelFilePath, isModelInScope(model.name, ctx), ctx)) continue;
+
     // Avoid duplicate test names when two IR model names collapse to the same
     // snake_case file name (we use the file name as the test suffix).
     const fileBase = fileName(model.name);

@@ -142,6 +142,39 @@ describe('kotlin/tests', () => {
     expect(content).toContain('assertEquals(parsed.toInstant(), reparsed.toInstant())');
   });
 
+  it('scoped run: round-trip test omits brand-new out-of-scope models, retains on-disk ones', () => {
+    const roundTripModel = (name: string): Model => ({
+      name,
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    });
+    const scopedModels: Model[] = [
+      roundTripModel('Organization'), // in scope
+      roundTripModel('PipesPipe'), // brand-new, out of scope, NOT on disk
+      roundTripModel('Directory'), // out of scope but ON disk
+    ];
+    const scopedSpec: ApiSpec = { ...spec, models: scopedModels };
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set(['src/main/kotlin/com/workos/models/Directory.kt']),
+    };
+
+    generateEnums([], scopedCtx);
+    const files = generateTests(scopedSpec, scopedCtx);
+    const roundTrip = files.find((f) => f.path.includes('GeneratedModelRoundTripTest.kt'))!;
+    const content = roundTrip.content;
+
+    expect(content).toContain('Organization round-trips through Jackson');
+    expect(content).toContain('Directory round-trips through Jackson'); // retained (on disk)
+    expect(content).not.toContain('PipesPipe round-trips through Jackson'); // omitted (brand-new)
+  });
+
   it('emits valid ISO-8601 for date-time fields in round-trip fixtures', () => {
     const dtModels: Model[] = [
       {

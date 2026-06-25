@@ -2,9 +2,9 @@ import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
-import { collectGeneratedEnumSymbolsByDir } from './enums.js';
+import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+import { isModelInScope, isEnumInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -171,8 +171,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       dispLines.push(`        return ${unknownClassName}.from_dict(data)`);
 
       // FR-1.4: write the file only when in scope; the barrel tracking below is
-      // unconditional so out-of-scope models (left on disk) stay exported.
-      if (isModelInScope(model.name, ctx)) {
+      // gated on the file existing after the run so out-of-scope models that
+      // are already on disk stay exported, but brand-new out-of-scope models
+      // (whose file is never emitted) are NOT referenced by the barrel.
+      const dispInScope = isModelInScope(model.name, ctx);
+      if (dispInScope) {
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
           content: dispLines.join('\n'),
@@ -181,19 +184,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         });
       }
 
-      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
-      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
-      // Also register the variant type alias and unknown variant in the barrel,
-      // pointing to the same file as the dispatcher.
-      emittedModelSymbolsByDir.get(dirName)!.push(variantTypeName);
-      symbolToFile.set(variantTypeName, fileName(model.name));
-      emittedModelSymbolsByDir.get(dirName)!.push(unknownClassName);
-      symbolToFile.set(unknownClassName, fileName(model.name));
-      const dispatcherNatural = originalModelToService.get(model.name);
-      if (dispatcherNatural) {
-        symbolToOriginalService.set(model.name, dispatcherNatural);
-        symbolToOriginalService.set(variantTypeName, dispatcherNatural);
-        symbolToOriginalService.set(unknownClassName, dispatcherNatural);
+      // Only reference this dispatcher (and its variant/unknown symbols, which
+      // live in the same file) from the barrel when that file exists on disk
+      // after the run.
+      if (fileExistsAfterRun(`src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`, dispInScope, ctx)) {
+        if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+        emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+        // Also register the variant type alias and unknown variant in the barrel,
+        // pointing to the same file as the dispatcher.
+        emittedModelSymbolsByDir.get(dirName)!.push(variantTypeName);
+        symbolToFile.set(variantTypeName, fileName(model.name));
+        emittedModelSymbolsByDir.get(dirName)!.push(unknownClassName);
+        symbolToFile.set(unknownClassName, fileName(model.name));
+        const dispatcherNatural = originalModelToService.get(model.name);
+        if (dispatcherNatural) {
+          symbolToOriginalService.set(model.name, dispatcherNatural);
+          symbolToOriginalService.set(variantTypeName, dispatcherNatural);
+          symbolToOriginalService.set(unknownClassName, dispatcherNatural);
+        }
       }
       continue;
     }
@@ -221,18 +229,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       }
       lines.push('');
       lines.push(`${modelClassName}: TypeAlias = ${canonicalClassName}`);
-      if (isModelInScope(model.name, ctx)) {
+      const aliasInScope = isModelInScope(model.name, ctx);
+      const aliasPath = `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`;
+      if (aliasInScope) {
         files.push({
-          path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+          path: aliasPath,
           content: lines.join('\n'),
           integrateTarget: true,
           overwriteExisting: true,
         });
       }
-      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
-      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
-      const aliasNatural = originalModelToService.get(model.name);
-      if (aliasNatural) symbolToOriginalService.set(model.name, aliasNatural);
+      // Reference the alias from the barrel only when its file exists on disk
+      // after the run (in-scope, or already present from a prior run).
+      if (fileExistsAfterRun(aliasPath, aliasInScope, ctx)) {
+        if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+        emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+        const aliasNatural = originalModelToService.get(model.name);
+        if (aliasNatural) symbolToOriginalService.set(model.name, aliasNatural);
+      }
       continue;
     }
 
@@ -464,18 +478,25 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('        return result');
 
-    if (isModelInScope(model.name, ctx)) {
+    const regularInScope = isModelInScope(model.name, ctx);
+    if (regularInScope) {
       files.push({
-        path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
+        path: modelFilePath,
         content: lines.join('\n'),
         integrateTarget: true,
         overwriteExisting: true,
       });
     }
-    if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
-    emittedModelSymbolsByDir.get(dirName)!.push(model.name);
-    const regularNatural = originalModelToService.get(model.name);
-    if (regularNatural) symbolToOriginalService.set(model.name, regularNatural);
+    // Reference the model from the barrel only when its file exists on disk
+    // after the run (in-scope, or already present from a prior run). A
+    // brand-new out-of-scope model whose file is never emitted must NOT be
+    // referenced, or the `from .x import X` line dangles and the import fails.
+    if (fileExistsAfterRun(modelFilePath, regularInScope, ctx)) {
+      if (!emittedModelSymbolsByDir.has(dirName)) emittedModelSymbolsByDir.set(dirName, []);
+      emittedModelSymbolsByDir.get(dirName)!.push(model.name);
+      const regularNatural = originalModelToService.get(model.name);
+      if (regularNatural) symbolToOriginalService.set(model.name, regularNatural);
+    }
   }
 
   // Generate __init__.py barrel files for each models/ directory
@@ -483,7 +504,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // A direct symbol lives in the file at `dirPath/<file>.py`. A re-exported
   // symbol was relocated to common/ but is being mirrored from its natural
   // service barrel for backwards compatibility.
-  type BarrelSymbol = { name: string; reExport?: { fromDir: string; file: string } };
+  // A `retainBasename` symbol has no known IR name — it is a per-item file
+  // recorded in the PRIOR manifest (renamed/removed from the current spec but
+  // still on disk) that we re-export wholesale via `from .<base> import *` so
+  // out-of-scope code the scoped run did not regenerate keeps resolving.
+  type BarrelSymbol = { name: string; reExport?: { fromDir: string; file: string }; retainBasename?: string };
   const symbolsByDir = new Map<string, BarrelSymbol[]>();
   for (const [dirName, names] of emittedModelSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
@@ -495,10 +520,57 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const reachableEnumNames = collectReachableEnumNames(ctx);
   const emittedEnums = ctx.spec.enums.filter((enumDef) => reachableEnumNames.has(enumDef.name));
   const enumSymbolsByDir = collectGeneratedEnumSymbolsByDir(emittedEnums, ctx);
+  // Map each compat-alias symbol back to its canonical enum so we can gate it by
+  // the canonical enum's scope (the alias file is only written when the
+  // canonical enum is in scope; see enums.ts).
+  const aliasToCanonicalEnum = new Map<string, string>();
+  for (const [canonical, aliasNames] of collectCompatEnumAliases(emittedEnums, ctx)) {
+    for (const aliasName of aliasNames) aliasToCanonicalEnum.set(aliasName, canonical);
+  }
   for (const [dirName, names] of enumSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;
     if (!symbolsByDir.has(key)) symbolsByDir.set(key, []);
-    for (const name of names) symbolsByDir.get(key)!.push({ name });
+    for (const name of names) {
+      // Reference an enum (or its compat alias) from the barrel only when its
+      // per-enum file exists on disk after the run. A brand-new out-of-scope
+      // enum whose file is never emitted must NOT be referenced.
+      const enumFilePath = `${key}/${fileName(name)}.py`;
+      const scopeName = aliasToCanonicalEnum.get(name) ?? name;
+      if (fileExistsAfterRun(enumFilePath, isEnumInScope(scopeName, ctx), ctx)) {
+        symbolsByDir.get(key)!.push({ name });
+      }
+    }
+  }
+
+  // Scoped runs: retain barrel entries for per-item files still on disk (prior
+  // manifest) that the current spec no longer produces — e.g. a model/enum
+  // renamed or removed for an out-of-scope service. Out-of-scope code we did
+  // not regenerate may still `from .<base> import X`, so dropping it would
+  // break the import. We can't recover the original class name from the
+  // basename, so re-export the module wholesale with `import *`. A full run
+  // (priorManifestBasenames returns []) yields nothing here. De-duped against
+  // files already referenced by an emitted/enum symbol in the same dir.
+  //
+  // Candidate dirs are every `src/<ns>/<dir>/models` that appears in the prior
+  // manifest (a dir may have no in-scope items yet still hold on-disk files
+  // referenced by stale out-of-scope code).
+  const manifestModelDirs = new Set<string>();
+  for (const p of ctx.priorTargetManifestPaths ?? []) {
+    const m = p.match(new RegExp(`^(src/${ctx.namespace}/[^/]+/models)/[^/]+\\.py$`));
+    if (m) manifestModelDirs.add(m[1]);
+  }
+  for (const dirPath of manifestModelDirs) {
+    if (!symbolsByDir.has(dirPath)) symbolsByDir.set(dirPath, []);
+    const referencedBasenames = new Set<string>();
+    for (const sym of symbolsByDir.get(dirPath)!) {
+      if (sym.reExport || sym.retainBasename) continue;
+      referencedBasenames.add(symbolToFile.get(sym.name) ?? fileName(sym.name));
+    }
+    for (const base of priorManifestBasenames(ctx, dirPath, '.py', new Set(['__init__']))) {
+      if (referencedBasenames.has(base)) continue;
+      referencedBasenames.add(base);
+      symbolsByDir.get(dirPath)!.push({ name: base, retainBasename: base });
+    }
   }
 
   // Backwards-compat re-exports: every relocated model is also re-exported
@@ -570,6 +642,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Use `import X as X` syntax for explicit re-exports (required by pyright strict)
     const importLines: string[] = [];
     for (const sym of uniqueSymbols) {
+      if (sym.retainBasename) {
+        // On-disk module renamed/removed from the spec: re-export it wholesale
+        // since its concrete symbol names are unknown from the manifest alone.
+        importLines.push(`from .${sym.retainBasename} import *  # noqa: F401,F403`);
+        continue;
+      }
       const cls = className(sym.name);
       if (sym.reExport) {
         importLines.push(
@@ -593,9 +671,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // which includes both the resource class re-export and model star import.
     if (!serviceDirModelPaths.has(dirPath)) {
       const parentDir = dirPath.replace(/\/models$/, '');
-      const reExports = uniqueSymbols
-        .map((sym) => `from .models import ${className(sym.name)} as ${className(sym.name)}`)
-        .join('\n');
+      const reExports = [
+        ...new Set(
+          uniqueSymbols.map((sym) =>
+            sym.retainBasename
+              ? 'from .models import *  # noqa: F401,F403'
+              : `from .models import ${className(sym.name)} as ${className(sym.name)}`,
+          ),
+        ),
+      ].join('\n');
       files.push({
         path: `${parentDir}/__init__.py`,
         content: reExports,

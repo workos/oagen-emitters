@@ -1,7 +1,16 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fixtureFileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
+import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+
+/**
+ * Prefix the per-model fixture path with the .NET test project layout so the
+ * scoped-run gate can compare it against the prefixed paths recorded in the
+ * prior manifest. Must mirror `TEST_PREFIX` in index.ts; the fixture path
+ * itself (`testdata/<name>.json`) is what `prefixTestPaths` later prepends to.
+ */
+const TEST_PREFIX = 'test/WorkOSTests/';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -25,11 +34,14 @@ export const ID_PREFIXES: Record<string, string> = {
 /**
  * Generate JSON fixture files for test data.
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}): { path: string; content: string }[] {
+export function generateFixtures(
+  spec: {
+    models: Model[];
+    enums: Enum[];
+    services: any[];
+  },
+  ctx: EmitterContext,
+): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
@@ -50,10 +62,19 @@ export function generateFixtures(spec: {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model) && !nonPaginatedWrapperRefs.has(model.name)) continue;
 
+    // Scoped-run gate: only emit a per-model fixture whose file will exist on
+    // disk after the run (in-scope, or already present from a prior manifest).
+    // A brand-new out-of-scope model's fixture would be a stray file for a
+    // model no in-scope test can reference; a renamed/removed-but-on-disk one
+    // is retained. Full runs emit everything. `relPath` carries the
+    // `test/WorkOSTests/` prefix so it matches the prefixed prior-manifest paths.
+    const fixturePath = `testdata/${fixtureFileName(model.name)}.json`;
+    if (!fileExistsAfterRun(`${TEST_PREFIX}${fixturePath}`, isModelInScope(model.name, ctx), ctx)) continue;
+
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `testdata/${fixtureFileName(model.name)}.json`,
+      path: fixturePath,
       content: JSON.stringify(fixture, null, 2),
     });
 
