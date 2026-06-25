@@ -138,6 +138,22 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
+  // The structural-dedup canonical is chosen alphabetically, independent of
+  // scope, so an in-scope alias can point at a canonical that is itself out of
+  // scope and brand-new — which the reconciler would drop, leaving the alias
+  // `type InScopeModel = Canonical` dangling (`undefined: Canonical`). Force-
+  // retain any canonical referenced by an in-scope alias. The canonical is
+  // structurally identical to that alias, so its field types are reachable from
+  // the in-scope service and therefore also emitted. In a mixed batched-alias
+  // block the in-scope member forces the shared canonical, covering its on-disk
+  // siblings that emit fresh in the same block.
+  const forcedCanonicals = new Set<string>();
+  if (isScopedRun(ctx)) {
+    for (const [aliasName, canonical] of aliasOf) {
+      if (isModelInScope(aliasName, ctx)) forcedCanonicals.add(canonical);
+    }
+  }
+
   // Build one NamedBlock per emitted model type. In a scoped run these blocks
   // are reconciled against the prior models.go (see reconcileFlatBlocks): blocks
   // for out-of-scope models that didn't exist before are dropped, and prior
@@ -246,7 +262,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     blockLines.push('}');
-    modelBlocks.push({ names: [structName], text: blockLines.join('\n'), inScope: isModelInScope(model.name, ctx) });
+    modelBlocks.push({
+      names: [structName],
+      text: blockLines.join('\n'),
+      inScope: isModelInScope(model.name, ctx) || forcedCanonicals.has(model.name),
+    });
   }
 
   // Scoped runs: drop brand-new out-of-scope blocks; carry over prior blocks the

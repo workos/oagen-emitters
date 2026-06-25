@@ -18,6 +18,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (enums.length === 0) return [];
 
   const aliasOf = collectEnumAliasOf(enums);
+  // An in-scope enum alias emits `type Alias = Canonical` against the current
+  // spec; the canonical may itself be out of scope and brand-new, which the
+  // reconciler would drop, leaving the alias dangling. Force-retain any
+  // canonical referenced by an in-scope alias.
+  const forcedCanonicals = new Set<string>();
+  if (isScopedRun(ctx)) {
+    for (const [aliasName, canonical] of aliasOf) {
+      if (isEnumInScope(aliasName, ctx)) forcedCanonicals.add(canonical);
+    }
+  }
   const files: GeneratedFile[] = [];
 
   // Group all enums into a single file per SDK
@@ -56,7 +66,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       enumBlocks.push({
         names: [typeName],
         text: [`// ${typeName} represents ${humanized} values.`, `type ${typeName} = string`].join('\n'),
-        inScope: isEnumInScope(enumDef.name, ctx),
+        inScope: isEnumInScope(enumDef.name, ctx) || forcedCanonicals.has(enumDef.name),
       });
       continue;
     }
@@ -101,7 +111,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       blockLines.push(`\t${constName} ${typeName} = ${valueStr}`);
     }
     blockLines.push(')');
-    enumBlocks.push({ names: [typeName], text: blockLines.join('\n'), inScope: isEnumInScope(enumDef.name, ctx) });
+    enumBlocks.push({
+      names: [typeName],
+      text: blockLines.join('\n'),
+      inScope: isEnumInScope(enumDef.name, ctx) || forcedCanonicals.has(enumDef.name),
+    });
   }
 
   const reconciled = reconcileFlatBlocks(enumBlocks, 'enums.go', ctx);

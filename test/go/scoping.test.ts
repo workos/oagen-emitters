@@ -162,6 +162,31 @@ describe('go scoped flat-file reconciliation (models.go)', () => {
     expect(content).toContain('NewField string `json:"new_field"`');
   });
 
+  it('force-retains an out-of-scope canonical referenced by an in-scope alias', () => {
+    // Two structurally-identical models. The alphabetically-first is the dedup
+    // canonical but is brand-new AND out of scope; the other is in scope and is
+    // emitted as `type InScopeAliasModel = AaaCanonical`. Without force-retain
+    // the canonical would be dropped, leaving the alias dangling
+    // (undefined: AaaCanonical) and the package failing to build.
+    writePrior('models.go', ['package workos', ''].join('\n'));
+
+    const fields = [strField('id'), strField('label')];
+    const models: Model[] = [
+      { name: 'AaaCanonical', fields }, // sorts first -> canonical; out of scope, brand-new
+      { name: 'InScopeAliasModel', fields }, // in scope -> alias to AaaCanonical
+    ];
+    const ctx = scopedCtx({
+      scopedServices: ['InScope'],
+      scopedModelNames: ['InScopeAliasModel'],
+      priorManifestPaths: ['models.go'],
+    });
+
+    const content = generateModels(models, ctx)[0].content;
+    expect(content).toContain('type InScopeAliasModel = AaaCanonical');
+    // The canonical must be present so the alias resolves.
+    expect(content).toContain('type AaaCanonical struct {');
+  });
+
   it('full run (no scoping) emits every model unchanged', () => {
     const models: Model[] = [
       { name: 'InScopeThing', fields: [strField('id')] },
@@ -220,6 +245,26 @@ describe('go scoped flat-file reconciliation (enums.go)', () => {
     expect(content).toContain('type OldRenamedState string');
     // the new (out-of-scope) name is not freshly added
     expect(content).not.toContain('type NewRenamedState string');
+  });
+
+  it('force-retains an out-of-scope canonical enum referenced by an in-scope alias', () => {
+    writePrior('enums.go', ['package workos', ''].join('\n'));
+
+    const enums: Enum[] = [
+      // identical values -> deduped; alphabetically-first is the canonical
+      { name: 'AaaCanonicalStatus', values: [{ name: 'active', value: 'active' }] }, // out of scope, brand-new
+      { name: 'InScopeAliasStatus', values: [{ name: 'active', value: 'active' }] }, // in scope -> alias
+    ];
+    const ctx = scopedCtx({
+      scopedServices: ['InScope'],
+      scopedEnumNames: ['InScopeAliasStatus'],
+      priorManifestPaths: ['enums.go'],
+    });
+
+    const content = generateEnums(enums, ctx).find((f) => f.path === 'enums.go')!.content;
+    expect(content).toContain('type InScopeAliasStatus = AaaCanonicalStatus');
+    // The canonical enum must be present so the alias resolves.
+    expect(content).toContain('type AaaCanonicalStatus string');
   });
 });
 
