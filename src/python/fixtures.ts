@@ -48,12 +48,15 @@ export function generateFixtures(
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
-  // When ctx is absent (unit tests) every model is in scope. The fixture path
-  // is recorded in the prior manifest verbatim, so it lines up with the gate.
-  const fixtureExists = (name: string): boolean => {
-    const path = `tests/fixtures/${fileName(name)}.json`;
+  // Gate a fixture by ITS OWN path (recorded verbatim in the prior manifest),
+  // scoped on the owning model. A base-model fixture and its `list_*` fixture
+  // are distinct files, so each must be checked against its own path — keying a
+  // list fixture off the base path would leak a brand-new `list_*` fixture for
+  // an out-of-scope model that merely already had its base fixture on disk.
+  // When ctx is absent (unit tests) every fixture is in scope.
+  const fixtureEmitted = (path: string, modelName: string): boolean => {
     if (!ctx) return true;
-    return fileExistsAfterRun(path, isModelInScope(name, ctx), ctx);
+    return fileExistsAfterRun(path, isModelInScope(modelName, ctx), ctx);
   };
 
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
@@ -67,7 +70,7 @@ export function generateFixtures(
     // would not match the override's required fields.
     if (model.fields.length === 0) continue;
     // Scoped run: skip a fixture for a brand-new out-of-scope model.
-    if (!fixtureExists(model.name)) continue;
+    if (!fixtureEmitted(`tests/fixtures/${fileName(model.name)}.json`, model.name)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
@@ -87,8 +90,9 @@ export function generateFixtures(
           if (unwrapped) itemModel = unwrapped;
           if (itemModel.fields.length === 0) continue;
           // Scoped run: a list fixture for a brand-new out-of-scope item model
-          // would be referenced by no emitted test; gate it the same way.
-          if (!fixtureExists(itemModel.name)) continue;
+          // would be referenced by no emitted test; gate it on the LIST
+          // fixture's own path (not the base model fixture's).
+          if (!fixtureEmitted(`tests/fixtures/list_${fileName(itemModel.name)}.json`, itemModel.name)) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

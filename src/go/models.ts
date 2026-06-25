@@ -3,8 +3,8 @@ import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName } from './naming.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
-import { reconcileFlatBlocks, type NamedBlock } from './flat-merge.js';
+import { isModelInScope, isScopedRun } from '../shared/resolved-ops.js';
+import { reconcileFlatBlocks, readPriorFile, parseFlatGoBlocks, type NamedBlock } from './flat-merge.js';
 
 // Import and re-export shared model detection utilities
 import {
@@ -116,6 +116,17 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Pick canonical for each duplicate group.
   // Empty structs (hash '') are now properly populated by oneOf flattening,
   // so we still skip aliasing them to avoid aliasing truly empty structs.
+  // For the batched-alias block below: in a scoped run, only emit an alias that
+  // is in scope OR already on disk (present in the prior models.go). Otherwise a
+  // `>= 5` structural group containing a single in-scope alias would drag every
+  // brand-new out-of-scope alias in the group into the file. A full run keeps
+  // every alias (isScopedRun is false).
+  const priorModelNames = isScopedRun(ctx)
+    ? new Set(parseFlatGoBlocks(readPriorFile('models.go', ctx) ?? '').blocks.flatMap((b) => b.names))
+    : new Set<string>();
+  const aliasEmitted = (name: string): boolean =>
+    !isScopedRun(ctx) || isModelInScope(name, ctx) || priorModelNames.has(className(name));
+
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroups) {
     if (names.length <= 1) continue;
@@ -163,13 +174,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const blockNames: string[] = [];
       let blockInScope = false;
       if (aliases.length >= 5) {
-        // Batch emit all aliases for this group at once
+        // Mark the whole group consumed so its members aren't re-emitted as
+        // singles, but only EMIT aliases that are in scope or already on disk —
+        // dropping brand-new out-of-scope aliases (scope leak fix). On-disk
+        // aliases are retained so out-of-scope code that references them still
+        // compiles.
         for (const aliasName of aliases) {
           batchedAliases.add(aliasName);
         }
+        const emittedAliases = aliases.filter(aliasEmitted);
+        if (emittedAliases.length === 0) continue;
         blockLines.push(`// The following types are structurally identical to ${canonicalStruct}.`);
         blockLines.push('type (');
-        for (const aliasName of aliases) {
+        for (const aliasName of emittedAliases) {
           blockLines.push(`\t${className(aliasName)} = ${canonicalStruct}`);
           blockNames.push(className(aliasName));
           if (isModelInScope(aliasName, ctx)) blockInScope = true;
