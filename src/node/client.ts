@@ -375,8 +375,23 @@ function generateServiceBarrels(spec: ApiSpec, ctx: EmitterContext): GeneratedFi
       }
     }
     const symbols = dirSymbols.get(dirName)!;
+    const dirIsOwned = ownedDirNames.has(dirName);
+    const registryScanRoot = ctx.targetDir ?? ctx.outputDir;
     for (const { stem, typeName } of options) {
       if (globalExistingSymbols.has(typeName)) continue;
+      // Skip phantom entries: options recorded for a service that isn't being
+      // emitted this run (non-owned, covered-by-existing) and whose interface
+      // file doesn't physically exist. Such an entry contributes nothing to
+      // that dir's barrel — its `export *` target is missing — yet it would
+      // claim the symbol in globalExistingSymbols, which then suppresses the
+      // SAME-named options file in the dir that actually owns it. Concretely:
+      // the generated UserManagement.getUser `GetUserOptions` (UserManagement
+      // is not owned, so no file is emitted) would otherwise hide the
+      // hand-owned DirectorySync.getUser `GetUserOptions` that exists on disk
+      // under src/directory-sync/interfaces.
+      const fileExists =
+        !!registryScanRoot && fs.existsSync(path.join(registryScanRoot, 'src', dirName, 'interfaces', `${stem}.ts`));
+      if (!dirIsOwned && !fileExists) continue;
       symbols.add(typeName);
       globalExistingSymbols.add(typeName);
       dirExports.get(dirName)!.push(`export * from './${stem}';`);
