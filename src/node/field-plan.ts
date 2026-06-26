@@ -504,7 +504,15 @@ export function planDeserializeField(
   const isNewField = baselineDomain && !baselineDomain.fields?.[domain];
   const effectivelyOptional = !field.required || isNewField;
 
-  const guard = planDeserializeGuard(field, expr, wireAccess, effectivelyOptional, isNewField, baselineResponse);
+  const guard = planDeserializeGuard(
+    field,
+    expr,
+    wireAccess,
+    effectivelyOptional,
+    isNewField,
+    baselineResponse,
+    baselineDomainField?.optional ?? false,
+  );
   return { line: emitAssignment(domain, expr, wireAccess, guard), skip: false };
 }
 
@@ -515,6 +523,7 @@ function planDeserializeGuard(
   effectivelyOptional: boolean | null | undefined,
   isNewField: boolean | null | undefined,
   baselineResponse: BaselineInterface | undefined,
+  domainFieldOptional: boolean | null | undefined,
 ): GuardStrategy {
   if (effectivelyOptional && expr !== wireAccess && needsNullGuard(field.type)) {
     const fallback = field.type.kind === 'nullable' ? 'null' : 'undefined';
@@ -525,7 +534,13 @@ function planDeserializeGuard(
     const wire = wireFieldName(field.name);
     const responseFieldInfo = baselineResponse?.fields?.[wire];
     const responseFieldOptional = responseFieldInfo?.optional ?? false;
-    const needsFallback = responseFieldOptional || !!isNewField;
+    // Only fabricate a default (e.g. `''`) when the emitted DOMAIN field is
+    // required — it must carry a value. When the domain field is optional
+    // (preserved from a baseline that declared it optional, even though the IR
+    // marks it required), coalescing to `''` violates the `?:` contract and
+    // changes runtime behavior vs. the hand-written serializer (an absent value
+    // was `undefined`, not `''`). Pass through instead so `undefined` is kept.
+    const needsFallback = (responseFieldOptional || !!isNewField) && !domainFieldOptional;
     const fallback = needsFallback ? defaultForType(field.type) : null;
     if (fallback) {
       return { kind: 'coalesce', fallback };
