@@ -3,7 +3,7 @@ import { collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oag
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
-import { isNodeOwnedService } from './options.js';
+import { isNodeOwnedService, enumValueRemap } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
@@ -47,7 +47,20 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const lines: string[] = [];
     let hasNewValues = false;
 
-    if (baselineEnum?.members) {
+    // A configured wire→domain value remap (see NodeEmitterOptions.enumValueRemaps)
+    // makes this the SDK-facing domain type: emit the mapped values (raw wire
+    // values not in the map pass through). The companion `deserialize<Enum>`
+    // mapper that converts wire → domain is emitted by the serializer pass.
+    // Bypasses baseline merging on purpose — the baseline holds the previously
+    // mapped values, and re-merging would union both wire and domain spellings.
+    const remap = enumValueRemap(ctx, enumDef.name);
+
+    if (remap) {
+      const domainValues = [...new Set(enumDef.values.map((v) => remap[String(v.value)] ?? String(v.value)))];
+      lines.push(`export type ${enumDef.name} =`);
+      lines.push(domainValues.map((v) => `  | '${v}'`).join('\n') + ';');
+      hasNewValues = true;
+    } else if (baselineEnum?.members) {
       const existingValues = new Set(Object.values(baselineEnum.members).map(String));
       const irValues = enumDef.values.map((v) => String(v.value));
       const missingValues = irValues.filter((v) => !existingValues.has(v));
@@ -122,11 +135,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     }
 
     if (isEnumInScope(enumDef.name, ctx)) {
-      files.push({
-        path: `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`,
-        content: lines.join('\n'),
-        skipIfExists: !hasNewValues,
-      });
+      const path = `src/${dirName}/interfaces/${fileName(enumDef.name)}.interface.ts`;
+      const content = lines.join('\n');
+      // A remapped enum must overwrite the existing file so its values flip from
+      // wire to domain on adoption (skipIfExists would leave the raw values).
+      files.push(remap ? { path, content, overwriteExisting: true } : { path, content, skipIfExists: !hasNewValues });
     }
   }
 

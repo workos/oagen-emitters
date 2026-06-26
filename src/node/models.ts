@@ -771,6 +771,7 @@ export function generateSerializers(
   if (models.length === 0) return [];
 
   const { modelToService, resolveDir, dedup } = shared ?? buildSharedContext(models, ctx);
+  const enumToService = assignEnumsToServices(ctx.spec.enums, ctx.spec.services, ctx.spec.models, ctx);
   const files: GeneratedFile[] = [];
   const skippedSerializeModels = new Set<string>();
   const projectedModels = models.map((model) =>
@@ -981,6 +982,7 @@ export function generateSerializers(
 
     const sctx = {
       modelToService,
+      enumToService,
       resolveDir,
       dedup,
       skippedSerializeModels,

@@ -70,6 +70,22 @@ export interface NodeEmitterOptions {
    * letting oagen own the rest of the service.
    */
   handOwnedTypes?: string[];
+  /**
+   * Remap an enum's raw wire string values to different SDK-facing (domain)
+   * values, keyed by enum name then `{ wireValue: domainValue }`.
+   *
+   * The OpenAPI spec can only describe the raw wire enum, but some SDK surfaces
+   * have historically presented translated values (e.g. WorkOS directory state
+   * `linked`/`unlinked` surfaced as `active`/`inactive`). Configuring a remap
+   * makes the emitter generate, for that enum:
+   *   - a domain type with the mapped values (`DirectoryState`),
+   *   - a wire type with the raw values (`DirectoryStateResponse`),
+   *   - a `deserialize<Enum>` mapper that converts wire → domain, and
+   *   - generated tests that assert the domain value.
+   * Wire values absent from the map pass through unchanged. Node-only; never
+   * affects the global spec or other SDKs.
+   */
+  enumValueRemaps?: Record<string, Record<string, string>>;
 }
 
 export function nodeOptions(ctx: EmitterContext): NodeEmitterOptions {
@@ -133,4 +149,40 @@ export function planOperationFor(op: Operation, ctx: EmitterContext): OperationP
     return { ...plan, responseModelName: responseModel, isModelResponse: true };
   }
   return plan;
+}
+
+/**
+ * The wire-value → domain-value remap configured for `enumName`, or undefined
+ * when the enum is not remapped. See {@link NodeEmitterOptions.enumValueRemaps}.
+ */
+export function enumValueRemap(ctx: EmitterContext, enumName: string): Record<string, string> | undefined {
+  return nodeOptions(ctx).enumValueRemaps?.[enumName];
+}
+
+/** True when `enumName` has a configured wire→domain value remap. */
+export function isRemappedEnum(ctx: EmitterContext, enumName: string | undefined): boolean {
+  return enumName !== undefined && enumValueRemap(ctx, enumName) !== undefined;
+}
+
+/** Names of every enum with a configured wire→domain value remap. */
+export function remappedEnumNames(ctx: EmitterContext): Set<string> {
+  return new Set(Object.keys(nodeOptions(ctx).enumValueRemaps ?? {}));
+}
+
+/**
+ * Project a raw wire enum value to its SDK-facing domain value via the
+ * configured remap (identity when the enum is unmapped or the value has no
+ * mapping). Shared by enum/serializer emission and test-assertion generation
+ * so they always agree on the domain value.
+ */
+export function remapWireValueToDomain(ctx: EmitterContext, enumName: string, wireValue: string): string {
+  return enumValueRemap(ctx, enumName)?.[wireValue] ?? wireValue;
+}
+
+/**
+ * The naming convention for the raw-wire companion type of a remapped enum:
+ * `DirectoryState` (domain) ↔ `DirectoryStateResponse` (wire).
+ */
+export function wireEnumName(enumName: string): string {
+  return `${enumName}Response`;
 }

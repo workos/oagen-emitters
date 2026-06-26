@@ -1,4 +1,5 @@
 import type { Model, Field, EmitterContext, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
+import { collectFieldDependencies } from '@workos/oagen';
 import { mapTypeRef as tsMapTypeRef } from './type-map.js';
 import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
 import {
@@ -15,7 +16,34 @@ import {
   liveSurfaceFunctionPath,
   liveSurfaceHasAutogenFile,
 } from './live-surface.js';
-import { isNodeOwnedService } from './options.js';
+import { isNodeOwnedService, isRemappedEnum, enumValueRemap, nodeOptions } from './options.js';
+
+/**
+ * Names of every remapped enum the model deserializes (see
+ * NodeEmitterOptions.enumValueRemaps), sorted for stable output. Drives both
+ * the domain-type import and the local mapper emission in the serializer file.
+ */
+function collectRemappedEnumDeps(model: Model, ctx: EmitterContext): string[] {
+  if (!nodeOptions(ctx).enumValueRemaps) return [];
+  const used = collectFieldDependencies(model).enums;
+  return [...used].filter((name) => isRemappedEnum(ctx, name)).sort();
+}
+
+/**
+ * Render the file-local wire→domain mapper for a remapped enum, e.g.
+ * `const deserializeDirectoryState = (value: string): DirectoryState => {...}`.
+ * The param is `string` because the wire value arrives untyped from JSON; the
+ * `as` on the fall-through narrows the unmapped (already-domain-valid) values.
+ */
+function renderEnumDeserializeMapper(enumName: string, ctx: EmitterContext): string[] {
+  const remap = enumValueRemap(ctx, enumName) ?? {};
+  const lines = [`const deserialize${enumName} = (value: string): ${enumName} => {`];
+  for (const [wire, domain] of Object.entries(remap)) {
+    lines.push(`  if (value === '${wire}') {`, `    return '${domain}';`, `  }`);
+  }
+  lines.push(`  return value as ${enumName};`, `};`);
+  return lines;
+}
 
 // ---------------------------------------------------------------------------
 // Guard strategy
@@ -83,8 +111,14 @@ export function deserializeExpression(
   switch (ref.kind) {
     case 'primitive':
       return deserializePrimitive(ref, wireExpr);
-    case 'literal':
     case 'enum':
+      // A remapped enum routes its wire value through the file-local
+      // `deserialize<Enum>` mapper emitted by `emitSerializerBody`.
+      if (isRemappedEnum(ctx, ref.name)) {
+        return `deserialize${ref.name}(${wireExpr})`;
+      }
+      return wireExpr;
+    case 'literal':
       return wireExpr;
     case 'model': {
       const name = resolveInterfaceName(ref.name, ctx);
@@ -706,6 +740,9 @@ function emitAssignment(lhs: string, expr: string, accessExpr: string, guard: Gu
 
 interface SerializerContext {
   modelToService: Map<string, string>;
+  /** Enum name → IR service, so a remapped enum's domain type can be imported
+   *  from its owning service directory. */
+  enumToService: Map<string, string>;
   resolveDir: (irService: string | undefined) => string;
   dedup: Map<string, string>;
   skippedSerializeModels: Set<string>;
@@ -822,6 +859,14 @@ export function buildSerializerImports(
       lines.push(`import { deserialize${depName}, serialize${depName} } from '${rel}';`);
     }
   }
+
+  // Domain-type imports for any remapped enum the model deserializes — the
+  // file-local mapper's return type (e.g. `): DirectoryState =>`).
+  for (const enumName of collectRemappedEnumDeps(model, sctx.ctx)) {
+    const enumDir = sctx.resolveDir(sctx.enumToService.get(enumName));
+    const enumInterfacePath = `src/${enumDir}/interfaces/${fileName(enumName)}.interface.ts`;
+    lines.push(`import type { ${enumName} } from '${relativeImport(serializerPath, enumInterfacePath)}';`);
+  }
   lines.push('');
   return lines;
 }
@@ -893,6 +938,11 @@ export function emitSerializerBody(
     shouldSkipSerialize || hasUnsafeSerializePassthrough(model, baselineDomain, baselineResponse, ctx);
 
   if (!shouldSkipDeserialize) {
+    // File-local wire→domain mappers for remapped enum fields, emitted before
+    // the deserializer that calls them (see deserializeExpression's enum case).
+    for (const enumName of collectRemappedEnumDeps(model, ctx)) {
+      lines.push(...renderEnumDeserializeMapper(enumName, ctx), '');
+    }
     const seenDeserFields = new Set<string>();
     const deserParamPrefix = model.fields.length === 0 ? '_' : '';
     lines.push(`export const deserialize${domainName} = ${typeParams.decl}(`);

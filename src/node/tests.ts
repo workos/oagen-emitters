@@ -40,7 +40,7 @@ import {
   computeNonEventReachable,
 } from './utils.js';
 import { groupByMount, buildResolvedLookup, lookupResolved, isMountInScope } from '../shared/resolved-ops.js';
-import { isNodeOwnedService, nodeOptions, planOperationFor } from './options.js';
+import { isNodeOwnedService, nodeOptions, planOperationFor, enumValueRemap } from './options.js';
 
 type BaselineMethod = {
   params: Array<{ name: string; type: string; optional?: boolean; passingStyle?: string }>;
@@ -607,7 +607,7 @@ function renderPaginatedTest(
   } else {
     const itemModel = modelMap.get(itemModelName);
     if (itemModel) {
-      const assertions = buildFieldAssertions(itemModel, 'data[0]', modelMap);
+      const assertions = buildFieldAssertions(itemModel, 'data[0]', ctx, modelMap);
       if (assertions.length > 0) {
         lines.push('      expect(data.length).toBeGreaterThan(0);');
         for (const assertion of assertions) {
@@ -717,7 +717,7 @@ function renderBodyTest(
   } else {
     const responseModel = modelMap.get(responseModelName);
     if (responseModel) {
-      const assertions = buildFieldAssertions(responseModel, accessor, modelMap);
+      const assertions = buildFieldAssertions(responseModel, accessor, ctx, modelMap);
       if (assertions.length > 0) {
         for (const assertion of assertions) {
           lines.push(`      ${assertion}`);
@@ -786,7 +786,7 @@ function renderGetTest(
   } else {
     const responseModel = modelMap.get(responseModelName);
     if (responseModel) {
-      const assertions = buildFieldAssertions(responseModel, accessor, modelMap);
+      const assertions = buildFieldAssertions(responseModel, accessor, ctx, modelMap);
       if (assertions.length > 0) {
         for (const assertion of assertions) {
           lines.push(`      ${assertion}`);
@@ -1138,7 +1138,7 @@ function generateEntityHelpers(
     if (count < 2) continue;
     const model = modelMap.get(modelName);
     if (!model) continue;
-    const assertions = buildFieldAssertions(model, 'result', modelMap);
+    const assertions = buildFieldAssertions(model, 'result', ctx, modelMap);
     if (assertions.length === 0) continue;
 
     const domainName = resolveInterfaceName(modelName, ctx);
@@ -1173,12 +1173,21 @@ function isDateTimeFieldType(type: TypeRef): boolean {
   return false;
 }
 
-function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<string, Model>): string[] {
+function buildFieldAssertions(
+  model: Model,
+  accessor: string,
+  ctx: EmitterContext | undefined,
+  modelMap?: Map<string, Model>,
+): string[] {
   const assertions: string[] = [];
 
   for (const field of model.fields) {
     if (!field.required) continue;
     const domainField = fieldName(field.domainName ?? field.name);
+    // A remapped enum field deserializes to its DOMAIN value (e.g. wire
+    // `linked` → `active`), so the assertion must expect the mapped value.
+    const enumRemap = ctx && field.type.kind === 'enum' ? enumValueRemap(ctx, field.type.name) : undefined;
+    const toDomain = (wire: string): string => enumRemap?.[wire] ?? wire;
     // `string` + `format: 'date-time'` is deserialized to `Date` by the
     // serializer (see `mapPrimitive` in type-map.ts). Asserting against a
     // string literal would fail Object.is — compare via `.toISOString()`.
@@ -1201,7 +1210,7 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
           isDateTime && typeof field.example === 'string'
             ? `'${new Date(field.example).toISOString()}'`
             : typeof field.example === 'string'
-              ? `'${field.example}'`
+              ? `'${toDomain(field.example)}'`
               : String(field.example);
         assertions.push(`expect(${fieldAccessor}).toBe(${exampleLiteral});`);
       }
@@ -1209,7 +1218,10 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
     }
     const value = fixtureValueForType(field.type, field.name, model.name);
     if (value === null) continue;
-    assertions.push(`expect(${fieldAccessor}).toBe(${value});`);
+    // Remap the wire enum literal (e.g. `'linked'`) to its domain value when
+    // the field has no example and falls back to a generated fixture value.
+    const remapped = enumRemap ? value.replace(/^'(.+)'$/, (_m, v) => `'${toDomain(v)}'`) : value;
+    assertions.push(`expect(${fieldAccessor}).toBe(${remapped});`);
   }
 
   // When no primitive assertions were found (e.g. wrapper types like
@@ -1223,7 +1235,7 @@ function buildFieldAssertions(model: Model, accessor: string, modelMap?: Map<str
         if (nestedModel) {
           const nestedAccessor = `${accessor}.${fieldName(field.name)}`;
           // Recurse without modelMap to limit depth to one level
-          const nested = buildFieldAssertions(nestedModel, nestedAccessor);
+          const nested = buildFieldAssertions(nestedModel, nestedAccessor, ctx);
           assertions.push(...nested);
         }
       }
@@ -1471,7 +1483,7 @@ function domainValueFromWire(field: Field, fixtureVar: string): string {
  * undoing the wire→domain conversion (`Date` compared via `toISOString()`,
  * `int64` via `BigInt(...)`). Only meaningful for reconstructable fields.
  */
-function deserializeFieldAssertion(field: Field): string {
+function deserializeFieldAssertion(field: Field, ctx: EmitterContext | undefined): string {
   const camel = domainFieldName(field);
   const wire = wireFieldName(field.name);
   // A nullable/optional field can deserialize to null/undefined when the wire
@@ -1480,6 +1492,21 @@ function deserializeFieldAssertion(field: Field): string {
   const mayBeAbsent = field.type.kind === 'nullable' || !field.required;
   let t = field.type;
   if (t.kind === 'nullable') t = t.inner;
+  // A remapped enum deserializes wire→domain, so the round-trip must map the
+  // fixture's wire value to the expected domain value rather than compare raw.
+  const enumRemap = ctx && t.kind === 'enum' ? enumValueRemap(ctx, t.name) : undefined;
+  if (enumRemap) {
+    // `String(...)` on the comparison subject because the wire field is typed
+    // as the mapped domain enum (single domain type), so comparing it directly
+    // to a raw wire literal like `'linked'` would trip TS2367 (no overlap).
+    const mapped = Object.entries(enumRemap).reduceRight(
+      (els, [w, d]) => `String(fixture.${wire}) === '${w}' ? '${d}' : ${els}`,
+      `fixture.${wire}`,
+    );
+    return mayBeAbsent
+      ? `    expect(deserialized.${camel} ?? null).toEqual((${mapped}) ?? null);`
+      : `    expect(deserialized.${camel}).toEqual(${mapped});`;
+  }
   if (t.kind === 'primitive' && t.format === 'date-time') {
     return mayBeAbsent
       ? `    expect(deserialized.${camel}?.toISOString() ?? null).toEqual(fixture.${wire} ?? null);`
@@ -1621,7 +1648,7 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
         lines.push(`    const deserialized = deserialize${domainName}(fixture);`);
         if (assertableFields.length > 0) {
-          for (const field of assertableFields) lines.push(deserializeFieldAssertion(field));
+          for (const field of assertableFields) lines.push(deserializeFieldAssertion(field, ctx));
         } else {
           lines.push('    expect(deserialized).toBeDefined();');
         }
