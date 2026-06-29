@@ -1460,22 +1460,88 @@ function isReconstructableFromWire(ref: TypeRef): boolean {
 
 /**
  * Build the camelCase domain value for `field`, read from a wire-fixture
- * variable, inverting the wire→domain primitive conversions the serializer
- * applies (`date-time` ⇒ `new Date(...)`, `int64` ⇒ `BigInt(...)`). This is
- * what lets a serialize-only test feed the serializer the shape it actually
- * expects instead of the snake_case wire object.
+ * variable, inverting the wire→domain conversions the serializer applies
+ * (`date-time` ⇒ `new Date(...)`, `int64` ⇒ `BigInt(...)`, snake_case ⇒
+ * camelCase, recursively through nested models and arrays). This is what lets a
+ * serialize-only test feed the serializer the domain shape it actually expects
+ * instead of the snake_case wire object — passing the raw fixture would
+ * dereference `undefined` (e.g. `model.occurredAt.toISOString()`) and throw.
  */
-function domainValueFromWire(field: Field, fixtureVar: string): string {
+function domainValueFromWire(field: Field, fixtureVar: string, modelMap?: Map<string, Model>): string {
   const access = `${fixtureVar}.${wireFieldName(field.name)}`;
-  let t = field.type;
-  if (t.kind === 'nullable') t = t.inner;
-  if (t.kind === 'primitive' && t.format === 'date-time') {
-    return field.required ? `new Date(${access})` : `${access} != null ? new Date(${access}) : undefined`;
+  const expr = domainValueExpr(field.type, access, modelMap, new Set());
+  if (expr === access) return access;
+  // An optional field may be absent on the wire; guard so the inversion doesn't
+  // run on `undefined` (the nullable case below guards explicit nulls).
+  return field.required ? expr : `${access} != null ? ${expr} : undefined`;
+}
+
+/** Recursively invert wire→domain conversions for `type`, reading from `access`. */
+function domainValueExpr(
+  type: TypeRef,
+  access: string,
+  modelMap: Map<string, Model> | undefined,
+  seen: Set<string>,
+): string {
+  if (type.kind === 'nullable') {
+    const inner = domainValueExpr(type.inner, access, modelMap, seen);
+    return inner === access ? access : `${access} != null ? ${inner} : undefined`;
   }
-  if (t.kind === 'primitive' && t.format === 'int64') {
-    return field.required ? `BigInt(${access})` : `${access} != null ? BigInt(${access}) : undefined`;
+  if (type.kind === 'primitive' && type.format === 'date-time') return `new Date(${access} as string)`;
+  if (type.kind === 'primitive' && type.format === 'int64') return `BigInt(${access} as string | number)`;
+  if (type.kind === 'array') {
+    const itemExpr = domainValueExpr(type.items, 'item', modelMap, seen);
+    // Parenthesize the arrow body so an object-literal item (`{ ... }`) isn't
+    // parsed as a block statement.
+    return itemExpr === 'item' ? access : `(${access} as any[]).map((item) => (${itemExpr}))`;
+  }
+  if (type.kind === 'model' && modelMap) {
+    const model = modelMap.get(type.name);
+    // Bail to passthrough on unknown or self-referential models (a cycle would
+    // recurse forever building the object literal).
+    if (!model || seen.has(type.name)) return access;
+    const next = new Set(seen).add(type.name);
+    const base = `(${access} as any)`;
+    const seenKeys = new Set<string>();
+    const parts: string[] = [];
+    for (const f of model.fields) {
+      const camel = domainFieldName(f);
+      if (seenKeys.has(camel)) continue;
+      seenKeys.add(camel);
+      const fAccess = `${base}.${wireFieldName(f.name)}`;
+      let fExpr = domainValueExpr(f.type, fAccess, modelMap, next);
+      if (fExpr !== fAccess && !f.required) fExpr = `${fAccess} != null ? ${fExpr} : undefined`;
+      parts.push(`${camel}: ${fExpr}`);
+    }
+    return `{ ${parts.join(', ')} }`;
   }
   return access;
+}
+
+/**
+ * Whether every field of `type` can be soundly reconstructed from the wire
+ * fixture (recursively), so a serialize-only test can assert the exact wire
+ * output. Unions can't be reconstructed (variant ambiguity) and remapped enums
+ * need a wire→domain mapping the reconstruction doesn't apply, so either makes
+ * the round-trip inexact — fall back to a `toBeDefined()` smoke check there.
+ */
+function isReconstructableTree(
+  ref: TypeRef,
+  modelMap: Map<string, Model>,
+  ctx: EmitterContext | undefined,
+  seen: Set<string> = new Set(),
+): boolean {
+  if (ref.kind === 'nullable') return isReconstructableTree(ref.inner, modelMap, ctx, seen);
+  if (ref.kind === 'array') return isReconstructableTree(ref.items, modelMap, ctx, seen);
+  if (ref.kind === 'enum') return !(ctx && enumValueRemap(ctx, ref.name));
+  if (ref.kind === 'model') {
+    const model = modelMap.get(ref.name);
+    if (!model) return false;
+    if (seen.has(ref.name)) return true;
+    const next = new Set(seen).add(ref.name);
+    return model.fields.every((f) => isReconstructableTree(f.type, modelMap, ctx, next));
+  }
+  return ref.kind === 'primitive' || ref.kind === 'literal' || ref.kind === 'map';
 }
 
 /**
@@ -1526,6 +1592,7 @@ function deserializeFieldAssertion(field: Field, ctx: EmitterContext | undefined
  */
 function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
+  const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const modelToService = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
   const serviceNameMap = new Map<string, string>();
   for (const service of spec.services) {
@@ -1656,28 +1723,31 @@ function generateSerializerTests(spec: ApiSpec, ctx: EmitterContext): GeneratedF
         lines.push('});');
       } else if (serializeOnlyModels.has(model.name)) {
         // Serialize-only test for request-body-only models without a deserializer.
-        // Feeding the snake_case wire fixture straight into the serializer
-        // silently maps mismatched keys (e.g. `organizationId`) to `undefined`
-        // while `toBeDefined()` still passes. Reconstruct the camelCase domain
-        // model from the fixture and assert the serialized wire output matches.
-        const reconstructable = model.fields.length > 0 && model.fields.every((f) => isReconstructableFromWire(f.type));
+        // Feeding the snake_case wire fixture straight into the serializer is
+        // unsound: mismatched keys map to `undefined` (silently passing a bare
+        // `toBeDefined()`) and converted fields crash it outright
+        // (`model.occurredAt.toISOString()` on an absent `occurredAt`).
+        // Reconstruct the camelCase domain model from the fixture instead —
+        // recursively, through nested models and arrays — and assert the exact
+        // serialized wire output when the shape round-trips losslessly.
+        const fullyReconstructable =
+          model.fields.length > 0 && model.fields.every((f) => isReconstructableTree(f.type, modelMap, ctx));
+        const seen = new Set<string>();
         lines.push(`describe('${domainName}Serializer', () => {`);
         lines.push("  it('serializes correctly', () => {");
         lines.push(`    const fixture = ${fixtureName} as ${wireName};`);
-        if (reconstructable) {
-          const seen = new Set<string>();
-          lines.push('    const model = {');
-          for (const field of model.fields) {
-            const camel = domainFieldName(field);
-            if (seen.has(camel)) continue;
-            seen.add(camel);
-            lines.push(`      ${camel}: ${domainValueFromWire(field, 'fixture')},`);
-          }
-          lines.push('    };');
-          lines.push(`    const serialized = serialize${domainName}(model as any);`);
+        lines.push('    const model = {');
+        for (const field of model.fields) {
+          const camel = domainFieldName(field);
+          if (seen.has(camel)) continue;
+          seen.add(camel);
+          lines.push(`      ${camel}: ${domainValueFromWire(field, 'fixture', modelMap)},`);
+        }
+        lines.push('    };');
+        lines.push(`    const serialized = serialize${domainName}(model as any);`);
+        if (fullyReconstructable) {
           lines.push('    expect(serialized).toEqual(expect.objectContaining(fixture));');
         } else {
-          lines.push(`    const serialized = serialize${domainName}(fixture as any);`);
           lines.push('    expect(serialized).toBeDefined();');
         }
         lines.push('  });');
