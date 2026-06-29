@@ -1613,7 +1613,14 @@ function renderMethod(
           // When the body is folded into an options-style param (not 'payload'),
           // expand individual fields so IDEs surface per-field documentation.
           if (bodyParamName !== 'payload' && bodyModel) {
+            // A baseline-preserved (curated) options type drops deprecated fields
+            // — the emitter is not regenerating the interface, so documenting a
+            // deprecated spec field would reference one the public type omits
+            // (e.g. AuditLogExportOptions has no `actors`). Mirror the curated
+            // baseline by skipping deprecated fields in that case.
+            const optionTypeIsCurated = optionInfo?.generated === false;
             for (const bField of bodyModel.fields) {
+              if (optionTypeIsCurated && bField.deprecated) continue;
               const fName = `${bodyParamName}.${fieldName(bField.name)}`;
               const deprecatedPrefix = bField.deprecated ? '(deprecated) ' : '';
               if (bField.description) {
@@ -1786,6 +1793,26 @@ function renderMethod(
   return lines;
 }
 
+/** Whether the resolved SDK behavior asks for auto-generated idempotency keys on POSTs. */
+function autoGeneratesIdempotencyKey(ctx: EmitterContext): boolean {
+  return ctx.spec.sdk?.idempotency?.autoGenerateForPost ?? false;
+}
+
+/**
+ * Fields to spread into an idempotent POST's trailing `RequestOptions` object,
+ * or `[]` when the operation is not an idempotent POST. Always forwards the
+ * caller-supplied `requestOptions`; when the SDK behavior opts in, it also
+ * auto-generates an `Idempotency-Key` so retries on 5xx don't duplicate writes.
+ */
+function idempotencyOptionFields(plan: OperationPlan, ctx: EmitterContext): string[] {
+  if (!plan.isIdempotentPost) return [];
+  const fields = ['...requestOptions'];
+  if (autoGeneratesIdempotencyKey(ctx)) {
+    fields.push('idempotencyKey: requestOptions.idempotencyKey ?? `workos-node-${globalThis.crypto.randomUUID()}`');
+  }
+  return fields;
+}
+
 function renderOptionsObjectMethod(
   lines: string[],
   op: Operation,
@@ -1812,9 +1839,18 @@ function renderOptionsObjectMethod(
     visibleQueryParams.length > 0 ||
     Object.keys(getOpDefaults(resolvedOp)).length > 0 ||
     getOpInferFromClient(resolvedOp).length > 0;
-  const queryOptionsArg = hasQuery
-    ? `, { query: ${renderQueryExprWithOptions(visibleQueryParams, optionParam.optional, resolvedOp)} }`
-    : '';
+  // Idempotent POSTs accept a trailing `requestOptions: PostOptions` param and
+  // forward it (merged with any query) so callers can supply — and the client
+  // can auto-generate — an Idempotency-Key. Mirrors renderBodyMethod's payload
+  // path. For non-idempotent ops `idempotencyFields` is empty, so this collapses
+  // to the original `{ query: ... }` (or nothing).
+  const idempotencyFields = idempotencyOptionFields(plan, ctx);
+  const requestOptionsParam = idempotencyFields.length ? ', requestOptions: PostOptions = {}' : '';
+  const trailingOptionParts = [
+    ...idempotencyFields,
+    ...(hasQuery ? [`query: ${renderQueryExprWithOptions(visibleQueryParams, optionParam.optional, resolvedOp)}`] : []),
+  ];
+  const queryOptionsArg = trailingOptionParts.length ? `, { ${trailingOptionParts.join(', ')} }` : '';
 
   if (plan.isPaginated && op.pagination && op.httpMethod === 'get') {
     let itemRawName = op.pagination.itemType.kind === 'model' ? op.pagination.itemType.name : null;
@@ -1912,7 +1948,7 @@ function renderOptionsObjectMethod(
     }
 
     if (!responseModel) {
-      lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): Promise<void> {`);
+      lines.push(`  async ${method}(${renderOptionsParam(optionParam)}${requestOptionsParam}): Promise<void> {`);
       renderOptionsObjectDestructure(lines, [...pathBindings, ...queryBindings], 'payload');
       const bodyParam = renderOptionsObjectBodyFieldMap(lines, bodyFieldMap);
       bodyExpr = bodyArgExprWithParam(bodyExpr, bodyParam);
@@ -1931,7 +1967,7 @@ function renderOptionsObjectMethod(
       : `deserialize${responseModel}(data)`;
     const finalReturnExpr = override?.returnDataProperty ? `${returnExpr}.${override.returnDataProperty}` : returnExpr;
 
-    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): ${methodReturnType} {`);
+    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}${requestOptionsParam}): ${methodReturnType} {`);
     renderOptionsObjectDestructure(lines, [...pathBindings, ...queryBindings], 'payload');
     const bodyParam = renderOptionsObjectBodyFieldMap(lines, bodyFieldMap);
     bodyExpr = bodyArgExprWithParam(bodyExpr, bodyParam);
@@ -1958,7 +1994,7 @@ function renderOptionsObjectMethod(
       : `deserialize${responseModel}(data)`;
     const finalReturnExpr = override?.returnDataProperty ? `${returnExpr}.${override.returnDataProperty}` : returnExpr;
 
-    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): ${methodReturnType} {`);
+    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}${requestOptionsParam}): ${methodReturnType} {`);
     renderOptionsObjectDestructure(lines, pathBindings);
     // POST/PUT/PATCH require the entity argument even without a request body —
     // the client signature is `post(path, entity, options?)`, so a body-less
@@ -1984,7 +2020,7 @@ function renderOptionsObjectMethod(
   // fall through to the positional renderVoidMethod, which is inconsistent with
   // the options-object surface the rest of an owned service uses.
   {
-    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}): Promise<void> {`);
+    lines.push(`  async ${method}(${renderOptionsParam(optionParam)}${requestOptionsParam}): Promise<void> {`);
     renderOptionsObjectDestructure(lines, pathBindings);
     const emptyBodyArg = httpMethodNeedsBody(op.httpMethod) ? ', {}' : '';
     lines.push(`    await this.workos.${op.httpMethod}(${pathStr}${emptyBodyArg}${queryOptionsArg});`);
@@ -2230,19 +2266,17 @@ function renderBodyMethod(
 
   lines.push(`  async ${method}(${paramsStr}): Promise<${returnType}> {`);
   if (plan.isIdempotentPost) {
-    if (hasCustomEncoding) {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
-      lines.push(`      ${pathStr},`);
-      lines.push(`      ${bodyExpr},`);
-      lines.push(`      { ...requestOptions${encodingOption} },`);
-      lines.push('    );');
-    } else {
-      lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
-      lines.push(`      ${pathStr},`);
-      lines.push(`      ${bodyExpr},`);
-      lines.push('      requestOptions,');
-      lines.push('    );');
-    }
+    // Forward requestOptions (auto-generating an Idempotency-Key when the SDK
+    // behavior opts in), merged with any non-json encoding option.
+    const optionFields = [
+      ...idempotencyOptionFields(plan, ctx),
+      ...(hasCustomEncoding ? [encodingOption.slice(2)] : []),
+    ];
+    lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
+    lines.push(`      ${pathStr},`);
+    lines.push(`      ${bodyExpr},`);
+    lines.push(`      { ${optionFields.join(', ')} },`);
+    lines.push('    );');
   } else {
     if (hasCustomEncoding) {
       lines.push(`    const { data } = await this.workos.${op.httpMethod}<${wireType}, ${entityType}>(`);
