@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.3](https://github.com/workos/oagen-emitters/compare/v0.19.2...v0.19.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* **python:** no empty models barrel for out-of-scope new services ([#168](https://github.com/workos/oagen-emitters/issues/168)) ([60e2cbb](https://github.com/workos/oagen-emitters/commit/60e2cbb17b8a67c312f4186ed9bb92946a9d104f))
+
 ## [0.19.2](https://github.com/workos/oagen-emitters/compare/v0.19.1...v0.19.2) (2026-06-30)
 
 
