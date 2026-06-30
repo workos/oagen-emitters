@@ -61,6 +61,37 @@ describe('go/enums', () => {
     expect(content).toContain('type Beta = Alpha');
   });
 
+  it('never declares the same Go type twice when the enum list contains duplicates', () => {
+    // Reproduces the enums.go "redeclared in this block" failure: the Go
+    // emitter feeds generateEnums `[...enums, ...syntheticEnums]`, and a
+    // synthetic enum (from enrichModelsFromSpec) can duplicate an inline enum
+    // the parser already emitted. Both collapse to the same Go type name, so a
+    // naive emit writes two `type X = Y` / `type X` lines into the single
+    // enums.go — a hard compile error.
+    const dup: Enum = {
+      name: 'DataIntegrationCredentialsResponseError',
+      values: [
+        { name: 'NOT_INSTALLED', value: 'not_installed' },
+        { name: 'NEEDS_REAUTHORIZATION', value: 'needs_reauthorization' },
+      ],
+    };
+    const enums: Enum[] = [
+      {
+        name: 'DataIntegrationAccessTokenResponseError',
+        values: [
+          { name: 'NOT_INSTALLED', value: 'not_installed' },
+          { name: 'NEEDS_REAUTHORIZATION', value: 'needs_reauthorization' },
+        ],
+      },
+      dup,
+      // Same name appears a second time (IR enum + synthetic enum).
+      { ...dup },
+    ];
+    const content = generateEnums(enums, ctx)[0].content;
+    const declarations = content.match(/^type DataIntegrationCredentialsResponseError\b/gm) ?? [];
+    expect(declarations).toHaveLength(1);
+  });
+
   it('handles empty enums as type aliases to string', () => {
     const enums: Enum[] = [{ name: 'UnknownType', values: [] }];
     const files = generateEnums(enums, ctx);

@@ -40,8 +40,19 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   // renamed/removed ones still referenced by un-regenerated code). A full run
   // emits every block unchanged.
   const enumBlocks: NamedBlock[] = [];
+  // Go declares every enum in this one file, so the same Go type name must
+  // never be written twice — a second `type X` / `type X = Y` is a hard
+  // "redeclared in this block" compile error. The input list can contain
+  // same-named entries when a synthetic enum (from enrichModelsFromSpec)
+  // duplicates an inline enum the parser already emitted. Dedup by the final
+  // Go type name as a backstop, independent of how the list was assembled.
+  const emittedTypeNames = new Set<string>();
 
   for (const enumDef of enums) {
+    const goTypeName = className(enumDef.name);
+    if (emittedTypeNames.has(goTypeName)) continue;
+    emittedTypeNames.add(goTypeName);
+
     // If this enum is an alias, emit a simple type alias
     const canonicalName = aliasOf.get(enumDef.name);
     if (canonicalName) {
