@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/workos/oagen-emitters/compare/v0.19.1...v0.19.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* emitter compile failures in Go enums and PHP unions ([#166](https://github.com/workos/oagen-emitters/issues/166)) ([d1ae232](https://github.com/workos/oagen-emitters/commit/d1ae232650b499c55e26527dee287f965a906307))
+
 ## [0.19.1](https://github.com/workos/oagen-emitters/compare/v0.19.0...v0.19.1) (2026-06-25)
 
 
