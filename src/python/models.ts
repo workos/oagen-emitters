@@ -4,7 +4,14 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
-import { isModelInScope, isEnumInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
+import {
+  isModelInScope,
+  isEnumInScope,
+  fileExistsAfterRun,
+  priorManifestBasenames,
+  isMountInScope,
+  getMountTarget,
+} from '../shared/resolved-ops.js';
 
 /**
  * Generate Python dataclass model files from IR Model definitions.
@@ -605,10 +612,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   // Build set of service directory model paths — these get their parent __init__.py
   // from generateServiceInits in client.ts, so we must not create a competing one here.
+  // `inScopeServiceDirModelPaths` is the subset the current run is generating: in a
+  // scoped (`--services`) run it excludes services not selected, so a brand-new
+  // out-of-scope service the spec just added does not get a stray empty barrel.
+  // (Inactive scoping ⇒ isMountInScope is always true ⇒ the two sets match.)
   const serviceDirModelPaths = new Set<string>();
+  const inScopeServiceDirModelPaths = new Set<string>();
   for (const service of ctx.spec.services) {
     const dirName = mountDirMap.get(service.name) ?? resolveDir(service.name);
-    serviceDirModelPaths.add(`src/${ctx.namespace}/${dirName}/models`);
+    const modelsPath = `src/${ctx.namespace}/${dirName}/models`;
+    serviceDirModelPaths.add(modelsPath);
+    if (isMountInScope(getMountTarget(service, ctx), ctx)) {
+      inScopeServiceDirModelPaths.add(modelsPath);
+    }
   }
 
   // Emit an empty barrel for every service-models dir that has no symbols of
@@ -617,8 +633,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // `__init__.py` from a previous spec revision — when the underlying module
   // gets pruned the dangling re-export survives and breaks pyright. Done here
   // (not in client.ts) so a subsequent emission for the same path with real
-  // content always wins last-write-wins.
-  for (const dirPath of serviceDirModelPaths) {
+  // content always wins last-write-wins. Skipped for services outside a scoped
+  // run's selection — we don't manage their tree this run.
+  for (const dirPath of inScopeServiceDirModelPaths) {
     if (!symbolsByDir.has(dirPath)) {
       files.push({
         path: `${dirPath}/__init__.py`,
