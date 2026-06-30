@@ -32,8 +32,13 @@ export const goEmitter: Emitter = {
   language: 'go',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    // Enrich models by flattening oneOf/allOf+oneOf variant fields from the raw spec
-    const enriched = enrichModelsFromSpec(models);
+    // Enrich models by flattening oneOf/allOf+oneOf variant fields from the raw
+    // spec. Pass the IR enums so enrichment seeds their names and does NOT mint a
+    // synthetic enum that duplicates one the parser already emitted (e.g. an
+    // inline `error` enum). Go writes every enum into a single enums.go, so a
+    // duplicate name becomes a `type X = Y` redeclaration and fails to compile.
+    // Ruby and PHP already pass `enums` here for the same reason.
+    const enriched = enrichModelsFromSpec(models, ctx.spec.enums);
     // Go has no sum types, so discriminated union base models (e.g. EventSchema)
     // need their base fields preserved. enrichModelsFromSpec clears fields for
     // discriminated models so dispatcher-capable languages can generate sealed
