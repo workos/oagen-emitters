@@ -202,4 +202,76 @@ describe('python scoped aggregates', () => {
       expect(testFiles.find((f) => f.path === 'tests/fixtures/gadget_brand_new.json')).toBeDefined();
     });
   });
+
+  // A service the spec just added that the SDK has never generated (no files in
+  // the prior manifest) and that this scoped run did not select must not get a
+  // stray empty `<svc>/models/__init__.py`. Without the guard the empty-barrel
+  // pass — which walks the full spec — would materialize one, leaving an "Agents"
+  // package in a Pipes-only PR.
+  describe('brand-new out-of-scope service gets no empty models barrel', () => {
+    const localServices: Service[] = [
+      {
+        name: 'Widgets',
+        operations: [
+          {
+            name: 'getWidget',
+            httpMethod: 'get',
+            path: '/widgets/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'WidgetA' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+      {
+        name: 'Agents',
+        operations: [
+          {
+            name: 'getAgent',
+            httpMethod: 'get',
+            path: '/agents/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AgentThing' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const localModels: Model[] = [
+      { name: 'WidgetA', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      { name: 'AgentThing', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const localSpec: ApiSpec = {
+      name: 'TestAPI',
+      version: '1.0.0',
+      baseUrl: 'https://api.workos.com',
+      services: localServices,
+      models: localModels,
+      enums: [],
+      sdk: defaultSdkBehavior(),
+    };
+    // Scoped to Widgets; the prior manifest has no record of Agents at all.
+    const ctx = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: localSpec,
+      scopedServices: new Set(['Widgets']),
+      scopedModelNames: new Set(['WidgetA']),
+      scopedEnumNames: new Set<string>(),
+      priorTargetManifestPaths: new Set(['src/workos/widgets/models/widget_a.py']),
+    } as EmitterContext;
+
+    it('skips the empty barrel for the never-generated, out-of-scope service', () => {
+      const files = generateModels(localModels, ctx);
+      expect(files.find((f) => f.path === 'src/workos/agents/models/__init__.py')).toBeUndefined();
+      // The selected service's barrel is still produced.
+      expect(files.find((f) => f.path === 'src/workos/widgets/models/__init__.py')).toBeDefined();
+    });
+  });
 });
