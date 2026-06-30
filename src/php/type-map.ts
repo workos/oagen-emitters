@@ -89,16 +89,48 @@ function joinUnionVariants(ref: UnionType, variants: string[]): string {
   if (ref.compositionKind === 'allOf') {
     return variants[0] ?? 'mixed';
   }
-  const unique = [...new Set(variants)];
-  if (unique.length === 1) return unique[0];
-  return unique.join('|');
+  // PHP type declarations forbid the `?T` nullable shorthand inside a `|`
+  // union — `string|?string` is a parse error. Hoist nullability out of the
+  // variants: strip a leading `?`, drop a bare `null`, then re-attach it as a
+  // single `?T` (one non-null type) or trailing `|null` (several). A union of
+  // `string` + nullable-`string` (e.g. from a `oneOf: [string, {string|null}]`
+  // spec shape) thus collapses to `?string` instead of invalid `string|?string`.
+  const { nonNull, nullable } = splitNullable(variants);
+  if (nonNull.includes('mixed')) return 'mixed'; // `mixed` already permits null
+  if (nonNull.length === 0) return 'null';
+  if (nonNull.length === 1) return nullable ? `?${nonNull[0]}` : nonNull[0];
+  return nullable ? `${nonNull.join('|')}|null` : nonNull.join('|');
 }
 
 function joinDocUnionVariants(ref: UnionType, variants: string[]): string {
   if (ref.compositionKind === 'allOf') {
     return variants[0] ?? 'mixed';
   }
-  const unique = [...new Set(variants)];
-  if (unique.length === 1) return unique[0];
-  return unique.join('|');
+  // PHPDoc tolerates `?T`, but normalize the same way for consistency and to
+  // avoid redundant members (the doc nullable form is `T|null`, so split on `|`).
+  const { nonNull, nullable } = splitNullable(variants.flatMap((v) => v.split('|')));
+  if (nonNull.includes('mixed')) return 'mixed';
+  if (nonNull.length === 0) return 'null';
+  return nullable ? `${nonNull.join('|')}|null` : nonNull.join('|');
+}
+
+/**
+ * Partition rendered union variants into their non-null types plus a single
+ * nullability flag. Recognizes both the `?T` shorthand and a bare `null`/`'null'`
+ * variant. Deduplicates the non-null types while preserving first-seen order.
+ */
+function splitNullable(variants: string[]): { nonNull: string[]; nullable: boolean } {
+  let nullable = false;
+  const nonNull: string[] = [];
+  for (const v of variants) {
+    if (v === 'null' || v === "'null'") {
+      nullable = true;
+    } else if (v.startsWith('?')) {
+      nullable = true;
+      nonNull.push(v.slice(1));
+    } else {
+      nonNull.push(v);
+    }
+  }
+  return { nonNull: [...new Set(nonNull)], nullable };
 }
