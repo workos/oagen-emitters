@@ -35,14 +35,22 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     seen.add(mod);
 
     // renderModel registers inline unions into `registry` as a side effect, and
-    // `_unions.rs` is rendered later (in generateClient) from that registry — so
-    // it MUST run for every model, even out-of-scope ones, or scoped runs drop
-    // unions. Compute content unconditionally; only the per-model `.rs` FILE write
-    // is scoped (FR-1.4) — an out-of-scope model's existing `.rs` file stays
-    // untouched on disk.
+    // `_unions.rs` is rendered later (in generateClient) from that registry.
+    // Register a model's unions ONLY when its own `.rs` file will exist on disk
+    // after this run — in-scope (emitted just below) or already present from a
+    // prior run (fileExistsAfterRun). A model that is NEITHER selected NOR on
+    // disk (e.g. a service the spec recently gained but this SDK has never
+    // generated, such as Agent) must NOT contribute: its variant model files
+    // are never written, so the synthesised enum in `_unions.rs` would
+    // reference dangling types and break the build (orphan class). On-disk
+    // out-of-scope models DO register — their existing `.rs` files reference
+    // those unions, so `_unions.rs` must keep them. A full run registers every
+    // model (fileExistsAfterRun ⇒ true when scoping is inert).
     const inScope = isModelInScope(model.name, ctx);
     const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
     const path = hintPath ?? `src/models/${mod}.rs`;
+    if (!fileExistsAfterRun(path, inScope, ctx)) continue;
+
     const content = renderModel(model, registry, taggedVariantFields.get(model.name));
     if (inScope) {
       files.push({
@@ -51,15 +59,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
         overwriteExisting: true,
       });
     }
-
-    // Declare the module only if its `.rs` file will exist on disk after this
-    // run: in-scope (emitted just now) or already present from a prior run. A
-    // scoped run must NOT declare a brand-new out-of-scope model whose file it
-    // never emits — that dangling `mod` is what broke the build. A full run
-    // declares every module (fileExistsAfterRun ⇒ true when scoping is inert).
-    if (fileExistsAfterRun(path, inScope, ctx)) {
-      moduleNames.push(mod);
-    }
+    moduleNames.push(mod);
   }
 
   // Scoped runs: retain barrel entries for model files still on disk (prior
