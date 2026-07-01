@@ -14,7 +14,7 @@ import { fieldName, domainFieldName, methodName, typeName, moduleName, variantNa
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 import { parsePathTemplate } from '../shared/path-template.js';
-import { groupByMount, buildResolvedLookup, isMountInScope } from '../shared/resolved-ops.js';
+import { groupByMount, buildResolvedLookup, isMountInScope, getMountTarget } from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 
 /**
@@ -22,23 +22,35 @@ import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapp
  * `src/resources/mod.rs` barrel. Each file collapses every IR service that
  * mounts on the same target into a single `Api` struct.
  */
-export function generateResources(_services: Service[], ctx: EmitterContext, registry: UnionRegistry): GeneratedFile[] {
+export function generateResources(services: Service[], ctx: EmitterContext, registry: UnionRegistry): GeneratedFile[] {
   const groups = groupByMount(ctx);
   const lookup = buildResolvedLookup(ctx);
   const files: GeneratedFile[] = [];
   const exports: { module: string; struct: string }[] = [];
 
+  // The emit surface the core resolved for this run: in a scoped run, the
+  // selected services PLUS every service already on disk — but NOT a service the
+  // spec has that this SDK never generated. The barrel must list exactly these.
+  // Listing every spec mount instead (the old behaviour) emitted `pub mod agents;`
+  // for a service whose `agents.rs` is neither emitted now nor present on disk —
+  // an orphaned module that fails to compile. Full runs pass every service here,
+  // so their barrels are unchanged.
+  const surfaceMounts = new Set(services.map((s) => getMountTarget(s, ctx)));
+
   for (const [mountName, group] of groups) {
     if (group.operations.length === 0) continue;
+    // Skip mounts outside the emit surface entirely — no barrel entry (would
+    // dangle) and no file. Present-but-not-selected mounts stay in surfaceMounts,
+    // so their existing `.rs` keeps a barrel entry below.
+    if (!surfaceMounts.has(mountName)) continue;
     const basename = moduleName(mountName);
     const struct = mountStructName(mountName);
-    // The barrel (`src/resources/mod.rs`) must list every mount's module so
-    // Rust compiles even in a scoped run — `exports` is collected from the
-    // FULL groupByMount set regardless of scope.
+    // The barrel (`src/resources/mod.rs`) lists every in-surface mount so Rust
+    // compiles even in a scoped run (on-disk siblings keep their entry).
     exports.push({ module: basename, struct });
-    // Only the per-service resource `.rs` FILE write is scoped. In a scoped
-    // run we skip emitting files for out-of-scope mounts, but the barrel above
-    // still references their modules (their existing `.rs` files stay on disk).
+    // Only the per-service resource `.rs` FILE write is scoped. In a scoped run
+    // we skip emitting files for out-of-scope-but-present mounts; the barrel
+    // above still references their modules (their existing `.rs` stays on disk).
     if (!isMountInScope(mountName, ctx)) continue;
     files.push({
       path: `src/resources/${basename}.rs`,
