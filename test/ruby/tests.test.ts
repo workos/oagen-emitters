@@ -64,27 +64,32 @@ const services: Service[] = [
 
 const spec = makeSpec(services, models);
 
-function findRoundTripFile(files: { path: string; content: string }[]): { path: string; content: string } {
-  const file = files.find((f) => f.path === 'test/workos/test_model_round_trip.rb');
-  if (!file) throw new Error('round-trip test file not emitted');
-  return file;
+const LEGACY_ROUNDTRIP_PATH = 'test/workos/test_model_round_trip.rb';
+
+// The per-dir round-trip files (test/workos/test_<dir>_model_round_trip.rb),
+// excluding the pre-split monolith which also ends with _model_round_trip.rb.
+function roundTripContent(files: { path: string; content: string }[]): string {
+  return files
+    .filter((f) => f.path !== LEGACY_ROUNDTRIP_PATH && f.path.endsWith('_model_round_trip.rb'))
+    .map((f) => f.content)
+    .join('\n');
 }
 
-describe('ruby/tests model round-trip aggregate scoping', () => {
-  it('full run: round-trips every model', () => {
+describe('ruby/tests model round-trip per-service scoping', () => {
+  it('full run: round-trips every model across per-dir files', () => {
     const ctx: EmitterContext = {
       namespace: 'workos',
       namespacePascal: 'WorkOS',
       spec,
       resolvedOperations: buildResolvedOps(services),
     };
-    const content = findRoundTripFile(generateTests(spec, ctx)).content;
-    expect(content).toContain('WorkOS::Organization.new');
-    expect(content).toContain('WorkOS::Connection.new');
-    expect(content).toContain('WorkOS::Directory.new');
+    const combined = roundTripContent(generateTests(spec, ctx));
+    expect(combined).toContain('WorkOS::Organization.new');
+    expect(combined).toContain('WorkOS::Connection.new');
+    expect(combined).toContain('WorkOS::Directory.new');
   });
 
-  it('scoped run: does NOT emit the wholesale round-trip test (leaves the on-disk one untouched)', () => {
+  it('scoped run: regenerates ONLY the selected service dir round-trip file', () => {
     const ctx: EmitterContext = {
       namespace: 'workos',
       namespacePascal: 'WorkOS',
@@ -95,10 +100,33 @@ describe('ruby/tests model round-trip aggregate scoping', () => {
     };
 
     const files = generateTests(spec, ctx);
-    // Minimal scope: the monolithic round-trip test is skipped in a scoped run so
-    // it never drags in (surface) — nor drops — other services' models. The
-    // on-disk file is left untouched; the selected service's own test still emits.
-    expect(files.some((f) => f.path === 'test/workos/test_model_round_trip.rb')).toBe(false);
-    expect(files.length).toBeGreaterThan(0);
+    const combined = roundTripContent(files);
+    // The selected service's model IS round-trip tested, in lockstep with its
+    // regenerated per-model file.
+    expect(combined).toContain('WorkOS::Organization.new');
+    // Out-of-scope models get no round-trip test — their untouched on-disk
+    // models are never asserted against with a fresh (possibly drifted) fixture.
+    expect(combined).not.toContain('WorkOS::Connection.new');
+    expect(combined).not.toContain('WorkOS::Directory.new');
+    // The pre-split monolith is not resurrected when it isn't on disk.
+    expect(files.some((f) => f.path === LEGACY_ROUNDTRIP_PATH)).toBe(false);
+  });
+
+  it('scoped run: overwrites the pre-split monolith with an inert placeholder while it is on disk', () => {
+    const ctx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set([LEGACY_ROUNDTRIP_PATH]),
+    };
+    const legacy = generateTests(spec, ctx).find((f) => f.path === LEGACY_ROUNDTRIP_PATH);
+    expect(legacy).toBeDefined();
+    expect(legacy!.content).toContain('moved to per-service');
+    // Inert: no test class or methods, so it passes while awaiting pruning.
+    expect(legacy!.content).not.toContain('def test_');
+    expect(legacy!.content).not.toContain('Minitest::Test');
   });
 });

@@ -175,7 +175,7 @@ describe('generateTests', () => {
     };
 
     const files = generateTests(discSpec, { ...ctx, spec: discSpec });
-    const roundTripTest = files.find((f) => f.path === 'tests/test_models_round_trip.py');
+    const roundTripTest = files.find((f) => f.path === 'tests/test_events_models_round_trip.py');
     expect(roundTripTest).toBeDefined();
 
     const content = roundTripTest!.content;
@@ -274,7 +274,7 @@ describe('generateTests', () => {
 
     const files = generateTests(edgeSpec, { ...ctx, spec: edgeSpec });
     const serviceTest = files.find((f) => f.path === 'tests/test_organizations.py');
-    const roundTripTest = files.find((f) => f.path === 'tests/test_models_round_trip.py');
+    const roundTripTest = files.find((f) => f.path === 'tests/test_organizations_models_round_trip.py');
 
     expect(serviceTest).toBeDefined();
     expect(serviceTest!.content).toContain('assert len(page.data) == 1');

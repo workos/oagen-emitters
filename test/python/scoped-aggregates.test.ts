@@ -161,13 +161,43 @@ describe('python scoped aggregates', () => {
   });
 
   describe('round-trip test + fixtures', () => {
-    // Minimal scoped generation: the monolithic round-trip test covers ALL
-    // models, so a scoped run must not touch it — it is not emitted at all,
-    // leaving the on-disk file byte-for-byte untouched.
-    it('does not emit the wholesale model round-trip test on a scoped run', () => {
+    // A scoped run regenerates the SELECTED service's per-dir round-trip file in
+    // lockstep with its models, covering ONLY in-scope models, and leaves
+    // out-of-scope services' files untouched (not emitted → scoped no-prune
+    // keeps them). This replaces the old wholesale skip that left one shared
+    // file asserting the old shape of a just-regenerated model.
+    it('emits the selected service dir round-trip file covering only in-scope models', () => {
       const files = generateTests(spec, scopedCtx());
-      const roundTrip = files.find((f) => f.path === 'tests/test_models_round_trip.py');
-      expect(roundTrip).toBeUndefined();
+      const widgetRoundTrip = files.find((f) => f.path === 'tests/test_widgets_models_round_trip.py');
+      expect(widgetRoundTrip).toBeDefined();
+      expect(widgetRoundTrip!.content).toContain('def test_widget_a_round_trip(self):');
+      expect(widgetRoundTrip!.content).toContain('from workos.widgets.models import WidgetA');
+      // The out-of-scope gadget models get no test — their untouched on-disk
+      // models are never asserted against with a fresh (possibly drifted) fixture.
+      expect(widgetRoundTrip!.content).not.toContain('GadgetBrandNew');
+      expect(widgetRoundTrip!.content).not.toContain('GadgetOnDisk');
+    });
+
+    it('does NOT emit a round-trip file for an out-of-scope service dir', () => {
+      const files = generateTests(spec, scopedCtx());
+      expect(files.find((f) => f.path === 'tests/test_gadgets_models_round_trip.py')).toBeUndefined();
+    });
+
+    it('does not resurrect the pre-split monolith when it is absent from disk', () => {
+      const files = generateTests(spec, scopedCtx());
+      expect(files.find((f) => f.path === 'tests/test_models_round_trip.py')).toBeUndefined();
+    });
+
+    it('overwrites the pre-split monolith with an inert placeholder while it is still on disk', () => {
+      const ctx = scopedCtx();
+      ctx.priorTargetManifestPaths!.add('tests/test_models_round_trip.py');
+      const files = generateTests(spec, ctx);
+      const legacy = files.find((f) => f.path === 'tests/test_models_round_trip.py');
+      expect(legacy).toBeDefined();
+      expect(legacy!.content).toContain('moved to per-service');
+      // Inert: no test classes or functions, so it passes as it awaits pruning.
+      expect(legacy!.content).not.toContain('class Test');
+      expect(legacy!.content).not.toContain('def test_');
     });
 
     it('emits a fixture ONLY for the selected in-scope model', () => {
@@ -198,7 +228,8 @@ describe('python scoped aggregates', () => {
       expect(gadgetBarrel!.content).not.toContain('import *');
 
       const testFiles = generateTests(spec, fullCtx);
-      const roundTrip = testFiles.find((f) => f.path === 'tests/test_models_round_trip.py');
+      // Full run emits a per-dir round-trip file for every service dir.
+      const roundTrip = testFiles.find((f) => f.path === 'tests/test_gadgets_models_round_trip.py');
       expect(roundTrip!.content).toContain('GadgetBrandNew');
       expect(testFiles.find((f) => f.path === 'tests/fixtures/gadget_brand_new.json')).toBeDefined();
     });

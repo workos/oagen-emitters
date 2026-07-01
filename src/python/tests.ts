@@ -31,6 +31,7 @@ import {
   buildHiddenParams,
   collectGroupedParamNames,
   isScopedRun,
+  isModelInScope,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
@@ -136,16 +137,16 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     if (testFile) files.push(testFile);
   }
 
-  // Generate model round-trip tests (P3-7).
-  // This is ONE monolithic file (tests/test_models_round_trip.py) covering ALL
-  // models. Under minimal scoped generation a scoped `--services X` run must not
-  // touch it: it would otherwise be rewritten to reference only the selected
-  // service's models, mutating a file that belongs to the whole SDK. Skip
-  // emitting it entirely on a scoped run so the on-disk file is left untouched.
-  if (!isScopedRun(ctx)) {
-    const modelTests = generateModelRoundTripTests(spec, ctx);
-    if (modelTests) files.push(modelTests);
-  }
+  // Model round-trip tests (P3-7): one file per service dir
+  // (tests/test_<dir>_models_round_trip.py), each covering only that dir's
+  // models regenerated this run. Unlike the former wholesale file — which a
+  // scoped run skipped, leaving it stale until a full regen — a scoped run now
+  // regenerates the selected services' round-trip tests in lockstep with their
+  // models (fixing "selected model changed shape but its round-trip test still
+  // asserts the old shape") and leaves untouched services' files alone.
+  files.push(...generateModelRoundTripTests(spec, ctx));
+  const legacyRoundTrip = retireLegacyRoundTripMonolith(ctx);
+  if (legacyRoundTrip) files.push(legacyRoundTrip);
 
   return files;
 }
@@ -1444,10 +1445,22 @@ function toPythonLiteral(value: unknown): string {
   return 'None';
 }
 
+const LEGACY_ROUNDTRIP_PATH = 'tests/test_models_round_trip.py';
+
 /**
- * Generate model round-trip tests: Model.from_dict(instance.to_dict()) == instance
+ * Per-service model round-trip tests (from_dict(to_dict()) == instance): one
+ * file per service dir (`tests/test_<dir>_models_round_trip.py`), each covering
+ * only the models emitted for that dir this run.
+ *
+ * `isModelInScope` is true for every model on a full run and selected-only under
+ * `--services`, so a scoped run regenerates a dir's round-trip file in lockstep
+ * with that dir's regenerated models — replacing the former single wholesale
+ * file, which a scoped run skipped entirely and thus left asserting the OLD
+ * shape of a model the same run had just regenerated (the failure this fixes).
+ * Dirs with no in-scope models are skipped, so untouched services' files are
+ * left byte-for-byte alone (scoped runs never prune).
  */
-function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile | null {
+function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   // Collect models used as request bodies only (not returned in responses)
   const responseModelNames = new Set<string>();
   const requestOnlyModelNames = new Set<string>();
@@ -1470,149 +1483,151 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
 
-  // The round-trip test imports models from their *natural* (pre-relocation)
-  // service so existing callers keep working — those imports resolve via the
-  // BC re-exports that the model emitter writes into each service barrel.
-  // This wholesale test only runs on a FULL (non-scoped) generation — a scoped
-  // run skips emitting it entirely (see generateTests → isScopedRun) — so no
-  // per-model on-disk gate is needed here: every non-request-only model file is
-  // freshly emitted by the same full run.
   const placement = computeSchemaPlacement(spec, ctx);
   const modelToService = placement.originalModelToService;
   const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';
 
-  const models = spec.models.filter(
+  const eligible = spec.models.filter(
     (m) =>
       !(isListWrapperModel(m) && !nonPaginatedRefs.has(m.name)) &&
       !(isListMetadataModel(m) && !listMetadataNeeded.has(m.name)) &&
-      !requestOnlyModelNames.has(m.name),
+      !requestOnlyModelNames.has(m.name) &&
+      // A scoped run emits only the selected services' per-model files, so a
+      // dir's round-trip test may only cover models regenerated THIS run —
+      // otherwise it would assert against an untouched (possibly drifted)
+      // on-disk model. Full run ⇒ isModelInScope is true for everything.
+      isModelInScope(m.name, ctx),
   );
-  if (models.length === 0) return null;
 
-  const lines: string[] = [];
-  lines.push('"""Model round-trip tests: from_dict(to_dict()) preserves data."""');
-  lines.push('');
-  lines.push('import pytest');
-  lines.push('');
-  lines.push('from tests.generated_helpers import load_fixture');
-  lines.push('');
-
-  // Collect imports by directory
-  const importsByDir = new Map<string, string[]>();
-  for (const model of models) {
-    const service = modelToService.get(model.name);
-    const dirName = resolveDir(service);
-    if (!importsByDir.has(dirName)) importsByDir.set(dirName, []);
-    importsByDir.get(dirName)!.push(className(model.name));
-  }
-  // Add discriminator Unknown variant classes to imports for dispatch tests
-  for (const model of models) {
-    if (!(model as any).discriminator) continue;
-    const service = modelToService.get(model.name);
-    const dirName = resolveDir(service);
-    if (!importsByDir.has(dirName)) importsByDir.set(dirName, []);
-    importsByDir.get(dirName)!.push(`${className(model.name)}Unknown`);
+  const modelsByDir = new Map<string, Model[]>();
+  for (const model of eligible) {
+    const dir = resolveDir(modelToService.get(model.name));
+    if (!modelsByDir.has(dir)) modelsByDir.set(dir, []);
+    modelsByDir.get(dir)!.push(model);
   }
 
-  for (const [dirName, names] of [...importsByDir].sort()) {
-    lines.push(`from ${ctx.namespace}.${dirToModule(dirName)}.models import ${names.sort().join(', ')}`);
+  const files: GeneratedFile[] = [];
+  for (const [dirName, dirModels] of [...modelsByDir].sort(([a], [b]) => a.localeCompare(b))) {
+    const file = buildDirRoundTripFile(dirName, dirModels, spec, ctx, modelToService, resolveDir);
+    if (file) files.push(file);
   }
+  return files;
+}
 
-  lines.push('');
-  lines.push('');
-  lines.push('class TestModelRoundTrip:');
+/** Build one service dir's round-trip test file, or null when it has no testable models. */
+function buildDirRoundTripFile(
+  dirName: string,
+  dirModels: Model[],
+  spec: ApiSpec,
+  ctx: EmitterContext,
+  modelToService: Map<string, string>,
+  resolveDir: (irService: string | undefined) => string,
+): GeneratedFile | null {
+  const roundTripModels = dirModels.filter((m) => m.fields.length > 0 && !(m as any).discriminator);
+  const discriminatorModels = dirModels.filter((m) => (m as any).discriminator);
+  if (roundTripModels.length === 0 && discriminatorModels.length === 0) return null;
 
-  for (const model of models) {
-    // Skip models with no fields or discriminated union dispatchers — these
-    // don't have a to_dict() and their round-trip semantics differ.
-    if (model.fields.length === 0) continue;
-    if ((model as any).discriminator) continue;
-    // Deduplicate fields by DOMAIN identifier (mirrors models.ts, which honors
-    // `domainName`); the wire key stays `field.name`.
-    const seenFieldNames = new Set<string>();
-    const dedupFields = model.fields.filter((f) => {
-      const pyName = domainFieldName(f);
-      if (seenFieldNames.has(pyName)) return false;
-      seenFieldNames.add(pyName);
-      return true;
-    });
-    const dedupModel = { ...model, fields: dedupFields };
+  // Imported classes grouped by their OWN dir: a discriminator's first variant
+  // may live in another service's dir, so a single file can import across dirs.
+  const importsByDir = new Map<string, Set<string>>();
+  const addImport = (modelName: string, cls: string) => {
+    const dir = resolveDir(modelToService.get(modelName));
+    if (!importsByDir.has(dir)) importsByDir.set(dir, new Set());
+    importsByDir.get(dir)!.add(cls);
+  };
 
-    const modelClass = className(model.name);
-    const fixtureName = `${fileName(model.name)}.json`;
-    const fullFixture = generateModelFixture(
-      dedupModel,
-      new Map(spec.models.map((m) => [m.name, m])),
-      new Map(spec.enums.map((e) => [e.name, e])),
-    );
-    const minimalPayload = buildMinimalModelPayload(dedupModel, fullFixture);
-    const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(dedupModel, fullFixture);
-    const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
-    const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
+  const modelMap = new Map(spec.models.map((m) => [m.name, m]));
+  const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
+  const body: string[] = [];
 
-    lines.push('');
-    lines.push(`    def test_${fileName(model.name)}_round_trip(self):`);
-    lines.push(`        data = load_fixture("${fixtureName}")`);
-    lines.push(`        instance = ${modelClass}.from_dict(data)`);
-    lines.push('        serialized = instance.to_dict()');
-    lines.push('        assert serialized == data');
-    lines.push(`        restored = ${modelClass}.from_dict(serialized)`);
-    lines.push('        assert restored.to_dict() == serialized');
+  if (roundTripModels.length > 0) {
+    body.push('');
+    body.push('');
+    body.push('class TestModelRoundTrip:');
+    for (const model of roundTripModels) {
+      // Deduplicate fields by DOMAIN identifier (mirrors models.ts, which honors
+      // `domainName`); the wire key stays `field.name`.
+      const seenFieldNames = new Set<string>();
+      const dedupFields = model.fields.filter((f) => {
+        const pyName = domainFieldName(f);
+        if (seenFieldNames.has(pyName)) return false;
+        seenFieldNames.add(pyName);
+        return true;
+      });
+      const dedupModel = { ...model, fields: dedupFields };
 
-    const requiredFields = dedupFields.filter((field) => field.required);
-    lines.push('');
-    lines.push(`    def test_${fileName(model.name)}_minimal_payload(self):`);
-    lines.push(`        data = ${toPythonLiteral(minimalPayload)}`);
-    lines.push(`        instance = ${modelClass}.from_dict(data)`);
-    if (requiredFields.length > 0) {
-      lines.push('        serialized = instance.to_dict()');
-      for (const field of requiredFields) {
-        lines.push(`        assert serialized[${toPythonLiteral(field.name)}] == data[${toPythonLiteral(field.name)}]`);
+      const modelClass = className(model.name);
+      addImport(model.name, modelClass);
+      const fixtureName = `${fileName(model.name)}.json`;
+      const fullFixture = generateModelFixture(dedupModel, modelMap, enumMap);
+      const minimalPayload = buildMinimalModelPayload(dedupModel, fullFixture);
+      const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(dedupModel, fullFixture);
+      const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
+      const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
+
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_round_trip(self):`);
+      body.push(`        data = load_fixture("${fixtureName}")`);
+      body.push(`        instance = ${modelClass}.from_dict(data)`);
+      body.push('        serialized = instance.to_dict()');
+      body.push('        assert serialized == data');
+      body.push(`        restored = ${modelClass}.from_dict(serialized)`);
+      body.push('        assert restored.to_dict() == serialized');
+
+      const requiredFields = dedupFields.filter((field) => field.required);
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_minimal_payload(self):`);
+      body.push(`        data = ${toPythonLiteral(minimalPayload)}`);
+      body.push(`        instance = ${modelClass}.from_dict(data)`);
+      if (requiredFields.length > 0) {
+        body.push('        serialized = instance.to_dict()');
+        for (const field of requiredFields) {
+          body.push(
+            `        assert serialized[${toPythonLiteral(field.name)}] == data[${toPythonLiteral(field.name)}]`,
+          );
+        }
+      } else {
+        body.push('        assert instance.to_dict() is not None');
       }
-    } else {
-      lines.push('        assert instance.to_dict() is not None');
-    }
 
-    if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_omits_absent_optional_non_nullable_fields(self):`);
-      lines.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
-      lines.push(`        instance = ${modelClass}.from_dict(data)`);
-      lines.push('        serialized = instance.to_dict()');
-      for (const field of dedupFields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
-        lines.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
+      if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
+        body.push('');
+        body.push(`    def test_${fileName(model.name)}_omits_absent_optional_non_nullable_fields(self):`);
+        body.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
+        body.push(`        instance = ${modelClass}.from_dict(data)`);
+        body.push('        serialized = instance.to_dict()');
+        for (const field of dedupFields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
+          body.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
+        }
       }
-    }
 
-    if (nullablePayload) {
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_preserves_nullable_fields(self):`);
-      lines.push(`        data = ${toPythonLiteral(nullablePayload)}`);
-      lines.push(`        instance = ${modelClass}.from_dict(data)`);
-      lines.push('        serialized = instance.to_dict()');
-      for (const field of dedupFields.filter((field) => field.type.kind === 'nullable')) {
-        lines.push(`        assert serialized[${toPythonLiteral(field.name)}] is None`);
+      if (nullablePayload) {
+        body.push('');
+        body.push(`    def test_${fileName(model.name)}_preserves_nullable_fields(self):`);
+        body.push(`        data = ${toPythonLiteral(nullablePayload)}`);
+        body.push(`        instance = ${modelClass}.from_dict(data)`);
+        body.push('        serialized = instance.to_dict()');
+        for (const field of dedupFields.filter((field) => field.type.kind === 'nullable')) {
+          body.push(`        assert serialized[${toPythonLiteral(field.name)}] is None`);
+        }
       }
-    }
 
-    if (unknownEnumPayload) {
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_round_trips_unknown_enum_values(self):`);
-      lines.push(`        data = ${toPythonLiteral(unknownEnumPayload)}`);
-      lines.push(`        instance = ${modelClass}.from_dict(data)`);
-      lines.push('        assert instance.to_dict() == data');
+      if (unknownEnumPayload) {
+        body.push('');
+        body.push(`    def test_${fileName(model.name)}_round_trips_unknown_enum_values(self):`);
+        body.push(`        data = ${toPythonLiteral(unknownEnumPayload)}`);
+        body.push(`        instance = ${modelClass}.from_dict(data)`);
+        body.push('        assert instance.to_dict() == data');
+      }
     }
   }
 
-  // Discriminator dispatch tests — targeted coverage for from_dict routing
-  const discriminatorModels = models.filter((m) => (m as any).discriminator);
   if (discriminatorModels.length > 0) {
-    lines.push('');
-    lines.push('');
-    lines.push('class TestDiscriminatorDispatch:');
-
+    body.push('');
+    body.push('');
+    body.push('class TestDiscriminatorDispatch:');
     for (const model of discriminatorModels) {
       const disc = (model as any).discriminator as { property: string; mapping: Record<string, string> };
       const modelClass = className(model.name);
@@ -1624,40 +1639,75 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
       const [, firstVariantName] = sortedEntries[0];
       const firstVariantClass = className(firstVariantName);
       const firstVariantFixture = `${fileName(firstVariantName)}.json`;
+      addImport(model.name, modelClass);
+      addImport(model.name, unknownClass);
+      addImport(firstVariantName, firstVariantClass);
 
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_dispatches_known_variant(self):`);
-      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
-      lines.push(`        result = ${modelClass}.from_dict(data)`);
-      lines.push(`        assert isinstance(result, ${firstVariantClass})`);
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_dispatches_known_variant(self):`);
+      body.push(`        data = load_fixture("${firstVariantFixture}")`);
+      body.push(`        result = ${modelClass}.from_dict(data)`);
+      body.push(`        assert isinstance(result, ${firstVariantClass})`);
 
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_returns_unknown_for_unrecognized_type(self):`);
-      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
-      lines.push(`        data = {**data, "${disc.property}": "future.unrecognized.type"}`);
-      lines.push(`        result = ${modelClass}.from_dict(data)`);
-      lines.push(`        assert isinstance(result, ${unknownClass})`);
-      lines.push('        assert result.raw_data == data');
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_returns_unknown_for_unrecognized_type(self):`);
+      body.push(`        data = load_fixture("${firstVariantFixture}")`);
+      body.push(`        data = {**data, "${disc.property}": "future.unrecognized.type"}`);
+      body.push(`        result = ${modelClass}.from_dict(data)`);
+      body.push(`        assert isinstance(result, ${unknownClass})`);
+      body.push('        assert result.raw_data == data');
 
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_raises_on_missing_discriminator(self):`);
-      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
-      lines.push(`        data = {k: v for k, v in data.items() if k != "${disc.property}"}`);
-      lines.push('        with pytest.raises(Exception):');
-      lines.push(`            ${modelClass}.from_dict(data)`);
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_raises_on_missing_discriminator(self):`);
+      body.push(`        data = load_fixture("${firstVariantFixture}")`);
+      body.push(`        data = {k: v for k, v in data.items() if k != "${disc.property}"}`);
+      body.push('        with pytest.raises(Exception):');
+      body.push(`            ${modelClass}.from_dict(data)`);
 
-      lines.push('');
-      lines.push(`    def test_${fileName(model.name)}_raises_on_none_discriminator(self):`);
-      lines.push(`        data = load_fixture("${firstVariantFixture}")`);
-      lines.push(`        data = {**data, "${disc.property}": None}`);
-      lines.push('        with pytest.raises(Exception):');
-      lines.push(`            ${modelClass}.from_dict(data)`);
+      body.push('');
+      body.push(`    def test_${fileName(model.name)}_raises_on_none_discriminator(self):`);
+      body.push(`        data = load_fixture("${firstVariantFixture}")`);
+      body.push(`        data = {**data, "${disc.property}": None}`);
+      body.push('        with pytest.raises(Exception):');
+      body.push(`            ${modelClass}.from_dict(data)`);
     }
   }
 
+  const lines: string[] = [];
+  lines.push('"""Model round-trip tests: from_dict(to_dict()) preserves data."""');
+  lines.push('');
+  lines.push('import pytest');
+  lines.push('');
+  lines.push('from tests.generated_helpers import load_fixture');
+  lines.push('');
+  for (const [dir, names] of [...importsByDir].sort(([a], [b]) => a.localeCompare(b))) {
+    lines.push(`from ${ctx.namespace}.${dirToModule(dir)}.models import ${[...names].sort().join(', ')}`);
+  }
+
   return {
-    path: 'tests/test_models_round_trip.py',
-    content: lines.join('\n'),
+    path: `tests/test_${dirName.replace(/\//g, '_')}_models_round_trip.py`,
+    content: [...lines, ...body].join('\n'),
+    integrateTarget: true,
+    overwriteExisting: true,
+  };
+}
+
+/**
+ * Retire the pre-split monolith (`tests/test_models_round_trip.py`). A full run
+ * simply stops emitting it, so the engine prunes it; a scoped run never prunes,
+ * so overwrite the stale (now-failing) monolith with an inert placeholder while
+ * it's still on disk (recorded in the prior manifest). Gating on the prior
+ * manifest means it is NOT recreated once a full run has pruned it.
+ */
+function retireLegacyRoundTripMonolith(ctx: EmitterContext): GeneratedFile | null {
+  if (!isScopedRun(ctx)) return null;
+  if (!ctx.priorTargetManifestPaths?.has(LEGACY_ROUNDTRIP_PATH)) return null;
+  return {
+    path: LEGACY_ROUNDTRIP_PATH,
+    content:
+      '"""Model round-trip tests moved to per-service ' +
+      'tests/test_<service>_models_round_trip.py files.\n\n' +
+      'This placeholder remains only until the next full generation prunes it."""\n',
     integrateTarget: true,
     overwriteExisting: true,
   };
