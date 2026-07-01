@@ -41,7 +41,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
   // In a scoped (`--services`) run this returns only the selected post-mount
   // services so we emit per-service test files for those alone. ClientTest.php
-  // and fixtures below are built from `spec` and stay full.
+  // is a trivial constructor test (no per-model deps) and always emits. Fixtures
+  // below are scoped per-model via `generateFixtures(spec, ctx)`.
   const mountGroupsFromResolved = scopedMountGroups(ctx);
   const mountGroups = new Map<string, { op: Operation; service: Service; resolvedOp?: ResolvedOperation }[]>();
   if (mountGroupsFromResolved.size > 0 || ctx.scopedServices?.size) {
@@ -80,8 +81,13 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     overwriteExisting: true,
   });
 
-  // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  // Generate fixture JSON files. Pass `ctx` so a scoped (`--services`) run only
+  // (re)emits fixtures for SELECTED (in-scope) models; out-of-scope fixtures are
+  // left untouched on disk (byte-for-byte), matching the per-model file gate in
+  // models.ts. PHP has no monolithic model round-trip test — model round-trips
+  // are exercised inline in the per-service `*Test.php` files (already scoped via
+  // `scopedMountGroups`) — so there is no whole-suite aggregate to skip here.
+  const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
