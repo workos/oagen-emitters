@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.5](https://github.com/workos/oagen-emitters/compare/v0.19.4...v0.19.5) (2026-07-01)
+
+
+### Bug Fixes
+
+* **node:** scope the WorkOS client to the emit surface ([#173](https://github.com/workos/oagen-emitters/issues/173)) ([05016ba](https://github.com/workos/oagen-emitters/commit/05016ba1f43ae42436b6c84a97e9de7c84b1aaa4))
+* **scoped:** complete the scoped-generation orphan fixes (rust client/manifest, ruby rbi/manifest) ([#172](https://github.com/workos/oagen-emitters/issues/172)) ([976f0d5](https://github.com/workos/oagen-emitters/commit/976f0d5a5d55240ecba40910cbfbbbae2a760c86))
+
 ## [0.19.4](https://github.com/workos/oagen-emitters/compare/v0.19.3...v0.19.4) (2026-07-01)
 
 
