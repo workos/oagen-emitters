@@ -466,7 +466,11 @@ function generateMethod(
       for (const field of visibleFields) {
         const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
         const nullsafe = field.required ? '' : '?';
-        const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+        const valueExpr = isEnumType(field.type)
+          ? `$${phpName}${nullsafe}->value`
+          : isDateTimeType(field.type)
+            ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+            : `$${phpName}`;
         lines.push(`            '${field.name}' => ${valueExpr},`);
       }
       // Inject constant defaults
@@ -523,7 +527,11 @@ function generateMethod(
     for (const field of visibleFields) {
       const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
       const nullsafe = field.required ? '' : '?';
-      const valueExpr = isEnumType(field.type) ? `$${phpName}${nullsafe}->value` : `$${phpName}`;
+      const valueExpr = isEnumType(field.type)
+        ? `$${phpName}${nullsafe}->value`
+        : isDateTimeType(field.type)
+          ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+          : `$${phpName}`;
       lines.push(`            '${field.name}' => ${valueExpr},`);
     }
     // Inject constant defaults
