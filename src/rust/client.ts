@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile } from '@workos/oagen';
 import type { UnionRegistry } from './type-map.js';
 import { moduleName } from './naming.js';
-import { groupByMount } from '../shared/resolved-ops.js';
+import { groupByMount, getMountTarget } from '../shared/resolved-ops.js';
 import { mountStructName } from './resources.js';
 
 /**
@@ -20,7 +20,7 @@ import { mountStructName } from './resources.js';
  * accessors in a generated file lets `src/client.rs` remain hand-maintained
  * without drifting as services mount/unmount.
  */
-export function generateClient(_spec: ApiSpec, ctx: EmitterContext, registry: UnionRegistry): GeneratedFile[] {
+export function generateClient(spec: ApiSpec, ctx: EmitterContext, registry: UnionRegistry): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
   // _unions.rs — emitted unconditionally so the models barrel reference
@@ -28,17 +28,22 @@ export function generateClient(_spec: ApiSpec, ctx: EmitterContext, registry: Un
   const unionsContent = registry.size() > 0 ? registry.render() : '// No oneOf-style unions registered.\n';
   files.push({ path: 'src/models/_unions.rs', content: unionsContent, overwriteExisting: true });
 
-  // resources_api.rs — `impl Client { fn user_management() -> ... }`.
-  files.push({ path: 'src/resources_api.rs', content: renderResourcesApi(ctx), overwriteExisting: true });
+  // resources_api.rs — `impl Client { fn user_management() -> ... }`. Scoped to
+  // the emit surface (`spec` is the core's surfaceSpec = selected ∪ on-disk), so
+  // it never wires an accessor to a resource this run doesn't emit and isn't on
+  // disk — the same orphan class as the resources barrel.
+  files.push({ path: 'src/resources_api.rs', content: renderResourcesApi(spec, ctx), overwriteExisting: true });
 
   return files;
 }
 
-function renderResourcesApi(ctx: EmitterContext): string {
+function renderResourcesApi(spec: ApiSpec, ctx: EmitterContext): string {
+  const surfaceMounts = new Set(spec.services.map((s) => getMountTarget(s, ctx)));
   const groups = groupByMount(ctx);
   const targets: { accessor: string; struct: string }[] = [];
   for (const [mountName, group] of groups) {
     if (group.operations.length === 0) continue;
+    if (!surfaceMounts.has(mountName)) continue;
     targets.push({ accessor: moduleName(mountName), struct: mountStructName(mountName) });
   }
   targets.sort((a, b) => a.accessor.localeCompare(b.accessor));
