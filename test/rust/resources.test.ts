@@ -50,6 +50,52 @@ describe('rust/resources', () => {
     expect(files.find((f) => f.path.startsWith('src/resources/empty'))).toBeUndefined();
   });
 
+  const svc = (name: string): Service => ({
+    name,
+    operations: [
+      {
+        name: `list${name}`,
+        httpMethod: 'get',
+        path: `/${name.toLowerCase()}`,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model', name },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  });
+
+  it('scoped run: barrel omits a spec mount that is neither selected nor on disk (no orphan `pub mod`)', () => {
+    const pipes = svc('Pipes');
+    const agents = svc('Agents');
+    // ctx resolves the FULL spec (both mounts), but the run's emit surface is
+    // Pipes only — Agents is a spec service this SDK never generated (not
+    // selected, not on disk), so the core does not include it in `services`.
+    const scopedCtx: EmitterContext = { ...ctxWithResolved([pipes, agents]), scopedServices: new Set(['Pipes']) };
+    const files = generateResources([pipes], scopedCtx, new UnionRegistry());
+    const barrel = files.find((f) => f.path === 'src/resources/mod.rs');
+    expect(barrel?.content).toContain('pub mod pipes;');
+    // The orphan: pre-fix the barrel listed `pub mod agents;` while agents.rs was
+    // never emitted → rust won't compile.
+    expect(barrel?.content).not.toContain('pub mod agents;');
+    expect(files.find((f) => f.path === 'src/resources/agents.rs')).toBeUndefined();
+  });
+
+  it('scoped run: barrel keeps an on-disk sibling (present, not selected) without re-emitting its file', () => {
+    const pipes = svc('Pipes');
+    const radar = svc('Radar');
+    // Surface = selected ∪ already-on-disk = [Pipes, Radar]; scope = Pipes only.
+    const scopedCtx: EmitterContext = { ...ctxWithResolved([pipes, radar]), scopedServices: new Set(['Pipes']) };
+    const files = generateResources([pipes, radar], scopedCtx, new UnionRegistry());
+    const barrel = files.find((f) => f.path === 'src/resources/mod.rs');
+    expect(barrel?.content).toContain('pub mod pipes;');
+    expect(barrel?.content).toContain('pub mod radar;'); // sibling stays referenced
+    expect(files.find((f) => f.path === 'src/resources/pipes.rs')).toBeDefined();
+    expect(files.find((f) => f.path === 'src/resources/radar.rs')).toBeUndefined(); // present, not selected → not re-emitted
+  });
+
   it('emits a resource struct with async methods', () => {
     const services: Service[] = [
       {
