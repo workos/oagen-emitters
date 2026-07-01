@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Model, ResolvedOperation } from '@workos/oagen';
-import { defaultSdkBehavior, toSnakeCase, toPascalCase, assignModelsToServices } from '@workos/oagen';
+import { defaultSdkBehavior, toSnakeCase, toPascalCase } from '@workos/oagen';
 import { generateTests } from '../../src/ruby/tests.js';
-import { fileName, buildMountDirMap } from '../../src/ruby/naming.js';
-import { classifyUnassignedModel } from '../../src/ruby/models.js';
 
 function makeSpec(services: Service[], models: Model[]): ApiSpec {
   return {
@@ -34,17 +32,6 @@ function buildResolvedOps(services: Service[]): ResolvedOperation[] {
     }
   }
   return ops;
-}
-
-/** Compute the per-model `.rb` path exactly as ruby/models.ts (and tests.ts) does. */
-function modelFilePath(modelName: string, spec: ApiSpec, ctx: EmitterContext): string {
-  const modelToService = assignModelsToServices(spec.models as Model[], spec.services, ctx.modelHints);
-  const mountDirMap = buildMountDirMap(ctx);
-  const service = modelToService.get(modelName);
-  const dir = service
-    ? (mountDirMap.get(service) ?? classifyUnassignedModel(modelName))
-    : classifyUnassignedModel(modelName);
-  return `lib/workos/${dir}/${fileName(modelName)}.rb`;
 }
 
 const models: Model[] = [
@@ -97,34 +84,21 @@ describe('ruby/tests model round-trip aggregate scoping', () => {
     expect(content).toContain('WorkOS::Directory.new');
   });
 
-  it('scoped run: keeps in-scope + on-disk models, drops brand-new out-of-scope models', () => {
-    const onDiskPath = modelFilePath('Connection', spec, {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec,
-      resolvedOperations: buildResolvedOps(services),
-    });
-
+  it('scoped run: does NOT emit the wholesale round-trip test (leaves the on-disk one untouched)', () => {
     const ctx: EmitterContext = {
       namespace: 'workos',
       namespacePascal: 'WorkOS',
       spec,
       resolvedOperations: buildResolvedOps(services),
-      // Scoped to the Organizations service / Organization model only.
       scopedServices: new Set(['Organizations']),
       scopedModelNames: new Set(['Organization']),
-      // Connection's per-model file already exists on disk from a prior run.
-      priorTargetManifestPaths: new Set([onDiskPath]),
     };
 
-    const content = findRoundTripFile(generateTests(spec, ctx)).content;
-
-    // In-scope model: kept.
-    expect(content).toContain('WorkOS::Organization.new');
-    // On-disk (prior manifest) model: retained even though out-of-scope.
-    expect(content).toContain('WorkOS::Connection.new');
-    // Brand-new out-of-scope model: NO round-trip test (would NameError).
-    expect(content).not.toContain('WorkOS::Directory.new');
-    expect(content).not.toContain('def test_directory_round_trip');
+    const files = generateTests(spec, ctx);
+    // Minimal scope: the monolithic round-trip test is skipped in a scoped run so
+    // it never drags in (surface) — nor drops — other services' models. The
+    // on-disk file is left untouched; the selected service's own test still emits.
+    expect(files.some((f) => f.path === 'test/workos/test_model_round_trip.rb')).toBe(false);
+    expect(files.length).toBeGreaterThan(0);
   });
 });
