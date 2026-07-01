@@ -1,4 +1,4 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, Model } from '@workos/oagen';
+import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, Model, Service } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import {
   className,
@@ -15,6 +15,7 @@ import {
 import {
   buildResolvedLookup,
   groupByMount,
+  getMountTarget,
   isMountInScope,
   isModelInScope,
   lookupResolved,
@@ -304,7 +305,15 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('module WorkOS');
     lines.push('  class Client < BaseClient');
 
+    // Restrict the client.rbi accessor sigs to the emit surface (`spec` is the
+    // core's surfaceSpec = selected ∪ on-disk). A present service keeps its sig
+    // (its .rbi stays on disk); a service the spec has but this SDK never
+    // generated is dropped — otherwise `sig { returns(WorkOS::Agents) }` names a
+    // constant with no class file → Sorbet "unable to resolve constant" under
+    // `# typed: strong`.
+    const surfaceMounts = new Set((spec.services as Service[]).map((s) => getMountTarget(s, ctx)));
     for (const [mountTarget] of groups) {
+      if (!surfaceMounts.has(mountTarget)) continue;
       const resolvedTarget = resolveServiceTarget(mountTarget, exportedClasses);
       const cls = className(resolvedTarget);
       const prop = servicePropertyName(mountTarget);
