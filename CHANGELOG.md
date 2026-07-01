@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.4](https://github.com/workos/oagen-emitters/compare/v0.19.3...v0.19.4) (2026-07-01)
+
+
+### Bug Fixes
+
+* **rust:** barrel must list the emit surface, not the full spec ([#170](https://github.com/workos/oagen-emitters/issues/170)) ([4206282](https://github.com/workos/oagen-emitters/commit/4206282f9fcdd278d359d3c07c654a9b26c99fba))
+
 ## [0.19.3](https://github.com/workos/oagen-emitters/compare/v0.19.2...v0.19.3) (2026-06-30)
 
 
