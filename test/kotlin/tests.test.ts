@@ -173,8 +173,11 @@ describe('kotlin/tests', () => {
     generateEnums([], scopedCtx);
     const files = generateTests(scopedSpec, scopedCtx);
 
-    // The monolithic round-trip aggregate is absent in a scoped run.
+    // BOTH whole-suite aggregates under com/workos/models are absent in a scoped
+    // run (they cover every model; regenerating either would rewrite a shared
+    // file outside the selected service).
     expect(files.some((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'))).toBe(false);
+    expect(files.some((f) => f.path.endsWith('GeneratedForwardCompatTest.kt'))).toBe(false);
 
     // The scoped per-service test class is still emitted.
     expect(files.some((f) => f.path.includes('OrganizationsTest.kt'))).toBe(true);

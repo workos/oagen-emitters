@@ -112,21 +112,20 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  // MINIMAL SCOPED GENERATION: the model round-trip suite is a single
-  // whole-suite AGGREGATE file (`GeneratedModelRoundTripTest.kt`) that covers
-  // every model. A scoped (`--services`) run must regenerate ONLY the selected
-  // service's files and leave every other on-disk service byte-for-byte
-  // untouched, so we skip emitting this monolithic file entirely under scoping
-  // (leaving the existing on-disk copy in place). Full runs (scoping inert)
-  // keep emitting it. The per-service test classes above stay scoped via
+  // MINIMAL SCOPED GENERATION: BOTH whole-suite AGGREGATE files under
+  // `com/workos/models` — `GeneratedModelRoundTripTest.kt` and
+  // `GeneratedForwardCompatTest.kt` — cover every model. A scoped (`--services`)
+  // run must regenerate ONLY the selected service's files and leave every other
+  // on-disk service byte-for-byte untouched, so we skip emitting BOTH monolithic
+  // files under scoping (leaving the on-disk copies in place). Full runs (scoping
+  // inert) keep emitting them. The per-service test classes above stay scoped via
   // `scopedMountGroups` and are unaffected.
   if (!isScopedRun(ctx)) {
     const roundTripFile = generateModelRoundTripTest(spec, ctx);
     if (roundTripFile) files.push(roundTripFile);
+    const forwardCompatFile = generateForwardCompatTest(spec, ctx);
+    if (forwardCompatFile) files.push(forwardCompatFile);
   }
-
-  const forwardCompatFile = generateForwardCompatTest(spec, ctx);
-  if (forwardCompatFile) files.push(forwardCompatFile);
 
   return files;
 }
