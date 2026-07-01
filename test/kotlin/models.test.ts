@@ -101,6 +101,80 @@ describe('kotlin/models', () => {
     expect(filePaths.some((p) => p.includes('ListMetadata.kt'))).toBe(false);
   });
 
+  it('scoped run: WorkOSEvent registry omits brand-new out-of-scope events but retains on-disk ones', () => {
+    // An event envelope model: id + event(literal) + created_at + data.
+    const eventModel = (name: string, wire: string): Model => ({
+      name,
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'event', type: { kind: 'literal', value: wire }, required: true },
+        { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        { name: 'data', type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } }, required: true },
+      ],
+    });
+
+    const models: Model[] = [
+      eventModel('OrganizationMembershipCreated', 'organization_membership.created'), // in scope
+      eventModel('SessionReauthenticated', 'session.reauthenticated'), // brand-new, out of scope, NOT on disk
+      eventModel('PipesConnectedAccountConnectionFailed', 'connected_account.connection_failed'), // out of scope, ON disk
+    ];
+    const spec: ApiSpec = { ...emptySpec, models };
+
+    // Scoped run: only OrganizationMembershipCreated is in scope this run.
+    // PipesConnectedAccountConnectionFailed is out of scope but its .kt file is
+    // still on disk (recorded in the prior manifest), so it must be retained.
+    // SessionReauthenticated is brand new + out of scope ⇒ its file is never
+    // emitted ⇒ it must be omitted from the registry.
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec,
+      scopedServices: new Set(['OrganizationMembership']),
+      scopedModelNames: new Set(['OrganizationMembershipCreated']),
+      priorTargetManifestPaths: new Set(['src/main/kotlin/com/workos/models/PipesConnectedAccountConnectionFailed.kt']),
+    };
+
+    generateEnums([], scopedCtx);
+    const files = generateModels(models, scopedCtx);
+
+    const registry = files.find((f) => f.path.endsWith('WorkOSEvent.kt'));
+    expect(registry).toBeDefined();
+    const content = registry!.content;
+
+    // In scope ⇒ listed.
+    expect(content).toContain('OrganizationMembershipCreated::class');
+    // Out of scope but on disk ⇒ retained.
+    expect(content).toContain('PipesConnectedAccountConnectionFailed::class');
+    // Brand-new + out of scope ⇒ omitted (this was the build break).
+    expect(content).not.toContain('SessionReauthenticated::class');
+
+    // The per-model FILE for the out-of-scope events must NOT be emitted.
+    expect(files.some((f) => f.path.endsWith('SessionReauthenticated.kt'))).toBe(false);
+    expect(files.some((f) => f.path.endsWith('PipesConnectedAccountConnectionFailed.kt'))).toBe(false);
+  });
+
+  it('full run: WorkOSEvent registry lists every event model', () => {
+    const eventModel = (name: string, wire: string): Model => ({
+      name,
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'event', type: { kind: 'literal', value: wire }, required: true },
+        { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        { name: 'data', type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } }, required: true },
+      ],
+    });
+    const models: Model[] = [
+      eventModel('OrganizationMembershipCreated', 'organization_membership.created'),
+      eventModel('SessionReauthenticated', 'session.reauthenticated'),
+    ];
+    const spec: ApiSpec = { ...emptySpec, models };
+
+    generateEnums([], { ...ctx, spec });
+    const files = generateModels(models, { ...ctx, spec });
+    const registry = files.find((f) => f.path.endsWith('WorkOSEvent.kt'))!;
+    expect(registry.content).toContain('OrganizationMembershipCreated::class');
+    expect(registry.content).toContain('SessionReauthenticated::class');
+  });
+
   it('deduplicates structurally identical models preferring shorter names', () => {
     const models: Model[] = [
       {

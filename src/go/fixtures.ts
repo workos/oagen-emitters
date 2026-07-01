@@ -1,7 +1,8 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -24,8 +25,25 @@ export const ID_PREFIXES: Record<string, string> = {
 
 /**
  * Generate JSON fixture files for test data.
+ *
+ * Minimal-scoped-generation gate (byte-for-byte untouched siblings): each
+ * fixture is a standalone per-model JSON file under `testdata/` with no
+ * barrel/index — a test reads it by path via `os.ReadFile`. Under a scoped
+ * (`--services X`) run we therefore emit a fixture ONLY for a SELECTED model
+ * (reachable from service X), gating on {@link isModelInScope}. Out-of-scope
+ * services' fixtures are never (re)written and stay BYTE-FOR-BYTE identical on
+ * disk. This is deliberately SELECTED-only, NOT the SURFACE `fileExistsAfterRun`
+ * gate: re-emitting an already-on-disk out-of-scope fixture would rewrite a file
+ * outside the requested scope (and drift it if that model's shape changed
+ * upstream), whereas a barrel entry needs the surface so its declaration stays
+ * valid — a standalone fixture has no such dependent. Full runs
+ * (`ctx.scopedModelNames` unset) emit everything. `ctx` is optional so unit
+ * tests that assert raw content can call it for a full run.
  */
-export function generateFixtures(spec: { models: Model[]; enums: Enum[]; services: any[] }): {
+export function generateFixtures(
+  spec: { models: Model[]; enums: Enum[]; services: any[] },
+  ctx?: EmitterContext,
+): {
   files: { path: string; content: string }[];
   pathRewrites: Map<string, string>;
 } {
@@ -38,14 +56,21 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
 
+  // Scoped run: emit only the SELECTED models' fixtures. Full run (no ctx / no
+  // scoping): every fixture is in scope.
+  const fixtureInScope = (modelName: string): boolean => !ctx || isModelInScope(modelName, ctx);
+
   for (const model of spec.models) {
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
 
+    const path = `testdata/${fileName(model.name)}.json`;
+    if (!fixtureInScope(model.name)) continue;
+
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `testdata/${fileName(model.name)}.json`,
+      path,
       content: JSON.stringify(fixture, null, 2),
     });
   }
@@ -67,6 +92,10 @@ export function generateFixtures(spec: { models: Model[]; enums: Enum[]; service
           const path = `testdata/list_${fileName(itemModel.name)}.json`;
           if (seenListPaths.has(path)) continue;
           seenListPaths.add(path);
+          // Scoped run: emit a list fixture only when its item model is SELECTED.
+          // Keyed on the item model so an out-of-scope paginated endpoint doesn't
+          // add a new file (and doesn't rewrite an on-disk out-of-scope one).
+          if (!fixtureInScope(itemModel.name)) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

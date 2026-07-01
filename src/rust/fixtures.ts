@@ -1,12 +1,24 @@
-import type { ApiSpec, GeneratedFile, Model, Enum, TypeRef } from '@workos/oagen';
+import type { ApiSpec, GeneratedFile, Model, Enum, TypeRef, EmitterContext } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { moduleName } from './naming.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate JSON test fixture files under `tests/fixtures/`. The Rust tests
  * pull these in via `include_str!` so no I/O is required at test time.
+ *
+ * A fixture is a per-model FILE, so under a scoped (`--services`) run it is
+ * gated to the SELECTED set alone ({@link isModelInScope}) — exactly like the
+ * per-model `.rs` file writer in models.ts. Out-of-scope models' fixtures are
+ * left byte-for-byte untouched on disk (a scoped run must regenerate ONLY the
+ * selected services' files). We deliberately do NOT retain prior-on-disk
+ * fixtures via `fileExistsAfterRun`: unlike a barrel/`mod.rs` there is no
+ * aggregate that must reference every fixture, and scoped test files only
+ * `include_str!` fixtures for in-scope models, so re-emitting an out-of-scope
+ * fixture would only rewrite another service's file. A full run (scoping
+ * inert) still emits every fixture.
  */
-export function generateFixtures(spec: ApiSpec): GeneratedFile[] {
+export function generateFixtures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
@@ -17,8 +29,10 @@ export function generateFixtures(spec: ApiSpec): GeneratedFile[] {
     if (model.fields.length === 0) continue;
     seen.add(model.name);
 
-    const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
     const path = `tests/fixtures/${moduleName(model.name)}.json`;
+    if (!isModelInScope(model.name, ctx)) continue;
+
+    const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
     files.push({
       path,
       content: JSON.stringify(fixture, null, 2) + '\n',

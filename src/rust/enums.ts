@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { typeName, moduleName, variantName } from './naming.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 /**
  * Generate one Rust source file per enum under `src/enums/`, plus a
@@ -28,20 +28,34 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     const mod = moduleName(e.name);
     if (seen.has(mod)) continue;
     seen.add(mod);
-    // The barrel (`src/enums/mod.rs`) must declare every enum's module so Rust
-    // compiles even in a scoped run — `moduleNames` is collected from the FULL
-    // enum set regardless of scope.
-    moduleNames.push(mod);
 
-    // Only the per-enum `.rs` FILE write is scoped (FR-1.4). In a scoped run we
-    // skip emitting files for out-of-scope enums, but the barrel above still
-    // declares their modules (their existing `.rs` files stay untouched on disk).
-    if (!isEnumInScope(e.name, ctx)) continue;
-    files.push({
-      path: `src/enums/${mod}.rs`,
-      content: renderEnum(e),
-      overwriteExisting: true,
-    });
+    // Only the per-enum `.rs` FILE write is scoped (FR-1.4); an out-of-scope
+    // enum's existing `.rs` file stays untouched on disk.
+    const inScope = isEnumInScope(e.name, ctx);
+    const path = `src/enums/${mod}.rs`;
+    if (inScope) {
+      files.push({
+        path,
+        content: renderEnum(e),
+        overwriteExisting: true,
+      });
+    }
+
+    // Declare the module only if its file will exist on disk after this run, so
+    // a scoped run never declares a brand-new out-of-scope enum it doesn't emit.
+    if (fileExistsAfterRun(path, inScope, ctx)) {
+      moduleNames.push(mod);
+    }
+  }
+
+  // Scoped runs: retain barrel entries for enum files still on disk (prior
+  // manifest) that the current spec no longer produces (e.g. renamed for
+  // another service), since out-of-scope code may still reference them.
+  for (const base of priorManifestBasenames(ctx, 'src/enums', '.rs', new Set(['mod']))) {
+    if (!seen.has(base)) {
+      seen.add(base);
+      moduleNames.push(base);
+    }
   }
 
   files.push({

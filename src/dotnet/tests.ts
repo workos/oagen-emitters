@@ -30,7 +30,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
@@ -647,6 +647,9 @@ function isSeedableStringRef(ref: import('@workos/oagen').TypeRef): boolean {
   if (ref.type !== 'string') return false;
   // `binary` maps to byte[], not a string literal
   if (ref.format === 'binary') return false;
+  // `date-time` maps to DateTimeOffset (a value type); a string-literal seed
+  // would not compile against the generated property.
+  if (ref.format === 'date-time') return false;
   return true;
 }
 

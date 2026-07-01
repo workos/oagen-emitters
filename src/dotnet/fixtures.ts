@@ -1,7 +1,8 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fixtureFileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -25,11 +26,14 @@ export const ID_PREFIXES: Record<string, string> = {
 /**
  * Generate JSON fixture files for test data.
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}): { path: string; content: string }[] {
+export function generateFixtures(
+  spec: {
+    models: Model[];
+    enums: Enum[];
+    services: any[];
+  },
+  ctx: EmitterContext,
+): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
@@ -50,10 +54,22 @@ export function generateFixtures(spec: {
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model) && !nonPaginatedWrapperRefs.has(model.name)) continue;
 
+    // Minimal-scoped-generation gate (FR: byte-for-byte untouched siblings):
+    // emit a per-model fixture ONLY for a SELECTED (in-scope) model. Under a
+    // scoped (`--services X`) run `isModelInScope` is true only for models
+    // reachable from service X, so out-of-scope services' fixtures are never
+    // (re)written and stay byte-for-byte identical on disk. This is
+    // deliberately SELECTED-only, not the SURFACE `fileExistsAfterRun` gate:
+    // re-emitting an already-on-disk out-of-scope fixture would rewrite a file
+    // outside the requested scope (and drift it if that model's shape changed
+    // upstream). Full runs (`ctx.scopedModelNames` unset) emit everything.
+    const fixturePath = `testdata/${fixtureFileName(model.name)}.json`;
+    if (!isModelInScope(model.name, ctx)) continue;
+
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `testdata/${fixtureFileName(model.name)}.json`,
+      path: fixturePath,
       content: JSON.stringify(fixture, null, 2),
     });
 

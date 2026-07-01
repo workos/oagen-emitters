@@ -8,11 +8,22 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const MODELS_PACKAGE = 'com.workos.models';
 const MODELS_DIR = 'com/workos/models';
+
+/**
+ * The relative path (target-root-relative, matching the prior manifest) of the
+ * per-model `.kt` FILE the emitter writes for a model. The aggregate gate
+ * ({@link fileExistsAfterRun}) checks this exact path against the freshly-emitted
+ * in-scope set and the prior manifest. Must stay in sync with the path used in
+ * {@link emitDataClass} / {@link emitSealedUnion} / the typealias branch.
+ */
+function modelFilePath(modelName: string): string {
+  return `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${className(modelName)}.kt`;
+}
 
 /**
  * Some specs leave string fields without `format: date-time` even though the
@@ -133,7 +144,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // Parent of a discriminated union: emit a sealed class.
     if (model.fields.length === 0 && discriminatedUnions.has(typeName)) {
       if (modelInScope) {
-        files.push(emitSealedUnion(typeName, discriminatedUnions.get(typeName)!));
+        files.push(emitSealedUnion(typeName, discriminatedUnions.get(typeName)!, ctx));
       }
       continue;
     }
@@ -168,11 +179,22 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Generate the sealed WorkOSEvent interface. Collect all event envelope
   // models that have a literal `event` field and build the @JsonSubTypes
   // mapping so Jackson can deserialize directly to the correct concrete type.
+  //
+  // This is an AGGREGATE: it enumerates many event models by name. A scoped
+  // (`--services`) run emits per-model `.kt` files only for in-scope models, so
+  // listing a brand-new OUT-OF-SCOPE event model here would reference a
+  // `ModelName::class` whose file is never written → "Unresolved reference"
+  // (the WorkOSEvent.kt build break). Gate each entry so it appears only if its
+  // model file will EXIST on disk after the run = in-scope (emitted now) ∪
+  // already-on-disk (prior manifest; scoped runs never prune). Renamed/
+  // removed-but-on-disk models still present under the same name in the spec are
+  // retained; full runs include everything (gate is inert).
   const eventMapping: Array<{ wireValue: string; modelName: string }> = [];
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (aliasOf.has(model.name)) continue;
     if (!isEventEnvelopeModel(model)) continue;
+    if (!fileExistsAfterRun(modelFilePath(model.name), isModelInScope(model.name, ctx), ctx)) continue;
     const eventField = model.fields.find((f) => f.name === 'event');
     if (eventField && eventField.type.kind === 'literal' && typeof eventField.type.value === 'string') {
       eventMapping.push({ wireValue: eventField.type.value, modelName: model.name });
@@ -254,6 +276,7 @@ function emitDataClass(model: Model): GeneratedFile {
 function emitSealedUnion(
   typeName: string,
   disc: { property: string; mapping: Record<string, string>; variantTypes: string[] },
+  ctx: EmitterContext,
 ): GeneratedFile {
   const lines: string[] = [];
   lines.push(`package ${MODELS_PACKAGE}`);
@@ -261,11 +284,19 @@ function emitSealedUnion(
   lines.push('import com.fasterxml.jackson.annotation.JsonSubTypes');
   lines.push('import com.fasterxml.jackson.annotation.JsonTypeInfo');
   lines.push('');
+  // AGGREGATE gate: @JsonSubTypes enumerates each variant model by name
+  // (`VariantClass::class`). The sealed parent itself is in scope here, but a
+  // scoped run may not emit a brand-new OUT-OF-SCOPE variant's `.kt` file — so
+  // only list variants whose model file will exist on disk after the run
+  // (in-scope ∪ prior manifest). A full run keeps every variant (gate is inert).
+  const entries = Object.entries(disc.mapping).filter(([, modelName]) =>
+    fileExistsAfterRun(modelFilePath(modelName), isModelInScope(modelName, ctx), ctx),
+  );
   // KDoc with worked Kotlin + Java consumption examples. These unions are
   // returned by Jackson; callers branch on the concrete subtype to access
-  // variant-specific data.
-  const exampleVariantWire = Object.keys(disc.mapping)[0];
-  const exampleVariantType = exampleVariantWire ? className(disc.mapping[exampleVariantWire]) : null;
+  // variant-specific data. Use a surviving variant so the example never names a
+  // class whose file the scoped run skipped.
+  const exampleVariantType = entries.length > 0 ? className(entries[0][1]) : null;
   lines.push('/**');
   lines.push(` * Discriminated union over ${typeName} variants. Selected by \`${disc.property}\`.`);
   if (exampleVariantType) {
@@ -294,7 +325,6 @@ function emitSealedUnion(
   lines.push('  visible = true');
   lines.push(')');
   lines.push('@JsonSubTypes(');
-  const entries = Object.entries(disc.mapping);
   for (let i = 0; i < entries.length; i++) {
     const [wireValue, modelName] = entries[i];
     const variantType = className(modelName);

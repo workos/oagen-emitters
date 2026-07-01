@@ -29,6 +29,12 @@ import {
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
+// Deterministic date-time seed shared by generated call args and request-body
+// assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the
+// RFC3339_EXTENDED form the generated client emits for `\DateTimeImmutable`.
+const TEST_DATE_TIME_ARG = "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
+const TEST_DATE_TIME_WIRE = '2023-01-01T00:00:00.000+00:00';
+
 /**
  * Generate PHPUnit test files and fixture JSON files.
  */
@@ -41,7 +47,8 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // This correctly handles operationHint mountOn overrides (e.g., audit_logs_retention → AuditLogs).
   // In a scoped (`--services`) run this returns only the selected post-mount
   // services so we emit per-service test files for those alone. ClientTest.php
-  // and fixtures below are built from `spec` and stay full.
+  // is a trivial constructor test (no per-model deps) and always emits. Fixtures
+  // below are scoped per-model via `generateFixtures(spec, ctx)`.
   const mountGroupsFromResolved = scopedMountGroups(ctx);
   const mountGroups = new Map<string, { op: Operation; service: Service; resolvedOp?: ResolvedOperation }[]>();
   if (mountGroupsFromResolved.size > 0 || ctx.scopedServices?.size) {
@@ -80,8 +87,13 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     overwriteExisting: true,
   });
 
-  // Generate fixture JSON files
-  const fixtures = generateFixtures(spec);
+  // Generate fixture JSON files. Pass `ctx` so a scoped (`--services`) run only
+  // (re)emits fixtures for SELECTED (in-scope) models; out-of-scope fixtures are
+  // left untouched on disk (byte-for-byte), matching the per-model file gate in
+  // models.ts. PHP has no monolithic model round-trip test — model round-trips
+  // are exercised inline in the per-service `*Test.php` files (already scoped via
+  // `scopedMountGroups`) — so there is no whole-suite aggregate to skip here.
+  const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
@@ -392,7 +404,7 @@ function generateTestValue(
   switch (ref.kind) {
     case 'primitive':
       if (ref.format === 'date-time') {
-        return "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
+        return TEST_DATE_TIME_ARG;
       }
       switch (ref.type) {
         case 'string':
@@ -642,7 +654,10 @@ function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext,
 
   lines.push('        $body = json_decode((string) $request->getBody(), true);');
   for (const f of primitiveRequired) {
-    if (f.type.kind === 'primitive' && f.type.type === 'string') {
+    if (f.type.kind === 'primitive' && f.type.format === 'date-time') {
+      // Serialized by the client via RFC3339_EXTENDED, not the raw string seed.
+      lines.push(`        $this->assertSame('${TEST_DATE_TIME_WIRE}', $body['${f.name}']);`);
+    } else if (f.type.kind === 'primitive' && f.type.type === 'string') {
       lines.push(`        $this->assertSame('test_value', $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.type === 'integer') {
       lines.push(`        $this->assertSame(1, $body['${f.name}']);`);

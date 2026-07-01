@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.19.8](https://github.com/workos/oagen-emitters/compare/v0.19.7...v0.19.8) (2026-07-01)
+
+
+### Bug Fixes
+
+* **python,ruby:** per-service model round-trip tests so scoped runs stay in sync ([#181](https://github.com/workos/oagen-emitters/issues/181)) ([f745c28](https://github.com/workos/oagen-emitters/commit/f745c28780f58445c12aab8d755e92250578b1a4))
+
+## [0.19.7](https://github.com/workos/oagen-emitters/compare/v0.19.6...v0.19.7) (2026-07-01)
+
+
+### Bug Fixes
+
+* **php,dotnet:** serialize date-time request-body params correctly ([#180](https://github.com/workos/oagen-emitters/issues/180)) ([ae75374](https://github.com/workos/oagen-emitters/commit/ae7537463594505a533e980305ac50cd9a4bbdb8))
+* two more scoped-generation orphan classes (rust unions + ruby inflections) ([#178](https://github.com/workos/oagen-emitters/issues/178)) ([8798fa6](https://github.com/workos/oagen-emitters/commit/8798fa6a909f4c0854d8a30af461140dcbd4d289))
+
+## [0.19.6](https://github.com/workos/oagen-emitters/compare/v0.19.5...v0.19.6) (2026-07-01)
+
+
+### Bug Fixes
+
+* minimal scoped generation across all languages (fixtures + round-trip/forward-compat tests) ([#176](https://github.com/workos/oagen-emitters/issues/176)) ([25b943c](https://github.com/workos/oagen-emitters/commit/25b943cb398176aaa4ff2ff2c199e36f476a7238))
+
+## [0.19.5](https://github.com/workos/oagen-emitters/compare/v0.19.4...v0.19.5) (2026-07-01)
+
+
+### Bug Fixes
+
+* **node:** scope the WorkOS client to the emit surface ([#173](https://github.com/workos/oagen-emitters/issues/173)) ([05016ba](https://github.com/workos/oagen-emitters/commit/05016ba1f43ae42436b6c84a97e9de7c84b1aaa4))
+* **scoped:** complete the scoped-generation orphan fixes (rust client/manifest, ruby rbi/manifest) ([#172](https://github.com/workos/oagen-emitters/issues/172)) ([976f0d5](https://github.com/workos/oagen-emitters/commit/976f0d5a5d55240ecba40910cbfbbbae2a760c86))
+
+## [0.19.4](https://github.com/workos/oagen-emitters/compare/v0.19.3...v0.19.4) (2026-07-01)
+
+
+### Bug Fixes
+
+* **rust:** barrel must list the emit surface, not the full spec ([#170](https://github.com/workos/oagen-emitters/issues/170)) ([4206282](https://github.com/workos/oagen-emitters/commit/4206282f9fcdd278d359d3c07c654a9b26c99fba))
+
+## [0.19.3](https://github.com/workos/oagen-emitters/compare/v0.19.2...v0.19.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* **python:** no empty models barrel for out-of-scope new services ([#168](https://github.com/workos/oagen-emitters/issues/168)) ([60e2cbb](https://github.com/workos/oagen-emitters/commit/60e2cbb17b8a67c312f4186ed9bb92946a9d104f))
+
+## [0.19.2](https://github.com/workos/oagen-emitters/compare/v0.19.1...v0.19.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* emitter compile failures in Go enums and PHP unions ([#166](https://github.com/workos/oagen-emitters/issues/166)) ([d1ae232](https://github.com/workos/oagen-emitters/commit/d1ae232650b499c55e26527dee287f965a906307))
+
+## [0.19.1](https://github.com/workos/oagen-emitters/compare/v0.19.0...v0.19.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* scope shared aggregates to emitted items in --services runs ([#164](https://github.com/workos/oagen-emitters/issues/164)) ([c137c6f](https://github.com/workos/oagen-emitters/commit/c137c6ffa16ae36237911b9778b85ca3a48e547e))
+
 ## [0.19.0](https://github.com/workos/oagen-emitters/compare/v0.18.4...v0.19.0) (2026-06-22)
 
 

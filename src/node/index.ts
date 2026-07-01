@@ -890,11 +890,20 @@ export const nodeEmitter: Emitter = {
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     const nodeCtx = withNodeOperationOverrides(ctx);
     const surface = getSurface(nodeCtx);
-    // `nodeCtx.spec` has the synthetic models that `enrichModelsFromSpec`
-    // produced (e.g. inline-object item types like `ConnectApplicationRedirectUri`).
-    // The `spec` param is the engine's pre-enrichment spec, so the barrel
-    // generator would miss those synthetic interfaces. Use the enriched one.
-    return applyLiveSurface(generateClient(nodeCtx.spec, nodeCtx), nodeCtx, surface);
+    // Use `nodeCtx.spec`'s enriched MODELS (synthetic inline-object item types
+    // like `ConnectApplicationRedirectUri` that the engine's pre-enrichment
+    // `spec` lacks), but restrict SERVICES to the emit surface the engine
+    // resolved (`spec.services` = selected ∪ already-on-disk). Passing
+    // nodeCtx.spec's FULL service list made workos.ts wire `readonly agents =
+    // new Agents(this)` (and the barrel export it) for a spec service this SDK
+    // never generated → dangling reference (TS2304); the import got scrubbed by
+    // the emitted-import invariant but the accessor did not.
+    const surfaceNames = new Set(spec.services.map((s) => s.name));
+    const clientSpec: ApiSpec = {
+      ...nodeCtx.spec,
+      services: nodeCtx.spec.services.filter((s) => surfaceNames.has(s.name)),
+    };
+    return applyLiveSurface(generateClient(clientSpec, nodeCtx), nodeCtx, surface);
   },
 
   // workos-node ships its own exception hierarchy under src/common/exceptions/.

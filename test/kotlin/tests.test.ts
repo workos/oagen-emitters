@@ -142,6 +142,47 @@ describe('kotlin/tests', () => {
     expect(content).toContain('assertEquals(parsed.toInstant(), reparsed.toInstant())');
   });
 
+  it('scoped run: skips the monolithic model round-trip test entirely', () => {
+    // MINIMAL SCOPED GENERATION: a scoped (`--services`) run regenerates only
+    // the selected service's files and must leave every other on-disk service
+    // byte-for-byte untouched. The model round-trip suite is a single
+    // whole-suite AGGREGATE file covering every model, so a scoped run must
+    // NOT emit it (the on-disk copy is left in place). Per-service test
+    // classes remain scoped via `scopedMountGroups` and are still emitted.
+    const roundTripModel = (name: string): Model => ({
+      name,
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    });
+    const scopedModels: Model[] = [
+      roundTripModel('Organization'), // in scope
+      roundTripModel('Directory'), // out of scope but ON disk
+    ];
+    const scopedSpec: ApiSpec = { ...spec, models: scopedModels };
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set(['src/main/kotlin/com/workos/models/Directory.kt']),
+    };
+
+    generateEnums([], scopedCtx);
+    const files = generateTests(scopedSpec, scopedCtx);
+
+    // BOTH whole-suite aggregates under com/workos/models are absent in a scoped
+    // run (they cover every model; regenerating either would rewrite a shared
+    // file outside the selected service).
+    expect(files.some((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'))).toBe(false);
+    expect(files.some((f) => f.path.endsWith('GeneratedForwardCompatTest.kt'))).toBe(false);
+
+    // The scoped per-service test class is still emitted.
+    expect(files.some((f) => f.path.includes('OrganizationsTest.kt'))).toBe(true);
+  });
+
   it('emits valid ISO-8601 for date-time fields in round-trip fixtures', () => {
     const dtModels: Model[] = [
       {

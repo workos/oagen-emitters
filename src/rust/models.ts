@@ -2,7 +2,7 @@ import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@work
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+import { isModelInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 const HEADER_PLACEHOLDER = ''; // engine prepends fileHeader()
 
@@ -33,26 +33,44 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     const mod = moduleName(model.name);
     if (seen.has(mod)) continue;
     seen.add(mod);
-    // The barrel (`src/models/mod.rs`) must declare every model's module so
-    // Rust compiles even in a scoped run — `moduleNames` is collected from the
-    // FULL model set regardless of scope.
-    moduleNames.push(mod);
 
     // renderModel registers inline unions into `registry` as a side effect, and
-    // `_unions.rs` is rendered later (in generateClient) from that registry — so
-    // it MUST run for every model, even out-of-scope ones, or scoped runs drop
-    // unions. Compute content unconditionally; only the per-model `.rs` FILE write
-    // is scoped (FR-1.4). The barrel above still declares every module, and an
-    // out-of-scope model's existing `.rs` file stays untouched on disk.
+    // `_unions.rs` is rendered later (in generateClient) from that registry.
+    // Register a model's unions ONLY when its own `.rs` file will exist on disk
+    // after this run — in-scope (emitted just below) or already present from a
+    // prior run (fileExistsAfterRun). A model that is NEITHER selected NOR on
+    // disk (e.g. a service the spec recently gained but this SDK has never
+    // generated, such as Agent) must NOT contribute: its variant model files
+    // are never written, so the synthesised enum in `_unions.rs` would
+    // reference dangling types and break the build (orphan class). On-disk
+    // out-of-scope models DO register — their existing `.rs` files reference
+    // those unions, so `_unions.rs` must keep them. A full run registers every
+    // model (fileExistsAfterRun ⇒ true when scoping is inert).
+    const inScope = isModelInScope(model.name, ctx);
     const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
     const path = hintPath ?? `src/models/${mod}.rs`;
+    if (!fileExistsAfterRun(path, inScope, ctx)) continue;
+
     const content = renderModel(model, registry, taggedVariantFields.get(model.name));
-    if (isModelInScope(model.name, ctx)) {
+    if (inScope) {
       files.push({
         path,
         content,
         overwriteExisting: true,
       });
+    }
+    moduleNames.push(mod);
+  }
+
+  // Scoped runs: retain barrel entries for model files still on disk (prior
+  // manifest) that the current spec no longer produces — e.g. a model renamed
+  // for another service. Out-of-scope code we did not regenerate may still
+  // reference them, so dropping the `mod` would break the build. De-duped
+  // against the modules declared above; a full run yields nothing here.
+  for (const base of priorManifestBasenames(ctx, 'src/models', '.rs', new Set([UNIONS_MODULE, 'mod']))) {
+    if (!seen.has(base)) {
+      seen.add(base);
+      moduleNames.push(base);
     }
   }
 

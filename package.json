@@ -1,6 +1,6 @@
 {
   "name": "@workos/oagen-emitters",
-  "version": "0.19.0",
+  "version": "0.19.8",
   "description": "WorkOS' oagen emitters",
   "license": "MIT",
   "author": "WorkOS",
@@ -54,6 +54,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.23.0"
+    "@workos/oagen": "^0.24.2"
   }
 }

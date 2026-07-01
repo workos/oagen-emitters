@@ -1,8 +1,9 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 
 import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -25,17 +26,41 @@ export const ID_PREFIXES: Record<string, string> = {
 
 /**
  * Generate JSON fixture files for test data.
+ *
+ * `ctx` is optional so unit tests can call with a bare spec; when supplied, a
+ * scoped (`--services`) run only emits a fixture for a SELECTED (in-scope)
+ * model — `isModelInScope` alone, NOT `fileExistsAfterRun`. Minimal scoped
+ * generation regenerates ONLY the selected service's files: every other
+ * on-disk service's fixtures must be left BYTE-FOR-BYTE untouched, so we must
+ * not re-emit a fixture just because the model already sits on disk (from the
+ * prior manifest). The monolithic round-trip test that consumed the wider set
+ * of fixtures is skipped entirely on a scoped run, and the per-service tests
+ * only reference fixtures for their (in-scope) models.
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}): { path: string; content: string }[] {
+export function generateFixtures(
+  spec: {
+    models: Model[];
+    enums: Enum[];
+    services: any[];
+  },
+  ctx?: EmitterContext,
+): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
+
+  // A fixture is emitted only for a SELECTED (in-scope) model. `isModelInScope`
+  // is selected-only under a scoped run and true for everything on a full run,
+  // so this leaves every out-of-scope service's fixtures untouched on disk.
+  // The `path` arg is retained for call-site symmetry (base vs. `list_*`) but
+  // scoping keys purely off the owning model. When ctx is absent (unit tests)
+  // every fixture is in scope.
+  const fixtureEmitted = (_path: string, modelName: string): boolean => {
+    if (!ctx) return true;
+    return isModelInScope(modelName, ctx);
+  };
 
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
@@ -47,6 +72,8 @@ export function generateFixtures(spec: {
     // with hand-maintained @oagen-ignore overrides; generated empty fixtures
     // would not match the override's required fields.
     if (model.fields.length === 0) continue;
+    // Scoped run: skip a fixture for a brand-new out-of-scope model.
+    if (!fixtureEmitted(`tests/fixtures/${fileName(model.name)}.json`, model.name)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
@@ -65,6 +92,10 @@ export function generateFixtures(spec: {
           const unwrapped = unwrapListModel(itemModel, modelMap);
           if (unwrapped) itemModel = unwrapped;
           if (itemModel.fields.length === 0) continue;
+          // Scoped run: a list fixture for a brand-new out-of-scope item model
+          // would be referenced by no emitted test; gate it on the LIST
+          // fixture's own path (not the base model fixture's).
+          if (!fixtureEmitted(`tests/fixtures/list_${fileName(itemModel.name)}.json`, itemModel.name)) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

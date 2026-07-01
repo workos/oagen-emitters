@@ -27,12 +27,33 @@ import {
   buildResolvedLookup,
   buildHiddenParams,
   collectGroupedParamNames,
+  isModelInScope,
+  isEnumInScope,
+  fileExistsAfterRun,
+  isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
+
+// Per-item FILE paths (target-root-relative, matching the prior manifest) the
+// model/enum emitters write. The whole-suite test aggregates below reference
+// these classes by name, so they may only list an item whose file will EXIST
+// on disk after the run (in-scope ∪ prior manifest) — otherwise a scoped
+// (`--services`) run references a `Class::class.java` whose `.kt` was never
+// emitted. Must stay in sync with the paths in `models.ts` / `enums.ts`.
+const MODELS_FILE_PREFIX = 'src/main/kotlin/com/workos/models/';
+const ENUMS_FILE_PREFIX = 'src/main/kotlin/com/workos/types/';
+
+function modelFilePath(modelName: string): string {
+  return `${MODELS_FILE_PREFIX}${className(modelName)}.kt`;
+}
+
+function enumFilePath(enumName: string): string {
+  return `${ENUMS_FILE_PREFIX}${className(enumName)}.kt`;
+}
 
 /**
  * Mirror the ISO-8601 hint promotion the resource/model emitters use so tests
@@ -91,11 +112,20 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  const roundTripFile = generateModelRoundTripTest(spec, ctx);
-  if (roundTripFile) files.push(roundTripFile);
-
-  const forwardCompatFile = generateForwardCompatTest(spec, ctx);
-  if (forwardCompatFile) files.push(forwardCompatFile);
+  // MINIMAL SCOPED GENERATION: BOTH whole-suite AGGREGATE files under
+  // `com/workos/models` — `GeneratedModelRoundTripTest.kt` and
+  // `GeneratedForwardCompatTest.kt` — cover every model. A scoped (`--services`)
+  // run must regenerate ONLY the selected service's files and leave every other
+  // on-disk service byte-for-byte untouched, so we skip emitting BOTH monolithic
+  // files under scoping (leaving the on-disk copies in place). Full runs (scoping
+  // inert) keep emitting them. The per-service test classes above stay scoped via
+  // `scopedMountGroups` and are unaffected.
+  if (!isScopedRun(ctx)) {
+    const roundTripFile = generateModelRoundTripTest(spec, ctx);
+    if (roundTripFile) files.push(roundTripFile);
+    const forwardCompatFile = generateForwardCompatTest(spec, ctx);
+    if (forwardCompatFile) files.push(forwardCompatFile);
+  }
 
   return files;
 }
@@ -1029,6 +1059,11 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   for (const m of spec.models) {
     if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
     if (m.fields.length === 0) continue;
+    // AGGREGATE gate: this whole-suite test references `${cls}::class.java`. In a
+    // scoped run only in-scope model files are emitted, so skip a brand-new
+    // OUT-OF-SCOPE model whose `.kt` won't exist on disk. In-scope ∪ prior
+    // manifest is retained; a full run keeps everything (gate is inert).
+    if (!fileExistsAfterRun(modelFilePath(m.name), isModelInScope(m.name, ctx), ctx)) continue;
     const cls = className(m.name);
     if (seenModelClassNames.has(cls)) continue;
     seenModelClassNames.add(cls);
@@ -1092,10 +1127,20 @@ const MAX_ENUM_FORWARD_COMPAT = 15;
 
 function generateForwardCompatTest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile | null {
   // Select multiple enums for forward-compat testing, not just the first.
-  const enumTargets = spec.enums.filter((e) => e.values.length > 0).slice(0, MAX_ENUM_FORWARD_COMPAT);
+  // AGGREGATE gate: each selected enum is imported as `com.workos.types.X`. In a
+  // scoped run only in-scope enum files are emitted, so skip a brand-new
+  // OUT-OF-SCOPE enum whose `.kt` won't exist on disk (in-scope ∪ prior manifest
+  // retained; full run keeps everything).
+  const enumTargets = spec.enums
+    .filter((e) => e.values.length > 0)
+    .filter((e) => fileExistsAfterRun(enumFilePath(e.name), isEnumInScope(e.name, ctx), ctx))
+    .slice(0, MAX_ENUM_FORWARD_COMPAT);
   const modelTarget = spec.models.find((m) => {
     if (isListWrapperModel(m) || isListMetadataModel(m)) return false;
     if (m.fields.length === 0) return false;
+    // Same aggregate gate as the round-trip test: the model is referenced as
+    // `${cls}::class.java`, so it must exist on disk after the run.
+    if (!fileExistsAfterRun(modelFilePath(m.name), isModelInScope(m.name, ctx), ctx)) return false;
     return synthJsonForModelName(m.name, ctx, new Set()) !== null;
   });
   if (enumTargets.length === 0 && !modelTarget) return null;

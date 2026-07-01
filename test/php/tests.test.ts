@@ -182,4 +182,173 @@ describe('generateTests', () => {
     expect(parsed).toHaveProperty('id');
     expect(parsed).toHaveProperty('name');
   });
+
+  describe('scoped (--services) generation', () => {
+    // Two-service / two-model spec: a scoped run selecting only `Organizations`
+    // must regenerate ONLY Organizations' artifacts and leave Connections'
+    // fixtures/tests untouched on disk (never emitted this run).
+    const scopedModels: Model[] = [
+      {
+        name: 'Organization',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+
+    const scopedServices: Service[] = [
+      ...services,
+      {
+        name: 'Connections',
+        operations: [
+          {
+            name: 'getConnection',
+            httpMethod: 'get',
+            path: '/connections/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Connection' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+          {
+            name: 'listConnections',
+            httpMethod: 'get',
+            path: '/connections',
+            pathParams: [],
+            queryParams: [{ name: 'after', type: { kind: 'primitive', type: 'string' }, required: false }],
+            headerParams: [],
+            response: { kind: 'model', name: 'Connection' },
+            errors: [],
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Connection' },
+            },
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const scopedSpec: ApiSpec = { ...spec, services: scopedServices, models: scopedModels };
+
+    // Resolved operations drive mount grouping (scopedMountGroups). Provide them
+    // for both services so a scoped run can select `Organizations` and drop
+    // `Connections`.
+    const resolvedOperations = [
+      ...scopedServices[0].operations.map((operation) => ({
+        operation,
+        service: scopedServices[0],
+        methodName: operation.name,
+        mountOn: 'Organizations',
+      })),
+      ...scopedServices[1].operations.map((operation) => ({
+        operation,
+        service: scopedServices[1],
+        methodName: operation.name,
+        mountOn: 'Connections',
+      })),
+    ] as any;
+
+    // Scope to `Organizations` only. `scopedModelNames` (selected-only) is what
+    // gates fixtures — Connection is reachable only from the out-of-scope service.
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      resolvedOperations,
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+    };
+
+    it('emits fixtures only for in-scope (selected) models', () => {
+      const result = generateTests(scopedSpec, scopedCtx);
+
+      // In-scope model fixture (+ list fixture) present.
+      expect(result.find((f) => f.path === 'tests/Fixtures/organization.json')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Fixtures/list_organization.json')).toBeDefined();
+
+      // Out-of-scope model fixtures NOT emitted (left untouched on disk).
+      expect(result.find((f) => f.path === 'tests/Fixtures/connection.json')).toBeUndefined();
+      expect(result.find((f) => f.path === 'tests/Fixtures/list_connection.json')).toBeUndefined();
+    });
+
+    it('emits per-service test files only for the selected service', () => {
+      const result = generateTests(scopedSpec, scopedCtx);
+
+      expect(result.find((f) => f.path === 'tests/Service/OrganizationsTest.php')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Service/ConnectionsTest.php')).toBeUndefined();
+    });
+
+    it('does not emit a monolithic model round-trip test (PHP has none)', () => {
+      const result = generateTests(scopedSpec, scopedCtx);
+
+      // PHP round-trips models inline in the per-service tests; there is no
+      // whole-suite aggregate file that would reference out-of-scope models.
+      const roundTrip = result.find((f) => /round.?trip|model_round|ModelRoundTrip/i.test(f.path));
+      expect(roundTrip).toBeUndefined();
+    });
+
+    it('a full (unscoped) run still emits every model fixture', () => {
+      const fullCtx: EmitterContext = { ...ctx, spec: scopedSpec, resolvedOperations };
+      const result = generateTests(scopedSpec, fullCtx);
+
+      expect(result.find((f) => f.path === 'tests/Fixtures/organization.json')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Fixtures/connection.json')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Service/OrganizationsTest.php')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Service/ConnectionsTest.php')).toBeDefined();
+    });
+  });
+
+  it('asserts date-time request-body fields against the RFC3339 wire value', () => {
+    const dtModels: Model[] = [
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        ],
+      },
+      { name: 'Export', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const dtServices: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createExport',
+            httpMethod: 'post',
+            path: '/audit_logs/exports',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'ExportCreation' },
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const dtSpec: ApiSpec = { ...spec, models: dtModels, services: dtServices };
+    const content = generateTests(dtSpec, { ...ctx, spec: dtSpec }).find(
+      (f) => f.path === 'tests/Service/AuditLogsTest.php',
+    )!.content;
+
+    // Call passes a DateTimeImmutable; the body assertion expects its RFC3339 form.
+    expect(content).toContain("new \\DateTimeImmutable('2023-01-01T00:00:00Z')");
+    expect(content).toContain("assertSame('2023-01-01T00:00:00.000+00:00', $body['range_start'])");
+    // The plain-string placeholder must NOT be used for a date-time field.
+    expect(content).not.toContain("assertSame('test_value', $body['range_start'])");
+  });
 });

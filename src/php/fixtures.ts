@@ -1,6 +1,7 @@
-import type { Model, TypeRef, Enum } from '@workos/oagen';
+import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 import { snakeName } from './naming.js';
 
 /**
@@ -24,13 +25,31 @@ export const ID_PREFIXES: Record<string, string> = {
 
 /**
  * Generate JSON fixture files for test data.
+ *
+ * FR-1.4: fixtures are per-model standalone JSON files under `tests/Fixtures/`
+ * with no barrel/index (they are loaded by name via TestHelper::loadFixture).
+ * Under a scoped (`--services`) run we therefore emit a fixture ONLY for a model
+ * that is in scope (SELECTED — reachable from the chosen services), gating on
+ * {@link isModelInScope}. Out-of-scope fixtures are left untouched on disk so a
+ * scoped run leaves every other service's fixtures BYTE-FOR-BYTE unchanged.
+ * `isModelInScope` (selected-only) — NOT `fileExistsAfterRun` (surface) — is the
+ * right gate here because a fixture is standalone: nothing references it that we
+ * must keep declared, unlike a barrel entry.
+ *
+ * `ctx` is optional so callers without a context (older tests) keep the full
+ * behavior; scoping is inert when `ctx` is absent or unscoped.
  */
-export function generateFixtures(spec: {
-  models: Model[];
-  enums: Enum[];
-  services: any[];
-}): { path: string; content: string }[] {
+export function generateFixtures(
+  spec: {
+    models: Model[];
+    enums: Enum[];
+    services: any[];
+  },
+  ctx?: EmitterContext,
+): { path: string; content: string }[] {
   if (spec.models.length === 0) return [];
+
+  const inScope = (modelName: string): boolean => (ctx ? isModelInScope(modelName, ctx) : true);
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
@@ -41,6 +60,8 @@ export function generateFixtures(spec: {
   for (const model of spec.models) {
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model)) continue;
+    // Scoped run: emit only the selected models' fixtures.
+    if (!inScope(model.name)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
@@ -59,6 +80,8 @@ export function generateFixtures(spec: {
           const unwrapped = unwrapListModel(itemModel, modelMap);
           if (unwrapped) itemModel = unwrapped;
           if (itemModel.fields.length === 0) continue;
+          // Scoped run: emit the list fixture only when its item model is selected.
+          if (!inScope(itemModel.name)) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

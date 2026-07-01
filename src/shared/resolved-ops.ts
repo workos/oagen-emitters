@@ -141,6 +141,63 @@ export function isEnumInScope(enumName: string, ctx: EmitterContext): boolean {
   return !scope || scope.has(enumName);
 }
 
+/** True when a scoped (`--services`) run is active. */
+export function isScopedRun(ctx: EmitterContext): boolean {
+  return !!ctx.scopedServices && ctx.scopedServices.size > 0;
+}
+
+/**
+ * Barrel/index inclusion gate for one item (model, enum, fixture) under a
+ * scoped run. A barrel/index may only reference an item whose per-item FILE
+ * EXISTS ON DISK after the run — otherwise the reference dangles and the SDK
+ * fails to compile (the bug this guards: a brand-new model belonging to an
+ * out-of-scope service gets declared in `mod.rs`/`__init__.py` but its source
+ * file is never emitted). That on-disk set is:
+ *   in-scope items (freshly emitted this run) ∪ items already on disk
+ *   (recorded in the prior manifest, left untouched because scoped runs never
+ *   prune).
+ * Inactive scoping ⇒ always true (a full run emits and declares everything).
+ *
+ * `relPath` is the per-item file path the emitter writes (e.g.
+ * `src/models/foo.rs`); `inScope` is the per-item scope predicate result
+ * (`isModelInScope` / `isEnumInScope`).
+ */
+export function fileExistsAfterRun(relPath: string, inScope: boolean, ctx: EmitterContext): boolean {
+  if (!isScopedRun(ctx)) return true;
+  return inScope || (ctx.priorTargetManifestPaths?.has(relPath) ?? false);
+}
+
+/**
+ * Per-item basenames recorded in the prior manifest directly under `dir` (e.g.
+ * `src/models`) with extension `ext` (e.g. `.rs`), EXCLUDING `reserved` names
+ * (barrels such as `mod`, `_unions`, `__init__`). A scoped run uses this to
+ * RETAIN barrel declarations for items that were renamed/removed from the spec
+ * but whose files still sit on disk — and may still be referenced by
+ * out-of-scope code the scoped run did not regenerate (e.g. a stale resource
+ * file). Returns `[]` for a full run or when no prior manifest is available;
+ * the caller is responsible for de-duping against items it already emitted.
+ */
+export function priorManifestBasenames(
+  ctx: EmitterContext,
+  dir: string,
+  ext: string,
+  reserved: Set<string> = new Set(),
+): string[] {
+  if (!isScopedRun(ctx)) return [];
+  const paths = ctx.priorTargetManifestPaths;
+  if (!paths) return [];
+  const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+  const out: string[] = [];
+  for (const p of paths) {
+    if (!p.startsWith(prefix) || !p.endsWith(ext)) continue;
+    const base = p.slice(prefix.length, p.length - ext.length);
+    if (base.includes('/')) continue; // direct children only
+    if (reserved.has(base)) continue;
+    out.push(base);
+  }
+  return out;
+}
+
 /**
  * Get the mount target for an IR service.
  * Checks the first resolved operation that belongs to this service.

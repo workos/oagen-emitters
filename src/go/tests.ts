@@ -71,8 +71,10 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     overwriteExisting: true,
   });
 
-  // Generate fixture JSON files
-  const { files: fixtures, pathRewrites: fixtureRewrites } = generateFixtures(spec);
+  // Generate fixture JSON files. Pass ctx so a scoped run only emits fixtures
+  // for SELECTED (in-scope) models, leaving every out-of-scope service's
+  // fixtures byte-for-byte untouched on disk (see generateFixtures).
+  const { files: fixtures, pathRewrites: fixtureRewrites } = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,

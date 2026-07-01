@@ -889,4 +889,45 @@ describe('generateResources', () => {
     expect(content).toContain('public function getProfileAndToken(');
     expect(content).toMatch(/function getProfileAndToken\(\s*string \$code/);
   });
+
+  it('serializes required date-time body fields via RFC3339_EXTENDED', () => {
+    const dtModels: Model[] = [
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+          { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        ],
+      },
+      { name: 'Export', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const dtServices: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createExport',
+            httpMethod: 'post',
+            path: '/audit_logs/exports',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'ExportCreation' },
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const dtSpec: ApiSpec = { ...emptySpec, models: dtModels, services: dtServices };
+    const content = generateResources(dtServices, { ...ctx, spec: dtSpec })[0].content;
+
+    // date-time body fields must be formatted, not passed as raw \DateTimeImmutable
+    expect(content).toContain("'range_start' => $rangeStart->format(\\DateTimeInterface::RFC3339_EXTENDED)");
+    expect(content).toContain("'range_end' => $rangeEnd->format(\\DateTimeInterface::RFC3339_EXTENDED)");
+    // plain string fields are unaffected
+    expect(content).toContain("'organization_id' => $organizationId");
+  });
 });
