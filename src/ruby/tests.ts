@@ -20,7 +20,6 @@ import {
   buildHiddenParams,
   collectBodyFieldTypes,
   isModelInScope,
-  fileExistsAfterRun,
   isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
@@ -209,47 +208,41 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  // Minimal scope: the model round-trip test is one wholesale file covering
-  // every model, so regenerating it in a scoped run would either drag in every
-  // on-disk model (surface) or drop their coverage. Skip it entirely in a scoped
-  // run — leave the on-disk file untouched. The selected service's models still
-  // regenerate; their brand-new fields just aren't round-trip-tested until the
-  // next full generation (accepted trade-off for X-only diffs).
-  if (!isScopedRun(ctx)) {
-    files.push(generateModelRoundTripTest(spec, ctx));
-  }
+  // Model round-trip tests: one file per service dir
+  // (test/workos/test_<dir>_model_round_trip.rb), each covering only that dir's
+  // models regenerated this run. A scoped run regenerates the selected
+  // services' round-trip tests in lockstep with their models — fixing the
+  // former wholesale file, which a scoped run skipped and thus left asserting a
+  // selected model's OLD shape — and leaves untouched services' files alone.
+  files.push(...generateModelRoundTripTests(spec, ctx));
+  const legacyRoundTrip = retireLegacyRoundTripMonolith(ctx);
+  if (legacyRoundTrip) files.push(legacyRoundTrip);
 
   return files;
 }
 
-/**
- * Emit test/workos/model_round_trip_test.rb that round-trips every non-wrapper
- * model through `.new(json)` and `.to_json`, asserting the result is a Hash and
- * that required fields appear with the seeded values.
- *
- * This is a whole-suite AGGREGATE: it references `WorkOS::<Class>` for every
- * model. Under a scoped (`--services`) run only the selected services' per-model
- * `.rb` files are (re)written, so a test referencing a brand-new out-of-scope
- * model whose file was never emitted would raise `NameError: uninitialized
- * constant`. Each per-model test is therefore gated by {@link fileExistsAfterRun}
- * on the SAME path `models.ts` writes (`lib/workos/<dir>/<file>.rb`): emit only
- * when that file will exist on disk after the run — in-scope (emitted this run)
- * OR already present from a prior run (`priorTargetManifestPaths`). Brand-new
- * out-of-scope models are excluded; renamed/removed-but-on-disk models are
- * retained. A full run (scoping inert) keeps every model.
- */
-function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): GeneratedFile {
-  const lines: string[] = [];
-  lines.push(`require 'test_helper'`);
-  lines.push('');
-  lines.push('class ModelRoundTripTest < Minitest::Test');
+const LEGACY_ROUNDTRIP_PATH = 'test/workos/test_model_round_trip.rb';
 
+/**
+ * Per-service model round-trip tests: one file per service dir
+ * (`test/workos/test_<dir>_model_round_trip.rb`) that round-trips every
+ * non-wrapper model in that dir through `.new(json)`/`.to_h`, asserting a Hash
+ * result and that seeded keys survive.
+ *
+ * Only IN-SCOPE models are emitted (`isModelInScope`: everything on a full run,
+ * selected-only under `--services`), so a scoped run regenerates a dir's
+ * round-trip file in lockstep with that dir's regenerated per-model `.rb`
+ * files. This replaces the former single wholesale file, which a scoped run
+ * skipped entirely — leaving it asserting the OLD shape of a model the same run
+ * had just regenerated (the failure this fixes). Dirs with no in-scope models
+ * are skipped, so untouched services' files are left byte-for-byte alone
+ * (scoped runs never prune). Because every emitted model is in-scope, its
+ * `WorkOS::<Class>` constant is written by this same run — the reference can't
+ * dangle into an `uninitialized constant`.
+ */
+function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const models = (spec.models as Model[]).filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
   const enumNames = new Set(spec.enums.map((e) => e.name));
-  const emitted = new Set<string>();
-
-  // Resolve each model's per-model file path EXACTLY as models.ts does, so the
-  // scope gate keys on the same path the per-model FILE writer uses.
   const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const dirFor = (modelName: string): string => {
@@ -258,19 +251,48 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
     return mountDirMap.get(service) ?? classifyUnassignedModel(modelName);
   };
 
+  // Group in-scope models by their dir; skip out-of-scope so untouched dirs'
+  // files stay put and each emitted file matches its regenerated models.
+  const modelsByDir = new Map<string, Model[]>();
   for (const model of models) {
-    // Skip models whose per-model `.rb` file will NOT exist on disk after this
-    // run (brand-new + out-of-scope under `--services`). Without this gate the
-    // aggregate would reference an undefined constant. The path mirrors
-    // models.ts's `lib/workos/${dirFor}/${fileName}.rb`.
-    const modelFilePath = `lib/workos/${dirFor(model.name)}/${fileName(model.name)}.rb`;
-    if (!fileExistsAfterRun(modelFilePath, isModelInScope(model.name, ctx), ctx)) continue;
+    if (!isModelInScope(model.name, ctx)) continue;
+    const dir = dirFor(model.name);
+    if (!modelsByDir.has(dir)) modelsByDir.set(dir, []);
+    modelsByDir.get(dir)!.push(model);
+  }
 
+  const files: GeneratedFile[] = [];
+  for (const [dirName, dirModels] of [...modelsByDir].sort(([a], [b]) => a.localeCompare(b))) {
+    const file = buildDirRoundTripFile(dirName, dirModels, enumNames);
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+/** Build one service dir's round-trip test file, or null when it has no models. */
+function buildDirRoundTripFile(dirName: string, dirModels: Model[], enumNames: Set<string>): GeneratedFile | null {
+  // Each dir gets a distinct test-class name so two files never reopen the same
+  // Minitest class (which would merge — and clash — their methods).
+  const dirClass = dirName
+    .split(/[_/]/)
+    .filter(Boolean)
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join('');
+
+  const lines: string[] = [];
+  lines.push(`require 'test_helper'`);
+  lines.push('');
+  lines.push(`class ${dirClass}ModelRoundTripTest < Minitest::Test`);
+
+  const emitted = new Set<string>();
+  let count = 0;
+  for (const model of dirModels) {
     // Avoid duplicate test names when two IR model names collapse to the same
     // snake_case file name (we use the file name as the test suffix).
     const fileBase = fileName(model.name);
     if (emitted.has(fileBase)) continue;
     emitted.add(fileBase);
+    count += 1;
 
     // Build a fixture hash with string keys and stub values for every field.
     const fixtureEntries: string[] = [];
@@ -327,10 +349,32 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   }
 
   lines.push('end');
+  if (count === 0) return null;
 
   return {
-    path: 'test/workos/test_model_round_trip.rb',
+    path: `test/workos/test_${dirName.replace(/\//g, '_')}_model_round_trip.rb`,
     content: lines.join('\n'),
+    integrateTarget: true,
+    overwriteExisting: true,
+  };
+}
+
+/**
+ * Retire the pre-split monolith (`test/workos/test_model_round_trip.rb`). A full
+ * run stops emitting it (engine prunes it); a scoped run never prunes, so
+ * overwrite the stale (now-failing) monolith with an inert placeholder while
+ * it's still on disk (recorded in the prior manifest). Gating on the prior
+ * manifest means it is NOT recreated once a full run has pruned it.
+ */
+function retireLegacyRoundTripMonolith(ctx: EmitterContext): GeneratedFile | null {
+  if (!isScopedRun(ctx)) return null;
+  if (!ctx.priorTargetManifestPaths?.has(LEGACY_ROUNDTRIP_PATH)) return null;
+  return {
+    path: LEGACY_ROUNDTRIP_PATH,
+    content:
+      '# Model round-trip tests moved to per-service ' +
+      'test/workos/test_<service>_model_round_trip.rb files.\n' +
+      '# This placeholder remains only until the next full generation prunes it.\n',
     integrateTarget: true,
     overwriteExisting: true,
   };
