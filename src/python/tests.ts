@@ -30,8 +30,7 @@ import {
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
-  isModelInScope,
-  fileExistsAfterRun,
+  isScopedRun,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { pythonLiteral } from './wrappers.js';
@@ -137,9 +136,16 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     if (testFile) files.push(testFile);
   }
 
-  // Generate model round-trip tests (P3-7)
-  const modelTests = generateModelRoundTripTests(spec, ctx);
-  if (modelTests) files.push(modelTests);
+  // Generate model round-trip tests (P3-7).
+  // This is ONE monolithic file (tests/test_models_round_trip.py) covering ALL
+  // models. Under minimal scoped generation a scoped `--services X` run must not
+  // touch it: it would otherwise be rewritten to reference only the selected
+  // service's models, mutating a file that belongs to the whole SDK. Skip
+  // emitting it entirely on a scoped run so the on-disk file is left untouched.
+  if (!isScopedRun(ctx)) {
+    const modelTests = generateModelRoundTripTests(spec, ctx);
+    if (modelTests) files.push(modelTests);
+  }
 
   return files;
 }
@@ -1467,32 +1473,21 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   // The round-trip test imports models from their *natural* (pre-relocation)
   // service so existing callers keep working — those imports resolve via the
   // BC re-exports that the model emitter writes into each service barrel.
+  // This wholesale test only runs on a FULL (non-scoped) generation — a scoped
+  // run skips emitting it entirely (see generateTests → isScopedRun) — so no
+  // per-model on-disk gate is needed here: every non-request-only model file is
+  // freshly emitted by the same full run.
   const placement = computeSchemaPlacement(spec, ctx);
   const modelToService = placement.originalModelToService;
-  // The per-model FILE is written to the RELOCATED dir; use it to compute the
-  // gate's relPath so it lines up with the prior manifest.
-  const relocatedModelToService = placement.modelToService;
   const roundTripDirMap = buildMountDirMap(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (roundTripDirMap.get(irService) ?? 'common') : 'common';
-
-  // Scoped runs: the round-trip test must only reference a model whose per-model
-  // file exists on disk after the run (in-scope, or already present from the
-  // prior manifest). A brand-new out-of-scope model is excluded — its file is
-  // never emitted, so importing it would raise ModuleNotFoundError. A full run
-  // keeps every model (fileExistsAfterRun ⇒ true).
-  const modelFileExists = (name: string): boolean => {
-    const dir = resolveDir(relocatedModelToService.get(name));
-    const path = `src/${ctx.namespace}/${dir}/models/${fileName(name)}.py`;
-    return fileExistsAfterRun(path, isModelInScope(name, ctx), ctx);
-  };
 
   const models = spec.models.filter(
     (m) =>
       !(isListWrapperModel(m) && !nonPaginatedRefs.has(m.name)) &&
       !(isListMetadataModel(m) && !listMetadataNeeded.has(m.name)) &&
-      !requestOnlyModelNames.has(m.name) &&
-      modelFileExists(m.name),
+      !requestOnlyModelNames.has(m.name),
   );
   if (models.length === 0) return null;
 

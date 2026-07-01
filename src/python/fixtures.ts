@@ -3,7 +3,7 @@ import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
-import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -28,11 +28,14 @@ export const ID_PREFIXES: Record<string, string> = {
  * Generate JSON fixture files for test data.
  *
  * `ctx` is optional so unit tests can call with a bare spec; when supplied, a
- * scoped (`--services`) run only emits a fixture for a model whose per-model
- * file will exist on disk after the run (in-scope, or already present from a
- * prior manifest). Brand-new out-of-scope models are skipped: the round-trip
- * test that consumes these fixtures is gated the same way, and the per-service
- * tests only reference fixtures for their (in-scope) models.
+ * scoped (`--services`) run only emits a fixture for a SELECTED (in-scope)
+ * model — `isModelInScope` alone, NOT `fileExistsAfterRun`. Minimal scoped
+ * generation regenerates ONLY the selected service's files: every other
+ * on-disk service's fixtures must be left BYTE-FOR-BYTE untouched, so we must
+ * not re-emit a fixture just because the model already sits on disk (from the
+ * prior manifest). The monolithic round-trip test that consumed the wider set
+ * of fixtures is skipped entirely on a scoped run, and the per-service tests
+ * only reference fixtures for their (in-scope) models.
  */
 export function generateFixtures(
   spec: {
@@ -48,15 +51,15 @@ export function generateFixtures(
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
   const files: { path: string; content: string }[] = [];
 
-  // Gate a fixture by ITS OWN path (recorded verbatim in the prior manifest),
-  // scoped on the owning model. A base-model fixture and its `list_*` fixture
-  // are distinct files, so each must be checked against its own path — keying a
-  // list fixture off the base path would leak a brand-new `list_*` fixture for
-  // an out-of-scope model that merely already had its base fixture on disk.
-  // When ctx is absent (unit tests) every fixture is in scope.
-  const fixtureEmitted = (path: string, modelName: string): boolean => {
+  // A fixture is emitted only for a SELECTED (in-scope) model. `isModelInScope`
+  // is selected-only under a scoped run and true for everything on a full run,
+  // so this leaves every out-of-scope service's fixtures untouched on disk.
+  // The `path` arg is retained for call-site symmetry (base vs. `list_*`) but
+  // scoping keys purely off the owning model. When ctx is absent (unit tests)
+  // every fixture is in scope.
+  const fixtureEmitted = (_path: string, modelName: string): boolean => {
     if (!ctx) return true;
-    return fileExistsAfterRun(path, isModelInScope(modelName, ctx), ctx);
+    return isModelInScope(modelName, ctx);
   };
 
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
