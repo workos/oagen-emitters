@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, Model, Enum } from '@workos/oagen';
 import { assignModelsToServices } from '@workos/oagen';
 import {
@@ -10,7 +12,7 @@ import {
   resolveServiceTarget,
 } from './naming.js';
 import { classifyUnassignedModel } from './models.js';
-import { getMountTarget } from '../shared/resolved-ops.js';
+import { getMountTarget, isScopedRun } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
@@ -128,7 +130,56 @@ function buildInflectionMap(spec: ApiSpec, ctx: EmitterContext): Map<string, str
 
   for (const [file, cls] of NON_SPEC_INFLECTIONS) inflections.set(file, cls);
 
+  preserveOnDiskInflections(inflections, ctx);
+
   return inflections;
+}
+
+/**
+ * Keep Zeitwerk acronym overrides for model files that survive on disk but are
+ * no longer in the spec the emitter was handed.
+ *
+ * A scoped (`--services`) run rebuilds `inflections.rb` from the narrowed spec,
+ * so an override for a model the spec has since REMOVED gets dropped — yet a
+ * scoped run never prunes another service's `.rb` files, so e.g.
+ * `admin_portal/sso_intent_options.rb` remains. Without its
+ * `"sso_intent_options" => "SSOIntentOptions"` override Zeitwerk infers
+ * `SsoIntentOptions` and every reference to `WorkOS::SSOIntentOptions` raises
+ * `uninitialized constant` at load time. Re-derive the override from the prior
+ * on-disk file (its real class name) rather than guessing casing from the path.
+ *
+ * Scoped-only: a full run prunes stale files, so there is nothing on disk to
+ * keep an override alive for.
+ */
+function preserveOnDiskInflections(inflections: Map<string, string>, ctx: EmitterContext): void {
+  if (!isScopedRun(ctx)) return;
+  const rootDir = ctx.targetDir ?? ctx.outputDir;
+  const onDisk = ctx.priorTargetManifestPaths;
+  if (!rootDir || !onDisk || onDisk.size === 0) return;
+
+  let prior: string;
+  try {
+    prior = fs.readFileSync(path.join(rootDir, 'lib/workos/inflections.rb'), 'utf8');
+  } catch {
+    return; // first run into this dir — no prior overrides to preserve
+  }
+
+  // Basenames (sans .rb) of every file still on disk after this run. Zeitwerk
+  // inflects by basename, so the inflection map is basename-keyed too.
+  const onDiskBasenames = new Set<string>();
+  for (const p of onDisk) {
+    if (p.endsWith('.rb')) onDiskBasenames.add(path.basename(p, '.rb'));
+  }
+
+  // Parse `  "key" => "Value"` rows from the prior WORKOS_INFLECTIONS hash and
+  // restore any whose file survives on disk and the current spec no longer covers.
+  const entryRe = /"([^"]+)"\s*=>\s*"([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = entryRe.exec(prior)) !== null) {
+    const [, key, cls] = m;
+    if (inflections.has(key)) continue; // current spec already emits this override
+    if (onDiskBasenames.has(key)) inflections.set(key, cls);
+  }
 }
 
 /** Generate lib/workos/inflections.rb — Zeitwerk inflection overrides (T40/C5). */
