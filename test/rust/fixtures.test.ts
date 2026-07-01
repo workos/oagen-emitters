@@ -206,6 +206,48 @@ describe('rust/fixtures', () => {
     expect(exampleFromSpec([], { kind: 'array', items: { kind: 'primitive', type: 'string' } }, enums)).toBeUndefined();
   });
 
+  it('scoped run: emits fixtures ONLY for selected models, leaving on-disk siblings untouched', () => {
+    const models: Model[] = [
+      {
+        name: 'Pipe',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'Radar',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    const s = spec(models);
+    // Scope selects Pipe only. `scopedModelNames` is the selected set (models
+    // reachable from the selected services), set by oagen-core. Radar's fixture
+    // is already on disk (prior manifest) but is out of scope, so a scoped run
+    // must NOT rewrite it — the SELECTED-only gate (`isModelInScope`) drops it
+    // even though `fileExistsAfterRun` would have retained it.
+    const scopedCtx: EmitterContext = {
+      ...ctx(s),
+      scopedServices: new Set(['Pipes']),
+      scopedModelNames: new Set(['Pipe']),
+      priorTargetManifestPaths: new Set(['tests/fixtures/radar.json']),
+    };
+    const files = generateFixtures(s, scopedCtx);
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('tests/fixtures/pipe.json');
+    // Out-of-scope on-disk sibling is left byte-for-byte untouched: not re-emitted.
+    expect(paths).not.toContain('tests/fixtures/radar.json');
+  });
+
+  it('full run (scoping inert): emits a fixture for every model', () => {
+    const models: Model[] = [
+      { name: 'Pipe', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      { name: 'Radar', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const s = spec(models);
+    const files = generateFixtures(s, ctx(s));
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('tests/fixtures/pipe.json');
+    expect(paths).toContain('tests/fixtures/radar.json');
+  });
+
   it('threads required-only field selection through generateModelFixture', () => {
     const models: Model[] = [
       {

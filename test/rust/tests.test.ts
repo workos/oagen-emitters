@@ -501,4 +501,65 @@ describe('rust/tests', () => {
     const content = getMountTestFile(files, 'things');
     expect(content).not.toContain('encodes_query_params');
   });
+
+  describe('minimal scoped generation', () => {
+    const svc = (name: string): Service => ({
+      name,
+      operations: [
+        {
+          name: `list${name}`,
+          httpMethod: 'get',
+          path: `/${name.toLowerCase()}`,
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: `${name}Item` },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    });
+
+    it('emits per-service test files ONLY for the selected mount, leaving siblings untouched', () => {
+      const pipes = svc('Pipes');
+      const radar = svc('Radar');
+      const models: ApiSpec['models'] = [
+        { name: 'PipesItem', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+        { name: 'RadarItem', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      ];
+      const scopedCtx: EmitterContext = {
+        ...ctxWithResolved([pipes, radar], models),
+        scopedServices: new Set(['Pipes']),
+        scopedModelNames: new Set(['PipesItem']),
+      };
+      const files = generateTests({ ...baseSpec, services: [pipes, radar], models }, scopedCtx);
+      const paths = files.map((f) => f.path);
+      // Selected service's mount test file is emitted; the sibling's is not.
+      expect(paths).toContain('tests/pipes_test.rs');
+      expect(paths).not.toContain('tests/radar_test.rs');
+    });
+
+    it('has NO monolithic all-models round-trip file — round-trips are per-op inside per-service files', () => {
+      const pipes = svc('Pipes');
+      const radar = svc('Radar');
+      const models: ApiSpec['models'] = [
+        { name: 'PipesItem', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+        { name: 'RadarItem', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      ];
+      const scopedCtx: EmitterContext = {
+        ...ctxWithResolved([pipes, radar], models),
+        scopedServices: new Set(['Pipes']),
+        scopedModelNames: new Set(['PipesItem']),
+      };
+      const files = generateTests({ ...baseSpec, services: [pipes, radar], models }, scopedCtx);
+      // The only *_test.rs files are the per-service mount tests (here: pipes).
+      // No aggregate model_round_trip / all-models test file exists to gate.
+      const testFiles = files.filter((f) => f.path.endsWith('_test.rs')).map((f) => f.path);
+      expect(testFiles).toEqual(['tests/pipes_test.rs']);
+      // The out-of-scope sibling's round-trip must not leak into the emitted file.
+      const pipesContent = getMountTestFile(files, 'pipes');
+      expect(pipesContent).toContain('async fn pipes_list_pipes_round_trip()');
+      expect(pipesContent).not.toContain('radar');
+    });
+  });
 });

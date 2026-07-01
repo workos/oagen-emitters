@@ -142,7 +142,13 @@ describe('kotlin/tests', () => {
     expect(content).toContain('assertEquals(parsed.toInstant(), reparsed.toInstant())');
   });
 
-  it('scoped run: round-trip test omits brand-new out-of-scope models, retains on-disk ones', () => {
+  it('scoped run: skips the monolithic model round-trip test entirely', () => {
+    // MINIMAL SCOPED GENERATION: a scoped (`--services`) run regenerates only
+    // the selected service's files and must leave every other on-disk service
+    // byte-for-byte untouched. The model round-trip suite is a single
+    // whole-suite AGGREGATE file covering every model, so a scoped run must
+    // NOT emit it (the on-disk copy is left in place). Per-service test
+    // classes remain scoped via `scopedMountGroups` and are still emitted.
     const roundTripModel = (name: string): Model => ({
       name,
       fields: [
@@ -152,7 +158,6 @@ describe('kotlin/tests', () => {
     });
     const scopedModels: Model[] = [
       roundTripModel('Organization'), // in scope
-      roundTripModel('PipesPipe'), // brand-new, out of scope, NOT on disk
       roundTripModel('Directory'), // out of scope but ON disk
     ];
     const scopedSpec: ApiSpec = { ...spec, models: scopedModels };
@@ -167,12 +172,15 @@ describe('kotlin/tests', () => {
 
     generateEnums([], scopedCtx);
     const files = generateTests(scopedSpec, scopedCtx);
-    const roundTrip = files.find((f) => f.path.includes('GeneratedModelRoundTripTest.kt'))!;
-    const content = roundTrip.content;
 
-    expect(content).toContain('Organization round-trips through Jackson');
-    expect(content).toContain('Directory round-trips through Jackson'); // retained (on disk)
-    expect(content).not.toContain('PipesPipe round-trips through Jackson'); // omitted (brand-new)
+    // BOTH whole-suite aggregates under com/workos/models are absent in a scoped
+    // run (they cover every model; regenerating either would rewrite a shared
+    // file outside the selected service).
+    expect(files.some((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'))).toBe(false);
+    expect(files.some((f) => f.path.endsWith('GeneratedForwardCompatTest.kt'))).toBe(false);
+
+    // The scoped per-service test class is still emitted.
+    expect(files.some((f) => f.path.includes('OrganizationsTest.kt'))).toBe(true);
   });
 
   it('emits valid ISO-8601 for date-time fields in round-trip fixtures', () => {

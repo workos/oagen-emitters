@@ -160,7 +160,14 @@ describe('dotnet/scoped aggregates', () => {
     expect(converter.content).toContain('ToObject<SessionReauthenticated>');
   });
 
-  it('gates per-model fixtures to models whose file exists after a scoped run', () => {
+  it('gates per-model fixtures to SELECTED (in-scope) models only under a scoped run', () => {
+    // Minimal scoped generation: a scoped `--services X` run must regenerate
+    // ONLY the selected service's fixtures and leave every other service's
+    // fixtures byte-for-byte untouched on disk. The fixture gate is therefore
+    // SELECTED-only (`isModelInScope`), NOT the SURFACE `fileExistsAfterRun`
+    // gate — even an out-of-scope fixture that already sits on disk from a
+    // prior full run must be left alone (never re-emitted), so the run cannot
+    // rewrite/drift files outside the requested scope.
     const models: Model[] = [
       {
         name: 'OrganizationMembership',
@@ -202,7 +209,9 @@ describe('dotnet/scoped aggregates', () => {
       spec,
       scopedServices: new Set(['OrganizationMemberships']),
       scopedModelNames: new Set(['OrganizationMembership']),
-      // The renamed/removed model is on disk; the brand-new one is not.
+      // OrganizationDomainStandAlone already sits on disk from a prior full
+      // run, but it is OUT OF SCOPE this run — a minimal scoped run must NOT
+      // re-emit it.
       priorTargetManifestPaths: new Set([
         'test/WorkOSTests/testdata/organization_membership.json',
         'test/WorkOSTests/testdata/organization_domain_stand_alone.json',
@@ -212,13 +221,79 @@ describe('dotnet/scoped aggregates', () => {
     const files = generateTests(spec, ctx);
     const paths = files.map((f) => f.path);
 
-    // In-scope model fixture is emitted.
+    // In-scope (SELECTED) model fixture is emitted.
     expect(paths).toContain('testdata/organization_membership.json');
-    // Renamed/removed-but-on-disk fixture is retained.
-    expect(paths).toContain('testdata/organization_domain_stand_alone.json');
-    // Brand-new out-of-scope fixture is EXCLUDED (stray file for an
-    // unreferenceable model).
+    // Out-of-scope fixture already on disk is LEFT UNTOUCHED (not re-emitted).
+    expect(paths.some((p) => p.includes('organization_domain_stand_alone'))).toBe(false);
+    // Brand-new out-of-scope fixture is EXCLUDED (never in scope).
     expect(paths.some((p) => p.includes('session_reauthenticated'))).toBe(false);
+  });
+
+  it('does not emit a monolithic model round-trip test under a scoped run', () => {
+    // Unlike some emitters (e.g. Ruby's GeneratedModelRoundTrip aggregate),
+    // the .NET emitter has no wholesale model-round-trip test file: round-trip
+    // coverage is inlined into each per-service `Tests/*Test.cs` file, which is
+    // already scoped via `scopedMountGroups`. So a scoped run must emit ONLY
+    // the selected service's test file and no cross-service aggregate.
+    const models: Model[] = [
+      {
+        name: 'OrganizationMembership',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'SessionReauthenticated',
+        fields: [{ name: 'session_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'OrganizationMemberships',
+        operations: [
+          {
+            name: 'getOrganizationMembership',
+            httpMethod: 'get',
+            path: '/organization_memberships/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'OrganizationMembership' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const spec: ApiSpec = { ...emptySpec, services, models };
+    const ctx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec,
+      scopedServices: new Set(['OrganizationMemberships']),
+      scopedModelNames: new Set(['OrganizationMembership']),
+      // Minimal resolvedOperations table so scopedMountGroups can group the
+      // selected service by mount target.
+      resolvedOperations: services.flatMap((service) =>
+        service.operations.map((operation) => ({
+          service,
+          operation,
+          methodName: operation.name,
+          mountOn: service.name,
+          defaults: {},
+          inferFromClient: [],
+          urlBuilder: false,
+        })),
+      ),
+    };
+
+    const files = generateTests(spec, ctx);
+    const csTestFiles = files.filter((f) => f.path.startsWith('Tests/') && f.path.endsWith('.cs'));
+
+    // Only the selected service's test file is emitted...
+    expect(csTestFiles.map((f) => f.path)).toEqual(['Tests/OrganizationMembershipsServiceTest.cs']);
+    // ...and there is no aggregate/wholesale round-trip test file.
+    expect(files.some((f) => /RoundTrip/i.test(f.path))).toBe(false);
   });
 
   it('emits all per-model fixtures on a full (unscoped) run', () => {

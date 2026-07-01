@@ -161,24 +161,25 @@ describe('python scoped aggregates', () => {
   });
 
   describe('round-trip test + fixtures', () => {
-    it('does not reference or fixture a brand-new out-of-scope model', () => {
+    // Minimal scoped generation: the monolithic round-trip test covers ALL
+    // models, so a scoped run must not touch it — it is not emitted at all,
+    // leaving the on-disk file byte-for-byte untouched.
+    it('does not emit the wholesale model round-trip test on a scoped run', () => {
       const files = generateTests(spec, scopedCtx());
       const roundTrip = files.find((f) => f.path === 'tests/test_models_round_trip.py');
-      expect(roundTrip).toBeDefined();
-      expect(roundTrip!.content).not.toContain('GadgetBrandNew');
-      // No fixture for the brand-new out-of-scope model.
-      expect(files.find((f) => f.path === 'tests/fixtures/gadget_brand_new.json')).toBeUndefined();
+      expect(roundTrip).toBeUndefined();
     });
 
-    it('keeps the in-scope model and retains the on-disk out-of-scope model', () => {
+    it('emits a fixture ONLY for the selected in-scope model', () => {
       const files = generateTests(spec, scopedCtx());
-      const roundTrip = files.find((f) => f.path === 'tests/test_models_round_trip.py');
-      expect(roundTrip!.content).toContain('WidgetA');
-      // GadgetOnDisk's per-model file exists on disk (prior manifest), so the
-      // round-trip test may still import it and its fixture is emitted.
-      expect(roundTrip!.content).toContain('GadgetOnDisk');
-      expect(files.find((f) => f.path === 'tests/fixtures/gadget_on_disk.json')).toBeDefined();
+      // The selected service's model gets its fixture.
       expect(files.find((f) => f.path === 'tests/fixtures/widget_a.json')).toBeDefined();
+      // No fixture for the brand-new out-of-scope model.
+      expect(files.find((f) => f.path === 'tests/fixtures/gadget_brand_new.json')).toBeUndefined();
+      // The on-disk out-of-scope model is NOT re-fixtured: minimal scoped
+      // generation leaves every other service's fixtures untouched on disk,
+      // even ones recorded in the prior manifest.
+      expect(files.find((f) => f.path === 'tests/fixtures/gadget_on_disk.json')).toBeUndefined();
     });
   });
 

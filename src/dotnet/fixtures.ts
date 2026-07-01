@@ -2,15 +2,7 @@ import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fixtureFileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
-import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
-
-/**
- * Prefix the per-model fixture path with the .NET test project layout so the
- * scoped-run gate can compare it against the prefixed paths recorded in the
- * prior manifest. Must mirror `TEST_PREFIX` in index.ts; the fixture path
- * itself (`testdata/<name>.json`) is what `prefixTestPaths` later prepends to.
- */
-const TEST_PREFIX = 'test/WorkOSTests/';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -62,14 +54,17 @@ export function generateFixtures(
     if (isListMetadataModel(model)) continue;
     if (isListWrapperModel(model) && !nonPaginatedWrapperRefs.has(model.name)) continue;
 
-    // Scoped-run gate: only emit a per-model fixture whose file will exist on
-    // disk after the run (in-scope, or already present from a prior manifest).
-    // A brand-new out-of-scope model's fixture would be a stray file for a
-    // model no in-scope test can reference; a renamed/removed-but-on-disk one
-    // is retained. Full runs emit everything. `relPath` carries the
-    // `test/WorkOSTests/` prefix so it matches the prefixed prior-manifest paths.
+    // Minimal-scoped-generation gate (FR: byte-for-byte untouched siblings):
+    // emit a per-model fixture ONLY for a SELECTED (in-scope) model. Under a
+    // scoped (`--services X`) run `isModelInScope` is true only for models
+    // reachable from service X, so out-of-scope services' fixtures are never
+    // (re)written and stay byte-for-byte identical on disk. This is
+    // deliberately SELECTED-only, not the SURFACE `fileExistsAfterRun` gate:
+    // re-emitting an already-on-disk out-of-scope fixture would rewrite a file
+    // outside the requested scope (and drift it if that model's shape changed
+    // upstream). Full runs (`ctx.scopedModelNames` unset) emit everything.
     const fixturePath = `testdata/${fixtureFileName(model.name)}.json`;
-    if (!fileExistsAfterRun(`${TEST_PREFIX}${fixturePath}`, isModelInScope(model.name, ctx), ctx)) continue;
+    if (!isModelInScope(model.name, ctx)) continue;
 
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 

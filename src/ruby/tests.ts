@@ -21,6 +21,7 @@ import {
   collectBodyFieldTypes,
   isModelInScope,
   fileExistsAfterRun,
+  isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { classifyUnassignedModel } from './models.js';
@@ -208,7 +209,15 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  files.push(generateModelRoundTripTest(spec, ctx));
+  // Minimal scope: the model round-trip test is one wholesale file covering
+  // every model, so regenerating it in a scoped run would either drag in every
+  // on-disk model (surface) or drop their coverage. Skip it entirely in a scoped
+  // run — leave the on-disk file untouched. The selected service's models still
+  // regenerate; their brand-new fields just aren't round-trip-tested until the
+  // next full generation (accepted trade-off for X-only diffs).
+  if (!isScopedRun(ctx)) {
+    files.push(generateModelRoundTripTest(spec, ctx));
+  }
 
   return files;
 }

@@ -30,6 +30,7 @@ import {
   isModelInScope,
   isEnumInScope,
   fileExistsAfterRun,
+  isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -111,11 +112,20 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  const roundTripFile = generateModelRoundTripTest(spec, ctx);
-  if (roundTripFile) files.push(roundTripFile);
-
-  const forwardCompatFile = generateForwardCompatTest(spec, ctx);
-  if (forwardCompatFile) files.push(forwardCompatFile);
+  // MINIMAL SCOPED GENERATION: BOTH whole-suite AGGREGATE files under
+  // `com/workos/models` — `GeneratedModelRoundTripTest.kt` and
+  // `GeneratedForwardCompatTest.kt` — cover every model. A scoped (`--services`)
+  // run must regenerate ONLY the selected service's files and leave every other
+  // on-disk service byte-for-byte untouched, so we skip emitting BOTH monolithic
+  // files under scoping (leaving the on-disk copies in place). Full runs (scoping
+  // inert) keep emitting them. The per-service test classes above stay scoped via
+  // `scopedMountGroups` and are unaffected.
+  if (!isScopedRun(ctx)) {
+    const roundTripFile = generateModelRoundTripTest(spec, ctx);
+    if (roundTripFile) files.push(roundTripFile);
+    const forwardCompatFile = generateForwardCompatTest(spec, ctx);
+    if (forwardCompatFile) files.push(forwardCompatFile);
+  }
 
   return files;
 }
