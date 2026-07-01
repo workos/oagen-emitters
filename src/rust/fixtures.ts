@@ -1,17 +1,22 @@
 import type { ApiSpec, GeneratedFile, Model, Enum, TypeRef, EmitterContext } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { moduleName } from './naming.js';
-import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate JSON test fixture files under `tests/fixtures/`. The Rust tests
  * pull these in via `include_str!` so no I/O is required at test time.
  *
- * Scoped runs only emit a fixture for a model whose file will exist on disk
- * after the run (in-scope, or already present from a prior run). Emitting a
- * fixture for a brand-new out-of-scope model would add a stray file for a model
- * the SDK can't even reference yet; in-scope tests only `include_str!` fixtures
- * for in-scope models, so gating here is safe.
+ * A fixture is a per-model FILE, so under a scoped (`--services`) run it is
+ * gated to the SELECTED set alone ({@link isModelInScope}) — exactly like the
+ * per-model `.rs` file writer in models.ts. Out-of-scope models' fixtures are
+ * left byte-for-byte untouched on disk (a scoped run must regenerate ONLY the
+ * selected services' files). We deliberately do NOT retain prior-on-disk
+ * fixtures via `fileExistsAfterRun`: unlike a barrel/`mod.rs` there is no
+ * aggregate that must reference every fixture, and scoped test files only
+ * `include_str!` fixtures for in-scope models, so re-emitting an out-of-scope
+ * fixture would only rewrite another service's file. A full run (scoping
+ * inert) still emits every fixture.
  */
 export function generateFixtures(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
@@ -25,7 +30,7 @@ export function generateFixtures(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     seen.add(model.name);
 
     const path = `tests/fixtures/${moduleName(model.name)}.json`;
-    if (!fileExistsAfterRun(path, isModelInScope(model.name, ctx), ctx)) continue;
+    if (!isModelInScope(model.name, ctx)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
     files.push({
