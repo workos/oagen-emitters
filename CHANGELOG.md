@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.8](https://github.com/workos/oagen-emitters/compare/v0.19.7...v0.19.8) (2026-07-01)
+
+
+### Bug Fixes
+
+* **python,ruby:** per-service model round-trip tests so scoped runs stay in sync ([#181](https://github.com/workos/oagen-emitters/issues/181)) ([f745c28](https://github.com/workos/oagen-emitters/commit/f745c28780f58445c12aab8d755e92250578b1a4))
+
 ## [0.19.7](https://github.com/workos/oagen-emitters/compare/v0.19.6...v0.19.7) (2026-07-01)
 
 
