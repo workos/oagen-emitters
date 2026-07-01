@@ -54,6 +54,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.24.1"
+    "@workos/oagen": "^0.24.2"
   }
 }
