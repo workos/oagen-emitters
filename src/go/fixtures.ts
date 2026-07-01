@@ -2,7 +2,7 @@ import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
 import { collectNonPaginatedResponseModelNames, collectReferencedListMetadataModels } from '../shared/model-utils.js';
-import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -26,12 +26,19 @@ export const ID_PREFIXES: Record<string, string> = {
 /**
  * Generate JSON fixture files for test data.
  *
- * Scoped runs only emit a fixture for a model whose per-model fixture FILE will
- * exist on disk after the run (in-scope, or already present from a prior run —
- * the fixture path is per-model so the prior manifest records it directly).
- * This drops brand-new out-of-scope fixtures (the round-trip ADDITION case) and
- * keeps prior fixtures untouched, mirroring the Rust fixtures fix. `ctx` is
- * optional so unit tests that assert raw content can call it for a full run.
+ * Minimal-scoped-generation gate (byte-for-byte untouched siblings): each
+ * fixture is a standalone per-model JSON file under `testdata/` with no
+ * barrel/index — a test reads it by path via `os.ReadFile`. Under a scoped
+ * (`--services X`) run we therefore emit a fixture ONLY for a SELECTED model
+ * (reachable from service X), gating on {@link isModelInScope}. Out-of-scope
+ * services' fixtures are never (re)written and stay BYTE-FOR-BYTE identical on
+ * disk. This is deliberately SELECTED-only, NOT the SURFACE `fileExistsAfterRun`
+ * gate: re-emitting an already-on-disk out-of-scope fixture would rewrite a file
+ * outside the requested scope (and drift it if that model's shape changed
+ * upstream), whereas a barrel entry needs the surface so its declaration stays
+ * valid — a standalone fixture has no such dependent. Full runs
+ * (`ctx.scopedModelNames` unset) emit everything. `ctx` is optional so unit
+ * tests that assert raw content can call it for a full run.
  */
 export function generateFixtures(
   spec: { models: Model[]; enums: Enum[]; services: any[] },
@@ -49,16 +56,16 @@ export function generateFixtures(
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(spec.services);
   const listMetadataNeeded = collectReferencedListMetadataModels(spec.models, nonPaginatedRefs);
 
-  // Full run (no ctx / no scoping): every fixture is in scope.
-  const fixtureInScope = (relPath: string, modelName: string): boolean =>
-    !ctx || fileExistsAfterRun(relPath, isModelInScope(modelName, ctx), ctx);
+  // Scoped run: emit only the SELECTED models' fixtures. Full run (no ctx / no
+  // scoping): every fixture is in scope.
+  const fixtureInScope = (modelName: string): boolean => !ctx || isModelInScope(modelName, ctx);
 
   for (const model of spec.models) {
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
 
     const path = `testdata/${fileName(model.name)}.json`;
-    if (!fixtureInScope(path, model.name)) continue;
+    if (!fixtureInScope(model.name)) continue;
 
     const fixture = model.fields.length === 0 ? {} : generateModelFixture(model, modelMap, enumMap);
 
@@ -85,10 +92,10 @@ export function generateFixtures(
           const path = `testdata/list_${fileName(itemModel.name)}.json`;
           if (seenListPaths.has(path)) continue;
           seenListPaths.add(path);
-          // Scoped run: only emit a list fixture whose file will exist after the
-          // run (in-scope item model, or already on disk). Keyed on the item
-          // model so an out-of-scope paginated endpoint doesn't add a new file.
-          if (!fixtureInScope(path, itemModel.name)) continue;
+          // Scoped run: emit a list fixture only when its item model is SELECTED.
+          // Keyed on the item model so an out-of-scope paginated endpoint doesn't
+          // add a new file (and doesn't rewrite an on-disk out-of-scope one).
+          if (!fixtureInScope(itemModel.name)) continue;
           const fixture = generateModelFixture(itemModel, modelMap, enumMap);
           const listFixture = {
             data: [fixture],

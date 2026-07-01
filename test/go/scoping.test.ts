@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateModels } from '../../src/go/models.js';
 import { generateEnums } from '../../src/go/enums.js';
+import { generateFixtures } from '../../src/go/fixtures.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -320,5 +321,51 @@ describe('go scoped flat-file reconciliation (events.go)', () => {
     const events = generateEnums(enums, ctx).find((f) => f.path === 'pkg/events/events.go')!.content;
     expect(events).toContain('organization.created');
     expect(events).toContain('session.reauthenticated');
+  });
+});
+
+describe('go scoped fixtures (testdata/*.json)', () => {
+  // Fixtures are standalone per-model files. Under minimal scoped generation a
+  // scoped run must emit fixtures ONLY for SELECTED models — NOT the surface —
+  // so every out-of-scope service's fixtures stay byte-for-byte untouched.
+  const fixtureModels: Model[] = [
+    { name: 'InScopeThing', fields: [strField('id'), strField('label')] },
+    { name: 'OutOfScopeNew', fields: [strField('id'), strField('extra')] },
+  ];
+  const fixtureSpec = { models: fixtureModels, enums: [] as Enum[], services: [] as any[] };
+
+  it('emits a fixture only for the SELECTED model, dropping brand-new out-of-scope', () => {
+    const ctx = scopedCtx({
+      scopedServices: ['InScope'],
+      scopedModelNames: ['InScopeThing'], // OutOfScopeNew NOT selected
+      priorManifestPaths: ['models.go'],
+    });
+    const { files } = generateFixtures(fixtureSpec, ctx);
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('testdata/in_scope_thing.json');
+    expect(paths).not.toContain('testdata/out_of_scope_new.json');
+  });
+
+  it('does NOT re-emit an out-of-scope fixture already present on disk (selected-only, not surface)', () => {
+    // The out-of-scope fixture's path is recorded in the prior manifest. A
+    // SURFACE gate (fileExistsAfterRun) would re-emit it (rewriting a file
+    // outside the requested scope); the SELECTED-only gate must skip it so the
+    // on-disk fixture stays byte-for-byte untouched.
+    const ctx = scopedCtx({
+      scopedServices: ['InScope'],
+      scopedModelNames: ['InScopeThing'],
+      priorManifestPaths: ['models.go', 'testdata/out_of_scope_new.json'],
+    });
+    const { files } = generateFixtures(fixtureSpec, ctx);
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('testdata/in_scope_thing.json');
+    expect(paths).not.toContain('testdata/out_of_scope_new.json');
+  });
+
+  it('full run (no scoping) emits every fixture', () => {
+    const { files } = generateFixtures(fixtureSpec); // no ctx -> full run
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('testdata/in_scope_thing.json');
+    expect(paths).toContain('testdata/out_of_scope_new.json');
   });
 });
