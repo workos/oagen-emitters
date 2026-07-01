@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.7](https://github.com/workos/oagen-emitters/compare/v0.19.6...v0.19.7) (2026-07-01)
+
+
+### Bug Fixes
+
+* **php,dotnet:** serialize date-time request-body params correctly ([#180](https://github.com/workos/oagen-emitters/issues/180)) ([ae75374](https://github.com/workos/oagen-emitters/commit/ae7537463594505a533e980305ac50cd9a4bbdb8))
+* two more scoped-generation orphan classes (rust unions + ruby inflections) ([#178](https://github.com/workos/oagen-emitters/issues/178)) ([8798fa6](https://github.com/workos/oagen-emitters/commit/8798fa6a909f4c0854d8a30af461140dcbd4d289))
+
 ## [0.19.6](https://github.com/workos/oagen-emitters/compare/v0.19.5...v0.19.6) (2026-07-01)
 
 
