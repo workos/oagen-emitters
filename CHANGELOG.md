@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.6](https://github.com/workos/oagen-emitters/compare/v0.19.5...v0.19.6) (2026-07-01)
+
+
+### Bug Fixes
+
+* minimal scoped generation across all languages (fixtures + round-trip/forward-compat tests) ([#176](https://github.com/workos/oagen-emitters/issues/176)) ([25b943c](https://github.com/workos/oagen-emitters/commit/25b943cb398176aaa4ff2ff2c199e36f476a7238))
+
 ## [0.19.5](https://github.com/workos/oagen-emitters/compare/v0.19.4...v0.19.5) (2026-07-01)
 
 
