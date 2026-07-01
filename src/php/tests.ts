@@ -29,6 +29,12 @@ import {
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
+// Deterministic date-time seed shared by generated call args and request-body
+// assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the
+// RFC3339_EXTENDED form the generated client emits for `\DateTimeImmutable`.
+const TEST_DATE_TIME_ARG = "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
+const TEST_DATE_TIME_WIRE = '2023-01-01T00:00:00.000+00:00';
+
 /**
  * Generate PHPUnit test files and fixture JSON files.
  */
@@ -398,7 +404,7 @@ function generateTestValue(
   switch (ref.kind) {
     case 'primitive':
       if (ref.format === 'date-time') {
-        return "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
+        return TEST_DATE_TIME_ARG;
       }
       switch (ref.type) {
         case 'string':
@@ -648,7 +654,10 @@ function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext,
 
   lines.push('        $body = json_decode((string) $request->getBody(), true);');
   for (const f of primitiveRequired) {
-    if (f.type.kind === 'primitive' && f.type.type === 'string') {
+    if (f.type.kind === 'primitive' && f.type.format === 'date-time') {
+      // Serialized by the client via RFC3339_EXTENDED, not the raw string seed.
+      lines.push(`        $this->assertSame('${TEST_DATE_TIME_WIRE}', $body['${f.name}']);`);
+    } else if (f.type.kind === 'primitive' && f.type.type === 'string') {
       lines.push(`        $this->assertSame('test_value', $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.type === 'integer') {
       lines.push(`        $this->assertSame(1, $body['${f.name}']);`);

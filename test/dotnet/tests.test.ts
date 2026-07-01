@@ -199,4 +199,45 @@ describe('dotnet/tests', () => {
     expect(content).toContain('MockSequentialResponses');
     expect(content).toContain('await foreach');
   });
+
+  it('does not seed a string literal into a date-time (DateTimeOffset) property', () => {
+    const dtModels: Model[] = [
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        ],
+      },
+      { name: 'Export', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const dtServices: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createExport',
+            httpMethod: 'post',
+            path: '/audit_logs/exports',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'ExportCreation' },
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const dtSpec: ApiSpec = { ...spec, models: dtModels, services: dtServices };
+    const content = generateTests(dtSpec, { ...ctx, spec: dtSpec }).find(
+      (f) => f.path === 'Tests/AuditLogsServiceTest.cs',
+    )!.content;
+
+    // A DateTimeOffset property must never be assigned a string literal seed.
+    expect(content).not.toContain('RangeStart = "');
+    // The plain string field is still seeded.
+    expect(content).toContain('OrganizationId = "test_organization_id"');
+  });
 });

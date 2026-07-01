@@ -309,4 +309,46 @@ describe('generateTests', () => {
       expect(result.find((f) => f.path === 'tests/Service/ConnectionsTest.php')).toBeDefined();
     });
   });
+
+  it('asserts date-time request-body fields against the RFC3339 wire value', () => {
+    const dtModels: Model[] = [
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        ],
+      },
+      { name: 'Export', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const dtServices: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'createExport',
+            httpMethod: 'post',
+            path: '/audit_logs/exports',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'ExportCreation' },
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const dtSpec: ApiSpec = { ...spec, models: dtModels, services: dtServices };
+    const content = generateTests(dtSpec, { ...ctx, spec: dtSpec }).find(
+      (f) => f.path === 'tests/Service/AuditLogsTest.php',
+    )!.content;
+
+    // Call passes a DateTimeImmutable; the body assertion expects its RFC3339 form.
+    expect(content).toContain("new \\DateTimeImmutable('2023-01-01T00:00:00Z')");
+    expect(content).toContain("assertSame('2023-01-01T00:00:00.000+00:00', $body['range_start'])");
+    // The plain-string placeholder must NOT be used for a date-time field.
+    expect(content).not.toContain("assertSame('test_value', $body['range_start'])");
+  });
 });
