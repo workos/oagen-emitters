@@ -1,6 +1,7 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { wireInterfaceName } from './naming.js';
+import { wireEnumName } from './options.js';
 
 export interface MapTypeRefOpts {
   genericDefaults?: Map<string, string>;
@@ -43,6 +44,18 @@ function resolveDomainName(irName: string): string {
 }
 
 /**
+ * Names of enums with a configured wire→domain value remap (see
+ * NodeEmitterOptions.enumValueRemaps). Set by `index.ts` once per run. A
+ * remapped enum's domain type carries the SDK-facing values while its wire
+ * companion (`<Enum>Response`) carries the raw values; `mapWireTypeRef` uses
+ * the companion so `*Response` interfaces describe the untranslated wire shape.
+ */
+let remappedEnumNames: Set<string> = new Set();
+export function setRemappedEnumNames(names: Set<string>): void {
+  remappedEnumNames = names;
+}
+
+/**
  * Map an IR TypeRef to a TypeScript domain type string.
  * Domain types use PascalCase model names (e.g., `Organization`).
  */
@@ -70,7 +83,10 @@ export function mapWireTypeRef(ref: TypeRef, opts?: { genericDefaults?: Map<stri
     primitive: mapWirePrimitive,
     array: (_r, items) => `${parenthesizeUnion(items)}[]`,
     model: (r) => wireInterfaceName(resolveDomainName(r.name)) + (genericDefaults?.get(r.name) ?? ''),
-    enum: (r) => inlineEnumUnions.get(r.name) ?? r.name,
+    // A remapped enum has a wire companion (`<Enum>Response`) with the raw
+    // values; reference it on the wire side. Inlined enums keep their literal
+    // union (they have no separate file, remapped or not).
+    enum: (r) => inlineEnumUnions.get(r.name) ?? (remappedEnumNames.has(r.name) ? wireEnumName(r.name) : r.name),
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `${inner} | null`,
     literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),

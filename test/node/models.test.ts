@@ -5,6 +5,7 @@ import { generateModels, generateSerializers } from '../../src/node/models.js';
 import { nodeEmitter, enforceEmittedImportInvariant } from '../../src/node/index.js';
 import { buildLiveSurface, emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surface.js';
 import { setBaselineInterfaceNames, setBaselineSerializedNames } from '../../src/node/naming.js';
+import { setRemappedEnumNames } from '../../src/node/type-map.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -1380,5 +1381,93 @@ describe('enforceEmittedImportInvariant', () => {
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('remapped enum wire companion', () => {
+  const directoryModel: Model = {
+    name: 'Directory',
+    fields: [
+      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'state',
+        type: { kind: 'enum', name: 'DirectoryState', values: ['linked', 'unlinked', 'validating'] },
+        required: true,
+      },
+    ],
+  };
+  const directorySpec: ApiSpec = {
+    ...emptySpec,
+    models: [directoryModel],
+    enums: [
+      {
+        name: 'DirectoryState',
+        values: [
+          { name: 'LINKED', value: 'linked' },
+          { name: 'UNLINKED', value: 'unlinked' },
+          { name: 'VALIDATING', value: 'validating' },
+        ],
+      },
+    ],
+    services: [
+      {
+        name: 'DirectorySync',
+        operations: [
+          {
+            name: 'getDirectory',
+            httpMethod: 'get',
+            path: '/directories/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Directory' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ],
+  };
+  const remapCtx: EmitterContext = {
+    ...ctx,
+    spec: directorySpec,
+    emitterOptions: {
+      enumValueRemaps: { DirectoryState: { linked: 'active', unlinked: 'inactive' } },
+    },
+  } as EmitterContext;
+
+  // `mapWireTypeRef` reads a module-level set populated by index.ts at run time.
+  const withRemapNames = <T>(fn: () => T): T => {
+    setRemappedEnumNames(new Set(['DirectoryState']));
+    try {
+      return fn();
+    } finally {
+      setRemappedEnumNames(new Set());
+    }
+  };
+
+  it('types the domain field as the domain enum and the wire field as the companion', () => {
+    const result = withRemapNames(() => generateModels([directoryModel], remapCtx));
+    const iface = result.find((f) => f.path === 'src/directory-sync/interfaces/directory.interface.ts');
+    expect(iface).toBeDefined();
+    // Domain interface keeps the SDK-facing enum…
+    expect(iface!.content).toContain('export interface Directory {');
+    expect(iface!.content).toMatch(/export interface Directory \{[\s\S]*state: DirectoryState;/);
+    // …while the wire interface references the raw-wire companion.
+    expect(iface!.content).toMatch(/export interface DirectoryResponse \{[\s\S]*state: DirectoryStateResponse;/);
+    // Both names are imported from the enum's interface file.
+    expect(iface!.content).toContain(
+      "import type { DirectoryState, DirectoryStateResponse } from './directory-state.interface';",
+    );
+  });
+
+  it('types the serializer mapper param as the wire companion and imports it', () => {
+    const result = withRemapNames(() => generateSerializers([directoryModel], remapCtx));
+    const ser = result.find((f) => f.path === 'src/directory-sync/serializers/directory.serializer.ts');
+    expect(ser).toBeDefined();
+    expect(ser!.content).toContain('const deserializeDirectoryState = (value: DirectoryStateResponse): DirectoryState');
+    expect(ser!.content).toContain("if (value === 'linked') {");
+    expect(ser!.content).toContain("return 'active';");
+    expect(ser!.content).toContain('DirectoryStateResponse');
   });
 });

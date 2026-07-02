@@ -16,7 +16,7 @@ import {
   liveSurfaceFunctionPath,
   liveSurfaceHasAutogenFile,
 } from './live-surface.js';
-import { isNodeOwnedService, isRemappedEnum, enumValueRemap, nodeOptions } from './options.js';
+import { isNodeOwnedService, isRemappedEnum, enumValueRemap, nodeOptions, wireEnumName } from './options.js';
 
 /**
  * Names of every remapped enum the model deserializes (see
@@ -31,13 +31,14 @@ function collectRemappedEnumDeps(model: Model, ctx: EmitterContext): string[] {
 
 /**
  * Render the file-local wire→domain mapper for a remapped enum, e.g.
- * `const deserializeDirectoryState = (value: string): DirectoryState => {...}`.
- * The param is `string` because the wire value arrives untyped from JSON; the
- * `as` on the fall-through narrows the unmapped (already-domain-valid) values.
+ * `const deserializeDirectoryState = (value: DirectoryStateResponse): DirectoryState => {...}`.
+ * The param is the raw-wire companion type (`<Enum>Response`), so the `value ===
+ * 'linked'` guards are type-reachable; the `as` on the fall-through narrows the
+ * unmapped values, which are valid in both the wire and domain unions.
  */
 function renderEnumDeserializeMapper(enumName: string, ctx: EmitterContext): string[] {
   const remap = enumValueRemap(ctx, enumName) ?? {};
-  const lines = [`const deserialize${enumName} = (value: string): ${enumName} => {`];
+  const lines = [`const deserialize${enumName} = (value: ${wireEnumName(enumName)}): ${enumName} => {`];
   for (const [wire, domain] of Object.entries(remap)) {
     lines.push(`  if (value === '${wire}') {`, `    return '${domain}';`, `  }`);
   }
@@ -860,12 +861,16 @@ export function buildSerializerImports(
     }
   }
 
-  // Domain-type imports for any remapped enum the model deserializes — the
-  // file-local mapper's return type (e.g. `): DirectoryState =>`).
+  // Type imports for any remapped enum the model deserializes — the file-local
+  // mapper's return type (domain, e.g. `): DirectoryState =>`) and its param
+  // type (wire companion, e.g. `(value: DirectoryStateResponse)`). Both are
+  // declared in the same interface file.
   for (const enumName of collectRemappedEnumDeps(model, sctx.ctx)) {
     const enumDir = sctx.resolveDir(sctx.enumToService.get(enumName));
     const enumInterfacePath = `src/${enumDir}/interfaces/${fileName(enumName)}.interface.ts`;
-    lines.push(`import type { ${enumName} } from '${relativeImport(serializerPath, enumInterfacePath)}';`);
+    lines.push(
+      `import type { ${enumName}, ${wireEnumName(enumName)} } from '${relativeImport(serializerPath, enumInterfacePath)}';`,
+    );
   }
   lines.push('');
   return lines;

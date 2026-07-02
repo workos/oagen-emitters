@@ -3,7 +3,7 @@ import { collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oag
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
 import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
-import { isNodeOwnedService, enumValueRemap } from './options.js';
+import { isNodeOwnedService, enumValueRemap, wireEnumName } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
@@ -49,16 +49,23 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     // A configured wire→domain value remap (see NodeEmitterOptions.enumValueRemaps)
     // makes this the SDK-facing domain type: emit the mapped values (raw wire
-    // values not in the map pass through). The companion `deserialize<Enum>`
-    // mapper that converts wire → domain is emitted by the serializer pass.
-    // Bypasses baseline merging on purpose — the baseline holds the previously
-    // mapped values, and re-merging would union both wire and domain spellings.
+    // values not in the map pass through). Alongside it we emit a wire companion
+    // (`<Enum>Response`) carrying the raw wire values, so `*Response` interfaces
+    // and the `deserialize<Enum>` mapper describe the untranslated wire shape
+    // instead of lying about it as the domain type. The mapper itself is emitted
+    // by the serializer pass. Bypasses baseline merging on purpose — the baseline
+    // holds the previously mapped values, and re-merging would union both wire
+    // and domain spellings.
     const remap = enumValueRemap(ctx, enumDef.name);
 
     if (remap) {
       const domainValues = [...new Set(enumDef.values.map((v) => remap[String(v.value)] ?? String(v.value)))];
+      const wireValues = [...new Set(enumDef.values.map((v) => String(v.value)))];
       lines.push(`export type ${enumDef.name} =`);
       lines.push(domainValues.map((v) => `  | '${v}'`).join('\n') + ';');
+      lines.push('');
+      lines.push(`export type ${wireEnumName(enumDef.name)} =`);
+      lines.push(wireValues.map((v) => `  | '${v}'`).join('\n') + ';');
       hasNewValues = true;
     } else if (baselineEnum?.members) {
       const existingValues = new Set(Object.values(baselineEnum.members).map(String));

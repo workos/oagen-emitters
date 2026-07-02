@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Model, Field, TypeRef, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
-import { planOperation } from '@workos/oagen';
+import { planOperation, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef, isInlineEnum } from './type-map.js';
 import {
   fieldName,
@@ -43,7 +43,7 @@ import {
   hasDateTimeConversion,
 } from './field-plan.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
-import { isNodeOwnedService, isHandOwnedType } from './options.js';
+import { isNodeOwnedService, isHandOwnedType, isRemappedEnum, wireEnumName } from './options.js';
 import { unwrapListModel } from './fixtures.js';
 import { groupByMount, buildResolvedLookup, lookupResolved, isModelInScope } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -159,6 +159,22 @@ function isSupportedFieldType(
     default:
       return true;
   }
+}
+
+/**
+ * True when a field type references a remapped enum (see enumValueRemaps). The
+ * wire interface must render such fields via `mapWireTypeRef` (→ the raw-wire
+ * `<Enum>Response`) rather than reuse the baseline type, which carries the
+ * remapped domain enum and would misdescribe the wire shape.
+ */
+function refReferencesRemappedEnum(ref: TypeRef, ctx: EmitterContext): boolean {
+  let found = false;
+  walkTypeRef(ref, {
+    enum: (r: { name: string }) => {
+      if (isRemappedEnum(ctx, r.name)) found = true;
+    },
+  });
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +363,9 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
     }
     for (const dep of deps.enums) {
       importableNames.add(dep);
+      // Remapped enums carry a wire companion (`<Enum>Response`) declared in the
+      // same file; the wire interface references it.
+      if (isRemappedEnum(ctx, dep)) importableNames.add(wireEnumName(dep));
     }
 
     const typeDecls = new Map<string, string>();
@@ -490,8 +509,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
       const generatedPath = `src/${depDir}/interfaces/${fileName(dep)}.interface.ts`;
       const currentFilePath = `src/${dirName}/interfaces/${fileName(model.name)}.interface.ts`;
 
+      // A remapped enum also declares a wire companion (`<Enum>Response`) in the
+      // same interface file (see enums.ts); pull it in too so `*Response` fields
+      // that reference the raw-wire type resolve.
+      const enumImports = isRemappedEnum(ctx, dep) ? `${dep}, ${wireEnumName(dep)}` : dep;
+
       if (baselineSrc === currentFilePath) {
         importableNames.add(dep);
+        if (isRemappedEnum(ctx, dep)) importableNames.add(wireEnumName(dep));
         continue;
       }
 
@@ -502,7 +527,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
         relPath =
           depDir === dirName ? `./${fileName(dep)}.interface` : `../../${depDir}/interfaces/${fileName(dep)}.interface`;
       }
-      lines.push(`import type { ${dep} } from '${relPath}';`);
+      lines.push(`import type { ${enumImports} } from '${relPath}';`);
     }
     for (const [, imp] of crossServiceImports) {
       lines.push(`import type { ${imp.name} } from '${imp.relPath}';`);
@@ -613,6 +638,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
           if (seenWireFields.has(wireField)) continue;
           seenWireFields.add(wireField);
           const baselineField = baselineResponse?.fields?.[wireField];
+          // A remapped-enum field must reflect the raw-wire companion
+          // (`<Enum>Response`) on the wire interface; the baseline carries the
+          // remapped domain enum, so bypass baseline reuse and let
+          // `mapWireTypeRef` emit the wire name.
+          const isRemappedEnumField = refReferencesRemappedEnum(field.type, ctx);
           if (
             genericDefaults.has(model.name) &&
             baselineField &&
@@ -623,6 +653,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, shared?: Sh
             const opt = baselineField.optional ? '?' : '';
             lines.push(`  ${wireField}${opt}: ${substituteGenericParam(baselineField.type, unresolvableNames)};`);
           } else if (
+            !isRemappedEnumField &&
             baselineField &&
             baselineTypeResolvable(baselineField.type, importableNames) &&
             baselineFieldCompatible(baselineField, field)

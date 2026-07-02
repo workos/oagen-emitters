@@ -114,6 +114,48 @@ describe('generateEnums', () => {
     expect(result[0].path).toBe('src/organizations/interfaces/org-status.interface.ts');
   });
 
+  it('emits a raw-wire companion type for a remapped enum', () => {
+    // A configured enumValueRemap makes the enum's domain type carry the
+    // SDK-facing values (linked→active, unlinked→inactive) while the wire
+    // companion (`<Enum>Response`) preserves the raw wire values. This keeps
+    // `*Response` interfaces honest about the untranslated wire shape.
+    const enums: Enum[] = [
+      {
+        name: 'DirectoryState',
+        values: [
+          { name: 'LINKED', value: 'linked' },
+          { name: 'VALIDATING', value: 'validating' },
+          { name: 'UNLINKED', value: 'unlinked' },
+        ],
+      },
+    ];
+    const ctxRemap: EmitterContext = {
+      ...ctx,
+      emitterOptions: {
+        enumValueRemaps: { DirectoryState: { linked: 'active', unlinked: 'inactive' } },
+      },
+    } as EmitterContext;
+
+    const result = generateEnums(enums, ctxRemap);
+    expect(result).toHaveLength(1);
+    const content = result[0].content;
+
+    // Domain type carries the remapped SDK-facing values.
+    expect(content).toContain('export type DirectoryState =');
+    expect(content).toContain("| 'active'");
+    expect(content).toContain("| 'inactive'");
+
+    // Wire companion carries the raw wire values.
+    expect(content).toContain('export type DirectoryStateResponse =');
+    const wireBlock = content.slice(content.indexOf('export type DirectoryStateResponse ='));
+    expect(wireBlock).toContain("| 'linked'");
+    expect(wireBlock).toContain("| 'unlinked'");
+    expect(wireBlock).not.toContain("| 'active'");
+
+    // A value with no mapping (`validating`) passes through to both.
+    expect(content).toContain("| 'validating'");
+  });
+
   it('renders @deprecated on enum values', () => {
     const enums: Enum[] = [
       {

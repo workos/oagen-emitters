@@ -44,8 +44,8 @@ import {
   resolveInterfaceName,
 } from './naming.js';
 import { withNodeOperationOverrides } from './node-overrides.js';
-import { isNodeOwnedService, nodeOptions } from './options.js';
-import { setInlineEnumUnions, setDomainNameResolver } from './type-map.js';
+import { isNodeOwnedService, nodeOptions, remappedEnumNames } from './options.js';
+import { setInlineEnumUnions, setDomainNameResolver, setRemappedEnumNames } from './type-map.js';
 import { groupByMount } from '../shared/resolved-ops.js';
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { assignModelsToServices, createServiceDirResolver, relativeImport } from './utils.js';
@@ -156,6 +156,10 @@ function getSurface(ctx: EmitterContext): LiveSurface {
   // test files dangling — see admin-portal.spec.ts referencing `.SSO`.
   // Pass an empty map; type-map will fall back to emitting the symbol name.
   setInlineEnumUnions(new Map());
+  // Tell `mapWireTypeRef` which enums have a wire companion (`<Enum>Response`)
+  // so `*Response` interface fields reference the raw-wire type, not the
+  // remapped domain type. See NodeEmitterOptions.enumValueRemaps.
+  setRemappedEnumNames(remappedEnumNames(ctx));
   setAdoptedModelNames(computeAdoptedModelNames(ctx, surface));
 
   // Pre-compute which domain names the resolver reaches via structural
