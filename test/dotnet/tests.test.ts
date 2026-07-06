@@ -122,6 +122,9 @@ describe('dotnet/tests', () => {
     const fixture = files.find((f) => f.path === 'testdata/organization.json');
     expect(fixture).toBeDefined();
     expect(fixture!.headerPlacement).toBe('skip');
+    // Fixtures overwrite rather than deep-merge into the on-disk JSON, so a
+    // regen can't preserve stale entries (e.g. an old `metadata: { "key": {} }`).
+    expect(fixture!.overwriteExisting).toBe(true);
 
     const data = JSON.parse(fixture!.content);
     expect(data).toHaveProperty('id');

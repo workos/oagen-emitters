@@ -76,10 +76,14 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // fixtures byte-for-byte untouched on disk (see generateFixtures).
   const { files: fixtures, pathRewrites: fixtureRewrites } = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
+    // Fixtures are fully generated artifacts: overwrite instead of deep-merging
+    // into the on-disk JSON, which would preserve stale entries (e.g. a leftover
+    // object-valued `metadata: { "key": {} }` map placeholder).
     files.push({
       path: fixture.path,
       content: fixture.content,
       headerPlacement: 'skip',
+      overwriteExisting: true,
     });
   }
 

@@ -29,13 +29,18 @@ import {
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
-  // Generate fixture JSON files
+  // Generate fixture JSON files. Fixtures are fully generated artifacts, so
+  // overwrite rather than let the writer deep-merge into the on-disk JSON — a
+  // merge preserves stale entries (e.g. an old `metadata: { "key": {} }` map
+  // placeholder survives after the example became `{ "timezone": ... }`, leaving
+  // an object value a `Dictionary<string,string>` model can't deserialize).
   const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
       content: fixture.content,
       headerPlacement: 'skip',
+      overwriteExisting: true,
     });
   }
 

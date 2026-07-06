@@ -33,10 +33,14 @@ export function generateFixtures(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     if (!isModelInScope(model.name, ctx)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap, new Set());
+    // Fixtures are fully generated artifacts: overwrite instead of deep-merging
+    // into the on-disk JSON, which would preserve stale entries (e.g. a leftover
+    // object-valued `metadata: { "key": {} }` map placeholder).
     files.push({
       path,
       content: JSON.stringify(fixture, null, 2) + '\n',
       headerPlacement: 'skip',
+      overwriteExisting: true,
     });
   }
 

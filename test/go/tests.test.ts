@@ -65,6 +65,9 @@ describe('go/tests', () => {
 
     expect(testFiles.length).toBeGreaterThanOrEqual(1);
     expect(fixtureFiles.length).toBeGreaterThanOrEqual(1);
+    // Fixtures overwrite rather than deep-merge, so a regen can't preserve
+    // stale entries (e.g. an old `metadata: { "key": {} }` map placeholder).
+    expect(fixtureFiles.every((f) => f.overwriteExisting === true)).toBe(true);
   });
 
   it('generates httptest-based tests', () => {
