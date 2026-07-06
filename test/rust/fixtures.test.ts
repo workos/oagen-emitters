@@ -45,6 +45,9 @@ describe('rust/fixtures', () => {
     const files = generateFixtures(spec(models), ctx(spec(models)));
     const file = files.find((f) => f.path === 'tests/fixtures/event.json')!;
     expect(file).toBeDefined();
+    // Fixtures overwrite rather than deep-merge, so a regen can't preserve
+    // stale entries (e.g. an old `metadata: { "key": {} }` map placeholder).
+    expect(file.overwriteExisting).toBe(true);
     const parsed = JSON.parse(file.content);
     expect(parsed.id).toBe('event_01XXXX');
     expect(parsed.created_at).toBe('2026-02-02T16:35:39.317Z');
