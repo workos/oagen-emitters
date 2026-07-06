@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.9](https://github.com/workos/oagen-emitters/compare/v0.19.8...v0.19.9) (2026-07-06)
+
+
+### Bug Fixes
+
+* **fixtures:** overwrite generated fixtures instead of deep-merging ([#183](https://github.com/workos/oagen-emitters/issues/183)) ([022cbdf](https://github.com/workos/oagen-emitters/commit/022cbdf1bf777b8bb879f7c97dc0bcd84318df9a))
+
 ## [0.19.8](https://github.com/workos/oagen-emitters/compare/v0.19.7...v0.19.8) (2026-07-01)
 
 
