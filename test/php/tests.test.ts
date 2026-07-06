@@ -178,6 +178,9 @@ describe('generateTests', () => {
 
     const fixture = result.find((f) => f.path.includes('Fixtures/organization.json'));
     expect(fixture).toBeDefined();
+    // Fixtures overwrite rather than deep-merge, so a regen can't preserve
+    // stale entries (e.g. an old `metadata: { "key": {} }` map placeholder).
+    expect(fixture!.overwriteExisting).toBe(true);
     const parsed = JSON.parse(fixture!.content);
     expect(parsed).toHaveProperty('id');
     expect(parsed).toHaveProperty('name');

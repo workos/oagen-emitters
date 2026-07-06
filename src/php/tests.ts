@@ -93,12 +93,16 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   // models.ts. PHP has no monolithic model round-trip test — model round-trips
   // are exercised inline in the per-service `*Test.php` files (already scoped via
   // `scopedMountGroups`) — so there is no whole-suite aggregate to skip here.
+  // Fixtures are fully generated artifacts: overwrite instead of deep-merging
+  // into the on-disk JSON, which would preserve stale entries (e.g. a leftover
+  // object-valued `metadata: { "key": {} }` map placeholder).
   const fixtures = generateFixtures(spec, ctx);
   for (const fixture of fixtures) {
     files.push({
       path: fixture.path,
       content: fixture.content,
       headerPlacement: 'skip',
+      overwriteExisting: true,
     });
   }
 
