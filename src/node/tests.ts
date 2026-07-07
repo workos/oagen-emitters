@@ -283,9 +283,11 @@ function generateServiceTest(
   // Conditionally import test utilities based on what test types exist
   const hasPaginated = plans.some((p) => p.plan.isPaginated);
   const hasBody = plans.some((p) => p.plan.hasBody);
+  const hasIdempotentPost = plans.some((p) => p.plan.isIdempotentPost);
   const testUtils = ['fetchOnce', 'fetchURL', 'fetchMethod'];
   if (hasPaginated) testUtils.push('fetchSearchParams');
   if (hasBody) testUtils.push('fetchBody');
+  if (hasIdempotentPost) testUtils.push('fetchHeaders');
   lines.push('import {');
   for (const util of testUtils) {
     lines.push(`  ${util},`);
@@ -376,6 +378,7 @@ function generateServiceTest(
       renderVoidTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     }
 
+    renderIdempotencyTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     renderUnionBranchTests(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
     renderErrorPathTest(lines, op, plan, method, serviceProp, modelMap, ctx, existingMethod);
 
@@ -857,6 +860,66 @@ function buildCallArgs(
     return pathArgs ? `${pathArgs}, ${bodyArg}` : bodyArg;
   }
   return pathArgs;
+}
+
+/** Whether the resolved SDK behavior asks for auto-generated idempotency keys on
+ *  POSTs. Mirrors the same-named helper in resources.ts so the generated tests
+ *  assert exactly what the generated method does. */
+function autoGeneratesIdempotencyKey(ctx?: EmitterContext): boolean {
+  return ctx?.spec.sdk?.idempotency?.autoGenerateForPost ?? false;
+}
+
+/** Emit idempotency-key coverage for POSTs that inject an `Idempotency-Key`.
+ *  The happy-path test asserts the body and URL but never inspects request
+ *  headers, so a regression that stopped forwarding `requestOptions.idempotencyKey`
+ *  — or stopped auto-generating one — would pass unnoticed. When the SDK
+ *  auto-generates keys, a 5xx retry that lost its key silently duplicates a
+ *  write, so both the caller-supplied and auto-generated paths are guarded. */
+function renderIdempotencyTest(
+  lines: string[],
+  op: Operation,
+  plan: any,
+  method: string,
+  serviceProp: string,
+  modelMap: Map<string, Model>,
+  ctx?: EmitterContext,
+  baselineMethod?: BaselineMethod,
+): void {
+  if (!plan.isIdempotentPost) return;
+
+  const baseArgs = buildCallArgs(op, plan, modelMap, ctx, baselineMethod);
+  const withReqOpts = (reqOpts: string) => (baseArgs ? `${baseArgs}, ${reqOpts}` : reqOpts);
+  const fixtureExpr = plan.responseModelName
+    ? plan.isArrayResponse
+      ? `[${toCamelCase(plan.responseModelName)}Fixture]`
+      : `${toCamelCase(plan.responseModelName)}Fixture`
+    : '{}';
+  const headerExpr = "(fetchHeaders() as Record<string, string>)['Idempotency-Key']";
+
+  // A caller-supplied key is forwarded verbatim as the Idempotency-Key header.
+  lines.push('');
+  lines.push("    it('forwards a caller-supplied idempotency key', async () => {");
+  lines.push(`      fetchOnce(${fixtureExpr});`);
+  lines.push('');
+  lines.push(
+    `      await workos.${serviceProp}.${method}(${withReqOpts("{ idempotencyKey: 'test-idempotency-key' }")});`,
+  );
+  lines.push('');
+  lines.push(`      expect(${headerExpr}).toBe('test-idempotency-key');`);
+  lines.push('    });');
+
+  // With no caller key, the SDK auto-generates a `workos-node-` prefixed one so
+  // retries reuse a stable key instead of duplicating the write.
+  if (autoGeneratesIdempotencyKey(ctx)) {
+    lines.push('');
+    lines.push("    it('auto-generates an idempotency key when none is supplied', async () => {");
+    lines.push(`      fetchOnce(${fixtureExpr});`);
+    lines.push('');
+    lines.push(`      await workos.${serviceProp}.${method}(${baseArgs});`);
+    lines.push('');
+    lines.push(`      expect(${headerExpr}).toEqual(expect.stringMatching(/^workos-node-/));`);
+    lines.push('    });');
+  }
 }
 
 /** Emit a server-error test for every method. The WorkOS client throws on any

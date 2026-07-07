@@ -337,6 +337,76 @@ describe('node test generation ownership', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('emits Idempotency-Key header coverage for idempotent POSTs', () => {
+    // The happy-path body test never inspects request headers, so a regression
+    // that stopped forwarding/auto-generating the key would go unnoticed. An
+    // idempotent POST should get both a caller-supplied and an auto-generated
+    // key assertion, reading the header via the fetchHeaders util.
+    const createGroupModel: Model = {
+      name: 'CreateGroup',
+      fields: [{ name: 'name', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const createOp = {
+      name: 'createGroup',
+      httpMethod: 'post' as const,
+      path: '/groups',
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      requestBody: { kind: 'model' as const, name: 'CreateGroup' },
+      response: { kind: 'model' as const, name: 'Group' },
+      errors: [],
+      injectIdempotencyKey: true,
+    };
+    const createService: Service = { name: 'Groups', operations: [createOp] };
+    const createSpec: ApiSpec = {
+      ...spec,
+      models: [groupModel, createGroupModel],
+      services: [createService],
+    };
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(createSpec, {
+        ...ctx,
+        spec: createSpec,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Groups'], regenerateOwnedTests: true },
+      } as EmitterContext);
+
+      const testFile = result.find((f) => f.path === 'src/groups/groups.spec.ts');
+      expect(testFile).toBeDefined();
+      const content = testFile!.content;
+      // fetchHeaders is imported only when an idempotent POST exists.
+      expect(content).toContain('fetchHeaders,');
+      // Caller-supplied key is forwarded verbatim as the Idempotency-Key header.
+      expect(content).toContain(
+        "expect((fetchHeaders() as Record<string, string>)['Idempotency-Key']).toBe('test-idempotency-key');",
+      );
+      // defaultSdkBehavior enables autoGenerateForPost, so the auto-gen path is asserted too.
+      expect(content).toContain('expect.stringMatching(/^workos-node-/)');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('omits idempotency-key coverage for non-idempotent operations', () => {
+    const tmpRoot = createTrackedSdkRoot();
+    try {
+      const result = nodeEmitter.generateTests!(spec, {
+        ...ctx,
+        outputDir: tmpRoot,
+        emitterOptions: { ownedServices: ['Groups'], regenerateOwnedTests: true },
+      } as EmitterContext);
+
+      const testFile = result.find((f) => f.path === 'src/groups/groups.spec.ts');
+      expect(testFile).toBeDefined();
+      expect(testFile!.content).not.toContain('fetchHeaders');
+      expect(testFile!.content).not.toContain('Idempotency-Key');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('serializer.spec assertions are meaningful (not toBeDefined smoke tests)', () => {
