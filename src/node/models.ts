@@ -32,6 +32,7 @@ import {
   computeNonEventReachable,
   isServiceCoveredByExisting,
   hasMethodsAbsentFromBaseline,
+  unwrapListModel,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import {
@@ -44,7 +45,6 @@ import {
 } from './field-plan.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
 import { isNodeOwnedService, isHandOwnedType } from './options.js';
-import { unwrapListModel } from './fixtures.js';
 import { groupByMount, buildResolvedLookup, lookupResolved, isModelInScope } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { collectWrapperResponseModels } from './wrappers.js';

@@ -11,7 +11,7 @@ import type {
   GeneratedFile,
 } from '@workos/oagen';
 import { toCamelCase, toPascalCase } from '@workos/oagen';
-import { unwrapListModel, ID_PREFIXES } from './fixtures.js';
+import { ID_PREFIXES } from './fixtures.js';
 import {
   fieldName,
   wireFieldName,
@@ -34,6 +34,7 @@ import {
   isListWrapperModel,
   modelHasNewFields,
   computeNonEventReachable,
+  unwrapListModel,
 } from './utils.js';
 import { groupByMount, buildResolvedLookup, lookupResolved, isMountInScope } from '../shared/resolved-ops.js';
 import { isNodeOwnedService, nodeOptions, planOperationFor } from './options.js';

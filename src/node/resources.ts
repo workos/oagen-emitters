@@ -70,9 +70,9 @@ import {
   hasMethodsAbsentFromBaseline,
   uncoveredOperations,
   relativeImport,
+  unwrapListModel,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
-import { unwrapListModel } from './fixtures.js';
 import { buildNodeStatusExceptions } from './sdk-errors.js';
 import {
   buildResolvedLookup,
