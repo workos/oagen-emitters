@@ -24,7 +24,7 @@ function docComment(description: string | undefined, indent: string): string {
   return description
     .trim()
     .split('\n')
-    .map((line) => `${indent}/// ${line.trim()}`)
+    .map((line) => (line.trim() ? `${indent}/// ${line.trim()}` : `${indent}///`))
     .join('\n');
 }
 
@@ -121,8 +121,19 @@ function renderEnum(e: Enum): string {
   lines.push('');
 
   // allKnownCases convenience (CaseIterable can't synthesize with associated values).
+  // Multiline (with trailing commas) when the single-line form would exceed the
+  // 100-column swift-format lineLength.
   const known = cases.map((c) => `.${c.id}`).join(', ');
-  lines.push(`    public static let allKnownCases: [${name}] = [${known}]`);
+  const singleLine = `    public static let allKnownCases: [${name}] = [${known}]`;
+  if (singleLine.length <= 100) {
+    lines.push(singleLine);
+  } else {
+    lines.push(`    public static let allKnownCases: [${name}] = [`);
+    for (const c of cases) {
+      lines.push(`        .${c.id},`);
+    }
+    lines.push('    ]');
+  }
 
   lines.push('}');
   return lines.join('\n');

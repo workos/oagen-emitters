@@ -14,15 +14,15 @@ import {
 
 /**
  * Generate the client entry point plus the full generated runtime: the
- * `{Namespace}Client` class, `Configuration`, `Transport`, `Package.swift`, the
- * `.swift-format` config, and the static support files. Everything is emitted
- * with `overwriteExisting` so a fresh SDK is fully generator-owned (Go pattern).
+ * `{Namespace}Client` class, `Configuration`, `Transport`, and the static
+ * support files. Everything is emitted with `overwriteExisting` so the
+ * generated surface is fully generator-owned (Go pattern). Repo resources
+ * (`Package.swift`, `.swift-format`, `script/ci`, `.gitignore`) are
+ * hand-maintained in the SDK repo and never generated.
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const module = moduleName(ctx);
   const files: GeneratedFile[] = [
-    { path: 'Package.swift', content: renderPackage(module), overwriteExisting: true },
-    { path: '.swift-format', content: SWIFT_FORMAT_CONFIG, overwriteExisting: true },
     {
       path: `Sources/${module}/${clientClassName(ctx)}.swift`,
       content: renderClientClass(ctx),
@@ -82,41 +82,6 @@ function idempotencyBlock(ctx: EmitterContext): string {
     `            request.setValue(idempotencyKey, forHTTPHeaderField: ${header})`,
     '        }',
   ].join('\n');
-}
-
-const SWIFT_FORMAT_CONFIG = `{
-  "version": 1,
-  "lineLength": 100,
-  "indentation": {
-    "spaces": 4
-  }
-}
-`;
-
-function renderPackage(module: string): string {
-  return `// swift-tools-version: 6.2
-import PackageDescription
-
-let package = Package(
-    name: "${module}",
-    platforms: [
-        .iOS(.v17),
-        .macCatalyst(.v17),
-        .macOS(.v14),
-        .watchOS(.v10),
-        .tvOS(.v17),
-        .visionOS(.v1),
-    ],
-    products: [
-        .library(name: "${module}", targets: ["${module}"]),
-    ],
-    targets: [
-        .target(name: "${module}"),
-        .testTarget(name: "${module}Tests", dependencies: ["${module}"]),
-    ],
-    swiftLanguageModes: [.v5]
-)
-`;
 }
 
 function renderClientClass(ctx: EmitterContext): string {

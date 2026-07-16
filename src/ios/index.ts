@@ -20,10 +20,19 @@ import { generateErrors } from './errors.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 
-/** Ensure every generated file's content ends with a trailing newline. */
+/**
+ * Normalize generated files: strip trailing whitespace from every line
+ * (swift-format's TrailingWhitespace rule), ensure a trailing newline, and
+ * mark every file generator-owned (`overwriteExisting`, Go pattern) — this is
+ * a fresh, fully-generated SDK, so regeneration must replace stale content
+ * rather than merge with it.
+ */
 function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   for (const f of files) {
-    if (f.content && !f.content.endsWith('\n')) {
+    f.overwriteExisting = true;
+    if (!f.content) continue;
+    f.content = f.content.replace(/[ \t]+$/gm, '');
+    if (!f.content.endsWith('\n')) {
       f.content += '\n';
     }
   }
@@ -91,13 +100,14 @@ export const iosEmitter: Emitter = {
 
   formatCommand(_targetDir: string): FormatCommand | null {
     // oagen appends every generated file path (including .json) to the format
-    // command. Filter to .swift and only run if swift-format is installed, so a
-    // missing formatter never fails generation.
+    // command. Filter to .swift and prefer the standalone swift-format binary,
+    // falling back to the toolchain-bundled `swift format` subcommand (Swift 6+),
+    // so a missing formatter never fails generation.
     return {
       cmd: 'bash',
       args: [
         '-c',
-        'SWIFT_FILES=$(printf "%s\\n" "$@" | grep "\\.swift$"); if [ -n "$SWIFT_FILES" ] && command -v swift-format >/dev/null 2>&1; then echo "$SWIFT_FILES" | xargs swift-format -i; fi',
+        'SWIFT_FILES=$(printf "%s\\n" "$@" | grep "\\.swift$"); if [ -n "$SWIFT_FILES" ]; then if command -v swift-format >/dev/null 2>&1; then echo "$SWIFT_FILES" | xargs swift-format -i; elif command -v swift >/dev/null 2>&1; then echo "$SWIFT_FILES" | xargs swift format -i; fi; fi',
         '--',
       ],
       batchSize: 999999,

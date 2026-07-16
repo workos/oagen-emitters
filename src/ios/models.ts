@@ -24,7 +24,7 @@ function docComment(description: string | undefined, indent: string): string {
   return description
     .trim()
     .split('\n')
-    .map((line) => `${indent}/// ${line.trim()}`)
+    .map((line) => (line.trim() ? `${indent}/// ${line.trim()}` : `${indent}///`))
     .join('\n');
 }
 

@@ -22,20 +22,20 @@ hard-coded** — everything flows from `ctx` and the IR.
 
 ## Structural Guidelines
 
-| Category                   | Choice                                                                                                                     |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| **Language / concurrency** | Swift, `async`/`await` (single `async throws` method per operation — no completion-handler or Combine variants)            |
-| **Package manager**        | Swift Package Manager (`Package.swift`)                                                                                    |
-| **Build tool**             | SPM (`swift build`)                                                                                                        |
-| **swift-tools-version**    | `6.2`                                                                                                                      |
-| **Platforms**              | iOS 17, macCatalyst 17, macOS 14, watchOS 10, tvOS 17, visionOS 1 (matches the Clerk iOS SDK baseline)                     |
-| **HTTP client**            | `URLSession` (Foundation) — zero third-party dependencies                                                                  |
-| **JSON**                   | `Codable` with generated `CodingKeys` (explicit wire-key mapping); `JSONEncoder`/`JSONDecoder`                             |
-| **Dates**                  | `Foundation.Date`, ISO-8601 with fractional-second fallback (custom encode/decode strategy in `Coding.swift`)              |
-| **Documentation**          | DocC (`///` doc comments)                                                                                                  |
-| **Linting / formatting**   | `swift-format` (Apple official); a `.swift-format` config is emitted and `formatCommand` runs `swift-format -i -r Sources` |
-| **Testing framework**      | Swift Testing (`import Testing`, `@Test`, `#expect`)                                                                       |
-| **HTTP mocking (tests)**   | Custom `URLProtocol` stub (`MockURLProtocol`) — no third-party mocking dependency                                          |
+| Category                   | Choice                                                                                                                                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Language / concurrency** | Swift, `async`/`await` (single `async throws` method per operation — no completion-handler or Combine variants)                                                                                                                                                |
+| **Package manager**        | Swift Package Manager (`Package.swift`)                                                                                                                                                                                                                        |
+| **Build tool**             | SPM (`swift build`)                                                                                                                                                                                                                                            |
+| **swift-tools-version**    | `6.2`                                                                                                                                                                                                                                                          |
+| **Platforms**              | iOS 17, macCatalyst 17, macOS 14, watchOS 10, tvOS 17, visionOS 1 (matches the Clerk iOS SDK baseline)                                                                                                                                                         |
+| **HTTP client**            | `URLSession` (Foundation) — zero third-party dependencies                                                                                                                                                                                                      |
+| **JSON**                   | `Codable` with generated `CodingKeys` (explicit wire-key mapping); `JSONEncoder`/`JSONDecoder`                                                                                                                                                                 |
+| **Dates**                  | `Foundation.Date`, ISO-8601 with fractional-second fallback (custom encode/decode strategy in `Coding.swift`)                                                                                                                                                  |
+| **Documentation**          | DocC (`///` doc comments)                                                                                                                                                                                                                                      |
+| **Linting / formatting**   | `swift-format` (Apple official); the `.swift-format` config is a hand-maintained repo resource in the SDK repo (as are `script/ci` and `.gitignore`); `formatCommand` runs `swift-format -i` (or the toolchain-bundled `swift format -i`) over generated files |
+| **Testing framework**      | Swift Testing (`import Testing`, `@Test`, `#expect`)                                                                                                                                                                                                           |
+| **HTTP mocking (tests)**   | Custom `URLProtocol` stub (`MockURLProtocol`) — no third-party mocking dependency                                                                                                                                                                              |
 
 ---
 
@@ -511,8 +511,10 @@ import Foundation
 ## Directory Structure (emitted `GeneratedFile` paths, target-root-relative)
 
 ```
-Package.swift                                  # generateClient
-.swift-format                                  # generateClient
+Package.swift                                  # repo resource (hand-maintained, not generated)
+.swift-format                                  # repo resource (hand-maintained, not generated)
+script/ci                                      # repo resource (hand-maintained, not generated)
+.gitignore                                     # repo resource (hand-maintained, not generated)
 Sources/{Namespace}/
   {Namespace}Client.swift                      # client.ts
   Configuration.swift                          # config.ts (via generateClient)

@@ -46,19 +46,13 @@ function fileByPath(files: { path: string; content: string }[], path: string): s
 }
 
 describe('ios/client', () => {
-  it('emits Package.swift with the configured platform baseline', () => {
+  it('does not emit repo resources (Package.swift, lint config, CI script)', () => {
     const files = generateClient(spec, ctx);
-    const pkg = fileByPath(files, 'Package.swift');
-    expect(pkg).toContain('// swift-tools-version: 6.2');
-    expect(pkg).toContain('name: "WorkOS"');
-    expect(pkg).toContain('.iOS(.v17)');
-    expect(pkg).toContain('.macCatalyst(.v17)');
-    expect(pkg).toContain('.macOS(.v14)');
-    expect(pkg).toContain('.watchOS(.v10)');
-    expect(pkg).toContain('.tvOS(.v17)');
-    expect(pkg).toContain('.visionOS(.v1)');
-    expect(pkg).toContain('.testTarget(name: "WorkOSTests"');
-    expect(pkg).toContain('swiftLanguageModes: [.v5]');
+    const paths = files.map((f) => f.path);
+    expect(paths).not.toContain('Package.swift');
+    expect(paths).not.toContain('.swift-format');
+    expect(paths).not.toContain('script/ci');
+    expect(paths).not.toContain('.gitignore');
   });
 
   it('emits the client class with a resource accessor', () => {
@@ -98,6 +92,5 @@ describe('ios/client', () => {
     expect(paths).toContain('Sources/WorkOS/Internal/Coding.swift');
     expect(paths).toContain('Sources/WorkOS/Internal/Pagination.swift');
     expect(paths).toContain('Sources/WorkOS/RequestOptions.swift');
-    expect(paths).toContain('.swift-format');
   });
 });
