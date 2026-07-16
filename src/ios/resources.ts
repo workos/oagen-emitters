@@ -60,6 +60,22 @@ function docComment(description: string | undefined, indent: string): string {
     .join('\n');
 }
 
+/**
+ * Doc lines flagging deprecated parameters. Swift has no per-parameter
+ * `@available` attribute, so — matching the Go/Kotlin emitters' policy — the
+ * deprecation is surfaced as a `- Parameter` doc note on the method.
+ */
+function deprecatedParamDocs(params: RenderedParam[], indent: string): string[] {
+  const lines: string[] = [];
+  for (const p of params) {
+    if (!p.deprecated) continue;
+    const desc = (p.description ?? '').replace(/\s+/g, ' ').trim();
+    const note = /^deprecated\b/i.test(desc) ? desc : desc ? `Deprecated. ${desc}` : 'Deprecated.';
+    lines.push(`${indent}/// - Parameter ${p.name}: ${note}`);
+  }
+  return lines;
+}
+
 function renderResource(mountName: string, resolvedOps: ResolvedOperation[], ctx: EmitterContext): string {
   const resourceName = resourceTypeName(mountName, ctx);
   const methods: string[] = [];
@@ -116,6 +132,8 @@ export interface RenderedParam {
   optional: boolean;
   ref: TypeRef;
   kind: 'path' | 'query' | 'body' | 'bodyRaw';
+  deprecated?: boolean;
+  description?: string;
 }
 
 /**
@@ -152,6 +170,8 @@ export function collectMethodParams(resolved: ResolvedOperation, ctx: EmitterCon
       optional: false,
       ref: p.type,
       kind: 'path',
+      deprecated: p.deprecated,
+      description: p.description,
     });
   }
 
@@ -177,6 +197,8 @@ export function collectMethodParams(resolved: ResolvedOperation, ctx: EmitterCon
         optional: type.endsWith('?'),
         ref: f.type,
         kind: 'body',
+        deprecated: f.deprecated,
+        description: f.description,
       });
     }
   }
@@ -192,6 +214,8 @@ export function collectMethodParams(resolved: ResolvedOperation, ctx: EmitterCon
       optional: type.endsWith('?'),
       ref: q.type,
       kind: 'query',
+      deprecated: q.deprecated,
+      description: q.description,
     });
   }
 
@@ -221,6 +245,11 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
   const lines: string[] = [];
   const doc = docComment(op.description, '    ');
   if (doc) lines.push(doc);
+  const paramNotes = deprecatedParamDocs(ordered, '    ');
+  if (paramNotes.length > 0) {
+    if (doc) lines.push('    ///');
+    lines.push(...paramNotes);
+  }
   if (op.deprecated) lines.push('    @available(*, deprecated)');
 
   const sigParams = ordered.map((p) => `        ${p.name}: ${p.type}${p.optional ? ' = nil' : ''}`);
@@ -286,6 +315,11 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
   const lines: string[] = [];
   const doc = docComment(op.description, '    ');
   if (doc) lines.push(doc);
+  const paramNotes = deprecatedParamDocs(ordered, '    ');
+  if (paramNotes.length > 0) {
+    if (doc) lines.push('    ///');
+    lines.push(...paramNotes);
+  }
   if (op.deprecated) lines.push('    @available(*, deprecated)');
 
   const sigParams = ordered.map((p) => `        ${p.name}: ${p.type}${p.optional ? ' = nil' : ''}`);
