@@ -32,6 +32,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "sdk:generate:ios": "oagen generate --lang ios --output ./sdk-ios --namespace WorkOS",
     "oagen:build:local": "npm --prefix ../oagen run build",
     "dev:link": "npm run oagen:build:local && npm link --prefix ../oagen && npm link @workos/oagen",
     "dev:unlink": "npm install",

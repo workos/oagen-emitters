@@ -175,49 +175,50 @@ export function withResolvedOps(ctx: EmitterContext): EmitterContext {
 
 // --- method-name resolution -------------------------------------------------
 
-/** Split a camelCase / PascalCase / snake_case string into lower-cased words. */
-function splitWords(s: string): string[] {
-  return s
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .split(/[\s_]+/)
-    .filter(Boolean)
-    .map((w) => w.toLowerCase());
+/** Split a camelCase / PascalCase identifier into words, preserving casing. */
+function splitCaseWords(name: string): string[] {
+  return name.match(/[A-Z]+(?:[a-z]+|(?=[A-Z]|$))|[A-Z]?[a-z]+|[0-9]+/g) ?? [name];
 }
 
 /** Naive singularizer sufficient for matching resource nouns. */
 function singularizeWord(w: string): string {
-  const lw = w.toLowerCase();
-  if (lw.endsWith('ies')) return lw.slice(0, -3) + 'y';
-  if (lw.endsWith('ses') || lw.endsWith('shes') || lw.endsWith('ches') || lw.endsWith('xes')) {
-    return lw.slice(0, -2);
-  }
-  if (lw.endsWith('s') && !lw.endsWith('ss')) return lw.slice(0, -1);
-  return lw;
+  if (w.endsWith('ies') && w.length > 3) return `${w.slice(0, -3)}y`;
+  if (w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
 }
 
-/** Recombine lower-cased words into camelCase. */
-function joinCamel(words: string[]): string {
-  return words.map((w, i) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1))).join('');
+function wordsMatch(left: string, right: string): boolean {
+  return singularizeWord(left.toLowerCase()) === singularizeWord(right.toLowerCase());
 }
 
 /**
- * Strip trailing method words that duplicate the mount-group resource noun, so
- * `listOrganizations` on the `Organizations` resource becomes `list`. Never
- * trims below a single word. Matches the cross-language emitter convention.
+ * Strip the mount-group resource noun when it directly follows the leading verb,
+ * so `listOrganizations` on the `Organizations` resource becomes `list` and
+ * `getOrganizationMembership` on `OrganizationMembership` becomes `get` — but
+ * `listUserAuthFactors` on `MultiFactorAuth` is left alone (the words after the
+ * verb don't start with the mount noun). Mirrors the Go/Kotlin emitters'
+ * `trimMountedResourceFromMethod` so method names match across languages.
+ * Untrimmed words keep their original casing (acronyms survive intact).
  */
 export function trimMountResource(method: string, mountName: string): string {
-  const words = splitWords(method);
-  if (words.length <= 1) return method;
-  const mountNouns = new Set(splitWords(mountName).map(singularizeWord));
-  while (words.length > 1) {
-    const last = singularizeWord(words[words.length - 1]);
-    if (mountNouns.has(last)) {
-      words.pop();
-    } else {
-      break;
-    }
+  const methodWords = splitCaseWords(method);
+  if (methodWords.length < 2) return method;
+
+  const mountWords = splitCaseWords(typeName(mountName));
+  if (mountWords.length === 0) return method;
+
+  let matched = 0;
+  while (
+    matched < mountWords.length &&
+    matched + 1 < methodWords.length &&
+    wordsMatch(methodWords[matched + 1], mountWords[matched])
+  ) {
+    matched++;
   }
-  return joinCamel(words);
+
+  if (matched === 0) return method;
+
+  return [methodWords[0], ...methodWords.slice(matched + 1)].join('');
 }
 
 /**

@@ -100,6 +100,14 @@ Swift `camelCase`.
   `buildResolvedLookup`/`lookupResolved`), fall back to `resolveOperations(ctx.spec)`
   when the context has none (unit tests). Uniqueness within a mount is enforced
   upstream by `assertUniqueResolvedMethods`.
+- **Mount-noun trimming (`trimMountResource`):** strips the mount resource noun
+  only when it directly follows the leading verb, matching word-for-word from
+  the front of the mount name (singular/plural tolerant) — `listOrganizations`
+  on `Organizations` → `list`, `getUserByExternalId` on `UserManagement` →
+  `getByExternalId`, but `listUserAuthFactors` on `MultiFactorAuth` is left
+  untouched. This mirrors the Go/Kotlin `trimMountedResourceFromMethod`
+  semantics exactly so method names agree across languages. Untrimmed words
+  keep their original casing, so acronyms (`updateJWTTemplate`) survive.
 
 ---
 
@@ -345,11 +353,15 @@ fields and injecting `defaults` + `inferFromClient` values (read from the client
 config, e.g. `transport.configuration.clientID`). Built from `ResolvedWrapper`
 fields via the shared `wrapper-utils`.
 
-### Handwritten overrides
+### URL builders (browser-redirect operations)
 
-`urlBuilder` operations (and any hand-maintained set) are skipped in both
-`generateResources` and `buildOperationsMap` so a URL-builder endpoint doesn't
-generate a bogus HTTP call.
+`urlBuilder` operations (e.g. `GET /sso/authorize`, `GET /sso/logout`) never
+issue an HTTP request: `generateResources` emits a synchronous method that
+returns the assembled `URL` via `Transport.buildURL(path:query:)`. Hidden
+`defaults` (`response_type=code`) and `inferFromClient` values (`client_id`,
+appended only when `Configuration.clientID` is set) join the caller's query
+parameters, mirroring the Go emitter's URL builders. They are still skipped in
+`buildOperationsMap` and the smoke plan — there is no live HTTP call to verify.
 
 ---
 
@@ -503,6 +515,15 @@ import Foundation
   headers, body) for wire-parity assertions.
 - One `@Test` per operation per mount group asserts: HTTP method, path, and that
   the response decodes into the expected type.
+- **Union-split wrappers** get one `@Test` each (`authenticateWithPassword`,
+  `createOAuthApplication`, …) asserting the discriminating default
+  (`grant_type` / `application_type`) landed in the request body.
+- **URL builders** get a synchronous `…BuildsExpectedUrl` test asserting the
+  assembled URL's path and query (defaults plus caller params) — no mock traffic.
+- **Nested model bodies** are sample-constructed through the generated structs'
+  memberwise initializers (required fields only, recursion-depth capped), so
+  operations like `createEvent` (Audit Logs) are exercised rather than skipped;
+  only heterogeneous-union bodies remain untestable.
 - A `makeTestClient(responding:)` helper wires a `URLSession` with the mock
   protocol into a `{Namespace}Client`.
 

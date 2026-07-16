@@ -66,7 +66,13 @@ function renderResource(mountName: string, resolvedOps: ResolvedOperation[], ctx
   const seen = new Set<string>();
 
   for (const resolved of resolvedOps) {
-    if (resolved.urlBuilder) continue;
+    if (resolved.urlBuilder) {
+      const method = resolveMethodName(resolved.operation, mountName, ctx);
+      if (seen.has(method)) continue;
+      seen.add(method);
+      methods.push(renderUrlBuilderMethod(resolved, method, ctx));
+      continue;
+    }
     if (resolved.wrappers && resolved.wrappers.length > 0) {
       for (const block of generateWrapperMethods(resolved, ctx)) {
         methods.push(block);
@@ -258,6 +264,62 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
     lines.push('            options: requestOptions');
     lines.push('        )');
   }
+  lines.push('    }');
+  return lines.join('\n');
+}
+
+/**
+ * Render a URL-builder method for a browser-redirect operation (`urlBuilder`
+ * hint, e.g. `GET /sso/authorize`). The method never performs an HTTP request:
+ * it assembles and returns the URL the caller redirects the user to. Hidden
+ * defaults (`response_type=code`) and client-inferred values (`client_id`) are
+ * appended to the query alongside the caller's parameters, mirroring the Go
+ * emitter's URL builders.
+ */
+function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx: EmitterContext): string {
+  const op = resolved.operation;
+  const defaults = getOpDefaults(resolved);
+  const infer = getOpInferFromClient(resolved);
+  const params = collectMethodParams(resolved, ctx);
+  const ordered = orderMethodParams(params);
+
+  const lines: string[] = [];
+  const doc = docComment(op.description, '    ');
+  if (doc) lines.push(doc);
+  if (op.deprecated) lines.push('    @available(*, deprecated)');
+
+  const sigParams = ordered.map((p) => `        ${p.name}: ${p.type}${p.optional ? ' = nil' : ''}`);
+  if (sigParams.length === 0) {
+    lines.push(`    public func ${method}() -> URL {`);
+  } else {
+    lines.push(`    public func ${method}(`);
+    lines.push(sigParams.join(',\n'));
+    lines.push('    ) -> URL {');
+  }
+
+  lines.push(`        let path = ${renderPathExpr(op, params)}`);
+  lines.push('        var query: [URLQueryItem] = []');
+  for (const key of Object.keys(defaults)) {
+    lines.push(
+      `        query.append(URLQueryItem(name: ${swiftStringLiteral(key)}, value: ${literalExpr(defaults[key])}))`,
+    );
+  }
+  for (const key of infer) {
+    // `clientID` is optional on Configuration; only append when set.
+    if (key === 'client_id') {
+      lines.push(`        if let value = ${clientFieldExpr(key)} {`);
+      lines.push(`            query.append(URLQueryItem(name: ${swiftStringLiteral(key)}, value: value))`);
+      lines.push('        }');
+    } else {
+      lines.push(
+        `        query.append(URLQueryItem(name: ${swiftStringLiteral(key)}, value: ${clientFieldExpr(key)}))`,
+      );
+    }
+  }
+  for (const q of params.filter((p) => p.kind === 'query')) {
+    lines.push(...renderQueryAppend(q));
+  }
+  lines.push('        return transport.buildURL(path: path, query: query)');
   lines.push('    }');
   return lines.join('\n');
 }

@@ -1,6 +1,16 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, Model, Enum, TypeRef, ResolvedOperation } from '@workos/oagen';
+import type {
+  ApiSpec,
+  EmitterContext,
+  GeneratedFile,
+  Model,
+  Enum,
+  TypeRef,
+  ResolvedOperation,
+  ResolvedWrapper,
+} from '@workos/oagen';
 import { planOperation, toCamelCase } from '@workos/oagen';
-import { scopedMountGroups } from '../shared/resolved-ops.js';
+import { scopedMountGroups, getOpDefaults } from '../shared/resolved-ops.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { parsePathTemplate } from '../shared/path-template.js';
@@ -12,6 +22,8 @@ import {
   accessorName,
   resourceTypeName,
   resolveMethodName,
+  methodName,
+  propertyName,
   withResolvedOps,
 } from './naming.js';
 import {
@@ -88,8 +100,24 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     ];
     const seen = new Set<string>();
     for (const resolved of [...group.resolvedOps].sort((a, b) => a.operation.path.localeCompare(b.operation.path))) {
-      if (resolved.urlBuilder) continue;
-      if (resolved.wrappers && resolved.wrappers.length > 0) continue;
+      if (resolved.urlBuilder) {
+        const method = resolveMethodName(resolved.operation, group.name, rctx);
+        if (seen.has(method)) continue;
+        seen.add(method);
+        const test = gen.urlBuilderTest(resolved, accessor, method);
+        if (test) tests.push('', test);
+        continue;
+      }
+      if (resolved.wrappers && resolved.wrappers.length > 0) {
+        for (const wrapper of resolved.wrappers) {
+          const method = methodName(wrapper.name);
+          if (seen.has(method)) continue;
+          seen.add(method);
+          const test = gen.wrapperTest(resolved, wrapper, accessor, method);
+          if (test) tests.push('', test);
+        }
+        continue;
+      }
       const method = resolveMethodName(resolved.operation, group.name, rctx);
       if (seen.has(method)) continue;
       seen.add(method);
@@ -202,6 +230,124 @@ class SuiteGenerator {
     return lines.join('\n');
   }
 
+  /** Build a test for a URL-builder operation: call the sync method and assert
+   * the assembled URL's path and query (defaults, inferred, and caller params). */
+  urlBuilderTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
+    const op = resolved.operation;
+    const defaults = getOpDefaults(resolved);
+    const params = collectMethodParams(resolved, this.ctx);
+    const ordered = orderMethodParams(params);
+
+    const args: string[] = [];
+    const pathValues = new Map<string, string>();
+    let queryAssert: { wire: string; value: string } | null = null;
+    for (const p of ordered) {
+      if (p.optional) continue;
+      const sample = this.sampleArg(p);
+      if (!sample) return null;
+      args.push(`${p.name}: ${sample.expr}`);
+      if (p.kind === 'path' && sample.pathValue) pathValues.set(p.wire, sample.pathValue);
+      if (p.kind === 'query' && queryAssert === null && sample.queryValue) {
+        queryAssert = { wire: p.wire, value: sample.queryValue };
+      }
+    }
+    const expectedPath = this.expectedPath(op.path, pathValues);
+    if (expectedPath === null) return null;
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${method}BuildsExpectedUrl() throws {`);
+    lines.push('        let (client, _) = makeTestClient()');
+    lines.push(`        let url = client.${accessor}.${method}(${args.join(', ')})`);
+    lines.push('');
+    lines.push('        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))');
+    lines.push(`        #expect(components.path == "${expectedPath}")`);
+    if (Object.keys(defaults).length > 0 || queryAssert) {
+      lines.push('        let query = components.queryItems ?? []');
+    }
+    for (const [key, value] of Object.entries(defaults)) {
+      lines.push(
+        `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(key)}, value: ${JSON.stringify(String(value))})))`,
+      );
+    }
+    if (queryAssert) {
+      lines.push(
+        `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(queryAssert.wire)}, value: ${JSON.stringify(queryAssert.value)})))`,
+      );
+    }
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
+  /** Build a wire-level test for one union-split wrapper method: call it with
+   * sample variant params and assert the request (incl. the discriminating
+   * default, e.g. `grant_type`) and the decoded response. */
+  wrapperTest(resolved: ResolvedOperation, wrapper: ResolvedWrapper, accessor: string, method: string): string | null {
+    const op = resolved.operation;
+    const wparams = resolveWrapperParams(wrapper, this.ctx);
+
+    // Path params (rare for split ops) lead the signature, mirroring wrappers.ts.
+    const args: string[] = [];
+    const pathValues = new Map<string, string>();
+    for (const p of op.pathParams) {
+      const sample = this.sampleForRef(p.type, p.name, 'path');
+      if (!sample?.pathValue) return null;
+      args.push(`${propertyName(p.name)}: ${sample.expr}`);
+      pathValues.set(p.name, sample.pathValue);
+    }
+    let firstBodyWire: string | null = null;
+    for (const wp of wparams) {
+      if (wp.isOptional) continue;
+      const sample = wp.field
+        ? this.sampleForRef(wp.field.type, wp.paramName, 'body')
+        : { expr: JSON.stringify(`test_${wp.paramName}`) };
+      if (!sample) return null;
+      args.push(`${propertyName(wp.paramName)}: ${sample.expr}`);
+      if (firstBodyWire === null) firstBodyWire = wp.paramName;
+    }
+    const expectedPath = this.expectedPath(op.path, pathValues);
+    if (expectedPath === null) return null;
+
+    const model = wrapper.responseModelName ? this.modelMap.get(wrapper.responseModelName) : undefined;
+    // A declared response type we can't fixture would leave an unused `try await`
+    // result (a Swift warning) — skip rather than emit a warning-laden test.
+    if (wrapper.responseModelName && !model) return null;
+    const fixture = model ? generateModelFixture(model, this.modelMap, this.enumMap) : null;
+    const json = fixture ? JSON.stringify(fixture) : '{}';
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${method}SendsExpectedRequest() async throws {`);
+    lines.push(`        let (client, recorder) = makeTestClient(responding: ${swiftRawString(json)})`);
+    const call = `client.${accessor}.${method}(${args.join(', ')})`;
+    if (model) {
+      lines.push(`        let result = try await ${call}`);
+    } else {
+      lines.push(`        try await ${call}`);
+    }
+    lines.push('');
+    lines.push('        let request = try #require(recorder.lastRequest)');
+    lines.push(`        #expect(request.httpMethod == "${op.httpMethod.toUpperCase()}")`);
+    lines.push(`        #expect(request.url?.path == "${expectedPath}")`);
+    lines.push('        let body = try #require(recorder.lastBody)');
+    lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
+    for (const [key, value] of Object.entries(wrapper.defaults ?? {})) {
+      if (typeof value === 'string') {
+        lines.push(`        #expect(json?[${JSON.stringify(key)}] as? String == ${JSON.stringify(value)})`);
+      } else {
+        lines.push(`        #expect(json?[${JSON.stringify(key)}] != nil)`);
+      }
+    }
+    if (firstBodyWire) {
+      lines.push(`        #expect(json?[${JSON.stringify(firstBodyWire)}] != nil)`);
+    }
+    if (model && fixture) {
+      for (const assertion of this.idAssertion(model, fixture, 'result')) {
+        lines.push(`        ${assertion}`);
+      }
+    }
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
   /** A two-page auto-pagination test for the first eligible paginated op. */
   autoPagingTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
     const auto = planAutoPaging(resolved, this.ctx);
@@ -257,14 +403,15 @@ class SuiteGenerator {
 
   /** Sample Swift expression for a required parameter, or null if unsupported. */
   private sampleArg(p: RenderedParam): SampleArg | null {
-    if (p.kind === 'bodyRaw') return null;
+    if (p.kind === 'bodyRaw') return this.sampleForRef(p.ref, p.wire, 'body');
     return this.sampleForRef(p.ref, p.wire, p.kind);
   }
 
-  private sampleForRef(ref: TypeRef, wire: string, kind: RenderedParam['kind']): SampleArg | null {
+  private sampleForRef(ref: TypeRef, wire: string, kind: RenderedParam['kind'], depth = 0): SampleArg | null {
+    if (depth > 4) return null; // guard against recursive model graphs
     switch (ref.kind) {
       case 'nullable':
-        return this.sampleForRef(ref.inner, wire, kind);
+        return this.sampleForRef(ref.inner, wire, kind, depth);
       case 'primitive':
         switch (ref.type) {
           case 'string': {
@@ -299,18 +446,38 @@ class SuiteGenerator {
         const first = e?.values[0]?.value;
         if (first === undefined) return null;
         const literal = typeof first === 'string' ? JSON.stringify(first) : String(first);
-        return { expr: `${typeName(ref.name)}(rawValue: ${literal})`, queryValue: String(first) };
+        return {
+          expr: `${typeName(ref.name)}(rawValue: ${literal})`,
+          pathValue: String(first),
+          queryValue: String(first),
+        };
       }
       case 'array': {
-        const inner = this.sampleForRef(ref.items, wire, 'body');
+        const inner = this.sampleForRef(ref.items, wire, 'body', depth + 1);
         return inner ? { expr: `[${inner.expr}]` } : null;
       }
       case 'map': {
-        const inner = this.sampleForRef(ref.valueType, wire, 'body');
+        const inner = this.sampleForRef(ref.valueType, wire, 'body', depth + 1);
         return inner ? { expr: `["key": ${inner.expr}]` } : null;
       }
+      case 'model': {
+        // Construct the generated struct via its memberwise initializer:
+        // required fields only, in declaration order (the init's label order).
+        // Field-less models are emitted with an explicit empty `public init()`.
+        const model = this.modelMap.get(ref.name);
+        if (!model) return null;
+        if (model.fields.length === 0) return { expr: `${typeName(model.name)}()` };
+        const args: string[] = [];
+        for (const f of model.fields) {
+          if (!f.required) continue;
+          const inner = this.sampleForRef(f.type, f.name, 'body', depth + 1);
+          if (!inner) return null;
+          args.push(`${propertyName(f.domainName ?? f.name)}: ${inner.expr}`);
+        }
+        return { expr: `${typeName(model.name)}(${args.join(', ')})` };
+      }
       default:
-        // model / union bodies need nested construction — skip those operations.
+        // union bodies need variant selection — skip those operations.
         return null;
     }
   }

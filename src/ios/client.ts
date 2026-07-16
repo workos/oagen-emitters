@@ -215,6 +215,21 @@ public struct Transport: Sendable {
         _ = try await perform(method: method, path: path, query: query, body: body, options: options)
     }
 
+    /// Assemble the absolute URL for a path and query against the configured
+    /// base URL. Used for every request and exposed to the generated
+    /// URL-builder methods (browser-redirect endpoints that never issue a
+    /// request themselves).
+    func buildURL(path: String, query: [URLQueryItem]) -> URL {
+        var urlString = configuration.baseURL.absoluteString
+        if urlString.hasSuffix("/") { urlString.removeLast() }
+        urlString += "/" + path
+        var components = URLComponents(string: urlString) ?? URLComponents()
+        if !query.isEmpty {
+            components.queryItems = (components.queryItems ?? []) + query
+        }
+        return components.url ?? configuration.baseURL
+    }
+
     private func perform(
         method: String,
         path: String,
@@ -222,18 +237,7 @@ public struct Transport: Sendable {
         body: (any Encodable & Sendable)?,
         options: RequestOptions?
     ) async throws -> Data {
-        var urlString = configuration.baseURL.absoluteString
-        if urlString.hasSuffix("/") { urlString.removeLast() }
-        urlString += "/" + path
-        guard var components = URLComponents(string: urlString) else {
-            throw ${errorName}.invalidResponse
-        }
-        if !query.isEmpty {
-            components.queryItems = (components.queryItems ?? []) + query
-        }
-        guard let url = components.url else {
-            throw ${errorName}.invalidResponse
-        }
+        let url = buildURL(path: path, query: query)
 
         var request = URLRequest(url: url)
         request.httpMethod = method
