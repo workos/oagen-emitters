@@ -193,7 +193,7 @@ function emitMethodSignature(
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   // Redirect endpoints never await, so emit as plain def even in async class
-  const isRedirectOp = isRedirectEndpoint(op);
+  const isRedirectOp = resolvedOp?.urlBuilder ?? false;
   const defKeyword = isAsync && !isRedirectOp ? 'async def' : 'def';
   const usesClientCredentialDefaults = false;
 
@@ -346,7 +346,7 @@ function emitMethodSignature(
 
   // Detect array response type
   const isArrayResponse = op.response.kind === 'array' && op.response.items.kind === 'model';
-  const isRedirect = isRedirectEndpoint(op);
+  const isRedirect = isRedirectOp;
 
   // Return type
   const pageType = isAsync ? 'AsyncPage' : 'SyncPage';
@@ -1498,31 +1498,6 @@ export function resolvePageItemName(itemType: TypeRef, listWrapperNames: Set<str
     return itemType.name;
   }
   return 'dict';
-}
-
-/**
- * Check if an operation is a redirect endpoint that should construct a URL
- * instead of making an HTTP request.
- *
- * Detection: GET endpoints with no response body (primitive unknown) are redirect
- * endpoints — e.g., SSO/OAuth authorize and logout flows that redirect the browser.
- * Also catches endpoints with 302 success responses when the parser includes them.
- */
-function isRedirectEndpoint(op: Operation): boolean {
-  // Explicit 302 in success responses
-  if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) {
-    return true;
-  }
-  // GET with no response body (primitive unknown) = browser redirect endpoint
-  if (
-    op.httpMethod === 'get' &&
-    op.response.kind === 'primitive' &&
-    op.response.type === 'unknown' &&
-    op.queryParams.length > 0
-  ) {
-    return true;
-  }
-  return false;
 }
 
 /**
