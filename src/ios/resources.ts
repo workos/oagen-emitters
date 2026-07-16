@@ -9,6 +9,7 @@ import type {
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { parsePathTemplate } from '../shared/path-template.js';
+import { unwrapListModel } from '../shared/model-utils.js';
 import { scopedMountGroups, buildHiddenParams, getOpDefaults, getOpInferFromClient } from '../shared/resolved-ops.js';
 import {
   moduleName,
@@ -449,14 +450,14 @@ function returnType(plan: ReturnType<typeof planOperation>, ctx: EmitterContext)
  * resolves to the wrapper (e.g. `OrganizationList { data: [Organization],
  * list_metadata }`); the generated `Page<T>` already models that envelope, so
  * the element must be the inner item (`Organization`), not the wrapper.
+ * Delegates to the shared `unwrapListModel` so a model with a `data` array but
+ * no `list_metadata` is not mistaken for a pagination envelope.
  */
 export function resolvePaginatedItemName(name: string, ctx: EmitterContext): string {
   const model = ctx.spec.models.find((m) => m.name === name);
   if (!model) return name;
-  const dataField = model.fields.find((f) => f.name === 'data');
-  if (!dataField || dataField.type.kind !== 'array') return name;
-  const items = dataField.type.items;
-  return items.kind === 'model' ? items.name : name;
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
+  return unwrapListModel(model, modelMap)?.name ?? name;
 }
 
 function renderPathExpr(op: Operation, params: RenderedParam[]): string {

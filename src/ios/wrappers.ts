@@ -66,7 +66,7 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
   const ret = wrapper.responseModelName ? typeName(wrapper.responseModelName) : null;
 
   const sig: string[] = [];
-  for (const p of pathParams) sig.push(`        ${p.name}: ${mapTypeRefFor(p.ref)}`);
+  for (const p of pathParams) sig.push(`        ${p.name}: ${mapTypeRef(p.ref)}`);
   const required = bodyParams.filter((p) => !p.optional);
   const optional = bodyParams.filter((p) => p.optional);
   for (const p of required) sig.push(`        ${p.name}: ${p.type}`);
@@ -111,10 +111,6 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
   }
   lines.push('    }');
   return lines.join('\n');
-}
-
-function mapTypeRefFor(ref: TypeRef): string {
-  return mapTypeRef(ref);
 }
 
 function renderPathExpr(op: Operation, pathParams: { name: string; wire: string; ref: TypeRef }[]): string {

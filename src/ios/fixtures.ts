@@ -140,10 +140,11 @@ function generatePrimitiveValue(type: string, format: string | undefined, name: 
 
 /**
  * Embed a JSON string as a Swift raw string literal, using enough `#`
- * delimiters that no content sequence can terminate the literal early.
+ * delimiters that no content sequence can terminate the literal early
+ * (`"` + hashes) or begin an escape sequence (`\` + hashes).
  */
 export function swiftRawString(json: string): string {
   let hashes = '#';
-  while (json.includes(`"${hashes}`) || json.includes(`${hashes}"`)) hashes += '#';
+  while (json.includes(`"${hashes}`) || json.includes(`\\${hashes}`)) hashes += '#';
   return `${hashes}"${json}"${hashes}`;
 }

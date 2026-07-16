@@ -317,8 +317,13 @@ class SuiteGenerator {
     lines.push('        let request = try #require(recorder.lastRequest)');
     lines.push(`        #expect(request.httpMethod == "${op.httpMethod.toUpperCase()}")`);
     lines.push(`        #expect(request.url?.path == "${expectedPath}")`);
-    lines.push('        let body = try #require(recorder.lastBody)');
-    lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
+    // Only bind the body when an assertion below reads it — unreferenced
+    // `let` bindings are Swift warnings.
+    const hasBodyAssertions = Object.keys(wrapper.defaults ?? {}).length > 0 || firstBodyWire !== null;
+    if (hasBodyAssertions) {
+      lines.push('        let body = try #require(recorder.lastBody)');
+      lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
+    }
     for (const [key, value] of Object.entries(wrapper.defaults ?? {})) {
       if (typeof value === 'string') {
         lines.push(`        #expect(json?[${JSON.stringify(key)}] as? String == ${JSON.stringify(value)})`);
