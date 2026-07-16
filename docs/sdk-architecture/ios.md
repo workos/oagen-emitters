@@ -8,11 +8,15 @@ the language-agnostic IR.
 > `src/ios/`; unit tests in `test/ios/`; smoke runner at `smoke/sdk-ios.ts`.
 
 This is a **Scenario B (fresh)** emitter: there is no existing published Swift
-SDK to preserve. The emitter therefore generates a **complete, self-contained,
-compilable Swift Package** — including the HTTP runtime, configuration, error
-types, and pagination — following the "full generation" model used by the Go
-emitter (as opposed to the Kotlin emitter, which emits mergeable stubs into a
-hand-maintained SDK).
+SDK to preserve. The emitter generates only the **spec-driven surface** —
+models, enums, resources, the client's resource-accessor extension, and the
+per-mount test suites. Everything spec-independent (the HTTP runtime:
+`Configuration`, `Transport`, errors, pagination, coding, request options; the
+test support: `MockURLProtocol`, `makeTestClient`, `TransportBehaviorTests`;
+and the repo resources: `Package.swift`, `.swift-format`, `script/ci`,
+`.gitignore`) is **hand-maintained in the SDK repo**, marked with
+`// @oagen-ignore-file` so generation never overwrites or prunes it. This
+matches the Go emitter's static-code-extraction model.
 
 Throughout this document, `{Namespace}` is `ctx.namespacePascal` (e.g. `WorkOS`)
 and `{namespace}` is `ctx.namespace` (e.g. `workos`). **No SDK-specific names are
@@ -52,20 +56,25 @@ let org = try await client.organizations.create(name: "Acme")
 
 Layers:
 
-1. **`{Namespace}Client`** (`{Namespace}Client.swift`) — the entry point. Holds an
-   immutable `Configuration` and a `Transport`, and exposes one lazily-created
-   resource accessor per **mount group** (`client.organizations`, `client.sso`, …).
-2. **Resources** (`Resources/{MountGroup}.swift`) — one `struct` per mount group,
-   one `async throws` method per operation. Methods flatten path/query/body
-   parameters into the Swift signature and delegate to `Transport`.
-3. **Transport** (`Internal/Transport.swift`) — `URLSession`-based request
-   execution: URL/query/header/body assembly, retry with exponential backoff +
-   jitter, response decoding, and status-code → error mapping.
-4. **Models** (`Models/{Model}.swift`) — `Codable` structs.
-5. **Enums** (`Enums/{Enum}.swift`) — forward-compatible `Codable` enums.
-6. **Errors** (`Errors/{Namespace}Error.swift`) — the error type hierarchy.
-7. **Support runtime** (`Internal/`) — `AnyCodable`, `Pagination`, `PathEncoding`,
-   `Coding`, `RequestOptions`, `Configuration`.
+1. **`{Namespace}Client`** (`{Namespace}Client.swift`, hand-maintained) — the
+   entry point. Holds an immutable `Configuration` and a `Transport`. The
+   generated `{Namespace}Client+Resources.swift` extension exposes one
+   lazily-created resource accessor per **mount group** (`client.organizations`,
+   `client.sso`, …).
+2. **Resources** (`Resources/{MountGroup}.swift`, generated) — one `struct` per
+   mount group, one `async throws` method per operation. Methods flatten
+   path/query/body parameters into the Swift signature and delegate to `Transport`.
+3. **Transport** (`Internal/Transport.swift`, hand-maintained) —
+   `URLSession`-based request execution: URL/query/header/body assembly, retry
+   with exponential backoff + jitter, response decoding, and status-code →
+   error mapping.
+4. **Models** (`Models/{Model}.swift`, generated) — `Codable` structs.
+5. **Enums** (`Enums/{Enum}.swift`, generated) — forward-compatible `Codable` enums.
+6. **Errors** (`Errors/{Namespace}Error.swift`, hand-maintained) — the error
+   type hierarchy.
+7. **Support runtime** (hand-maintained) — `AnyCodable`, `Pagination`,
+   `PathEncoding`, `Coding` (`Internal/`), plus `RequestOptions` and
+   `Configuration`.
 
 ### Mount-group architecture
 
@@ -254,31 +263,26 @@ public enum ConnectionState: RawRepresentable, Codable, Sendable, Hashable {
 
 ### Client
 
+The client class core lives in the SDK repo (hand-maintained,
+`@oagen-ignore-file`); the emitter generates only the spec-driven accessor
+extension:
+
 ```swift
-public final class WorkOSClient: Sendable {
-    public let configuration: Configuration
-    let transport: Transport
-
-    public init(configuration: Configuration) {
-        self.configuration = configuration
-        self.transport = Transport(configuration: configuration)
-    }
-
-    /// Convenience initializer.
-    public convenience init(apiKey: String, baseURL: URL? = nil) {
-        self.init(configuration: Configuration(apiKey: apiKey, baseURL: baseURL))
-    }
-
+// {Namespace}Client+Resources.swift (generated)
+extension WorkOSClient {
     public var organizations: Organizations { Organizations(transport: transport) }
     public var sso: SSO { SSO(transport: transport) }
     // …one accessor per mount group
 }
 ```
 
-- `generateClient` returns the **whole** client file plus the runtime/config/
-  package scaffolding (see below), all with `overwriteExisting: true` (Go pattern).
+- `generateClient` returns the accessor extension (with `overwriteExisting:
+true`, Go pattern) plus the staging-only smoke-plan sidecar.
 - Resource accessors are computed properties returning value-type resource
   structs that capture the shared `Transport`. (Cheap to create; no retain cycle.)
+- An extension (not a subclass) is used because Swift extensions in the same
+  module see the internal `transport` property, and the hand-maintained helper
+  layer (`Sources/{Namespace}/Helpers/`) already extends the client the same way.
 
 ### Resource + method
 
@@ -407,9 +411,11 @@ public struct ListMetadata: Codable, Sendable, Equatable {
 
 ---
 
-## Error Handling (`errors.ts`)
+## Error Handling (hand-maintained `Errors/{Namespace}Error.swift`)
 
-Generated from `ctx.spec.sdk.errors` (the `ErrorPolicy.statusCodeMap`):
+Hand-maintained in the SDK repo (`generateErrors` returns `[]`). The hierarchy
+mirrors `ctx.spec.sdk.errors` (the `ErrorPolicy.statusCodeMap`) as of
+extraction:
 
 ```swift
 public struct APIError: Error, Sendable, Equatable {
@@ -447,9 +453,10 @@ status-code map. `errorDocUrlTemplate` (if present) is surfaced in the message.
 
 ---
 
-## Retry Logic (`Internal/Transport.swift`)
+## Retry Logic (hand-maintained `Internal/Transport.swift`)
 
-Generated from `ctx.spec.sdk.retry` (`RetryPolicy`):
+Hand-maintained in the SDK repo; the behavior mirrors `ctx.spec.sdk.retry`
+(`RetryPolicy`) as of extraction:
 
 - Retry on `retryableStatusCodes` (default `[429, 500, 502, 503, 504]`), and on
   connection errors / timeouts per policy flags.
@@ -464,7 +471,7 @@ Generated from `ctx.spec.sdk.retry` (`RetryPolicy`):
 
 ---
 
-## Configuration (`config.ts`, emitted via `generateClient`)
+## Configuration (hand-maintained `Configuration.swift`)
 
 ```swift
 public struct Configuration: Sendable {
@@ -479,11 +486,11 @@ public struct Configuration: Sendable {
 }
 ```
 
-- `baseURL` defaults to `ctx.spec.baseUrl` (or first `ctx.spec.servers[]`).
-- Auth from `ctx.spec.auth`: `bearer` → `Authorization: Bearer <apiKey>`;
-  `apiKey` scheme → configured header/query.
-- User-Agent from `SdkBehavior.userAgent.sdkIdentifierTemplate`.
-- Timeout from `SdkBehavior.timeout.defaultTimeoutSeconds`.
+Hand-maintained; the defaults captured at extraction time came from the spec
+policy (`baseURL` from `ctx.spec.baseUrl`, bearer auth from `ctx.spec.auth`,
+User-Agent from `SdkBehavior.userAgent.sdkIdentifierTemplate`, timeout from
+`SdkBehavior.timeout.defaultTimeoutSeconds`). Policy changes are applied by
+hand in the SDK repo.
 
 ---
 
@@ -510,9 +517,9 @@ import Foundation
 }
 ```
 
-- **`MockURLProtocol`** (test support file) intercepts `URLSession` and returns a
-  canned status/body while recording the outgoing `URLRequest` (method, URL,
-  headers, body) for wire-parity assertions.
+- **`MockURLProtocol`** (hand-maintained test support, `@oagen-ignore-file`)
+  intercepts `URLSession` and returns a canned status/body while recording the
+  outgoing `URLRequest` (method, URL, headers, body) for wire-parity assertions.
 - One `@Test` per operation per mount group asserts: HTTP method, path, and that
   the response decodes into the expected type.
 - **Union-split wrappers** get one `@Test` each (`authenticateWithPassword`,
@@ -524,8 +531,11 @@ import Foundation
   memberwise initializers (required fields only, recursion-depth capped), so
   operations like `createEvent` (Audit Logs) are exercised rather than skipped;
   only heterogeneous-union bodies remain untestable.
-- A `makeTestClient(responding:)` helper wires a `URLSession` with the mock
-  protocol into a `{Namespace}Client`.
+- A `makeTestClient(responding:)` helper (hand-maintained `Support/TestClient.swift`)
+  wires a `URLSession` with the mock protocol into a `{Namespace}Client`.
+- The transport behavior suite (`TransportBehaviorTests.swift` — auth header,
+  request options, typed errors, retries, idempotency) is hand-maintained
+  alongside the transport it tests.
 
 ---
 
@@ -537,11 +547,13 @@ Package.swift                                  # repo resource (hand-maintained,
 script/ci                                      # repo resource (hand-maintained, not generated)
 .gitignore                                     # repo resource (hand-maintained, not generated)
 Sources/{Namespace}/
-  {Namespace}Client.swift                      # client.ts
-  Configuration.swift                          # config.ts (via generateClient)
-  RequestOptions.swift                         # via generateClient
+  {Namespace}Client.swift                      # hand-maintained (@oagen-ignore-file)
+  {Namespace}Client+Resources.swift            # client.ts (accessor extension)
+  Configuration.swift                          # hand-maintained (@oagen-ignore-file)
+  RequestOptions.swift                         # hand-maintained (@oagen-ignore-file)
   Errors/
-    {Namespace}Error.swift                     # errors.ts
+    {Namespace}Error.swift                     # hand-maintained (@oagen-ignore-file)
+  Helpers/                                     # hand-maintained (@oagen-ignore-file)
   Models/
     {Model}.swift                              # models.ts (one per model)
   Enums/
@@ -549,15 +561,16 @@ Sources/{Namespace}/
   Resources/
     {MountGroup}.swift                         # resources.ts (one per mount group)
   Internal/
-    Transport.swift                            # via generateClient (runtime)
-    AnyCodable.swift                           # via generateClient
-    Pagination.swift                           # via generateClient
-    PathEncoding.swift                         # via generateClient
-    Coding.swift                               # via generateClient
+    Transport.swift                            # hand-maintained (@oagen-ignore-file)
+    AnyCodable.swift                           # hand-maintained (@oagen-ignore-file)
+    Pagination.swift                           # hand-maintained (@oagen-ignore-file)
+    PathEncoding.swift                         # hand-maintained (@oagen-ignore-file)
+    Coding.swift                               # hand-maintained (@oagen-ignore-file)
 Tests/{Namespace}Tests/
   Support/
-    MockURLProtocol.swift                      # tests.ts (test support)
-    TestClient.swift                           # tests.ts (makeTestClient helper)
+    MockURLProtocol.swift                      # hand-maintained (@oagen-ignore-file)
+    TestClient.swift                           # hand-maintained (@oagen-ignore-file)
+  TransportBehaviorTests.swift                 # hand-maintained (@oagen-ignore-file)
   {MountGroup}Tests.swift                      # tests.ts (one per mount group)
 ```
 
@@ -569,20 +582,18 @@ Tests/{Namespace}Tests/
 
 ## Emitter File Layout (`src/ios/`)
 
-| File           | Responsibility                                                                                                    |
-| -------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `index.ts`     | `iosEmitter: Emitter` — wires enrichment + sub-generators, `fileHeader`, `formatCommand`                          |
-| `naming.ts`    | Swift identifier casing, reserved-word escaping, method-name resolution, mount-group helpers                      |
-| `type-map.ts`  | IR `TypeRef` → Swift type string (via `irMapTypeRef`)                                                             |
-| `models.ts`    | `generateModels` — Codable structs + CodingKeys + public init                                                     |
-| `enums.ts`     | `generateEnums` — forward-compatible Codable enums                                                                |
-| `resources.ts` | `generateResources` — mount-group resource structs, `async throws` methods                                        |
-| `wrappers.ts`  | union-split wrapper method rendering                                                                              |
-| `client.ts`    | `generateClient` — client + full runtime + Package.swift + config files                                           |
-| `errors.ts`    | `generateErrors` — error hierarchy from `SdkBehavior.errors`                                                      |
-| `runtime.ts`   | static runtime templates (Transport, AnyCodable, Pagination, PathEncoding, Coding, RequestOptions, Configuration) |
-| `tests.ts`     | `generateTests` — Swift Testing suites + MockURLProtocol support                                                  |
-| `manifest.ts`  | `buildOperationsMap` — `"METHOD /path"` → `{ sdkMethod, service }`                                                |
+| File           | Responsibility                                                                                       |
+| -------------- | ---------------------------------------------------------------------------------------------------- |
+| `index.ts`     | `iosEmitter: Emitter` — wires enrichment + sub-generators, `fileHeader`, `formatCommand`             |
+| `naming.ts`    | Swift identifier casing, reserved-word escaping, method-name resolution, mount-group helpers         |
+| `type-map.ts`  | IR `TypeRef` → Swift type string (via `irMapTypeRef`)                                                |
+| `models.ts`    | `generateModels` — Codable structs + CodingKeys + public init                                        |
+| `enums.ts`     | `generateEnums` — forward-compatible Codable enums                                                   |
+| `resources.ts` | `generateResources` — mount-group resource structs, `async throws` methods                           |
+| `wrappers.ts`  | union-split wrapper method rendering                                                                 |
+| `client.ts`    | `generateClient` — `{Namespace}Client+Resources.swift` accessor extension + smoke-plan sidecar       |
+| `tests.ts`     | `generateTests` — per-mount Swift Testing suites (support files are hand-maintained in the SDK repo) |
+| `manifest.ts`  | `buildOperationsMap` — `"METHOD /path"` → `{ sdkMethod, service }`                                   |
 
 ---
 
@@ -600,5 +611,3 @@ Tests/{Namespace}Tests/
   "explicitly null" for PATCH bodies.
 - **Completion-handler / Combine variants** for pre-async call sites (only if a
   consumer needs to support pre-iOS-13 patterns — not applicable at iOS 17 baseline).
-  </content>
-  </invoke>

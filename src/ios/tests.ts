@@ -8,7 +8,7 @@ import type {
   ResolvedOperation,
   ResolvedWrapper,
 } from '@workos/oagen';
-import { planOperation, toCamelCase } from '@workos/oagen';
+import { planOperation } from '@workos/oagen';
 import { scopedMountGroups, getOpDefaults } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
@@ -16,8 +16,6 @@ import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import {
   moduleName,
-  clientClassName,
-  errorTypeName,
   typeName,
   accessorName,
   resourceTypeName,
@@ -37,23 +35,19 @@ import type { RenderedParam } from './resources.js';
 import { generateModelFixture, swiftRawString } from './fixtures.js';
 
 /**
- * Generate the SDK's own behavioral test target:
+ * Generate the spec-driven test suites:
  *
- * - `MockURLProtocol` — a host-keyed, parallel-safe URLProtocol stub that
- *   queues canned responses and records every outgoing request.
- * - `makeTestClient` — builds a client (unique mock host per call, so Swift
- *   Testing's parallel execution never cross-talks) plus a request recorder.
  * - One suite per mount group with one wire-level test per operation: each
  *   test calls the real generated method against a fixture response and
  *   asserts the HTTP method, the rendered path, the encoded body/query, and
  *   that the response decodes into the expected type.
- * - `TransportBehaviorTests` — auth header, per-request options, typed error
- *   mapping, retry policy, and idempotency behavior.
  * - One multi-page auto-pagination test driving `AutoPagingSequence` through
  *   two stubbed pages.
  *
- * Live wire parity is covered separately by the oagen smoke runner
- * (`smoke/sdk-ios.ts`).
+ * The static test support (`MockURLProtocol`, `makeTestClient`) and the
+ * transport behavior suite are hand-maintained in the SDK repo with
+ * `@oagen-ignore-file`. Live wire parity is covered separately by the oagen
+ * smoke runner (`smoke/sdk-ios.ts`).
  */
 export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const module = moduleName(ctx);
@@ -76,11 +70,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   const modelMap = new Map(flatModels.map((m) => [m.name, m]));
   const enumMap = new Map([...spec.enums, ...getSyntheticEnums()].map((e) => [e.name, e]));
 
-  const files: GeneratedFile[] = [
-    { path: `Tests/${module}Tests/Support/MockURLProtocol.swift`, content: mockURLProtocol() },
-    { path: `Tests/${module}Tests/Support/TestClient.swift`, content: testClient(module, clientClassName(ctx)) },
-    { path: `Tests/${module}Tests/TransportBehaviorTests.swift`, content: transportBehaviorTests(module, ctx) },
-  ];
+  const files: GeneratedFile[] = [];
 
   // Generate the multi-page auto-pagination test exactly once, on the first
   // paginated operation (deterministic: groups and ops are sorted).
@@ -527,244 +517,4 @@ class SuiteGenerator {
     if (!idField || typeof value !== 'string') return [`_ = ${target.replace(/\?$/, '')}`];
     return [`#expect(${target}.id == ${JSON.stringify(value)})`];
   }
-}
-
-// --- static support + transport behavior --------------------------------------
-
-function mockURLProtocol(): string {
-  return `import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
-
-/// A URLProtocol that serves queued canned responses and records outgoing
-/// requests, keyed by request host. Every test client uses a unique mock host,
-/// so parallel Swift Testing execution never observes another test's traffic.
-final class MockURLProtocol: URLProtocol {
-    struct Stub {
-        let statusCode: Int
-        let data: Data
-        let headers: [String: String]
-    }
-
-    private static let lock = NSLock()
-    private static var stubQueues: [String: [Stub]] = [:]
-    private static var recordedRequests: [String: [URLRequest]] = [:]
-    private static var recordedBodies: [String: [Data]] = [:]
-
-    /// Register a queue of responses for a mock host. Each request pops the
-    /// next stub; the final stub is reused once the queue is exhausted.
-    static func register(host: String, stubs: [Stub]) {
-        lock.lock()
-        defer { lock.unlock() }
-        stubQueues[host] = stubs
-        recordedRequests[host] = []
-        recordedBodies[host] = []
-    }
-
-    static func requests(forHost host: String) -> [URLRequest] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedRequests[host] ?? []
-    }
-
-    static func bodies(forHost host: String) -> [Data] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedBodies[host] ?? []
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        let host = request.url?.host ?? ""
-        let stub = MockURLProtocol.consume(host: host, request: request)
-        let response = HTTPURLResponse(
-            url: request.url ?? URL(string: "https://example.test")!,
-            statusCode: stub.statusCode,
-            httpVersion: nil,
-            headerFields: stub.headers
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.data)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-
-    private static func consume(host: String, request: URLRequest) -> Stub {
-        lock.lock()
-        defer { lock.unlock() }
-        recordedRequests[host, default: []].append(request)
-        if let body = request.httpBody {
-            recordedBodies[host, default: []].append(body)
-        } else if let stream = request.httpBodyStream {
-            recordedBodies[host, default: []].append(readStream(stream))
-        }
-        var queue = stubQueues[host] ?? []
-        let stub = queue.isEmpty ? Stub(statusCode: 200, data: Data("{}".utf8), headers: [:]) : queue.removeFirst()
-        if queue.isEmpty {
-            stubQueues[host] = [stub]
-        } else {
-            stubQueues[host] = queue
-        }
-        return stub
-    }
-
-    private static func readStream(_ stream: InputStream) -> Data {
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 4096
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
-        while stream.hasBytesAvailable {
-            let read = stream.read(buffer, maxLength: bufferSize)
-            if read <= 0 { break }
-            data.append(buffer, count: read)
-        }
-        return data
-    }
-}
-`;
-}
-
-function testClient(module: string, clientName: string): string {
-  return `import Foundation
-@testable import ${module}
-
-/// Reads back the requests a mocked client sent.
-struct RequestRecorder {
-    let host: String
-
-    var allRequests: [URLRequest] { MockURLProtocol.requests(forHost: host) }
-    var lastRequest: URLRequest? { allRequests.last }
-    var lastBody: Data? { MockURLProtocol.bodies(forHost: host).last }
-}
-
-/// Build a client whose URLSession is backed by MockURLProtocol, serving the
-/// given response queue from a unique per-client mock host.
-func makeTestClient(stubs: [MockURLProtocol.Stub]) -> (${clientName}, RequestRecorder) {
-    let host = "mock-\\(UUID().uuidString.lowercased()).example.test"
-    MockURLProtocol.register(host: host, stubs: stubs)
-    let sessionConfig = URLSessionConfiguration.ephemeral
-    sessionConfig.protocolClasses = [MockURLProtocol.self]
-    let session = URLSession(configuration: sessionConfig)
-    let configuration = Configuration(apiKey: "sk_test_123", baseURL: URL(string: "https://\\(host)")!)
-    let client = ${clientName}(configuration: configuration, transport: Transport(configuration: configuration, session: session))
-    return (client, RequestRecorder(host: host))
-}
-
-/// Convenience: a single canned response.
-func makeTestClient(
-    statusCode: Int = 200,
-    responding body: String = "{}",
-    headers: [String: String] = [:]
-) -> (${clientName}, RequestRecorder) {
-    makeTestClient(stubs: [MockURLProtocol.Stub(statusCode: statusCode, data: Data(body.utf8), headers: headers)])
-}
-`;
-}
-
-function transportBehaviorTests(module: string, ctx: EmitterContext): string {
-  const errorName = errorTypeName(ctx);
-  const sdk = ctx.spec.sdk;
-  const notFoundKind = sdk.errors.statusCodeMap[404];
-  const notFoundCase = notFoundKind ? toCamelCase(notFoundKind) : 'api';
-  const retryable = sdk.retry.retryableStatusCodes[0] ?? 500;
-  const emitRetryTest = sdk.retry.maxRetries >= 1 && sdk.retry.backoff.initialDelay <= 2;
-  const idempotencyHeader = sdk.idempotency.headerName;
-  const autoIdempotency = sdk.idempotency.autoGenerateForPost;
-
-  const lines: string[] = [];
-  lines.push('import Foundation');
-  lines.push('import Testing');
-  lines.push('');
-  lines.push(`@testable import ${module}`);
-  lines.push('');
-  lines.push('private struct EmptyBody: Codable {}');
-  lines.push('');
-  lines.push('/// Behavioral tests for the shared transport: authentication, per-request');
-  lines.push('/// options, typed error mapping, retries, and idempotency.');
-  lines.push('@Suite struct TransportBehaviorTests {');
-  lines.push('    @Test func sendsAuthorizationAndUserAgentHeaders() async throws {');
-  lines.push('        let (client, recorder) = makeTestClient()');
-  lines.push('        _ = try await client.transport.request(');
-  lines.push('            method: "GET", path: "things", query: [], body: nil, options: nil, as: EmptyBody.self)');
-  lines.push('');
-  lines.push('        let request = try #require(recorder.lastRequest)');
-  lines.push('        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer sk_test_123")');
-  lines.push('        #expect(request.value(forHTTPHeaderField: "User-Agent")?.isEmpty == false)');
-  lines.push('    }');
-  lines.push('');
-  lines.push('    @Test func requestOptionsOverrideHeadersAndTimeout() async throws {');
-  lines.push('        let (client, recorder) = makeTestClient()');
-  lines.push('        let options = RequestOptions(additionalHeaders: ["X-Test-Header": "test-value"], timeout: 5)');
-  lines.push('        _ = try await client.transport.request(');
-  lines.push('            method: "GET", path: "things", query: [], body: nil, options: options, as: EmptyBody.self)');
-  lines.push('');
-  lines.push('        let request = try #require(recorder.lastRequest)');
-  lines.push('        #expect(request.value(forHTTPHeaderField: "X-Test-Header") == "test-value")');
-  lines.push('        #expect(request.timeoutInterval == 5)');
-  lines.push('    }');
-  lines.push('');
-  lines.push('    @Test func mapsErrorStatusToTypedError() async throws {');
-  lines.push('        let errorBody = #"{"message":"Not found","code":"entity_not_found","request_id":"req_123"}"#');
-  lines.push('        let (client, _) = makeTestClient(statusCode: 404, responding: errorBody)');
-  lines.push('        do {');
-  lines.push('            _ = try await client.transport.request(');
-  lines.push(
-    '                method: "GET", path: "things/thing_123", query: [], body: nil, options: nil, as: EmptyBody.self)',
-  );
-  lines.push('            Issue.record("expected a typed error to be thrown")');
-  lines.push(`        } catch let error as ${errorName} {`);
-  lines.push(`            guard case .${notFoundCase}(let apiError) = error else {`);
-  lines.push(`                Issue.record("expected ${errorName}.${notFoundCase}, got \\(error)")`);
-  lines.push('                return');
-  lines.push('            }');
-  lines.push('            #expect(apiError.statusCode == 404)');
-  lines.push('            #expect(apiError.message == "Not found")');
-  lines.push('            #expect(apiError.code == "entity_not_found")');
-  lines.push('            #expect(apiError.requestID == "req_123")');
-  lines.push('        }');
-  lines.push('    }');
-  if (emitRetryTest) {
-    lines.push('');
-    lines.push('    @Test func retriesRetryableStatusThenSucceeds() async throws {');
-    lines.push('        let (client, recorder) = makeTestClient(stubs: [');
-    lines.push(`            .init(statusCode: ${retryable}, data: Data("{}".utf8), headers: ["Retry-After": "0"]),`);
-    lines.push('            .init(statusCode: 200, data: Data("{}".utf8), headers: [:]),');
-    lines.push('        ])');
-    lines.push('        _ = try await client.transport.request(');
-    lines.push('            method: "GET", path: "things", query: [], body: nil, options: nil, as: EmptyBody.self)');
-    lines.push('');
-    lines.push('        #expect(recorder.allRequests.count == 2)');
-    lines.push('    }');
-  }
-  lines.push('');
-  if (autoIdempotency) {
-    lines.push('    @Test func postRequestsCarryAnIdempotencyKey() async throws {');
-    lines.push('        let (client, recorder) = makeTestClient()');
-    lines.push('        _ = try await client.transport.request(');
-    lines.push('            method: "POST", path: "things", query: [], body: nil, options: nil, as: EmptyBody.self)');
-    lines.push('');
-    lines.push('        let request = try #require(recorder.lastRequest)');
-    lines.push(
-      `        #expect(request.value(forHTTPHeaderField: ${JSON.stringify(idempotencyHeader)})?.isEmpty == false)`,
-    );
-    lines.push('    }');
-    lines.push('');
-  }
-  lines.push('    @Test func explicitIdempotencyKeyIsHonored() async throws {');
-  lines.push('        let (client, recorder) = makeTestClient()');
-  lines.push('        let options = RequestOptions(idempotencyKey: "key_123")');
-  lines.push('        _ = try await client.transport.request(');
-  lines.push('            method: "POST", path: "things", query: [], body: nil, options: options, as: EmptyBody.self)');
-  lines.push('');
-  lines.push('        let request = try #require(recorder.lastRequest)');
-  lines.push(`        #expect(request.value(forHTTPHeaderField: ${JSON.stringify(idempotencyHeader)}) == "key_123")`);
-  lines.push('    }');
-  lines.push('}');
-  return lines.join('\n');
 }

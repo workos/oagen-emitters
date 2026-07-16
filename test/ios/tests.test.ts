@@ -45,24 +45,11 @@ function fileByPath(files: { path: string; content: string }[], path: string): s
 }
 
 describe('ios/tests', () => {
-  it('emits the mock protocol and test-client support files', () => {
-    const files = generateTests(spec, ctx);
-    const paths = files.map((f) => f.path);
-    expect(paths).toContain('Tests/WorkOSTests/Support/MockURLProtocol.swift');
-    expect(paths).toContain('Tests/WorkOSTests/Support/TestClient.swift');
-
-    const mock = fileByPath(files, 'Tests/WorkOSTests/Support/MockURLProtocol.swift');
-    expect(mock).toContain('final class MockURLProtocol: URLProtocol {');
-    expect(mock).toContain('override func startLoading() {');
-    // Host-keyed registry so parallel Swift Testing runs never cross-talk.
-    expect(mock).toContain('static func register(host: String, stubs: [Stub]) {');
-
-    const testClient = fileByPath(files, 'Tests/WorkOSTests/Support/TestClient.swift');
-    expect(testClient).toContain(
-      'func makeTestClient(stubs: [MockURLProtocol.Stub]) -> (WorkOSClient, RequestRecorder)',
-    );
-    expect(testClient).toContain('sessionConfig.protocolClasses = [MockURLProtocol.self]');
-    expect(testClient).toContain('struct RequestRecorder {');
+  it('does not emit the hand-maintained test support or transport suite', () => {
+    const paths = generateTests(spec, ctx).map((f) => f.path);
+    expect(paths).not.toContain('Tests/WorkOSTests/Support/MockURLProtocol.swift');
+    expect(paths).not.toContain('Tests/WorkOSTests/Support/TestClient.swift');
+    expect(paths).not.toContain('Tests/WorkOSTests/TransportBehaviorTests.swift');
   });
 
   it('emits a wire-level test per operation in each mount-group suite', () => {
@@ -77,18 +64,6 @@ describe('ios/tests', () => {
     expect(suite).toContain('#expect(request.httpMethod == "GET")');
     expect(suite).toContain('#expect(request.url?.path == "/organizations")');
     expect(suite).toContain('#expect(result.count == 1)');
-  });
-
-  it('emits transport behavior tests (auth, options, typed errors, idempotency)', () => {
-    const files = generateTests(spec, ctx);
-    const transport = fileByPath(files, 'Tests/WorkOSTests/TransportBehaviorTests.swift');
-    expect(transport).toContain('@Suite struct TransportBehaviorTests {');
-    expect(transport).toContain('#expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer sk_test_123")');
-    expect(transport).toContain('@Test func requestOptionsOverrideHeadersAndTimeout() async throws {');
-    expect(transport).toContain('@Test func mapsErrorStatusToTypedError() async throws {');
-    expect(transport).toContain('catch let error as WorkOSError {');
-    expect(transport).toContain('@Test func retriesRetryableStatusThenSucceeds() async throws {');
-    expect(transport).toContain('@Test func explicitIdempotencyKeyIsHonored() async throws {');
   });
 
   it('emits a multi-page auto-pagination test for a paginated operation', () => {

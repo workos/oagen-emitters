@@ -16,7 +16,6 @@ import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
-import { generateErrors } from './errors.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 
@@ -73,12 +72,13 @@ export const iosEmitter: Emitter = {
     return ensureTrailingNewlines(generateResources(services, ctx));
   },
 
-  generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateClient(spec, ctx));
+  generateClient(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    return ensureTrailingNewlines(generateClient(ctx));
   },
 
-  generateErrors(ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateErrors(ctx));
+  generateErrors(): GeneratedFile[] {
+    // The error hierarchy is hand-maintained in the SDK repo (@oagen-ignore-file).
+    return [];
   },
 
   generateTypeSignatures(): GeneratedFile[] {
