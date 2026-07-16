@@ -9,6 +9,7 @@ import { dotnetEmitter } from './dotnet/index.js';
 import { kotlinEmitter } from './kotlin/index.js';
 import { rubyEmitter } from './ruby/index.js';
 import { rustEmitter } from './rust/index.js';
+import { iosEmitter } from './ios/index.js';
 import { nodeExtractor } from './compat/extractors/node.js';
 import { rubyExtractor } from './compat/extractors/ruby.js';
 import { pythonExtractor } from './compat/extractors/python.js';
@@ -25,7 +26,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const smokeDir = path.resolve(__dirname, '..', 'smoke');
 
 export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' | 'smokeRunners'> = {
-  emitters: [nodeEmitter, pythonEmitter, phpEmitter, goEmitter, dotnetEmitter, kotlinEmitter, rubyEmitter, rustEmitter],
+  emitters: [
+    nodeEmitter,
+    pythonEmitter,
+    phpEmitter,
+    goEmitter,
+    dotnetEmitter,
+    kotlinEmitter,
+    rubyEmitter,
+    rustEmitter,
+    iosEmitter,
+  ],
   extractors: [
     nodeExtractor,
     rubyExtractor,
@@ -47,5 +58,6 @@ export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' |
     elixir: path.join(smokeDir, 'sdk-elixir.ts'),
     kotlin: path.join(smokeDir, 'sdk-kotlin.ts'),
     dotnet: path.join(smokeDir, 'sdk-dotnet.ts'),
+    ios: path.join(smokeDir, 'sdk-ios.ts'),
   },
 };

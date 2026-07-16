@@ -6,6 +6,7 @@ export { dotnetEmitter } from './dotnet/index.js';
 export { kotlinEmitter } from './kotlin/index.js';
 export { rubyEmitter } from './ruby/index.js';
 export { rustEmitter } from './rust/index.js';
+export { iosEmitter } from './ios/index.js';
 
 export { nodeExtractor } from './compat/extractors/node.js';
 export { rubyExtractor } from './compat/extractors/ruby.js';

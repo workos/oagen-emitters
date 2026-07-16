@@ -23,6 +23,8 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       'dotnetEmitter',
       'kotlinEmitter',
       'rubyEmitter',
+      'rustEmitter',
+      'iosEmitter',
     ];
     for (const name of expectedEmitters) {
       expect(mod).toHaveProperty(name);
@@ -61,6 +63,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       mod.kotlinEmitter,
       mod.rubyEmitter,
       mod.rustEmitter,
+      mod.iosEmitter,
     ];
     for (const emitter of directEmitters) {
       expect(pluginLanguages).toContain(emitter.language);
