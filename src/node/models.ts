@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Model, Field, TypeRef, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
+import type { Model, TypeRef, EmitterContext, GeneratedFile, Operation, Service } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapWireTypeRef, isInlineEnum } from './type-map.js';
 import {
@@ -32,6 +32,7 @@ import {
   computeNonEventReachable,
   isServiceCoveredByExisting,
   hasMethodsAbsentFromBaseline,
+  baselineFieldCompatible,
 } from './utils.js';
 import { assignEnumsToServices } from './enums.js';
 import {
@@ -1262,75 +1263,6 @@ function baselineTypeResolvable(typeStr: string, importableNames: Set<string>): 
     return false;
   }
   return true;
-}
-
-function baselineFieldCompatible(baselineField: { type: string; optional: boolean }, irField: Field): boolean {
-  // A baseline `any` is the footprint of a previously-broken generation:
-  // api-surface extraction types a field as `any` when its import failed to
-  // resolve (e.g. the enum file hadn't been emitted yet in that run). Copying
-  // it forward would freeze the degradation — once `state: any` lands in the
-  // SDK, every later regen sees it as the baseline and re-emits it. When the
-  // IR knows the real model/enum name, always re-derive from the IR instead.
-  if (baselineTypeIsDegradedAny(baselineField.type) && hasNamedTypeReference(irField.type)) {
-    return false;
-  }
-
-  const irNullable = irField.type.kind === 'nullable';
-  const baselineHasNull = baselineField.type.includes('null');
-
-  if (irNullable && !baselineHasNull && irField.required) {
-    return false;
-  }
-
-  if (!irField.required && !baselineField.optional && !baselineField.type.includes('undefined')) {
-    return false;
-  }
-
-  if (baselineField.type === 'Record<string, unknown>' && hasSpecificIRType(irField.type)) {
-    return false;
-  }
-
-  return true;
-}
-
-/** `any`, `any[]`, `any | null`, … — shapes api-surface extraction degrades to. */
-function baselineTypeIsDegradedAny(typeStr: string): boolean {
-  const stripped = typeStr
-    .replace(/\s*\|\s*(?:null|undefined)\b/g, '')
-    .replace(/\[\]$/, '')
-    .trim();
-  return stripped === 'any';
-}
-
-/** Does the IR type reference a named model/enum anywhere (incl. arrays)? */
-function hasNamedTypeReference(ref: TypeRef): boolean {
-  switch (ref.kind) {
-    case 'model':
-    case 'enum':
-      return true;
-    case 'array':
-      return hasNamedTypeReference(ref.items);
-    case 'nullable':
-      return hasNamedTypeReference(ref.inner);
-    case 'union':
-      return ref.variants.some((v) => hasNamedTypeReference(v));
-    default:
-      return false;
-  }
-}
-
-function hasSpecificIRType(ref: TypeRef): boolean {
-  switch (ref.kind) {
-    case 'model':
-    case 'enum':
-      return true;
-    case 'union':
-      return ref.variants.some((v) => v.kind === 'model' || v.kind === 'enum');
-    case 'nullable':
-      return hasSpecificIRType(ref.inner);
-    default:
-      return false;
-  }
 }
 
 /** True when a baseline field type references one of the model's generic
