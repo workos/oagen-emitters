@@ -8,6 +8,7 @@ import {
   createServiceDirResolver,
   modelHasNewFields,
   assignModelsToServices,
+  baselineFieldCompatible,
 } from './utils.js';
 import {
   liveSurfaceHasFunction,
@@ -592,6 +593,25 @@ export function planSerializeField(
   return { line: emitAssignment(wire, expr, domainAccess, guard), skip: false };
 }
 
+/**
+ * Whether the wire field must carry a value on serialize. Mirrors the interface
+ * emitter's optionality decision: a captured baseline's `optional` flag is only
+ * authoritative when the baseline is compatible with the IR field
+ * (`baselineFieldCompatible`). When it isn't — e.g. the IR marks the field
+ * optional+nullable but a stale baseline snapshot recorded the wire field as
+ * required — the interface layer re-derives optionality from the IR and emits
+ * the field as optional (`models.ts` `baselineFieldCompatible` gate). The
+ * serializer must follow suit; otherwise it coalesces omitted values to
+ * `?? null` for a field its own response interface declares optional, turning
+ * every partial update into an unintended field clear.
+ */
+function baselineWireRequired(baselineWireField: BaselineFieldInfo | undefined, field: Field): boolean {
+  if (baselineWireField && baselineFieldCompatible(baselineWireField, field)) {
+    return !baselineWireField.optional;
+  }
+  return field.required;
+}
+
 function planSerializeGuard(
   field: Field,
   expr: string,
@@ -627,7 +647,7 @@ function planSerializeGuard(
   const isNewFieldOnExistingDomain = baselineDomain && !baselineDomainField;
   const domainFieldIsOptional =
     !field.required || (baselineDomainField?.optional ?? false) || !!isNewFieldOnExistingDomain;
-  const wireFieldIsRequired = baselineWireField ? !baselineWireField.optional : field.required;
+  const wireFieldIsRequired = baselineWireRequired(baselineWireField, field);
   const needsUndefinedCoalesce = domainFieldIsOptional && wireFieldIsRequired && expr === domainAccess;
 
   if (needsUndefinedCoalesce) {
@@ -648,7 +668,15 @@ function planSerializeGuard(
       responseBaselineField2 &&
       responseBaselineField2.optional;
     const fieldEffectivelyOptional = !field.required || !!isNewSerField || !!domainResponseMismatch;
-    if (fieldEffectivelyOptional) {
+    // Only coalesce when the wire field is REQUIRED — it must carry a value, so
+    // a nullish domain value has to become `null` (or `undefined` if the wire
+    // rejects null). When the wire field is itself optional, a passthrough is
+    // correct and compat-faithful: `undefined` omits the field (matching the
+    // hand-written serializers) and an explicit `null` is preserved. Inventing
+    // `?? null` here would send `description: null` for an omitted optional
+    // field, turning a partial update into an unintended clear.
+    const wireFieldIsRequired2 = baselineWireRequired(responseBaselineField2, field);
+    if (fieldEffectivelyOptional && wireFieldIsRequired2) {
       // The wire side may not accept `null` (e.g. `metadata?: Record<...>`).
       // Fall back to `undefined` in that case so the assignment matches the
       // baseline wire field's actual type.

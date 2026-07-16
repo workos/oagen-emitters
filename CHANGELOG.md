@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.10](https://github.com/workos/oagen-emitters/compare/v0.19.9...v0.19.10) (2026-07-16)
+
+
+### Bug Fixes
+
+* **node:** don't coalesce optional nullable body fields to null ([#186](https://github.com/workos/oagen-emitters/issues/186)) ([66c6c06](https://github.com/workos/oagen-emitters/commit/66c6c06ea7d80d418cce5500a29e9e5b040053a2))
+
 ## [0.19.9](https://github.com/workos/oagen-emitters/compare/v0.19.8...v0.19.9) (2026-07-06)
 
 

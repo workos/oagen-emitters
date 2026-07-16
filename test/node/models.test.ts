@@ -681,6 +681,107 @@ describe('generateSerializers', () => {
     expect(file.content).toContain('createdAt: new Date(response.created_at)');
   });
 
+  // Regression: optional+nullable request-body fields must serialize as a
+  // passthrough, never `?? null`. Coercing an omitted field to explicit null
+  // turns a partial update like `updateDataIntegration({ enabled: true })` into
+  // an unintended clear of `description`/`scopes` (null = reset, per the API's
+  // PUT semantics; undefined = no-op). Covers both a brand-new model (no
+  // baseline) and a stale baseline that recorded the wire field as required.
+  const optionalNullableBodyModels: Model[] = [
+    {
+      name: 'UpdateDataIntegration',
+      fields: [
+        {
+          name: 'description',
+          type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+          required: false,
+        },
+        { name: 'enabled', type: { kind: 'primitive', type: 'boolean' }, required: false },
+        {
+          name: 'scopes',
+          type: { kind: 'nullable', inner: { kind: 'array', items: { kind: 'primitive', type: 'string' } } },
+          required: false,
+        },
+      ],
+    },
+    {
+      name: 'DataIntegration',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    },
+  ];
+
+  const optionalNullableBodySpec: ApiSpec = {
+    ...emptySpec,
+    models: optionalNullableBodyModels,
+    services: [
+      {
+        name: 'Pipes',
+        operations: [
+          {
+            name: 'updateDataIntegration',
+            httpMethod: 'put',
+            path: '/data-integrations/{slug}',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateDataIntegration' },
+            response: { kind: 'model', name: 'DataIntegration' },
+            errors: [],
+            injectIdempotencyKey: false,
+          } as any,
+        ],
+      },
+    ],
+  };
+
+  function expectPassthrough(content: string): void {
+    expect(content).toContain('description: model.description,');
+    expect(content).toContain('scopes: model.scopes,');
+    expect(content).not.toContain('description: model.description ?? null');
+    expect(content).not.toContain('scopes: model.scopes ?? null');
+  }
+
+  it('does not coalesce optional nullable body fields to null (new model, no baseline)', () => {
+    const ctxWithModels: EmitterContext = { ...ctx, spec: optionalNullableBodySpec };
+    const result = generateSerializers(optionalNullableBodyModels, ctxWithModels);
+    const ser = result.find((f) => f.path.includes('update-data-integration.serializer'));
+    expect(ser).toBeTruthy();
+    expectPassthrough(ser!.content);
+  });
+
+  it('does not coalesce optional nullable body fields against a stale required-wire baseline', () => {
+    const ctxWithBaseline: EmitterContext = {
+      ...ctx,
+      spec: optionalNullableBodySpec,
+      apiSurface: {
+        language: 'node',
+        extractedFrom: '',
+        extractedAt: '2026-05-12T00:00:00Z',
+        classes: {},
+        interfaces: {
+          // Stale snapshot: wire fields captured as REQUIRED (optional: false),
+          // the footprint of an older generation.
+          UpdateDataIntegrationResponse: {
+            name: 'UpdateDataIntegrationResponse',
+            fields: {
+              description: { type: 'string | null', optional: false },
+              scopes: { type: 'string[] | null', optional: false },
+            },
+            extends: [],
+            sourceFile: 'src/pipes/interfaces/update-data-integration.interface.ts',
+          },
+        },
+        typeAliases: {},
+        enums: {},
+        exports: {},
+      } as any,
+    };
+    const result = generateSerializers(optionalNullableBodyModels, ctxWithBaseline);
+    const ser = result.find((f) => f.path.includes('update-data-integration.serializer'));
+    expect(ser).toBeTruthy();
+    expectPassthrough(ser!.content);
+  });
+
   it('generates nested model deserialization', () => {
     const models: Model[] = [
       {
