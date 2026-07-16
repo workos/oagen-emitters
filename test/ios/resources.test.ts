@@ -135,4 +135,44 @@ describe('ios/resources', () => {
     expect(map['POST /organizations']).toEqual({ sdkMethod: 'create', service: 'organizations' });
     expect(map['DELETE /organizations/{id}']).toEqual({ sdkMethod: 'delete', service: 'organizations' });
   });
+
+  it('emits an auto-paging companion for cursor-paginated operations', () => {
+    const paginatedSpec: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              name: 'list_organizations',
+              httpMethod: 'get',
+              path: '/organizations',
+              pathParams: [],
+              queryParams: [
+                { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'model', name: 'OrganizationList' },
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                limitParam: 'limit',
+                itemType: { kind: 'model', name: 'Organization' },
+              },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const content = generateResources(paginatedSpec.services, { ...ctx, spec: paginatedSpec })[0].content;
+    expect(content).toContain('public func listAutoPaging(');
+    expect(content).toContain(') -> AutoPagingSequence<Organization> {');
+    expect(content).toContain('AutoPagingSequence { cursor in');
+    expect(content).toContain('after: cursor');
+    // The companion drops the cursor from its own signature.
+    expect(content).not.toContain('public func listAutoPaging(\n        after:');
+  });
 });

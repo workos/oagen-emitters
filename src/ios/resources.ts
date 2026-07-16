@@ -77,18 +77,24 @@ function renderResource(mountName: string, resolvedOps: ResolvedOperation[], ctx
     if (seen.has(method)) continue;
     seen.add(method);
     methods.push(renderMethod(resolved, mountName, method, ctx));
+
+    // Cursor-paginated operations get an auto-paginating companion that walks
+    // every page through the same underlying method.
+    const auto = renderAutoPagingMethod(resolved, method, ctx);
+    if (auto && !seen.has(auto.name)) {
+      seen.add(auto.name);
+      methods.push(auto.block);
+    }
   }
 
   const lines: string[] = [];
   lines.push('import Foundation');
   lines.push('');
   lines.push(`/// Operations for the ${resourceName} API.`);
+  // No explicit init: the synthesized internal memberwise initializer is
+  // identical (swift-format's UseSynthesizedInitializer rule).
   lines.push(`public struct ${resourceName}: Sendable {`);
   lines.push('    let transport: Transport');
-  lines.push('');
-  lines.push('    init(transport: Transport) {');
-  lines.push('        self.transport = transport');
-  lines.push('    }');
   for (const m of methods) {
     lines.push('');
     lines.push(m);
@@ -256,6 +262,67 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
   return lines.join('\n');
 }
 
+/** The auto-paging companion method name for a paginated operation. */
+export function autoPagingMethodName(method: string): string {
+  return `${method}AutoPaging`;
+}
+
+/**
+ * Details of an operation's auto-paging companion, or null when the operation
+ * is not cursor-paginated (or its cursor param is not a plain string query
+ * param the wrapper can drive).
+ */
+export function planAutoPaging(
+  resolved: ResolvedOperation,
+  ctx: EmitterContext,
+): { itemType: string; cursorWire: string; params: RenderedParam[]; cursorParam: RenderedParam } | null {
+  const op = resolved.operation;
+  const plan = planOperation(op);
+  if (!plan.isPaginated || !plan.paginatedItemModelName) return null;
+  if (op.pagination?.strategy !== 'cursor') return null;
+  const params = collectMethodParams(resolved, ctx);
+  // The sequence drives the cursor with a String? (nil on the first page), so
+  // the underlying method's cursor param must be an optional string.
+  const cursorParam = params.find((p) => p.kind === 'query' && p.wire === op.pagination!.param);
+  if (!cursorParam || cursorParam.type !== 'String?') return null;
+  const itemType = typeName(resolvePaginatedItemName(plan.paginatedItemModelName, ctx));
+  return { itemType, cursorWire: cursorParam.wire, params, cursorParam };
+}
+
+function renderAutoPagingMethod(
+  resolved: ResolvedOperation,
+  method: string,
+  ctx: EmitterContext,
+): { name: string; block: string } | null {
+  const auto = planAutoPaging(resolved, ctx);
+  if (!auto) return null;
+  const name = autoPagingMethodName(method);
+
+  const passthrough = orderMethodParams(auto.params.filter((p) => p !== auto.cursorParam));
+  const sigParams = passthrough.map((p) => `        ${p.name}: ${p.type}${p.optional ? ' = nil' : ''}`);
+  sigParams.push('        requestOptions: RequestOptions? = nil');
+
+  const callArgs = orderMethodParams(auto.params).map((p) =>
+    p === auto.cursorParam ? `${p.name}: cursor` : `${p.name}: ${p.name}`,
+  );
+  callArgs.push('requestOptions: requestOptions');
+
+  const lines: string[] = [];
+  lines.push(`    /// Auto-paginating variant of \`\`${method}\`\`: fetches successive`);
+  lines.push('    /// pages as the sequence is iterated.');
+  if (resolved.operation.deprecated) lines.push('    @available(*, deprecated)');
+  lines.push(`    public func ${name}(`);
+  lines.push(sigParams.join(',\n'));
+  lines.push(`    ) -> AutoPagingSequence<${auto.itemType}> {`);
+  lines.push('        AutoPagingSequence { cursor in');
+  lines.push(`            try await self.${method}(`);
+  lines.push(callArgs.map((a) => `                ${a}`).join(',\n'));
+  lines.push('            )');
+  lines.push('        }');
+  lines.push('    }');
+  return { name, block: lines.join('\n') };
+}
+
 /** Determine whether the body is a model (return its fields), raw, or absent. */
 function resolveBodyFields(op: Operation, ctx: EmitterContext): Field[] | 'raw' | null {
   const rb = op.requestBody;
@@ -287,7 +354,7 @@ function returnType(plan: ReturnType<typeof planOperation>, ctx: EmitterContext)
  * list_metadata }`); the generated `Page<T>` already models that envelope, so
  * the element must be the inner item (`Organization`), not the wrapper.
  */
-function resolvePaginatedItemName(name: string, ctx: EmitterContext): string {
+export function resolvePaginatedItemName(name: string, ctx: EmitterContext): string {
   const model = ctx.spec.models.find((m) => m.name === name);
   if (!model) return name;
   const dataField = model.fields.find((f) => f.name === 'data');
