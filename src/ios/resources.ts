@@ -22,6 +22,7 @@ import {
 } from './naming.js';
 import { fieldSwiftType, mapTypeRef } from './type-map.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { renderDocComment, renderParameterDocs } from './doc-comments.js';
 
 /**
  * Generate one Swift resource struct per mount group. Each operation becomes an
@@ -53,28 +54,7 @@ function isStringPrimitive(ref: TypeRef): boolean {
 // --- rendering --------------------------------------------------------------
 
 function docComment(description: string | undefined, indent: string): string {
-  if (!description) return '';
-  return description
-    .trim()
-    .split('\n')
-    .map((line) => (line.trim() ? `${indent}/// ${line.trim()}` : `${indent}///`))
-    .join('\n');
-}
-
-/**
- * Doc lines flagging deprecated parameters. Swift has no per-parameter
- * `@available` attribute, so — matching the Go/Kotlin emitters' policy — the
- * deprecation is surfaced as a `- Parameter` doc note on the method.
- */
-function deprecatedParamDocs(params: RenderedParam[], indent: string): string[] {
-  const lines: string[] = [];
-  for (const p of params) {
-    if (!p.deprecated) continue;
-    const desc = (p.description ?? '').replace(/\s+/g, ' ').trim();
-    const note = /^deprecated\b/i.test(desc) ? desc : desc ? `Deprecated. ${desc}` : 'Deprecated.';
-    lines.push(`${indent}/// - Parameter ${p.name}: ${note}`);
-  }
-  return lines;
+  return renderDocComment(description, indent);
 }
 
 function renderResource(mountName: string, resolvedOps: ResolvedOperation[], ctx: EmitterContext): string {
@@ -246,7 +226,20 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
   const lines: string[] = [];
   const doc = docComment(op.description, '    ');
   if (doc) lines.push(doc);
-  const paramNotes = deprecatedParamDocs(ordered, '    ');
+  const paramNotes = renderParameterDocs(
+    [
+      ...ordered.map((param) => ({
+        name: param.name,
+        description: param.description,
+        deprecated: param.deprecated,
+      })),
+      {
+        name: 'requestOptions',
+        description: 'Per-request overrides (idempotency key, API key, headers, timeout).',
+      },
+    ],
+    '    ',
+  );
   if (paramNotes.length > 0) {
     if (doc) lines.push('    ///');
     lines.push(...paramNotes);
@@ -316,7 +309,14 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
   const lines: string[] = [];
   const doc = docComment(op.description, '    ');
   if (doc) lines.push(doc);
-  const paramNotes = deprecatedParamDocs(ordered, '    ');
+  const paramNotes = renderParameterDocs(
+    ordered.map((param) => ({
+      name: param.name,
+      description: param.description,
+      deprecated: param.deprecated,
+    })),
+    '    ',
+  );
   if (paramNotes.length > 0) {
     if (doc) lines.push('    ///');
     lines.push(...paramNotes);
@@ -405,8 +405,26 @@ function renderAutoPagingMethod(
   callArgs.push('requestOptions: requestOptions');
 
   const lines: string[] = [];
-  lines.push(`    /// Auto-paginating variant of \`\`${method}\`\`: fetches successive`);
+  lines.push(`    /// Auto-paginating variant of \`${method}\`: fetches successive`);
   lines.push('    /// pages as the sequence is iterated.');
+  const paramNotes = renderParameterDocs(
+    [
+      ...passthrough.map((param) => ({
+        name: param.name,
+        description: param.description,
+        deprecated: param.deprecated,
+      })),
+      {
+        name: 'requestOptions',
+        description: 'Per-request overrides (idempotency key, API key, headers, timeout).',
+      },
+    ],
+    '    ',
+  );
+  if (paramNotes.length > 0) {
+    lines.push('    ///');
+    lines.push(...paramNotes);
+  }
   if (resolved.operation.deprecated) lines.push('    @available(*, deprecated)');
   lines.push(`    public func ${name}(`);
   lines.push(sigParams.join(',\n'));

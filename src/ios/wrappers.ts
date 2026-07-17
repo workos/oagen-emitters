@@ -3,6 +3,7 @@ import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrappe
 import { parsePathTemplate } from '../shared/path-template.js';
 import { methodName, propertyName, typeName, swiftStringLiteral } from './naming.js';
 import { mapTypeRef } from './type-map.js';
+import { renderDocComment, renderParameterDocs } from './doc-comments.js';
 
 /**
  * Render one `async throws` method per wrapper of a union-split operation (e.g.
@@ -19,6 +20,8 @@ interface WParam {
   wire: string;
   type: string;
   optional: boolean;
+  description?: string;
+  deprecated?: boolean;
 }
 
 function unwrapNullable(ref: TypeRef): TypeRef {
@@ -45,11 +48,17 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
     .filter((s) => s.kind === 'param')
     .map((s) => (s as { name: string }).name);
   const pathByWire = new Map(op.pathParams.map((p) => [p.name, p]));
-  const pathParams: { name: string; wire: string; ref: TypeRef }[] = [];
+  const pathParams: { name: string; wire: string; ref: TypeRef; description?: string; deprecated?: boolean }[] = [];
   for (const wire of pathParamOrder) {
     const p = pathByWire.get(wire);
     if (!p) continue;
-    pathParams.push({ name: dedupe(propertyName(p.name)), wire: p.name, ref: p.type });
+    pathParams.push({
+      name: dedupe(propertyName(p.name)),
+      wire: p.name,
+      ref: p.type,
+      description: p.description,
+      deprecated: p.deprecated,
+    });
   }
 
   const bodyParams: WParam[] = wparams.map((wp) => {
@@ -60,6 +69,8 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
       wire: wp.paramName,
       type,
       optional: type.endsWith('?'),
+      description: wp.field?.description,
+      deprecated: wp.field?.deprecated,
     };
   });
 
@@ -74,7 +85,31 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
   sig.push('        requestOptions: RequestOptions? = nil');
 
   const lines: string[] = [];
-  lines.push(`    /// ${formatWrapperDescription(wrapper.name)}.`);
+  const doc = renderDocComment(formatWrapperDescription(wrapper.name), '    ');
+  if (doc) lines.push(doc);
+  const paramNotes = renderParameterDocs(
+    [
+      ...pathParams.map((param) => ({
+        name: param.name,
+        description: param.description,
+        deprecated: param.deprecated,
+      })),
+      ...bodyParams.map((param) => ({
+        name: param.name,
+        description: param.description,
+        deprecated: param.deprecated,
+      })),
+      {
+        name: 'requestOptions',
+        description: 'Per-request overrides (idempotency key, API key, headers, timeout).',
+      },
+    ],
+    '    ',
+  );
+  if (paramNotes.length > 0) {
+    if (doc) lines.push('    ///');
+    lines.push(...paramNotes);
+  }
   lines.push(`    public func ${method}(`);
   lines.push(sig.join(',\n'));
   lines.push(`    ) async throws${ret ? ` -> ${ret}` : ''} {`);
