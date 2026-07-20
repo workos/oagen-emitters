@@ -86,7 +86,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const resolvedLookup = buildResolvedLookup(ctx);
 
   // Determine which imports are needed
-  const needsFmt = operations.some((op) => op.pathParams.length > 0);
+  const needsFmt = operations.some(
+    (op) => op.pathParams.length > 0 || opHasClearableBodyField(op, ctx, resolvedLookup),
+  );
   const needsNetUrl = operations.some((op) => {
     if (op.pathParams.length > 0) return true;
     const resolved = lookupResolved(op, resolvedLookup);
@@ -96,7 +98,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     return false;
   });
   const needsStrings = needsStringsImport(operations, resolvedLookup);
-  const needsJson = operations.some((op) => hasBodyGroups(op));
+  const needsJson = operations.some((op) => hasBodyGroups(op) || opHasClearableBodyField(op, ctx, resolvedLookup));
   // context is needed only for methods that make HTTP calls. URL-builder ops
   // don't take ctx, so a file that contains *only* URL builders would have
   // an unused import.
@@ -224,6 +226,26 @@ function hiddenParamsBodyStructName(method: string): string {
 /** Check whether an operation has any body-level parameter groups. */
 function hasBodyGroups(op: Operation): boolean {
   return (op.parameterGroups ?? []).some((g) => isBodyGroup(g, op));
+}
+
+/**
+ * Check whether an operation exposes a nullable optional body field that can be
+ * cleared via NullFields. Such fields cause a generated `MarshalJSON` (needs
+ * `encoding/json`) with a validation error (needs `fmt`).
+ */
+function opHasClearableBodyField(
+  op: Operation,
+  ctx: EmitterContext,
+  resolvedLookup: Map<string, ResolvedOperation>,
+): boolean {
+  if (op.requestBody?.kind !== 'model') return false;
+  const model = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (!model) return false;
+  const hidden = buildHiddenParams(lookupResolved(op, resolvedLookup));
+  const grouped = collectGroupedParamNames(op);
+  return model.fields.some(
+    (f) => !hidden.has(f.name) && !grouped.has(f.name) && !f.required && f.type.kind === 'nullable',
+  );
 }
 
 /**
@@ -405,6 +427,10 @@ function generateParamsStruct(
   // Track emitted field names to avoid duplicates
   const emittedFields = new Set<string>();
 
+  // Wire names of nullable optional body fields. These can be explicitly
+  // cleared (sent as JSON `null`) by listing them in the struct's NullFields.
+  const clearableBodyFieldNames: string[] = [];
+
   // Body fields (if body is a model)
   if (hasBody && op.requestBody?.kind === 'model') {
     const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
@@ -416,6 +442,7 @@ function generateParamsStruct(
         const goField = domainFieldName(field);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
+        if (!field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
         const isOptional = !field.required;
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
         const jsonTag = field.required ? `json:"${field.name}"` : `json:"${field.name},omitempty"`;
@@ -498,13 +525,23 @@ function generateParamsStruct(
     lines.push(`\t${goField} ${goType} \`url:"-" json:"-"\``);
   }
 
+  // NullFields lists wire names of nullable fields to send as an explicit JSON
+  // `null` (clearing them). Fields left off the struct are omitted as usual;
+  // this is the only way to distinguish "leave unchanged" from "clear".
+  if (clearableBodyFieldNames.length > 0) {
+    lines.push('\t// NullFields lists JSON field names to send as an explicit null,');
+    lines.push('\t// clearing the corresponding value (e.g. []string{"external_id"}).');
+    lines.push('\tNullFields []string `json:"-" url:"-"`');
+  }
+
   lines.push('}');
 
-  // Generate MarshalJSON for params structs that have body-level groups.
-  // The method uses a type alias to marshal non-group fields, then merges
-  // the active group variant's fields into the JSON map.
+  // Generate MarshalJSON for params structs that need to rewrite the JSON map:
+  // structs with body-level parameter groups and/or nullable fields that can be
+  // explicitly cleared via NullFields.
   const bodyGroupList = (op.parameterGroups ?? []).filter((g) => isBodyGroup(g, op));
-  if (bodyGroupList.length > 0) {
+  const hasNullFields = clearableBodyFieldNames.length > 0;
+  if (bodyGroupList.length > 0 || hasNullFields) {
     lines.push('');
     lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
     lines.push(`func (p ${structName}) MarshalJSON() ([]byte, error) {`);
@@ -513,9 +550,10 @@ function generateParamsStruct(
     lines.push('\tif err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
-    // Check if any group is non-nil; if not, return early
-    const allNilCheck = bodyGroupList.map((g) => `p.${fieldName(g.name)} == nil`).join(' && ');
-    lines.push(`\tif ${allNilCheck} {`);
+    // Fast path: nothing to rewrite when no group is set and NullFields is empty.
+    const earlyReturnChecks = bodyGroupList.map((g) => `p.${fieldName(g.name)} == nil`);
+    if (hasNullFields) earlyReturnChecks.push('len(p.NullFields) == 0');
+    lines.push(`\tif ${earlyReturnChecks.join(' && ')} {`);
     lines.push('\t\treturn data, nil');
     lines.push('\t}');
     lines.push('\tvar m map[string]any');
@@ -526,6 +564,17 @@ function generateParamsStruct(
       const goField = fieldName(group.name);
       lines.push(`\tif p.${goField} != nil {`);
       lines.push(`\t\tp.${goField}.applyToBody(m)`);
+      lines.push('\t}');
+    }
+    if (hasNullFields) {
+      lines.push('\tnullable := map[string]bool{');
+      for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+      lines.push('\t}');
+      lines.push('\tfor _, f := range p.NullFields {');
+      lines.push('\t\tif !nullable[f] {');
+      lines.push(`\t\t\treturn nil, fmt.Errorf("${structName}: %q is not a nullable field", f)`);
+      lines.push('\t\t}');
+      lines.push('\t\tm[f] = nil');
       lines.push('\t}');
     }
     lines.push('\treturn json.Marshal(m)');
@@ -965,6 +1014,7 @@ function emitHiddenParamsBodyStruct(
   }
 
   // Optional exposed body fields (pointer/slice/map + omitempty)
+  const clearableBodyFieldNames: string[] = [];
   if (bodyModel) {
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
@@ -974,10 +1024,46 @@ function emitHiddenParamsBodyStruct(
       const goField = domainFieldName(field);
       const goType = makeOptional(mapTypeRef(field.type));
       lines.push(`\t${goField} ${goType} \`json:"${field.name},omitempty"\``);
+      if (field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
     }
   }
 
+  if (clearableBodyFieldNames.length > 0) {
+    lines.push('\t// NullFields lists JSON field names to send as an explicit null,');
+    lines.push('\t// clearing the corresponding value (e.g. []string{"external_id"}).');
+    lines.push('\tNullFields []string `json:"-"`');
+  }
+
   lines.push('}');
+
+  if (clearableBodyFieldNames.length > 0) {
+    lines.push('');
+    lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
+    lines.push(`func (b ${structName}) MarshalJSON() ([]byte, error) {`);
+    lines.push(`\ttype Alias ${structName}`);
+    lines.push('\tdata, err := json.Marshal(Alias(b))');
+    lines.push('\tif err != nil {');
+    lines.push('\t\treturn nil, err');
+    lines.push('\t}');
+    lines.push('\tif len(b.NullFields) == 0 {');
+    lines.push('\t\treturn data, nil');
+    lines.push('\t}');
+    lines.push('\tvar m map[string]any');
+    lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
+    lines.push('\t\treturn nil, err');
+    lines.push('\t}');
+    lines.push('\tnullable := map[string]bool{');
+    for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+    lines.push('\t}');
+    lines.push('\tfor _, f := range b.NullFields {');
+    lines.push('\t\tif !nullable[f] {');
+    lines.push(`\t\t\treturn nil, fmt.Errorf("${structName}: %q is not a nullable field", f)`);
+    lines.push('\t\t}');
+    lines.push('\t\tm[f] = nil');
+    lines.push('\t}');
+    lines.push('\treturn json.Marshal(m)');
+    lines.push('}');
+  }
 }
 
 /**
@@ -1033,14 +1119,24 @@ function emitBodyWithHiddenParams(
   }
 
   // Optional exposed body fields — copy through; omitempty drops nil/empty
+  const groupedParamNames = collectGroupedParamNames(op);
+  let hasClearableField = false;
   if (paramsType && bodyModel) {
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
+      // Grouped params live on their group struct, not the body struct
+      // (emitHiddenParamsBodyStruct skips them too), so don't copy them here.
+      if (groupedParamNames.has(field.name)) continue;
       if (field.required) continue;
       // Domain struct field on both the body struct and the params struct.
       const goField = domainFieldName(field);
       lines.push(`\tbody.${goField} = params.${goField}`);
+      if (field.type.kind === 'nullable') hasClearableField = true;
     }
+  }
+  // Forward the explicit-null field list so clearing works through the body struct.
+  if (hasClearableField) {
+    lines.push('\tbody.NullFields = params.NullFields');
   }
 
   // Determine query arg (visible query params from struct)

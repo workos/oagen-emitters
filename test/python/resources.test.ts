@@ -954,4 +954,66 @@ describe('generateResources', () => {
     expect(files[0].content).toContain('class RoleMultiple:');
     expect(files[0].content).toContain('    role_slugs: List[str]');
   });
+
+  it('lets nullable optional body fields be cleared with an explicit None', () => {
+    const models: Model[] = [
+      {
+        name: 'UpdateOrganizationRequest',
+        fields: [
+          // Non-nullable optional: keeps the historical None-means-omit behavior.
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+          // Nullable optional: clearable via explicit None.
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          {
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateOrganizationRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const content = generateResources(services, ctxWithServices)[0].content;
+
+    // Sentinel imported for clearable fields.
+    expect(content).toContain('NOT_GIVEN, NotGiven');
+    // Nullable field is typed with NotGiven and defaults to the sentinel.
+    expect(content).toContain('external_id: Union[str, None, NotGiven] = NOT_GIVEN');
+    // Non-nullable optional keeps its Optional[...] = None signature.
+    expect(content).toContain('name: Optional[str] = None');
+
+    // Non-nullable optional stays in the None-filtered comprehension.
+    expect(content).toContain('"name": name,');
+    expect(content).toContain('}.items() if v is not None}');
+
+    // Nullable field is conditionally assigned so an explicit None survives.
+    expect(content).toContain('if external_id is not NOT_GIVEN:');
+    expect(content).toContain('body["external_id"] = external_id');
+    // It must NOT be part of the None-filtered comprehension (that drops None).
+    expect(content).not.toContain('"external_id": external_id,');
+  });
 });

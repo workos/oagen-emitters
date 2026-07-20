@@ -246,6 +246,13 @@ function emitMethod(args: {
     return bodyFieldRenames.get(wireName) ?? fieldName(wireName);
   };
 
+  // A nullable optional body field can be explicitly cleared by passing `nil`
+  // (serialized as JSON `null`). Such kwargs default to the `WorkOS::OMIT`
+  // sentinel so an omitted argument still means "leave unchanged", while an
+  // explicit `nil` flows through to the request body.
+  const isClearableBodyField = (f: { required?: boolean; type: TypeRef }): boolean =>
+    !f.required && f.type.kind === 'nullable';
+
   // Method signature. Deduplicate param names across path/body/query.
   const sigParts: string[] = [];
   const seenParamNames = new Set<string>();
@@ -292,7 +299,7 @@ function emitMethod(args: {
     const n = bodyKwargName(f.name);
     if (seenParamNames.has(n)) continue;
     seenParamNames.add(n);
-    sigParts.push(`${n}: nil`);
+    sigParts.push(`${n}: ${isClearableBodyField(f) ? 'WorkOS::OMIT' : 'nil'}`);
   }
   for (const q of queryParams) {
     if (hiddenParams.has(q.name)) continue;
@@ -432,9 +439,17 @@ function emitMethod(args: {
     }
     // Track whether any literal entry can be nil — defaults/inferFromClient
     // resolve to non-nil values, so only optional body kwargs are nilable.
+    // Nullable optional fields are emitted separately below so an explicit
+    // `nil` survives as JSON `null` (clearing the field) rather than being
+    // dropped by `.compact`.
     let bodyHasNilable = false;
+    const clearableFields: typeof bodyFields = [];
     for (const f of bodyFields) {
       if (hiddenParams.has(f.name)) continue;
+      if (isClearableBodyField(f)) {
+        clearableFields.push(f);
+        continue;
+      }
       bodyEntries.push(`${rubyStringLit(f.name)} => ${bodyKwargName(f.name)}`);
       if (!f.required) bodyHasNilable = true;
     }
@@ -445,6 +460,14 @@ function emitMethod(args: {
       lines.push(`        ${bodyEntries[i]}${sep}`);
     }
     lines.push(`      }${bodyCompact}`);
+
+    // Nullable fields: only assign when the caller passed an argument. The
+    // `WorkOS::OMIT` default means "leave unchanged" (field omitted); an
+    // explicit `nil` is kept and serialized as JSON `null` to clear the field.
+    for (const f of clearableFields) {
+      const kwarg = bodyKwargName(f.name);
+      lines.push(`      body[${rubyStringLit(f.name)}] = ${kwarg} unless ${kwarg}.equal?(WorkOS::OMIT)`);
+    }
 
     // Parameter group dispatch into body for POST/PUT/PATCH so sensitive
     // fields (passwords, role slugs) never leak into the URL query string.

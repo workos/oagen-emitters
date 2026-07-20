@@ -56,6 +56,16 @@ export function bodyParamName(field: { name: string }, pathParamNames: Set<strin
 }
 
 /**
+ * A nullable optional body field can be explicitly cleared by passing `None`
+ * (serialized as JSON `null`). Such parameters default to the `NOT_GIVEN`
+ * sentinel so an omitted argument still means "leave unchanged", while an
+ * explicit `None` flows through to the request body.
+ */
+export function isClearableBodyField(field: { required?: boolean; type: TypeRef }): boolean {
+  return !field.required && field.type.kind === 'nullable';
+}
+
+/**
  * Resolve the resource class name for a service.
  */
 export function resolveResourceClassName(service: Service, ctx: EmitterContext): string {
@@ -235,7 +245,11 @@ function emitMethodSignature(
           f.type.kind === 'nullable'
             ? mapTypeRefUnquoted(f.type.inner, specEnumNames, true)
             : mapTypeRefUnquoted(f.type, specEnumNames, true);
-        lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
+        if (isClearableBodyField(f)) {
+          lines.push(`        ${bodyParamName(f, pathParamNames)}: Union[${innerType}, None, NotGiven] = NOT_GIVEN,`);
+        } else {
+          lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${innerType}] = None,`);
+        }
       }
     } else if (op.requestBody.kind === 'union') {
       // Union body — accept any of the variant models or a plain dict
@@ -727,24 +741,7 @@ function emitMethodBody(
           (f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name),
         );
         for (const f of bodyFields) deleteBodyFieldNames.add(bodyParamName(f, pathParamNames));
-        const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-        if (bodyFields.length > 0 && hasOptionalBodyFields) {
-          lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-          for (const f of bodyFields) {
-            lines.push(
-              `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-            );
-          }
-          lines.push('        }.items() if v is not None}');
-        } else if (bodyFields.length > 0) {
-          lines.push('        body: Dict[str, Any] = {');
-          for (const f of bodyFields) {
-            lines.push(
-              `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-            );
-          }
-          lines.push('        }');
-        }
+        emitBodyDict(lines, bodyFields, pathParamNames, false);
         // Inject constant defaults into body
         if (Object.keys(opDefaults).length > 0) {
           for (const [key, value] of Object.entries(opDefaults)) {
@@ -790,26 +787,7 @@ function emitMethodBody(
     if (bodyModel) {
       const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name));
       for (const f of bodyFields) bodyFieldNamesSet.add(bodyParamName(f, pathParamNames));
-      const hasOptionalBodyFields = bodyFields.some((f) => !f.required);
-      if (bodyFields.length > 0 && hasOptionalBodyFields) {
-        lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
-        for (const f of bodyFields) {
-          lines.push(
-            `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-          );
-        }
-        lines.push('        }.items() if v is not None}');
-      } else if (bodyFields.length > 0) {
-        lines.push('        body: Dict[str, Any] = {');
-        for (const f of bodyFields) {
-          lines.push(
-            `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required)},`,
-          );
-        }
-        lines.push('        }');
-      } else {
-        lines.push('        body: Dict[str, Any] = {}');
-      }
+      emitBodyDict(lines, bodyFields, pathParamNames, true);
       // Inject constant defaults into body
       if (Object.keys(opDefaults).length > 0) {
         for (const [key, value] of Object.entries(opDefaults)) {
@@ -1180,11 +1158,22 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (!specEnumNames.has(name)) enumImports.delete(name);
     }
 
-    if (enumImports.size > 0) {
-      lines.push(`from ${importPrefix}_types import RequestOptions, enum_value`);
-    } else {
-      lines.push(`from ${importPrefix}_types import RequestOptions`);
-    }
+    // A file needs the NOT_GIVEN sentinel if any of its operations has a
+    // nullable optional (clearable) body field.
+    const needsNotGiven = allOperations.some((op) => {
+      if (!op.requestBody || op.requestBody.kind !== 'model') return false;
+      const bm = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+      if (!bm) return false;
+      const resolved = lookupResolved(op, resolvedLookup);
+      const hidden = buildHiddenParams(resolved);
+      const grouped = collectGroupedParamNames(op);
+      return bm.fields.some((f) => !hidden.has(f.name) && !grouped.has(f.name) && isClearableBodyField(f));
+    });
+
+    const typesImports = ['RequestOptions'];
+    if (enumImports.size > 0) typesImports.push('enum_value');
+    if (needsNotGiven) typesImports.push('NOT_GIVEN', 'NotGiven');
+    lines.push(`from ${importPrefix}_types import ${typesImports.join(', ')}`);
     const actualModelImports = [...modelImports];
 
     // Split imports into same-service and cross-service (using mount-based dirs)
@@ -1442,6 +1431,50 @@ function emitQueryParamsDict(
  * Calls .to_dict() directly on model fields since types are known at generation time.
  * For arrays of models, maps each item through .to_dict().
  */
+/**
+ * Emit the `body` dict for a request. Non-clearable fields go into the dict
+ * literal (optional ones filtered via `if v is not None`), preserving the
+ * historical "None means omit" behavior. Nullable optional (clearable) fields
+ * are assigned conditionally afterward so an explicit `None` survives as JSON
+ * `null`, while the `NOT_GIVEN` default omits them.
+ */
+function emitBodyDict(
+  lines: string[],
+  bodyFields: Array<{ name: string; required?: boolean; type: TypeRef }>,
+  pathParamNames: Set<string>,
+  emitEmpty: boolean,
+): void {
+  const literalFields = bodyFields.filter((f) => !isClearableBodyField(f));
+  const clearableFields = bodyFields.filter((f) => isClearableBodyField(f));
+  const hasOptionalLiteral = literalFields.some((f) => !f.required);
+
+  if (literalFields.length > 0 && hasOptionalLiteral) {
+    lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
+    for (const f of literalFields) {
+      lines.push(
+        `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
+      );
+    }
+    lines.push('        }.items() if v is not None}');
+  } else if (literalFields.length > 0) {
+    lines.push('        body: Dict[str, Any] = {');
+    for (const f of literalFields) {
+      lines.push(
+        `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
+      );
+    }
+    lines.push('        }');
+  } else if (clearableFields.length > 0 || emitEmpty) {
+    lines.push('        body: Dict[str, Any] = {}');
+  }
+
+  for (const f of clearableFields) {
+    const varName = bodyParamName(f, pathParamNames);
+    lines.push(`        if ${varName} is not NOT_GIVEN:`);
+    lines.push(`            body["${f.name}"] = ${serializeBodyFieldValue(f.type, varName, f.required ?? false)}`);
+  }
+}
+
 function serializeBodyFieldValue(fieldType: any, varName: string, isRequired: boolean): string {
   const effectiveType = fieldType.kind === 'nullable' ? fieldType.inner : fieldType;
   if (effectiveType.kind === 'enum') {
