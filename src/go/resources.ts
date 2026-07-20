@@ -86,7 +86,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const resolvedLookup = buildResolvedLookup(ctx);
 
   // Determine which imports are needed
-  const needsFmt = operations.some((op) => op.pathParams.length > 0);
+  const needsFmt = operations.some(
+    (op) => op.pathParams.length > 0 || opHasClearableBodyField(op, ctx, resolvedLookup),
+  );
   const needsNetUrl = operations.some((op) => {
     if (op.pathParams.length > 0) return true;
     const resolved = lookupResolved(op, resolvedLookup);
@@ -96,7 +98,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     return false;
   });
   const needsStrings = needsStringsImport(operations, resolvedLookup);
-  const needsJson = operations.some((op) => hasBodyGroups(op));
+  const needsJson = operations.some((op) => hasBodyGroups(op) || opHasClearableBodyField(op, ctx, resolvedLookup));
   // context is needed only for methods that make HTTP calls. URL-builder ops
   // don't take ctx, so a file that contains *only* URL builders would have
   // an unused import.
@@ -224,6 +226,26 @@ function hiddenParamsBodyStructName(method: string): string {
 /** Check whether an operation has any body-level parameter groups. */
 function hasBodyGroups(op: Operation): boolean {
   return (op.parameterGroups ?? []).some((g) => isBodyGroup(g, op));
+}
+
+/**
+ * Check whether an operation exposes a nullable optional body field that can be
+ * cleared via NullFields. Such fields cause a generated `MarshalJSON` (needs
+ * `encoding/json`) with a validation error (needs `fmt`).
+ */
+function opHasClearableBodyField(
+  op: Operation,
+  ctx: EmitterContext,
+  resolvedLookup: Map<string, ResolvedOperation>,
+): boolean {
+  if (op.requestBody?.kind !== 'model') return false;
+  const model = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (!model) return false;
+  const hidden = buildHiddenParams(lookupResolved(op, resolvedLookup));
+  const grouped = collectGroupedParamNames(op);
+  return model.fields.some(
+    (f) => !hidden.has(f.name) && !grouped.has(f.name) && !f.required && f.type.kind === 'nullable',
+  );
 }
 
 /**
@@ -545,7 +567,13 @@ function generateParamsStruct(
       lines.push('\t}');
     }
     if (hasNullFields) {
+      lines.push('\tnullable := map[string]bool{');
+      for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+      lines.push('\t}');
       lines.push('\tfor _, f := range p.NullFields {');
+      lines.push('\t\tif !nullable[f] {');
+      lines.push(`\t\t\treturn nil, fmt.Errorf("${structName}: %q is not a nullable field", f)`);
+      lines.push('\t\t}');
       lines.push('\t\tm[f] = nil');
       lines.push('\t}');
     }
@@ -1024,7 +1052,13 @@ function emitHiddenParamsBodyStruct(
     lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
+    lines.push('\tnullable := map[string]bool{');
+    for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+    lines.push('\t}');
     lines.push('\tfor _, f := range b.NullFields {');
+    lines.push('\t\tif !nullable[f] {');
+    lines.push(`\t\t\treturn nil, fmt.Errorf("${structName}: %q is not a nullable field", f)`);
+    lines.push('\t\t}');
     lines.push('\t\tm[f] = nil');
     lines.push('\t}');
     lines.push('\treturn json.Marshal(m)');

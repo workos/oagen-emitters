@@ -702,6 +702,13 @@ describe('go/resources', () => {
     expect(content).toContain('MarshalJSON() ([]byte, error)');
     expect(content).toContain('for _, f := range p.NullFields {');
     expect(content).toContain('m[f] = nil');
+    // Unknown/typo field names are rejected instead of silently injected.
+    expect(content).toContain('nullable := map[string]bool{');
+    expect(content).toContain('"external_id": true,');
+    expect(content).toContain('is not a nullable field');
+    // json + fmt are imported since MarshalJSON/validation need them.
+    expect(content).toContain('"encoding/json"');
+    expect(content).toContain('"fmt"');
   });
 
   it('supports NullFields on the hidden-params body struct path', () => {
@@ -751,6 +758,7 @@ describe('go/resources', () => {
     // Internal body struct carries its own NullFields + MarshalJSON.
     expect(content).toContain('NullFields []string `json:"-"`');
     expect(content).toContain('for _, f := range b.NullFields {');
+    expect(content).toContain('is not a nullable field');
     // And the params list is forwarded into the body struct.
     expect(content).toContain('body.NullFields = params.NullFields');
   });
