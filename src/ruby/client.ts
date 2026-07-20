@@ -214,6 +214,16 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   lines.push(`require 'zeitwerk'`);
   lines.push('');
   lines.push('module WorkOS');
+  lines.push('  # Sentinel default for nullable optional parameters. Distinguishes an');
+  lines.push('  # omitted argument ("leave unchanged") from an explicit `nil`, which');
+  lines.push('  # clears the field by sending JSON `null`.');
+  lines.push('  OMIT = Object.new');
+  lines.push('');
+  lines.push('  def OMIT.inspect');
+  lines.push('    "WorkOS::OMIT"');
+  lines.push('  end');
+  lines.push('');
+  lines.push('  OMIT.freeze');
   lines.push('end');
   lines.push('');
   lines.push('loader = Zeitwerk::Loader.for_gem');

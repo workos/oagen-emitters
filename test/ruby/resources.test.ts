@@ -124,6 +124,53 @@ describe('ruby/resources', () => {
     expect(content).toContain('request_options: request_options');
   });
 
+  it('lets nullable optional body fields be cleared with an explicit nil', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            requestBody: { kind: 'model', name: 'UpdateOrganizationRequest' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'UpdateOrganizationRequest',
+        fields: [
+          // Non-nullable optional: keeps the historical nil-means-omit behavior.
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+          // Nullable optional: clearable via explicit nil.
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ]);
+    const files = generateResources(services, makeCtx(spec));
+    const content = files[0].content;
+
+    // Nullable field defaults to the OMIT sentinel; non-nullable stays nil.
+    expect(content).toContain('external_id: WorkOS::OMIT');
+    expect(content).toContain('name: nil');
+
+    // Non-nullable optional stays in the compacted literal.
+    expect(content).toContain("'name' => name");
+    expect(content).toContain('}.compact');
+
+    // Nullable field is conditionally assigned so an explicit nil survives.
+    expect(content).toContain("body['external_id'] = external_id unless external_id.equal?(WorkOS::OMIT)");
+    // It must NOT be part of the compacted literal (that would drop nil).
+    expect(content).not.toContain("'external_id' => external_id");
+  });
+
   // ── P0-2: pagination cursor direction ──────────────────────────────────
 
   it('uses after cursor for fetch_next lambda (not before)', () => {

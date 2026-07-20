@@ -660,4 +660,47 @@ describe('go/resources', () => {
       expect(content).toContain('"net/url"');
     });
   });
+
+  it('adds NullFields and MarshalJSON for nullable optional body fields', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            requestBody: { kind: 'model', name: 'UpdateOrganizationRequest' },
+            response: { kind: 'model', name: 'Organization' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'UpdateOrganizationRequest',
+        fields: [
+          // Non-nullable optional: plain pointer + omitempty, no NullFields needed.
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+          // Nullable optional: clearable via NullFields.
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ]);
+    const content = generateResources(services, makeCtx(spec))[0].content;
+
+    // Existing pointer field stays (set-a-value / omit paths unchanged).
+    expect(content).toContain('ExternalID *string `json:"external_id,omitempty" url:"-"`');
+    // Additive NullFields list drives explicit clearing.
+    expect(content).toContain('NullFields []string `json:"-" url:"-"`');
+    // MarshalJSON rewrites listed fields to JSON null.
+    expect(content).toContain('MarshalJSON() ([]byte, error)');
+    expect(content).toContain('for _, f := range p.NullFields {');
+    expect(content).toContain('m[f] = nil');
+  });
 });
