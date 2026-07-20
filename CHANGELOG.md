@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.0](https://github.com/workos/oagen-emitters/compare/v0.19.10...v0.20.0) (2026-07-20)
+
+
+### Features
+
+* **ios:** add Swift SDK emitter ([#188](https://github.com/workos/oagen-emitters/issues/188)) ([b14527c](https://github.com/workos/oagen-emitters/commit/b14527cab2228f4d1db358340023c8065e541b99))
+* support clearing nullable fields via explicit null ([#189](https://github.com/workos/oagen-emitters/issues/189)) ([50f6130](https://github.com/workos/oagen-emitters/commit/50f6130c6934896eac84f6a3d8981199122f29f5))
+
 ## [0.19.10](https://github.com/workos/oagen-emitters/compare/v0.19.9...v0.19.10) (2026-07-16)
 
 
