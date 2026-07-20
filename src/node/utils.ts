@@ -400,6 +400,7 @@ export {
   isListWrapperModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
+  unwrapListModel,
 } from '../shared/model-utils.js';
 
 function modelFingerprint(model: Model): string {

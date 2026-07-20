@@ -67,20 +67,6 @@ function resolvePaginatedItemClass(itemName: string | null, spec: ApiSpec): stri
   return className(itemName);
 }
 
-/** Check if an operation is a redirect endpoint (same logic as resources.ts). */
-function isRedirectEndpoint(op: Operation): boolean {
-  if (op.successResponses?.some((r) => r.statusCode >= 300 && r.statusCode < 400)) return true;
-  if (
-    op.httpMethod === 'get' &&
-    op.response.kind === 'primitive' &&
-    (op.response as any).type === 'unknown' &&
-    op.queryParams.length > 0
-  ) {
-    return true;
-  }
-  return false;
-}
-
 /** Push an async test method definition with @pytest.mark.asyncio decorator. */
 function pushAsyncTestDef(lines: string[], def: string): void {
   lines.push('    @pytest.mark.asyncio');
@@ -318,6 +304,9 @@ function generateServiceTest(
   lines.push(`class Test${resolvedName}:`);
 
   const resolvedLookup = buildResolvedLookup(ctx);
+  // Redirect/urlBuilder ops construct a URL instead of making an HTTP request;
+  // the canonical marker is the `urlBuilder` hint on the resolved operation.
+  const isRedirectEndpoint = (op: Operation): boolean => lookupResolved(op, resolvedLookup)?.urlBuilder ?? false;
   const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);

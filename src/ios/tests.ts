@@ -1,0 +1,525 @@
+import type {
+  ApiSpec,
+  EmitterContext,
+  GeneratedFile,
+  Model,
+  Enum,
+  TypeRef,
+  ResolvedOperation,
+  ResolvedWrapper,
+} from '@workos/oagen';
+import { planOperation } from '@workos/oagen';
+import { scopedMountGroups, getOpDefaults } from '../shared/resolved-ops.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
+import { parsePathTemplate } from '../shared/path-template.js';
+import {
+  moduleName,
+  typeName,
+  accessorName,
+  resourceTypeName,
+  resolveMethodName,
+  methodName,
+  propertyName,
+  withResolvedOps,
+} from './naming.js';
+import {
+  collectMethodParams,
+  orderMethodParams,
+  planAutoPaging,
+  autoPagingMethodName,
+  resolvePaginatedItemName,
+} from './resources.js';
+import type { RenderedParam } from './resources.js';
+import { generateModelFixture, swiftRawString } from './fixtures.js';
+
+/**
+ * Generate the spec-driven test suites:
+ *
+ * - One suite per mount group with one wire-level test per operation: each
+ *   test calls the real generated method against a fixture response and
+ *   asserts the HTTP method, the rendered path, the encoded body/query, and
+ *   that the response decodes into the expected type.
+ * - One multi-page auto-pagination test driving `AutoPagingSequence` through
+ *   two stubbed pages.
+ *
+ * The static test support (`MockURLProtocol`, `makeTestClient`) and the
+ * transport behavior suite are hand-maintained in the SDK repo with
+ * `@oagen-ignore-file`. Live wire parity is covered separately by the oagen
+ * smoke runner (`smoke/sdk-ios.ts`).
+ */
+export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+  const module = moduleName(ctx);
+  const rctx = withResolvedOps(ctx);
+  const groups = [...scopedMountGroups(rctx).values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  // Fixtures must decode into the emitted structs, so mirror the exact model
+  // pipeline the model generator runs (enrich + union-flatten).
+  const enriched = enrichModelsFromSpec(spec.models, spec.enums);
+  const originalByName = new Map(spec.models.map((m) => [m.name, m]));
+  const flatModels = flattenDiscriminatedUnionFields(
+    enriched.map((m) => {
+      if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+        const original = originalByName.get(m.name);
+        if (original && original.fields.length > 0) return { ...m, fields: original.fields };
+      }
+      return m;
+    }),
+  );
+  const modelMap = new Map(flatModels.map((m) => [m.name, m]));
+  const enumMap = new Map([...spec.enums, ...getSyntheticEnums()].map((e) => [e.name, e]));
+
+  const files: GeneratedFile[] = [];
+
+  // Generate the multi-page auto-pagination test exactly once, on the first
+  // paginated operation (deterministic: groups and ops are sorted).
+  let autoPagingEmitted = false;
+
+  for (const group of groups) {
+    const gen = new SuiteGenerator(module, rctx, modelMap, enumMap);
+    const suite = typeName(group.name);
+    const accessor = accessorName(group.name);
+    const resource = resourceTypeName(group.name, rctx);
+    const tests: string[] = [
+      `    @Test func resourceIsReachable() {`,
+      `        let (client, _) = makeTestClient()`,
+      `        _ = client.${accessor}`,
+      `        #expect(client.configuration.apiKey == "sk_test_123")`,
+      `    }`,
+    ];
+    const seen = new Set<string>();
+    for (const resolved of [...group.resolvedOps].sort((a, b) => a.operation.path.localeCompare(b.operation.path))) {
+      if (resolved.urlBuilder) {
+        const method = resolveMethodName(resolved.operation, group.name, rctx);
+        if (seen.has(method)) continue;
+        seen.add(method);
+        const test = gen.urlBuilderTest(resolved, accessor, method);
+        if (test) tests.push('', test);
+        continue;
+      }
+      if (resolved.wrappers && resolved.wrappers.length > 0) {
+        for (const wrapper of resolved.wrappers) {
+          const method = methodName(wrapper.name);
+          if (seen.has(method)) continue;
+          seen.add(method);
+          const test = gen.wrapperTest(resolved, wrapper, accessor, method);
+          if (test) tests.push('', test);
+        }
+        continue;
+      }
+      const method = resolveMethodName(resolved.operation, group.name, rctx);
+      if (seen.has(method)) continue;
+      seen.add(method);
+      const test = gen.operationTest(resolved, accessor, method);
+      if (test) tests.push('', test);
+      if (!autoPagingEmitted) {
+        const autoTest = gen.autoPagingTest(resolved, accessor, method);
+        if (autoTest) {
+          tests.push('', autoTest);
+          autoPagingEmitted = true;
+        }
+      }
+    }
+
+    const lines: string[] = [];
+    lines.push('import Foundation');
+    lines.push('import Testing');
+    lines.push('');
+    lines.push(`@testable import ${module}`);
+    lines.push('');
+    lines.push(`/// Wire-level tests for the ${resource} resource: each test performs a real`);
+    lines.push('/// call through the mocked transport and asserts the request that went out');
+    lines.push('/// and the decoded response that came back.');
+    lines.push(`@Suite struct ${suite}Tests {`);
+    lines.push(tests.join('\n'));
+    lines.push('}');
+    files.push({ path: `Tests/${module}Tests/${suite}Tests.swift`, content: lines.join('\n') });
+  }
+
+  return files;
+}
+
+// --- per-operation test generation -------------------------------------------
+
+interface SampleArg {
+  /** Swift argument expression. */
+  expr: string;
+  /** For path params: the literal value interpolated into the URL path. */
+  pathValue?: string;
+  /** For query params: the expected serialized query value. */
+  queryValue?: string;
+}
+
+class SuiteGenerator {
+  constructor(
+    private module: string,
+    private ctx: EmitterContext,
+    private modelMap: Map<string, Model>,
+    private enumMap: Map<string, Enum>,
+  ) {}
+
+  /** Build a wire-level test for one operation, or null when a required
+   * parameter cannot be sample-constructed (nested model bodies etc.). */
+  operationTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
+    const op = resolved.operation;
+    const params = collectMethodParams(resolved, this.ctx);
+    const ordered = orderMethodParams(params);
+
+    const args: string[] = [];
+    const pathValues = new Map<string, string>();
+    let firstBodyWire: string | null = null;
+    for (const p of ordered) {
+      if (p.optional) continue;
+      const sample = this.sampleArg(p);
+      if (!sample) return null;
+      args.push(`${p.name}: ${sample.expr}`);
+      if (p.kind === 'path' && sample.pathValue) pathValues.set(p.wire, sample.pathValue);
+      if (p.kind === 'body' && firstBodyWire === null) firstBodyWire = p.wire;
+    }
+
+    const expectedPath = this.expectedPath(op.path, pathValues);
+    if (expectedPath === null) return null;
+    const fixture = this.responseFixture(resolved);
+    if (fixture === null) return null;
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${method}SendsExpectedRequest() async throws {`);
+    lines.push(`        let (client, recorder) = makeTestClient(responding: ${swiftRawString(fixture.json)})`);
+    const call = `client.${accessor}.${method}(${args.join(', ')})`;
+    if (fixture.binding) {
+      lines.push(`        let result = try await ${call}`);
+    } else {
+      lines.push(`        try await ${call}`);
+    }
+    lines.push('');
+    lines.push('        let request = try #require(recorder.lastRequest)');
+    lines.push(`        #expect(request.httpMethod == "${op.httpMethod.toUpperCase()}")`);
+    lines.push(`        #expect(request.url?.path == "${expectedPath}")`);
+    if (firstBodyWire) {
+      lines.push('        let body = try #require(recorder.lastBody)');
+      lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
+      lines.push(`        #expect(json?[${JSON.stringify(firstBodyWire)}] != nil)`);
+    }
+    for (const q of ordered) {
+      if (q.kind !== 'query' || q.optional) continue;
+      const sample = this.sampleArg(q);
+      if (!sample?.queryValue) continue;
+      lines.push(
+        '        let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []',
+      );
+      lines.push(
+        `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(q.wire)}, value: ${JSON.stringify(sample.queryValue)})))`,
+      );
+      break;
+    }
+    for (const assertion of fixture.assertions) {
+      lines.push(`        ${assertion}`);
+    }
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
+  /** Build a test for a URL-builder operation: call the sync method and assert
+   * the assembled URL's path and query (defaults, inferred, and caller params). */
+  urlBuilderTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
+    const op = resolved.operation;
+    const defaults = getOpDefaults(resolved);
+    const params = collectMethodParams(resolved, this.ctx);
+    const ordered = orderMethodParams(params);
+
+    const args: string[] = [];
+    const pathValues = new Map<string, string>();
+    let queryAssert: { wire: string; value: string } | null = null;
+    for (const p of ordered) {
+      if (p.optional) continue;
+      const sample = this.sampleArg(p);
+      if (!sample) return null;
+      args.push(`${p.name}: ${sample.expr}`);
+      if (p.kind === 'path' && sample.pathValue) pathValues.set(p.wire, sample.pathValue);
+      if (p.kind === 'query' && queryAssert === null && sample.queryValue) {
+        queryAssert = { wire: p.wire, value: sample.queryValue };
+      }
+    }
+    const expectedPath = this.expectedPath(op.path, pathValues);
+    if (expectedPath === null) return null;
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${method}BuildsExpectedUrl() throws {`);
+    lines.push('        let (client, _) = makeTestClient()');
+    lines.push(`        let url = client.${accessor}.${method}(${args.join(', ')})`);
+    lines.push('');
+    lines.push('        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))');
+    lines.push(`        #expect(components.path == "${expectedPath}")`);
+    if (Object.keys(defaults).length > 0 || queryAssert) {
+      lines.push('        let query = components.queryItems ?? []');
+    }
+    for (const [key, value] of Object.entries(defaults)) {
+      lines.push(
+        `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(key)}, value: ${JSON.stringify(String(value))})))`,
+      );
+    }
+    if (queryAssert) {
+      lines.push(
+        `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(queryAssert.wire)}, value: ${JSON.stringify(queryAssert.value)})))`,
+      );
+    }
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
+  /** Build a wire-level test for one union-split wrapper method: call it with
+   * sample variant params and assert the request (incl. the discriminating
+   * default, e.g. `grant_type`) and the decoded response. */
+  wrapperTest(resolved: ResolvedOperation, wrapper: ResolvedWrapper, accessor: string, method: string): string | null {
+    const op = resolved.operation;
+    const wparams = resolveWrapperParams(wrapper, this.ctx);
+
+    // Path params (rare for split ops) lead the signature, mirroring wrappers.ts.
+    const args: string[] = [];
+    const pathValues = new Map<string, string>();
+    for (const p of op.pathParams) {
+      const sample = this.sampleForRef(p.type, p.name, 'path');
+      if (!sample?.pathValue) return null;
+      args.push(`${propertyName(p.name)}: ${sample.expr}`);
+      pathValues.set(p.name, sample.pathValue);
+    }
+    let firstBodyWire: string | null = null;
+    for (const wp of wparams) {
+      if (wp.isOptional) continue;
+      const sample = wp.field
+        ? this.sampleForRef(wp.field.type, wp.paramName, 'body')
+        : { expr: JSON.stringify(`test_${wp.paramName}`) };
+      if (!sample) return null;
+      args.push(`${propertyName(wp.paramName)}: ${sample.expr}`);
+      if (firstBodyWire === null) firstBodyWire = wp.paramName;
+    }
+    const expectedPath = this.expectedPath(op.path, pathValues);
+    if (expectedPath === null) return null;
+
+    const model = wrapper.responseModelName ? this.modelMap.get(wrapper.responseModelName) : undefined;
+    // A declared response type we can't fixture would leave an unused `try await`
+    // result (a Swift warning) — skip rather than emit a warning-laden test.
+    if (wrapper.responseModelName && !model) return null;
+    const fixture = model ? generateModelFixture(model, this.modelMap, this.enumMap) : null;
+    const json = fixture ? JSON.stringify(fixture) : '{}';
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${method}SendsExpectedRequest() async throws {`);
+    lines.push(`        let (client, recorder) = makeTestClient(responding: ${swiftRawString(json)})`);
+    const call = `client.${accessor}.${method}(${args.join(', ')})`;
+    if (model) {
+      lines.push(`        let result = try await ${call}`);
+    } else {
+      lines.push(`        try await ${call}`);
+    }
+    lines.push('');
+    lines.push('        let request = try #require(recorder.lastRequest)');
+    lines.push(`        #expect(request.httpMethod == "${op.httpMethod.toUpperCase()}")`);
+    lines.push(`        #expect(request.url?.path == "${expectedPath}")`);
+    // Only bind the body when an assertion below reads it — unreferenced
+    // `let` bindings are Swift warnings.
+    const hasBodyAssertions = Object.keys(wrapper.defaults ?? {}).length > 0 || firstBodyWire !== null;
+    if (hasBodyAssertions) {
+      lines.push('        let body = try #require(recorder.lastBody)');
+      lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
+    }
+    for (const [key, value] of Object.entries(wrapper.defaults ?? {})) {
+      if (typeof value === 'string') {
+        lines.push(`        #expect(json?[${JSON.stringify(key)}] as? String == ${JSON.stringify(value)})`);
+      } else {
+        lines.push(`        #expect(json?[${JSON.stringify(key)}] != nil)`);
+      }
+    }
+    if (firstBodyWire) {
+      lines.push(`        #expect(json?[${JSON.stringify(firstBodyWire)}] != nil)`);
+    }
+    if (model && fixture) {
+      for (const assertion of this.idAssertion(model, fixture, 'result')) {
+        lines.push(`        ${assertion}`);
+      }
+    }
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
+  /** A two-page auto-pagination test for the first eligible paginated op. */
+  autoPagingTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
+    const auto = planAutoPaging(resolved, this.ctx);
+    if (!auto) return null;
+    // Only all-optional signatures keep this test simple and deterministic.
+    if (auto.params.some((p) => !p.optional)) return null;
+    const itemModel = this.modelMap.get(
+      resolvePaginatedItemName(planOperation(resolved.operation).paginatedItemModelName!, this.ctx),
+    );
+    if (!itemModel || itemModel.fields.length === 0) return null;
+    const item = generateModelFixture(itemModel, this.modelMap, this.enumMap);
+    const itemJson = JSON.stringify(item);
+    const page1 = `{"data":[${itemJson}],"list_metadata":{"before":null,"after":"cursor_2"}}`;
+    const page2 = `{"data":[${itemJson}],"list_metadata":{"before":null,"after":null}}`;
+
+    const lines: string[] = [];
+    lines.push(`    @Test func ${autoPagingMethodName(method)}FetchesAllPages() async throws {`);
+    lines.push('        let (client, recorder) = makeTestClient(stubs: [');
+    lines.push(`            .init(statusCode: 200, data: Data(${swiftRawString(page1)}.utf8), headers: [:]),`);
+    lines.push(`            .init(statusCode: 200, data: Data(${swiftRawString(page2)}.utf8), headers: [:]),`);
+    lines.push('        ])');
+    lines.push(`        var items: [${auto.itemType}] = []`);
+    lines.push(`        for try await item in client.${accessor}.${autoPagingMethodName(method)}() {`);
+    lines.push('            items.append(item)');
+    lines.push('        }');
+    lines.push('');
+    lines.push('        #expect(items.count == 2)');
+    lines.push('        #expect(recorder.allRequests.count == 2)');
+    lines.push('        let second = try #require(recorder.allRequests.last?.url)');
+    lines.push('        let query = URLComponents(url: second, resolvingAgainstBaseURL: false)?.queryItems ?? []');
+    lines.push(
+      `        #expect(query.contains(URLQueryItem(name: ${JSON.stringify(auto.cursorWire)}, value: "cursor_2")))`,
+    );
+    lines.push('    }');
+    return lines.join('\n');
+  }
+
+  /** Render the expected URL path for a template with sample path values. */
+  private expectedPath(template: string, pathValues: Map<string, string>): string | null {
+    const segments = parsePathTemplate(template, { stripLeadingSlash: true });
+    let path = '';
+    for (const seg of segments) {
+      if (seg.kind === 'literal') {
+        path += seg.value;
+      } else {
+        const value = pathValues.get(seg.name);
+        if (!value) return null; // hidden/unsampled path param
+        path += value;
+      }
+    }
+    return `/${path}`;
+  }
+
+  /** Sample Swift expression for a required parameter, or null if unsupported. */
+  private sampleArg(p: RenderedParam): SampleArg | null {
+    if (p.kind === 'bodyRaw') return this.sampleForRef(p.ref, p.wire, 'body');
+    return this.sampleForRef(p.ref, p.wire, p.kind);
+  }
+
+  private sampleForRef(ref: TypeRef, wire: string, kind: RenderedParam['kind'], depth = 0): SampleArg | null {
+    if (depth > 4) return null; // guard against recursive model graphs
+    switch (ref.kind) {
+      case 'nullable':
+        return this.sampleForRef(ref.inner, wire, kind, depth);
+      case 'primitive':
+        switch (ref.type) {
+          case 'string': {
+            if (ref.format === 'date-time' || ref.format === 'date') {
+              return { expr: 'Date(timeIntervalSince1970: 1_672_531_200)' };
+            }
+            if (ref.format === 'byte' || ref.format === 'binary') {
+              return { expr: 'Data("test".utf8)' };
+            }
+            const value = kind === 'path' ? `sample-${wire.replace(/[^a-zA-Z0-9]+/g, '-')}` : `test_${wire}`;
+            return { expr: JSON.stringify(value), pathValue: value, queryValue: value };
+          }
+          case 'integer':
+            return { expr: '1', pathValue: '1', queryValue: '1' };
+          case 'number':
+            return { expr: '1.5', queryValue: '1.5' };
+          case 'boolean':
+            return { expr: 'true', queryValue: 'true' };
+          case 'unknown':
+            return { expr: 'AnyCodable.string("test")' };
+          default:
+            return null;
+        }
+      case 'literal':
+        return typeof ref.value === 'string'
+          ? { expr: JSON.stringify(ref.value), queryValue: ref.value }
+          : typeof ref.value === 'number' || typeof ref.value === 'boolean'
+            ? { expr: String(ref.value), queryValue: String(ref.value) }
+            : null;
+      case 'enum': {
+        const e = this.enumMap.get(ref.name);
+        const first = e?.values[0]?.value;
+        if (first === undefined) return null;
+        const literal = typeof first === 'string' ? JSON.stringify(first) : String(first);
+        return {
+          expr: `${typeName(ref.name)}(rawValue: ${literal})`,
+          pathValue: String(first),
+          queryValue: String(first),
+        };
+      }
+      case 'array': {
+        const inner = this.sampleForRef(ref.items, wire, 'body', depth + 1);
+        return inner ? { expr: `[${inner.expr}]` } : null;
+      }
+      case 'map': {
+        const inner = this.sampleForRef(ref.valueType, wire, 'body', depth + 1);
+        return inner ? { expr: `["key": ${inner.expr}]` } : null;
+      }
+      case 'model': {
+        // Construct the generated struct via its memberwise initializer:
+        // required fields only, in declaration order (the init's label order).
+        // Field-less models are emitted with an explicit empty `public init()`.
+        const model = this.modelMap.get(ref.name);
+        if (!model) return null;
+        if (model.fields.length === 0) return { expr: `${typeName(model.name)}()` };
+        const args: string[] = [];
+        for (const f of model.fields) {
+          if (!f.required) continue;
+          const inner = this.sampleForRef(f.type, f.name, 'body', depth + 1);
+          if (!inner) return null;
+          args.push(`${propertyName(f.domainName ?? f.name)}: ${inner.expr}`);
+        }
+        return { expr: `${typeName(model.name)}(${args.join(', ')})` };
+      }
+      default:
+        // union bodies need variant selection — skip those operations.
+        return null;
+    }
+  }
+
+  /** Fixture JSON + decode assertions for the operation's response. */
+  private responseFixture(
+    resolved: ResolvedOperation,
+  ): { json: string; binding: boolean; assertions: string[] } | null {
+    const op = resolved.operation;
+    const plan = planOperation(op);
+    if (plan.isPaginated && plan.paginatedItemModelName) {
+      const itemModel = this.modelMap.get(resolvePaginatedItemName(plan.paginatedItemModelName, this.ctx));
+      if (!itemModel || itemModel.fields.length === 0) return null;
+      const item = generateModelFixture(itemModel, this.modelMap, this.enumMap);
+      const json = `{"data":[${JSON.stringify(item)}],"list_metadata":{"before":null,"after":null}}`;
+      const assertions = [
+        '#expect(result.data.count == 1)',
+        ...this.idAssertion(itemModel, item, 'result.data.first?'),
+      ];
+      return { json, binding: true, assertions };
+    }
+    if (plan.isArrayResponse && plan.responseModelName) {
+      const model = this.modelMap.get(plan.responseModelName);
+      if (!model || model.fields.length === 0) return null;
+      const item = generateModelFixture(model, this.modelMap, this.enumMap);
+      return { json: `[${JSON.stringify(item)}]`, binding: true, assertions: ['#expect(result.count == 1)'] };
+    }
+    if (plan.responseModelName) {
+      const model = this.modelMap.get(plan.responseModelName);
+      if (!model) return null;
+      const fixture = generateModelFixture(model, this.modelMap, this.enumMap);
+      return {
+        json: JSON.stringify(fixture),
+        binding: true,
+        assertions: model.fields.length === 0 ? ['_ = result'] : this.idAssertion(model, fixture, 'result'),
+      };
+    }
+    return { json: '{}', binding: false, assertions: [] };
+  }
+
+  /** Assert the decoded `id` when the model has a plain required string id. */
+  private idAssertion(model: Model, fixture: Record<string, unknown>, target: string): string[] {
+    const idField = model.fields.find(
+      (f) => f.name === 'id' && f.required && f.type.kind === 'primitive' && f.type.type === 'string' && !f.type.format,
+    );
+    const value = fixture['id'];
+    if (!idField || typeof value !== 'string') return [`_ = ${target.replace(/\?$/, '')}`];
+    return [`#expect(${target}.id == ${JSON.stringify(value)})`];
+  }
+}

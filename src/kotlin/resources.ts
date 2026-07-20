@@ -16,6 +16,7 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
+  unwrapListModel,
 } from '../shared/model-utils.js';
 import { enumCanonicalMap } from './enums.js';
 import {
@@ -864,16 +865,15 @@ function resolveReturnType(plan: ReturnType<typeof planOperation>, imports: Set<
 /**
  * If [paginatedItemModelName] points to a list wrapper (`{ data, list_metadata }`),
  * unwrap it and return the actual item model name. Otherwise return as-is.
+ * Delegates to the shared `unwrapListModel` so a model with a `data` array but
+ * no `list_metadata` is not mistaken for a pagination envelope.
  */
 function resolvePaginatedItemName(name: string | null, ctx?: EmitterContext): string | null {
   if (!name || !ctx) return name;
   const model = ctx.spec.models.find((m) => m.name === name);
   if (!model) return name;
-  const dataField = model.fields.find((f) => f.name === 'data');
-  if (!dataField || dataField.type.kind !== 'array') return name;
-  const items = dataField.type.items;
-  if (items.kind === 'model') return items.name;
-  return name;
+  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
+  return unwrapListModel(model, modelMap)?.name ?? name;
 }
 
 function renderParam(name: string, type: TypeRef, required: boolean, forceInt = false): string {

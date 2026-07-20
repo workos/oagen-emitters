@@ -12,7 +12,8 @@ describe('workosEmittersPlugin', () => {
     expect(languages).toContain('kotlin');
     expect(languages).toContain('ruby');
     expect(languages).toContain('rust');
-    expect(languages).toHaveLength(8);
+    expect(languages).toContain('ios');
+    expect(languages).toHaveLength(9);
   });
 
   it('exports extractors for all supported languages', () => {
@@ -40,7 +41,8 @@ describe('workosEmittersPlugin', () => {
     expect(runners).toContain('kotlin');
     expect(runners).toContain('dotnet');
     expect(runners).toContain('elixir');
-    expect(runners).toHaveLength(9);
+    expect(runners).toContain('ios');
+    expect(runners).toHaveLength(10);
   });
 
   it('smoke runner paths are absolute', () => {

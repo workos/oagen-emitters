@@ -57,6 +57,26 @@ export function isListWrapperModel(model: Model): boolean {
 }
 
 /**
+ * Resolve the inner item model of a list-wrapper envelope (`data` array +
+ * `list_metadata`). Returns the item model when the wrapper convention
+ * matches and the item is a named model present in `modelMap`, else null.
+ *
+ * Fixture/test emitters use this to generate the item fixture instead of the
+ * envelope: the SDK's pagination machinery replaces the wrapper at runtime.
+ */
+export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
+  const dataField = model.fields.find((f) => f.name === 'data');
+  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
+  if (dataField && hasListMetadata && dataField.type.kind === 'array') {
+    const itemType = dataField.type.items;
+    if (itemType.kind === 'model') {
+      return modelMap.get(itemType.name) ?? null;
+    }
+  }
+  return null;
+}
+
+/**
  * Detect whether a model is a list metadata model (e.g., ListMetadata).
  * These models typically have exactly `before` and `after` nullable string fields.
  */

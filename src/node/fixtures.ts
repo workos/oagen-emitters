@@ -8,6 +8,7 @@ import {
   isListWrapperModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
+  unwrapListModel,
 } from './utils.js';
 
 export const ID_PREFIXES: Record<string, string> = {
@@ -135,18 +136,6 @@ export function generateFixtures(
   }
 
   return files;
-}
-
-export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
-  const dataField = model.fields.find((f) => f.name === 'data');
-  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  if (dataField && hasListMetadata && dataField.type.kind === 'array') {
-    const itemType = dataField.type.items;
-    if (itemType.kind === 'model') {
-      return modelMap.get(itemType.name) ?? null;
-    }
-  }
-  return null;
 }
 
 export function generateModelFixture(

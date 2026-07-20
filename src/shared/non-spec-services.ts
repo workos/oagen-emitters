@@ -35,6 +35,14 @@ export interface NonSpecService {
  * The canonical list of non-spec services that every SDK must expose.
  *
  * Order here determines emission order in the generated client.
+ *
+ * Not every emitter consumes this list at generate time: compiled-SDK emitters
+ * whose staging output must build standalone (ios, kotlin) mount these
+ * services via hand-maintained same-module extensions committed in the target
+ * SDK instead of generated accessors — a generated accessor would reference a
+ * hand-maintained type that does not exist in staging. Those emitters pin
+ * their coverage of this list with a unit test (e.g. `test/ios/non-spec.test.ts`)
+ * so adding an entry here fails their build until the helper exists.
  */
 export const NON_SPEC_SERVICES: readonly NonSpecService[] = [
   {

@@ -1,7 +1,7 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { fixtureFileName, domainFieldName } from './naming.js';
 import { isListMetadataModel, isListWrapperModel } from './models.js';
-import { collectNonPaginatedResponseModelNames } from '../shared/model-utils.js';
+import { collectNonPaginatedResponseModelNames, unwrapListModel } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
@@ -148,18 +148,6 @@ export function generateFixtures(
   }
 
   return [...byPath.values()];
-}
-
-function unwrapListModel(model: Model, modelMap: Map<string, Model>): Model | null {
-  const dataField = model.fields.find((f) => f.name === 'data');
-  const hasListMetadata = model.fields.some((f) => f.name === 'list_metadata' || f.name === 'listMetadata');
-  if (dataField && hasListMetadata && dataField.type.kind === 'array') {
-    const itemType = dataField.type.items;
-    if (itemType.kind === 'model') {
-      return modelMap.get(itemType.name) ?? null;
-    }
-  }
-  return null;
 }
 
 export function generateModelFixture(

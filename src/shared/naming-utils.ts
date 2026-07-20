@@ -51,6 +51,63 @@ export function stripUrnPrefix(name: string): string {
   return name.replace(/^Urn(?:IetfParams|Workos)O[Aa]uthGrantType/, '');
 }
 
+// ---------------------------------------------------------------------------
+// Mount-noun trimming (Stripe-style method names)
+// ---------------------------------------------------------------------------
+
+/** Split a camelCase / PascalCase identifier into words, preserving casing. */
+export function splitPascalWords(name: string): string[] {
+  return name.match(/[A-Z]+(?:[a-z]+|(?=[A-Z]|$))|[A-Z]?[a-z]+|[0-9]+/g) ?? [name];
+}
+
+/** Naive singularizer sufficient for matching resource nouns. */
+function singularizeWord(word: string): string {
+  if (word.endsWith('ies') && word.length > 3) {
+    return `${word.slice(0, -3)}y`;
+  }
+  if (word.endsWith('s') && !word.endsWith('ss')) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+function mountWordsMatch(left: string, right: string): boolean {
+  return singularizeWord(left.toLowerCase()) === singularizeWord(right.toLowerCase());
+}
+
+/**
+ * Strip the mount-group resource noun when it directly follows the leading
+ * verb, so `listOrganizations` on the `Organizations` resource becomes `list`
+ * and `getOrganizationMembership` on `OrganizationMembership` becomes `get` —
+ * but `listUserAuthFactors` on `MultiFactorAuth` is left alone (the words after
+ * the verb don't start with the mount noun). Matching is case-insensitive and
+ * singular/plural tolerant; untrimmed words keep their original casing.
+ *
+ * This is the single source of truth for the family-wide convention (Go,
+ * Kotlin, Swift, .NET). `mountName` must already be canonicalized to the
+ * language's PascalCase class/type name so word boundaries match the method.
+ */
+export function trimMountedResourceFromMethod(method: string, mountName: string): string {
+  const methodWords = splitPascalWords(method);
+  if (methodWords.length < 2) return method;
+
+  const mountWords = splitPascalWords(mountName);
+  if (mountWords.length === 0) return method;
+
+  let matched = 0;
+  while (
+    matched < mountWords.length &&
+    matched + 1 < methodWords.length &&
+    mountWordsMatch(methodWords[matched + 1], mountWords[matched])
+  ) {
+    matched++;
+  }
+
+  if (matched === 0) return method;
+
+  return [methodWords[0], ...methodWords.slice(matched + 1)].join('');
+}
+
 /**
  * Build the GoDoc prefix for a field comment.
  * If the description already starts with a verb (e.g., "Distinguishes...", "Indicates..."),

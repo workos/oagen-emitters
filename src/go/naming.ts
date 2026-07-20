@@ -1,7 +1,11 @@
 import type { Operation, Service, EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
-import { stripUrnPrefix, applyAcronymFixes } from '../shared/naming-utils.js';
+import {
+  stripUrnPrefix,
+  applyAcronymFixes,
+  trimMountedResourceFromMethod as trimMountedResource,
+} from '../shared/naming-utils.js';
 
 /**
  * Go-specific acronym extensions beyond the shared base set.
@@ -149,41 +153,10 @@ export function buildMountDirMap(ctx: EmitterContext): Map<string, string> {
   return map;
 }
 
-function splitPascalWords(name: string): string[] {
-  return name.match(/[A-Z]+(?:[a-z]+|(?=[A-Z]|$))|[A-Z]?[a-z]+|[0-9]+/g) ?? [name];
-}
-
-function singularize(word: string): string {
-  if (word.endsWith('ies') && word.length > 3) {
-    return `${word.slice(0, -3)}y`;
-  }
-  if (word.endsWith('s') && !word.endsWith('ss')) {
-    return word.slice(0, -1);
-  }
-  return word;
-}
-
-function wordsMatch(left: string, right: string): boolean {
-  return singularize(left.toLowerCase()) === singularize(right.toLowerCase());
-}
-
+/**
+ * Family-wide mount-noun trimming (shared algorithm); canonicalizes the mount
+ * to Go's class name so acronym casing matches the method words.
+ */
 export function trimMountedResourceFromMethod(method: string, mountName: string): string {
-  const methodWords = splitPascalWords(method);
-  if (methodWords.length < 2) return method;
-
-  const mountWords = splitPascalWords(className(mountName));
-  if (mountWords.length === 0) return method;
-
-  let matched = 0;
-  while (
-    matched < mountWords.length &&
-    matched + 1 < methodWords.length &&
-    wordsMatch(methodWords[matched + 1], mountWords[matched])
-  ) {
-    matched++;
-  }
-
-  if (matched === 0) return method;
-
-  return [methodWords[0], ...methodWords.slice(matched + 1)].join('');
+  return trimMountedResource(method, className(mountName));
 }
