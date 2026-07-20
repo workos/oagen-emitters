@@ -1090,11 +1090,14 @@ function emitBodyWithHiddenParams(
   if (paramsType && bodyModel) {
     for (const field of bodyModel.fields) {
       if (hidden.has(field.name)) continue;
+      // Grouped params live on their group struct, not the body struct
+      // (emitHiddenParamsBodyStruct skips them too), so don't copy them here.
+      if (groupedParamNames.has(field.name)) continue;
       if (field.required) continue;
       // Domain struct field on both the body struct and the params struct.
       const goField = domainFieldName(field);
       lines.push(`\tbody.${goField} = params.${goField}`);
-      if (!groupedParamNames.has(field.name) && field.type.kind === 'nullable') hasClearableField = true;
+      if (field.type.kind === 'nullable') hasClearableField = true;
     }
   }
   // Forward the explicit-null field list so clearing works through the body struct.
