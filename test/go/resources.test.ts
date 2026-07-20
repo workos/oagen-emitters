@@ -703,4 +703,55 @@ describe('go/resources', () => {
     expect(content).toContain('for _, f := range p.NullFields {');
     expect(content).toContain('m[f] = nil');
   });
+
+  it('supports NullFields on the hidden-params body struct path', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            requestBody: { kind: 'model', name: 'UpdateOrganizationRequest' },
+            response: { kind: 'model', name: 'Organization' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'UpdateOrganizationRequest',
+        fields: [
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'external_id',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+        ],
+      },
+    ]);
+    // A default hides a param, forcing the internal hidden-params body struct path.
+    const ctx: EmitterContext = {
+      ...makeCtx(spec),
+      resolvedOperations: [
+        {
+          operation: services[0].operations[0],
+          service: services[0],
+          methodName: 'update_organization',
+          mountOn: 'Organizations',
+          defaults: { source: 'api' },
+        } as never,
+      ],
+    };
+    const content = generateResources(services, ctx)[0].content;
+
+    // Internal body struct carries its own NullFields + MarshalJSON.
+    expect(content).toContain('NullFields []string `json:"-"`');
+    expect(content).toContain('for _, f := range b.NullFields {');
+    // And the params list is forwarded into the body struct.
+    expect(content).toContain('body.NullFields = params.NullFields');
+  });
 });
