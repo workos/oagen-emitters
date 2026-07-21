@@ -112,6 +112,84 @@ describe('ruby/tests model round-trip per-service scoping', () => {
     expect(files.some((f) => f.path === LEGACY_ROUNDTRIP_PATH)).toBe(false);
   });
 
+  it('scoped run: RETAINS an out-of-scope on-disk model sharing a REGENERATED dir', () => {
+    // Regression: a dir's aggregate round-trip file is regenerated because ONE
+    // of its models (Organization) is in scope; it must NOT be overwritten with
+    // only that in-scope subset. The dir's other models — out of scope this run
+    // but still on disk (per-model `.rb` untouched, never pruned) — must keep
+    // their round-trip coverage. A real batch scoped to user_management deleted
+    // ~140 round-trip tests for on-disk models sharing regenerated dirs this way.
+    const mkOp = (name: string, path: string, model: string) => ({
+      name,
+      httpMethod: 'get' as const,
+      path,
+      pathParams: [{ name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: model },
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    const localModels: Model[] = [
+      { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      // Out of scope this run, but its per-model file is on disk (prior manifest).
+      {
+        name: 'OrganizationDomain',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      // Out of scope AND brand-new (no file on disk) → nothing to test.
+      {
+        name: 'OrganizationBrandNew',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    const localServices: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          mkOp('getOrganization', '/organizations/{id}', 'Organization'),
+          mkOp('getOrganizationDomain', '/organizations/domains/{id}', 'OrganizationDomain'),
+          mkOp('getOrganizationBrandNew', '/organizations/brand-new/{id}', 'OrganizationBrandNew'),
+        ],
+      },
+    ];
+    const localSpec = makeSpec(localServices, localModels);
+
+    // Discover the per-model dir the emitter uses (avoids hard-coding naming
+    // internals): find the full-run round-trip file that covers the models.
+    const fullFiles = generateTests(localSpec, {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: localSpec,
+      resolvedOperations: buildResolvedOps(localServices),
+    } as EmitterContext);
+    const rtFull = fullFiles.find(
+      (f) => f.path.endsWith('_model_round_trip.rb') && f.content.includes('WorkOS::OrganizationDomain.new'),
+    );
+    expect(rtFull).toBeDefined();
+    const dir = rtFull!.path.replace(/^test\/workos\/test_/, '').replace(/_model_round_trip\.rb$/, '');
+
+    const ctx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: localSpec,
+      resolvedOperations: buildResolvedOps(localServices),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set([
+        `lib/workos/${dir}/organization.rb`,
+        `lib/workos/${dir}/organization_domain.rb`,
+      ]),
+    };
+    const combined = roundTripContent(generateTests(localSpec, ctx));
+    // In-scope model is covered.
+    expect(combined).toContain('WorkOS::Organization.new');
+    // Out-of-scope model still on disk → coverage retained (the regression).
+    expect(combined).toContain('WorkOS::OrganizationDomain.new');
+    // Out-of-scope model with no file on disk → no test (no dangling constant).
+    expect(combined).not.toContain('WorkOS::OrganizationBrandNew.new');
+  });
+
   it('scoped run: overwrites the pre-split monolith with an inert placeholder while it is on disk', () => {
     const ctx: EmitterContext = {
       namespace: 'workos',

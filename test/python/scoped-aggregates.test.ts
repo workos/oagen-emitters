@@ -240,6 +240,83 @@ describe('python scoped aggregates', () => {
   // stray empty `<svc>/models/__init__.py`. Without the guard the empty-barrel
   // pass — which walks the full spec — would materialize one, leaving an "Agents"
   // package in a Pipes-only PR.
+  // Regression guard: a dir's aggregate round-trip file is regenerated because
+  // ONE of its models is in scope, then must NOT be overwritten with only that
+  // in-scope subset — the dir's other models, out of scope this run but still
+  // present on disk (model + fixture untouched, never pruned), must keep their
+  // round-trip coverage. This is the scoped-drop bug: a real batch scoped to
+  // user_management deleted ~330 round-trip tests for on-disk event models
+  // (SessionCreated, InvitationCreated, ...) that share the user_management dir.
+  describe('round-trip coverage retention for same-dir out-of-scope models', () => {
+    const mkOp = (name: string, path: string, model: string) => ({
+      name,
+      httpMethod: 'get' as const,
+      path,
+      pathParams: [{ name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: model },
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    const localModels: Model[] = [
+      // In scope this run.
+      { name: 'WidgetA', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      // Out of scope this run, but its model + fixture are on disk (prior manifest).
+      { name: 'WidgetLegacy', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      // Out of scope AND brand-new (no fixture on disk) → nothing to test.
+      { name: 'WidgetBrandNew', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const localSpec: ApiSpec = {
+      name: 'TestAPI',
+      version: '1.0.0',
+      baseUrl: 'https://api.workos.com',
+      services: [
+        {
+          name: 'Widgets',
+          operations: [
+            mkOp('getWidget', '/widgets/{id}', 'WidgetA'),
+            mkOp('getWidgetLegacy', '/widgets/legacy/{id}', 'WidgetLegacy'),
+            mkOp('getWidgetBrandNew', '/widgets/brand-new/{id}', 'WidgetBrandNew'),
+          ],
+        },
+      ],
+      models: localModels,
+      enums: [],
+      sdk: defaultSdkBehavior(),
+    };
+    // Scoped to Widgets; only WidgetA is regenerated this run. The prior manifest
+    // records WidgetLegacy's model + fixture (left untouched on disk), but NOT
+    // WidgetBrandNew's.
+    const ctx = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: localSpec,
+      scopedServices: new Set(['Widgets']),
+      scopedModelNames: new Set(['WidgetA']),
+      scopedEnumNames: new Set<string>(),
+      priorTargetManifestPaths: new Set([
+        'src/workos/widgets/models/widget_a.py',
+        'src/workos/widgets/models/widget_legacy.py',
+        'tests/fixtures/widget_a.json',
+        'tests/fixtures/widget_legacy.json',
+      ]),
+    } as EmitterContext;
+
+    it('RETAINS the out-of-scope on-disk model and excludes the brand-new one', () => {
+      const files = generateTests(localSpec, ctx);
+      const rt = files.find((f) => f.path === 'tests/test_widgets_models_round_trip.py');
+      expect(rt).toBeDefined();
+      // In-scope model is covered.
+      expect(rt!.content).toContain('def test_widget_a_round_trip(self):');
+      // Out-of-scope model still on disk → coverage retained (the regression).
+      expect(rt!.content).toContain('def test_widget_legacy_round_trip(self):');
+      expect(rt!.content).toContain('WidgetLegacy');
+      // Out-of-scope model with no on-disk fixture → no test, no dangling import.
+      expect(rt!.content).not.toContain('WidgetBrandNew');
+    });
+  });
+
   describe('brand-new out-of-scope service gets no empty models barrel', () => {
     const localServices: Service[] = [
       {
