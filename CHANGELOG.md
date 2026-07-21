@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/workos/oagen-emitters/compare/v0.20.1...v0.20.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* **kotlin:** reconcile round-trip test per-model in scoped runs ([#193](https://github.com/workos/oagen-emitters/issues/193)) ([de2a963](https://github.com/workos/oagen-emitters/commit/de2a963e22ba19785cee1f4bb5ab6cdbe03955e6))
+
 ## [0.20.1](https://github.com/workos/oagen-emitters/compare/v0.20.0...v0.20.1) (2026-07-21)
 
 
