@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/workos/oagen-emitters/compare/v0.20.0...v0.20.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **python:** narrow NotGiven for clearable transform fields ([#191](https://github.com/workos/oagen-emitters/issues/191)) ([6dfa772](https://github.com/workos/oagen-emitters/commit/6dfa7725ed51ec2678029b255e61d42c0579be3a))
+
 ## [0.20.0](https://github.com/workos/oagen-emitters/compare/v0.19.10...v0.20.0) (2026-07-20)
 
 
