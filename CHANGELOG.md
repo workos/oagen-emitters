@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/workos/oagen-emitters/compare/v0.20.2...v0.20.3) (2026-07-21)
+
+
+### Bug Fixes
+
+* **ruby,python:** retain out-of-scope on-disk models in per-dir round-trip tests ([#195](https://github.com/workos/oagen-emitters/issues/195)) ([a5a358c](https://github.com/workos/oagen-emitters/commit/a5a358cbbd76b03760d4f47bcd357dad9ce1e765))
+
 ## [0.20.2](https://github.com/workos/oagen-emitters/compare/v0.20.1...v0.20.2) (2026-07-21)
 
 
