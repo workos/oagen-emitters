@@ -1011,9 +1011,71 @@ describe('generateResources', () => {
     expect(content).toContain('}.items() if v is not None}');
 
     // Nullable field is conditionally assigned so an explicit None survives.
-    expect(content).toContain('if external_id is not NOT_GIVEN:');
+    // Uses isinstance so the type checker narrows NotGiven out of the union.
+    expect(content).toContain('if not isinstance(external_id, NotGiven):');
     expect(content).toContain('body["external_id"] = external_id');
     // It must NOT be part of the None-filtered comprehension (that drops None).
     expect(content).not.toContain('"external_id": external_id,');
+  });
+
+  it('narrows NotGiven for clearable model/array fields that need .to_dict()', () => {
+    const models: Model[] = [
+      {
+        name: 'RedirectUriInput',
+        fields: [{ name: 'uri', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'UpdateConnectApplicationRequest',
+        fields: [
+          // Nullable optional array-of-model: cleared with explicit None, and each
+          // item is transformed with .to_dict() — so the guard must narrow NotGiven
+          // out of the union or the comprehension trips a type error.
+          {
+            name: 'redirect_uris',
+            type: {
+              kind: 'nullable',
+              inner: { kind: 'array', items: { kind: 'model', name: 'RedirectUriInput' } },
+            },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Connect',
+        operations: [
+          {
+            name: 'updateConnectApplication',
+            httpMethod: 'put',
+            path: '/connect/applications/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateConnectApplicationRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const content = generateResources(services, ctxWithServices)[0].content;
+
+    // isinstance guard lets the checker narrow NotGiven out before the .to_dict()
+    // comprehension runs (which is guarded on `is not None`).
+    expect(content).toContain('if not isinstance(redirect_uris, NotGiven):');
+    expect(content).toContain(
+      'body["redirect_uris"] = [item.to_dict() for item in redirect_uris] if redirect_uris is not None else None',
+    );
+    // The old identity guard would leave NotGiven in the union → not iterable.
+    expect(content).not.toContain('if redirect_uris is not NOT_GIVEN:');
   });
 });

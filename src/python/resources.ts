@@ -1470,7 +1470,10 @@ function emitBodyDict(
 
   for (const f of clearableFields) {
     const varName = bodyParamName(f, pathParamNames);
-    lines.push(`        if ${varName} is not NOT_GIVEN:`);
+    // `not isinstance(x, NotGiven)` (rather than `x is not NOT_GIVEN`) so the
+    // type checker narrows `NotGiven` out of the union — required when the
+    // value is transformed (e.g. `.to_dict()` on a nullable model/array field).
+    lines.push(`        if not isinstance(${varName}, NotGiven):`);
     lines.push(`            body["${f.name}"] = ${serializeBodyFieldValue(f.type, varName, f.required ?? false)}`);
   }
 }
