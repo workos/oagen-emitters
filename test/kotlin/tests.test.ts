@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { generateTests } from '../../src/kotlin/tests.js';
 import { generateEnums } from '../../src/kotlin/enums.js';
 import type { EmitterContext, ApiSpec, Service, Model, ResolvedOperation } from '@workos/oagen';
@@ -142,20 +145,21 @@ describe('kotlin/tests', () => {
     expect(content).toContain('assertEquals(parsed.toInstant(), reparsed.toInstant())');
   });
 
-  it('scoped run: skips the monolithic model round-trip test entirely', () => {
-    // MINIMAL SCOPED GENERATION: a scoped (`--services`) run regenerates only
-    // the selected service's files and must leave every other on-disk service
-    // byte-for-byte untouched. The model round-trip suite is a single
-    // whole-suite AGGREGATE file covering every model, so a scoped run must
-    // NOT emit it (the on-disk copy is left in place). Per-service test
-    // classes remain scoped via `scopedMountGroups` and are still emitted.
-    const roundTripModel = (name: string): Model => ({
-      name,
-      fields: [
-        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
-      ],
-    });
+  const roundTripModel = (name: string): Model => ({
+    name,
+    fields: [
+      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+    ],
+  });
+
+  it('scoped run: emits the round-trip test with only in-scope fixtures when there is no prior file', () => {
+    // The round-trip suite is a single whole-suite AGGREGATE file, but it is
+    // reconciled PER MODEL in a scoped run so an in-scope model whose shape
+    // changed still gets a refreshed fixture (the bug: skipping it wholesale
+    // left in-scope fixtures stale). With no prior file to freeze from, an
+    // out-of-scope model is dropped rather than emitted with a fresh block whose
+    // per-model .kt this run does not write.
     const scopedModels: Model[] = [
       roundTripModel('Organization'), // in scope
       roundTripModel('Directory'), // out of scope but ON disk
@@ -173,14 +177,78 @@ describe('kotlin/tests', () => {
     generateEnums([], scopedCtx);
     const files = generateTests(scopedSpec, scopedCtx);
 
-    // BOTH whole-suite aggregates under com/workos/models are absent in a scoped
-    // run (they cover every model; regenerating either would rewrite a shared
-    // file outside the selected service).
-    expect(files.some((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'))).toBe(false);
-    expect(files.some((f) => f.path.endsWith('GeneratedForwardCompatTest.kt'))).toBe(false);
+    const roundTrip = files.find((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'));
+    expect(roundTrip).toBeDefined();
+    expect(roundTrip!.content).toContain('Organization round-trips through Jackson');
+    // Out of scope + no prior on disk → dropped (no fresh block for an unemitted file).
+    expect(roundTrip!.content).not.toContain('Directory round-trips through Jackson');
 
-    // The scoped per-service test class is still emitted.
+    // Forward-compat is a representative slice (not a per-model block set), so it
+    // stays skipped under scoping; the per-service class stays scoped and emitted.
+    expect(files.some((f) => f.path.endsWith('GeneratedForwardCompatTest.kt'))).toBe(false);
     expect(files.some((f) => f.path.includes('OrganizationsTest.kt'))).toBe(true);
+  });
+
+  it('scoped run: refreshes in-scope fixture but freezes out-of-scope one to its prior on-disk block', () => {
+    // Write a prior round-trip file: Directory (out of scope) carries an EXTRA
+    // field in its fixture that the current spec's model lacks. The scoped run
+    // must keep Directory's block byte-for-byte (freeze) while refreshing
+    // Organization from the current spec.
+    const outputDir = mkdtempSync(join(tmpdir(), 'oagen-rt-'));
+    const rtPath = join(outputDir, 'src/test/kotlin/com/workos/models/GeneratedModelRoundTripTest.kt');
+    mkdirSync(dirname(rtPath), { recursive: true });
+    const priorDirectoryMethod = [
+      '  @Test',
+      '  fun `Directory round-trips through Jackson`() {',
+      '    val json = "{\\"id\\": \\"sample\\", \\"name\\": \\"sample\\", \\"legacy\\": \\"kept\\"}"',
+      '    val parsed = mapper.readValue(json, Directory::class.java)',
+      '    val reserialized = mapper.writeValueAsString(parsed)',
+      '    val tree1 = mapper.readTree(json)',
+      '    val tree2 = mapper.readTree(reserialized)',
+      '    assertEquals(tree1, tree2)',
+      '  }',
+    ].join('\n');
+    writeFileSync(
+      rtPath,
+      [
+        'package com.workos.models',
+        '',
+        'import com.workos.common.json.ObjectMapperFactory',
+        'import org.junit.jupiter.api.Assertions.assertEquals',
+        'import org.junit.jupiter.api.Test',
+        '',
+        'class GeneratedModelRoundTripTest {',
+        '  private val mapper = ObjectMapperFactory.create()',
+        '',
+        priorDirectoryMethod,
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const scopedModels: Model[] = [roundTripModel('Organization'), roundTripModel('Directory')];
+    const scopedSpec: ApiSpec = { ...spec, models: scopedModels };
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      outputDir,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set(['src/main/kotlin/com/workos/models/Directory.kt']),
+    };
+
+    const roundTrip = generateTests(scopedSpec, scopedCtx).find((f) =>
+      f.path.endsWith('GeneratedModelRoundTripTest.kt'),
+    )!;
+    expect(roundTrip).toBeDefined();
+    // In-scope: refreshed from the current spec.
+    expect(roundTrip.content).toContain('Organization round-trips through Jackson');
+    // Out-of-scope: frozen to the prior block verbatim (extra "legacy" field kept).
+    expect(roundTrip.content).toContain('Directory round-trips through Jackson');
+    expect(roundTrip.content).toContain('\\"legacy\\": \\"kept\\"');
+
+    rmSync(outputDir, { recursive: true, force: true });
   });
 
   it('emits valid ISO-8601 for date-time fields in round-trip fixtures', () => {
