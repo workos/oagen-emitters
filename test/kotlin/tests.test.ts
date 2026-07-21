@@ -251,6 +251,32 @@ describe('kotlin/tests', () => {
     rmSync(outputDir, { recursive: true, force: true });
   });
 
+  it('scoped run: does NOT emit the round-trip test when the prior file exists but is unreadable', () => {
+    // Guard against silent data loss: if the prior aggregate can't be read, we
+    // must not overwrite it with only fresh in-scope blocks (which would drop
+    // every out-of-scope frozen fixture). Simulate "exists but unreadable" with
+    // a DIRECTORY at the file path — readFileSync throws EISDIR.
+    const outputDir = mkdtempSync(join(tmpdir(), 'oagen-rt-'));
+    const rtPath = join(outputDir, 'src/test/kotlin/com/workos/models/GeneratedModelRoundTripTest.kt');
+    mkdirSync(rtPath, { recursive: true }); // a dir where a file is expected
+
+    const scopedSpec: ApiSpec = { ...spec, models: [roundTripModel('Organization')] };
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      outputDir,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+    };
+
+    const files = generateTests(scopedSpec, scopedCtx);
+    // Left untouched on disk → not in the emitted set.
+    expect(files.some((f) => f.path.endsWith('GeneratedModelRoundTripTest.kt'))).toBe(false);
+
+    rmSync(outputDir, { recursive: true, force: true });
+  });
+
   it('emits valid ISO-8601 for date-time fields in round-trip fixtures', () => {
     const dtModels: Model[] = [
       {

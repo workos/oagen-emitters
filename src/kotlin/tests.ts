@@ -1096,7 +1096,23 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   }));
 
   const path = `${TEST_PREFIX}com/workos/models/GeneratedModelRoundTripTest.kt`;
-  const priorBlocks = scoped ? parseRoundTripMethods(readPriorFile(path, ctx)) : [];
+  let priorBlocks: AggregateBlock[] = [];
+  if (scoped) {
+    try {
+      priorBlocks = parseRoundTripMethods(readPriorFile(path, ctx));
+    } catch (err) {
+      // The prior aggregate exists but is unreadable. Emitting now would
+      // reconcile against an empty prior and silently drop every out-of-scope
+      // fixture; leave the on-disk copy untouched instead (a later run with a
+      // readable prior refreshes it).
+      console.warn(
+        `[oagen] kotlin: leaving ${path} untouched — could not read prior file: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
   const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
   if (methods.length === 0) return null;
 

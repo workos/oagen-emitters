@@ -43,16 +43,23 @@ export interface AggregateBlock {
   inScope?: boolean;
 }
 
-/** Read the prior on-disk content of a generated file, or null when unavailable. */
+/**
+ * Read the prior on-disk content of a generated file, or `null` when the file is
+ * genuinely ABSENT (no output dir / not on disk) — the safe "no prior blocks"
+ * signal.
+ *
+ * A read error on a file that DOES exist is NOT swallowed: it throws. Treating
+ * an unreadable-but-present aggregate as empty would make the reconciler drop
+ * every out-of-scope (frozen) block and overwrite the file with only fresh
+ * in-scope blocks — silent data loss. Callers must let the throw prevent the
+ * aggregate from being emitted (leaving the on-disk copy untouched) rather than
+ * reconcile against an empty prior.
+ */
 export function readPriorFile(relPath: string, ctx: EmitterContext): string | null {
   if (!ctx.outputDir) return null;
   const abs = resolve(ctx.outputDir, relPath);
   if (!existsSync(abs)) return null;
-  try {
-    return readFileSync(abs, 'utf-8');
-  } catch {
-    return null;
-  }
+  return readFileSync(abs, 'utf-8');
 }
 
 /**
