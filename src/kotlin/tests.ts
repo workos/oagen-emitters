@@ -34,6 +34,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
@@ -112,17 +113,24 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     });
   }
 
-  // MINIMAL SCOPED GENERATION: BOTH whole-suite AGGREGATE files under
-  // `com/workos/models` — `GeneratedModelRoundTripTest.kt` and
-  // `GeneratedForwardCompatTest.kt` — cover every model. A scoped (`--services`)
-  // run must regenerate ONLY the selected service's files and leave every other
-  // on-disk service byte-for-byte untouched, so we skip emitting BOTH monolithic
-  // files under scoping (leaving the on-disk copies in place). Full runs (scoping
-  // inert) keep emitting them. The per-service test classes above stay scoped via
-  // `scopedMountGroups` and are unaffected.
+  // Whole-suite AGGREGATE files under `com/workos/models` pack one block per
+  // model into a single file covering EVERY model, so they can't obey per-model
+  // scoping the way a per-model source file does.
+  //
+  // `GeneratedModelRoundTripTest.kt` reconciles per-model blocks against the
+  // prior on-disk file (see generateModelRoundTripTest), so a scoped run
+  // refreshes ONLY in-scope models' fixtures and freezes the rest byte-for-byte.
+  // This is required: an in-scope model whose shape changed (e.g. a data class
+  // the spec now deduplicates into a `typealias` onto a wider model with an
+  // extra required field) would otherwise keep a stale fixture that no longer
+  // deserializes. It is emitted in every run.
+  const roundTripFile = generateModelRoundTripTest(spec, ctx);
+  if (roundTripFile) files.push(roundTripFile);
+
+  // `GeneratedForwardCompatTest.kt` tests a representative slice (a handful of
+  // enums + one model), not a per-model block set, so per-block reconciliation
+  // doesn't apply; skip it under scoping to leave the on-disk copy untouched.
   if (!isScopedRun(ctx)) {
-    const roundTripFile = generateModelRoundTripTest(spec, ctx);
-    if (roundTripFile) files.push(roundTripFile);
     const forwardCompatFile = generateForwardCompatTest(spec, ctx);
     if (forwardCompatFile) files.push(forwardCompatFile);
   }
@@ -1075,7 +1083,38 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
     const json = synthJsonForModelName(m.name, ctx, new Set());
     if (json !== null) targets.push({ model: m, json });
   }
-  if (targets.length === 0) return null;
+  // Render one block per model, tagged with in-scope so a scoped run can
+  // reconcile against the prior on-disk file: refresh in-scope models' fixtures,
+  // freeze the rest byte-for-byte. `targets` is already gated to in-scope ∪
+  // on-disk models (fileExistsAfterRun above), matching the reconciler's input
+  // contract. A full run reconciles trivially (every block is fresh).
+  const scoped = isScopedRun(ctx);
+  const newBlocks: AggregateBlock[] = targets.map(({ model, json }) => ({
+    key: className(model.name),
+    text: renderRoundTripMethod(className(model.name), json),
+    inScope: isModelInScope(model.name, ctx),
+  }));
+
+  const path = `${TEST_PREFIX}com/workos/models/GeneratedModelRoundTripTest.kt`;
+  let priorBlocks: AggregateBlock[] = [];
+  if (scoped) {
+    try {
+      priorBlocks = parseRoundTripMethods(readPriorFile(path, ctx));
+    } catch (err) {
+      // The prior aggregate exists but is unreadable. Emitting now would
+      // reconcile against an empty prior and silently drop every out-of-scope
+      // fixture; leave the on-disk copy untouched instead (a later run with a
+      // readable prior refreshes it).
+      console.warn(
+        `[oagen] kotlin: leaving ${path} untouched — could not read prior file: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
+  if (methods.length === 0) return null;
 
   const lines: string[] = [
     'package com.workos.models',
@@ -1087,28 +1126,47 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
     'class GeneratedModelRoundTripTest {',
     '  private val mapper = ObjectMapperFactory.create()',
   ];
-
-  for (const { model, json } of targets) {
-    const cls = className(model.name);
-    lines.push('', '  @Test', `  fun \`${cls} round-trips through Jackson\`() {`);
-    emitJsonVal(lines, '    ', json);
-    lines.push(
-      `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
-      '    val reserialized = mapper.writeValueAsString(parsed)',
-      '    val tree1 = mapper.readTree(json)',
-      '    val tree2 = mapper.readTree(reserialized)',
-      '    assertEquals(tree1, tree2)',
-      '  }',
-    );
-  }
-
+  for (const method of methods) lines.push('', ...method.split('\n'));
   lines.push('}', '');
 
-  return {
-    path: `${TEST_PREFIX}com/workos/models/GeneratedModelRoundTripTest.kt`,
-    content: lines.join('\n'),
-    overwriteExisting: true,
-  };
+  return { path, content: lines.join('\n'), overwriteExisting: true };
+}
+
+/** Render a single model's round-trip `@Test` method (no surrounding blanks). */
+function renderRoundTripMethod(cls: string, json: string): string {
+  const lines = ['  @Test', `  fun \`${cls} round-trips through Jackson\`() {`];
+  emitJsonVal(lines, '    ', json);
+  lines.push(
+    `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
+    '    val reserialized = mapper.writeValueAsString(parsed)',
+    '    val tree1 = mapper.readTree(json)',
+    '    val tree2 = mapper.readTree(reserialized)',
+    '    assertEquals(tree1, tree2)',
+    '  }',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Parse the per-model `@Test` methods out of a prior GeneratedModelRoundTripTest,
+ * keyed by class name, so a scoped run can freeze out-of-scope blocks verbatim.
+ * Each generated method runs from its `  @Test` line to the first `  }` at
+ * method indent (the JSON body is a string literal, so no inner 2-space `}`).
+ */
+function parseRoundTripMethods(content: string | null): AggregateBlock[] {
+  if (!content) return [];
+  const lines = content.split('\n');
+  const blocks: AggregateBlock[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== '@Test') continue;
+    const start = i;
+    const m = (lines[i + 1] ?? '').match(/^\s*fun `(.+?) round-trips through Jackson`\(\)/);
+    let end = i + 1;
+    while (end < lines.length && lines[end] !== '  }') end++;
+    if (m && end < lines.length) blocks.push({ key: m[1], text: lines.slice(start, end + 1).join('\n') });
+    i = end;
+  }
+  return blocks;
 }
 
 /**
