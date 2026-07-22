@@ -226,7 +226,12 @@ export function escapeReserved(name: string): string {
 
 /** Escape a string literal for Kotlin source. */
 export function ktStringLiteral(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"`;
+  return `"${value
+    .replace(/\\/g, '\\\\')
+    .replace(/\$/g, '\\$')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')}"`;
 }
 
 /** Escape any scalar as a Kotlin literal expression. */

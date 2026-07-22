@@ -227,10 +227,10 @@ function renderField(
     // stops the struct from re-emitting it (serde injects the tag itself,
     // which would otherwise produce a duplicate key). Standalone uses of the
     // struct still deserialize the value normally because the key is present.
-    const args = rename ? `rename = "${rename}", default, skip_serializing` : 'default, skip_serializing';
+    const args = rename ? `rename = ${JSON.stringify(rename)}, default, skip_serializing` : 'default, skip_serializing';
     lines.push(`    #[serde(${args})]`);
   } else {
-    if (rename) lines.push(`    #[serde(rename = "${rename}")]`);
+    if (rename) lines.push(`    #[serde(rename = ${JSON.stringify(rename)})]`);
     if (baseType.startsWith('Option<')) {
       lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
     }
