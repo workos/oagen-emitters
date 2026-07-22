@@ -97,7 +97,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         member = `${member}_${suffix}`;
       }
       usedNames.add(member);
-      const valueLit = allIntegers ? String(v.value) : `'${String(v.value).replace(/'/g, "\\'")}'`;
+      const valueLit = allIntegers
+        ? String(v.value)
+        : `'${String(v.value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
       if (v.deprecated) {
         memberLines.push(`      # @deprecated`);
       }

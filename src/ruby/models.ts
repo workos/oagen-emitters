@@ -303,7 +303,7 @@ function deserializeExpression(
         const branches = entries
           .map(([value, modelName]) => {
             const cls = `WorkOS::${className(modelName)}`;
-            return `when ${JSON.stringify(value)} then ${cls}.new(${accessor})`;
+            return `when "${rubyDoubleQuotedInner(value)}" then ${cls}.new(${accessor})`;
           })
           .join(' ');
         const dispatcher = `(case ${propAccess} ${branches} else ${accessor} end)`;
@@ -329,13 +329,19 @@ function deserializeExpression(
   return accessor;
 }
 
+/** Escape a string for embedding in a Ruby double-quoted literal, neutralizing
+ *  quote breakout (`\`, `"`) and interpolation (`#{`, `#@`, `#$`). */
+function rubyDoubleQuotedInner(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/#/g, '\\#');
+}
+
 /** Produce a Ruby accessor expression `hash[:foo]` or `hash[:"weird#name"]` for a raw field name. */
 function rubyHashAccessor(accessor: string, name: string): string {
   if (/^[a-z_][a-zA-Z0-9_]*$/.test(name)) {
     return `${accessor}[:${name}]`;
   }
   // Non-simple identifier: quoted symbol literal.
-  return `${accessor}[:"${name.replace(/"/g, '\\"')}"]`;
+  return `${accessor}[:"${rubyDoubleQuotedInner(name)}"]`;
 }
 
 /** Produce a Ruby hash key literal (e.g., `foo:` shorthand or `"foo#bar" =>`).
@@ -345,7 +351,7 @@ function rubyHashLiteralKey(name: string): string {
   if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     return `${name}:`;
   }
-  return `"${name.replace(/"/g, '\\"')}" =>`;
+  return `"${rubyDoubleQuotedInner(name)}" =>`;
 }
 
 /** Build a recursive structural hash map for model deduplication. */
