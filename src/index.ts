@@ -17,6 +17,7 @@ export { rustExtractor } from './compat/extractors/rust.js';
 export { kotlinExtractor } from './compat/extractors/kotlin.js';
 export { dotnetExtractor } from './compat/extractors/dotnet.js';
 export { elixirExtractor } from './compat/extractors/elixir.js';
+export { iosExtractor } from './compat/extractors/ios.js';
 
 export { workosEmittersPlugin } from './plugin.js';
 

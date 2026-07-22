@@ -44,6 +44,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       'kotlinExtractor',
       'dotnetExtractor',
       'elixirExtractor',
+      'iosExtractor',
     ];
     for (const name of expectedExtractors) {
       expect(mod).toHaveProperty(name);
@@ -84,6 +85,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       mod.kotlinExtractor,
       mod.dotnetExtractor,
       mod.elixirExtractor,
+      mod.iosExtractor,
     ];
     for (const extractor of directExtractors) {
       expect(pluginLanguages).toContain(extractor.language);
