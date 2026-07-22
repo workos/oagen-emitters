@@ -25,7 +25,15 @@ const ctx: EmitterContext = { namespace: 'workos', namespacePascal: 'WorkOS', sp
 // breakout, Rust serde-rename attribute breakout).
 describe('emitter injection escaping', () => {
   it('kotlin: escapes `$` so enum wire values cannot become string templates', () => {
-    const enums: Enum[] = [{ name: 'Status', values: [{ value: 'active' }, { value: '${System.getenv()}' }] }];
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [
+          { name: 'active', value: 'active' },
+          { name: 'evil', value: '${System.getenv()}' },
+        ],
+      },
+    ];
     const content = ktEnums(enums, ctx)
       .map((f) => f.content)
       .join('\n');
@@ -55,7 +63,15 @@ describe('emitter injection escaping', () => {
   });
 
   it('ruby: escapes `\\` in single-quoted enum values (no quote breakout)', () => {
-    const enums: Enum[] = [{ name: 'Kind', values: [{ value: 'a\\' }, { value: 'b' }] }];
+    const enums: Enum[] = [
+      {
+        name: 'Kind',
+        values: [
+          { name: 'a', value: 'a\\' },
+          { name: 'b', value: 'b' },
+        ],
+      },
+    ];
     const content = rbEnums(enums, ctx)
       .map((f) => f.content)
       .join('\n');
