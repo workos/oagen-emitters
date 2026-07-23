@@ -19,6 +19,7 @@ import { rustExtractor } from './compat/extractors/rust.js';
 import { kotlinExtractor } from './compat/extractors/kotlin.js';
 import { dotnetExtractor } from './compat/extractors/dotnet.js';
 import { elixirExtractor } from './compat/extractors/elixir.js';
+import { iosExtractor } from './compat/extractors/ios.js';
 
 // Resolve smoke runner paths relative to the package root so they work
 // regardless of which project loads the config (CWD-independent).
@@ -47,6 +48,7 @@ export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' |
     kotlinExtractor,
     dotnetExtractor,
     elixirExtractor,
+    iosExtractor,
   ],
   smokeRunners: {
     node: path.join(smokeDir, 'sdk-node.ts'),

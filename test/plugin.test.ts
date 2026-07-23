@@ -27,7 +27,8 @@ describe('workosEmittersPlugin', () => {
     expect(languages).toContain('kotlin');
     expect(languages).toContain('dotnet');
     expect(languages).toContain('elixir');
-    expect(languages).toHaveLength(9);
+    expect(languages).toContain('ios');
+    expect(languages).toHaveLength(10);
   });
 
   it('exports smoke runners for all supported languages', () => {
