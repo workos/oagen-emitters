@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/workos/oagen-emitters/compare/v0.20.3...v0.21.0) (2026-07-23)
+
+
+### Features
+
+* **compat:** register the Swift (iOS) extractor in the plugin ([#199](https://github.com/workos/oagen-emitters/issues/199)) ([fbcff4b](https://github.com/workos/oagen-emitters/commit/fbcff4b75ab30ac5a9262c75ff78f23474742c12))
+
+
+### Bug Fixes
+
+* escape injection metacharacters in Kotlin/Ruby/Rust emitters ([#197](https://github.com/workos/oagen-emitters/issues/197)) ([431dde5](https://github.com/workos/oagen-emitters/commit/431dde51ee118899dbfabf6a9a0323c96a456875))
+
 ## [0.20.3](https://github.com/workos/oagen-emitters/compare/v0.20.2...v0.20.3) (2026-07-21)
 
 
