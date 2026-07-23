@@ -25,6 +25,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       'rubyEmitter',
       'rustEmitter',
       'iosEmitter',
+      'elixirEmitter',
     ];
     for (const name of expectedEmitters) {
       expect(mod).toHaveProperty(name);
@@ -65,6 +66,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       mod.rubyEmitter,
       mod.rustEmitter,
       mod.iosEmitter,
+      mod.elixirEmitter,
     ];
     for (const emitter of directEmitters) {
       expect(pluginLanguages).toContain(emitter.language);
