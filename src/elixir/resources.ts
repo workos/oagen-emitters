@@ -1,4 +1,12 @@
-import type { EmitterContext, GeneratedFile, Operation, Service, ResolvedOperation } from '@workos/oagen';
+import type {
+  EmitterContext,
+  GeneratedFile,
+  Operation,
+  Service,
+  ResolvedOperation,
+  ResolvedWrapper,
+  TypeRef,
+} from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import {
@@ -12,10 +20,17 @@ import {
   nsPascal,
 } from './naming.js';
 import { castExpr, casterFun, type CastNames } from './casting.js';
-import { scopedMountGroups, type MountGroup } from '../shared/resolved-ops.js';
+import {
+  scopedMountGroups,
+  getOpDefaults,
+  getOpInferFromClient,
+  buildHiddenParams,
+  type MountGroup,
+} from '../shared/resolved-ops.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import { getSyntheticEnums } from '../shared/model-utils.js';
+import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
 
 /**
  * Generate one resource module per mount group. Functions take the client as
@@ -51,11 +66,21 @@ function renderService(group: MountGroup, target: string, ctx: EmitterContext, n
   const methods: string[] = [];
   const seen = new Set<string>();
   for (const resolved of group.resolvedOps) {
-    if ((resolved as { urlBuilder?: boolean }).urlBuilder) continue;
     const fname = functionName(resolved.methodName);
-    if (seen.has(fname)) continue;
-    seen.add(fname);
-    methods.push(renderMethod(resolved, fname, ctx, names));
+    if (!seen.has(fname)) {
+      seen.add(fname);
+      if ((resolved as { urlBuilder?: boolean }).urlBuilder) {
+        methods.push(renderUrlBuilder(resolved, fname, ctx));
+      } else {
+        methods.push(renderMethod(resolved, fname, ctx, names));
+      }
+    }
+    for (const wrapper of resolved.wrappers ?? []) {
+      const wname = functionName(wrapper.name);
+      if (seen.has(wname)) continue;
+      seen.add(wname);
+      methods.push(renderWrapper(resolved, wrapper, wname, ctx, names));
+    }
   }
   if (methods.length === 0) return null;
 
@@ -110,12 +135,68 @@ function pathExpression(op: Operation, params: PathParamInfo[]): string {
   return `${out}"`;
 }
 
+/** Elixir literal for a constant default value. */
+function elixirLiteral(value: string | number | boolean): string {
+  return typeof value === 'string' ? `"${escapeString(value)}"` : String(value);
+}
+
+/** Expression reading an inferFromClient field off the client struct. */
+function clientFieldExpr(field: string): string {
+  switch (field) {
+    case 'client_id':
+      return 'client.client_id';
+    case 'client_secret':
+      return 'client.api_key';
+    default:
+      return `client.${functionName(field)}`;
+  }
+}
+
+/**
+ * Lines rebinding `params` with constant defaults and client-inferred fields.
+ * Defaults always win (the whole point of a wrapper is pinning them); inferred
+ * fields fill in only when the caller did not pass them. Empty when the
+ * operation has no hidden params.
+ */
+function injectionLines(ns: string, defaults: Record<string, string | number | boolean>, inferred: string[]): string[] {
+  const defaultKeys = Object.keys(defaults);
+  if (defaultKeys.length === 0 && inferred.length === 0) return [];
+  const lines: string[] = [];
+  lines.push('    params =');
+  lines.push('      params');
+  const entries = defaultKeys.map((k) => `"${escapeString(k)}" => ${elixirLiteral(defaults[k])}`).join(', ');
+  lines.push(`      |> ${ns}.Client.merge_defaults(%{${entries}})`);
+  for (const field of inferred) {
+    lines.push(`      |> ${ns}.Client.put_inferred("${escapeString(field)}", ${clientFieldExpr(field)})`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/** Doc sentences describing hidden params the SDK fills in automatically. */
+function injectionDocLines(defaults: Record<string, string | number | boolean>, inferred: string[]): string[] {
+  const lines: string[] = [];
+  const defaultKeys = Object.keys(defaults);
+  if (defaultKeys.length > 0) {
+    const rendered = defaultKeys.map((k) => `\`${k}\` (\`${elixirLiteral(defaults[k])}\`)`).join(', ');
+    lines.push(`  Sets ${rendered} automatically.`);
+  }
+  if (inferred.length > 0) {
+    const rendered = inferred.map((f) => `\`${f}\``).join('/');
+    lines.push(`  Reads ${rendered} from the client configuration unless passed explicitly.`);
+  }
+  return lines;
+}
+
 function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterContext, names: CastNames): string {
   const ns = nsPascal(ctx);
   const op = resolved.operation;
   const plan = planOperation(op);
   const pathParams = pathParamInfos(op);
-  const hasParams = plan.hasBody || plan.hasQueryParams || plan.isPaginated;
+  const defaults = getOpDefaults(resolved);
+  const inferred = getOpInferFromClient(resolved);
+  const injection = injectionLines(ns, defaults, inferred);
+  const hasParams = plan.hasBody || plan.hasQueryParams || plan.isPaginated || injection.length > 0;
   const isQueryMethod = ['get', 'delete', 'head'].includes(op.httpMethod);
 
   const args = ['client', ...pathParams.map((p) => p.variable)];
@@ -140,6 +221,10 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   lines.push('  @doc """');
   const summary = op.description?.trim() || humanize(resolved.methodName);
   lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);
+  for (const docLine of injectionDocLines(defaults, inferred)) {
+    lines.push('');
+    lines.push(docLine);
+  }
   lines.push('');
   lines.push('  ## Parameters');
   lines.push('');
@@ -147,8 +232,10 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
     lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
   }
   if (hasParams) {
-    if (isQueryMethod && op.queryParams.length > 0) {
-      const namesList = op.queryParams.map((p) => `\`:${varName(p.name)}\``).join(', ');
+    const hidden = buildHiddenParams(resolved);
+    const visibleQueryParams = op.queryParams.filter((p) => !hidden.has(p.name));
+    if (isQueryMethod && visibleQueryParams.length > 0) {
+      const namesList = visibleQueryParams.map((p) => `\`:${varName(p.name)}\``).join(', ');
       lines.push(`    * \`params\` — query parameters: ${namesList}`);
     } else if (isQueryMethod) {
       lines.push('    * `params` — query parameters');
@@ -172,6 +259,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
 
   // Body
   lines.push(`  def ${fname}(${args.join(', ')}) do`);
+  lines.push(...injection);
 
   if (plan.isPaginated && op.pagination) {
     const dataKey = op.pagination.dataPath ?? 'data';
@@ -200,6 +288,141 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
       lines.push(`      {:ok, ${resultExpr}}`);
       lines.push('    end');
     }
+  }
+
+  lines.push('  end');
+  return lines.join('\n');
+}
+
+/**
+ * URL-builder operation: composes a browser-redirect URL from the client's
+ * base URL plus query params — no HTTP request. Hidden params (constant
+ * defaults like `response_type`, client-inferred `client_id`) are injected.
+ */
+function renderUrlBuilder(resolved: ResolvedOperation, fname: string, ctx: EmitterContext): string {
+  const ns = nsPascal(ctx);
+  const op = resolved.operation;
+  const pathParams = pathParamInfos(op);
+  const defaults = getOpDefaults(resolved);
+  const inferred = getOpInferFromClient(resolved);
+  const injection = injectionLines(ns, defaults, inferred);
+  const hidden = buildHiddenParams(resolved);
+  const visibleQueryParams = op.queryParams.filter((p) => !hidden.has(p.name));
+
+  const args = ['client', ...pathParams.map((p) => p.variable), 'params \\\\ %{}'];
+  const specArgs = [`${ns}.Client.t()`, ...pathParams.map(() => 'String.t()'), 'map()'];
+
+  const lines: string[] = [];
+  lines.push('  @doc """');
+  const summary = op.description?.trim() || humanize(resolved.methodName);
+  lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);
+  lines.push('');
+  lines.push('  Returns the fully-qualified redirect URL — no HTTP request is made.');
+  for (const docLine of injectionDocLines(defaults, inferred)) {
+    lines.push('');
+    lines.push(docLine);
+  }
+  lines.push('');
+  lines.push('  ## Parameters');
+  lines.push('');
+  for (const p of pathParams) {
+    lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
+  }
+  if (visibleQueryParams.length > 0) {
+    const namesList = visibleQueryParams.map((p) => `\`:${varName(p.name)}\``).join(', ');
+    lines.push(`    * \`params\` — query parameters: ${namesList}`);
+  } else {
+    lines.push('    * `params` — query parameters');
+  }
+  lines.push('  """');
+
+  if (op.deprecated) {
+    lines.push('  @deprecated "This operation is deprecated."');
+  }
+
+  lines.push(`  @spec ${fname}(${specArgs.join(', ')}) :: String.t()`);
+  lines.push(`  def ${fname}(${args.join(', ')}) do`);
+  lines.push(...injection);
+  lines.push(`    ${ns}.Client.build_url(client, ${pathExpression(op, pathParams)}, params)`);
+  lines.push('  end');
+  return lines.join('\n');
+}
+
+/**
+ * Union-split wrapper: a convenience method that pins the discriminating
+ * defaults (e.g. `grant_type`), fills client-inferred credentials, and
+ * delegates to the underlying operation's path.
+ */
+function renderWrapper(
+  resolved: ResolvedOperation,
+  wrapper: ResolvedWrapper,
+  wname: string,
+  ctx: EmitterContext,
+  names: CastNames,
+): string {
+  const ns = nsPascal(ctx);
+  const op = resolved.operation;
+  const pathParams = pathParamInfos(op);
+  const wrapperParams = resolveWrapperParams(wrapper, ctx);
+  const required = wrapperParams.filter((p) => !p.isOptional);
+  const optional = wrapperParams.filter((p) => p.isOptional);
+  const injection = injectionLines(ns, wrapper.defaults, wrapper.inferFromClient);
+
+  const responseRef: TypeRef =
+    wrapper.responseModelName && names.modelNames.has(wrapper.responseModelName)
+      ? { kind: 'model', name: wrapper.responseModelName }
+      : op.response;
+
+  const args = ['client', ...pathParams.map((p) => p.variable), 'params \\\\ %{}', 'opts \\\\ []'];
+  const specArgs = [`${ns}.Client.t()`, ...pathParams.map(() => 'String.t()'), 'map()', 'keyword()'];
+  const optsExpr = op.injectIdempotencyKey ? 'Keyword.put_new(opts, :idempotency, true)' : 'opts';
+  const requestCall = `${ns}.Client.request(client, :${op.httpMethod}, ${pathExpression(op, pathParams)}, params, ${optsExpr})`;
+
+  const lines: string[] = [];
+  lines.push('  @doc """');
+  lines.push(`  ${escapeDoc(formatWrapperDescription(wrapper.name))}`);
+  const summary = op.description?.trim();
+  if (summary) {
+    lines.push('');
+    lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);
+  }
+  for (const docLine of injectionDocLines(wrapper.defaults, wrapper.inferFromClient)) {
+    lines.push('');
+    lines.push(docLine);
+  }
+  lines.push('');
+  lines.push('  ## Parameters');
+  lines.push('');
+  for (const p of pathParams) {
+    lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
+  }
+  const paramsDocParts: string[] = [];
+  if (required.length > 0) {
+    paramsDocParts.push(`Required: ${required.map((p) => `\`:${varName(p.paramName)}\``).join(', ')}.`);
+  }
+  if (optional.length > 0) {
+    paramsDocParts.push(`Optional: ${optional.map((p) => `\`:${varName(p.paramName)}\``).join(', ')}.`);
+  }
+  lines.push(`    * \`params\` — request body map.${paramsDocParts.length > 0 ? ` ${paramsDocParts.join(' ')}` : ''}`);
+  lines.push(`    * \`opts\` — per-request options (see \`${ns}.Client.request/5\`)`);
+  lines.push('  """');
+
+  if (op.deprecated) {
+    lines.push('  @deprecated "This operation is deprecated."');
+  }
+
+  lines.push(`  @spec ${wname}(${specArgs.join(', ')}) ::`);
+  lines.push(`          {:ok, ${mapTypeRef(responseRef, { nsPascal: ns })}} | {:error, ${ns}.Error.error()}`);
+  lines.push(`  def ${wname}(${args.join(', ')}) do`);
+  lines.push(...injection);
+
+  const resultExpr = castExpr(responseRef, 'body', ctx, names);
+  if (resultExpr === 'body') {
+    lines.push(`    ${requestCall}`);
+  } else {
+    lines.push(`    with {:ok, body} <- ${requestCall} do`);
+    lines.push(`      {:ok, ${resultExpr}}`);
+    lines.push('    end');
   }
 
   lines.push('  end');

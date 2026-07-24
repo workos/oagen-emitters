@@ -1,11 +1,19 @@
-import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, ResolvedOperation } from '@workos/oagen';
+import type {
+  ApiSpec,
+  EmitterContext,
+  GeneratedFile,
+  TypeRef,
+  ResolvedOperation,
+  ResolvedWrapper,
+} from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { moduleName, fileName, fullModuleName, functionName, varName, nsPascal, escapeString } from './naming.js';
 import { authAssertHeader } from './client.js';
 import { buildFixtureEntries, generateFixtureFiles, fixtureName } from './fixtures.js';
-import { scopedMountGroups, type MountGroup } from '../shared/resolved-ops.js';
+import { scopedMountGroups, getOpDefaults, type MountGroup } from '../shared/resolved-ops.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
 import { parsePathTemplate } from '../shared/path-template.js';
+import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 
 /**
  * Generate ExUnit tests (one file per mount group) plus their JSON fixtures,
@@ -66,7 +74,8 @@ function findPaginatedOp(
 ): { call: string; fixture: string; cursorParam: string } | null {
   let fallback: { call: string; fixture: string; cursorParam: string } | null = null;
   for (const group of [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-    for (const op of testableOps(group)) {
+    for (const op of testableOps(group, ctx)) {
+      if (op.wrapper) continue;
       const operation = op.resolved.operation;
       if (!planOperation(operation).isPaginated || !operation.pagination) continue;
       const fixture = fixtureName(group.name, op.fname);
@@ -214,20 +223,75 @@ interface TestableOp {
   fname: string;
   /** Call arguments after `client`. */
   callArgs: string[];
+  /** Set when this entry is a union-split wrapper method. */
+  wrapper?: ResolvedWrapper;
 }
 
-function testableOps(group: MountGroup): TestableOp[] {
+function pathCallArgs(resolved: ResolvedOperation): string[] {
+  return parsePathTemplate(resolved.operation.path)
+    .filter((s) => s.kind === 'param')
+    .map((s) => `"test_${varName((s as { name: string }).name)}"`);
+}
+
+/** Elixir map literal covering a wrapper's required params with type-shaped placeholders. */
+function wrapperParamsLiteral(wrapper: ResolvedWrapper, ctx: EmitterContext): string {
+  const required = resolveWrapperParams(wrapper, ctx).filter((p) => !p.isOptional);
+  if (required.length === 0) return '%{}';
+  const entries = required.map(({ paramName, field }) => {
+    const key = varName(paramName);
+    const kind = field?.type.kind === 'nullable' ? field.type.inner.kind : field?.type.kind;
+    const primType =
+      field?.type.kind === 'primitive'
+        ? field.type.type
+        : field?.type.kind === 'nullable' && field.type.inner.kind === 'primitive'
+          ? field.type.inner.type
+          : null;
+    let value: string;
+    if (primType === 'boolean') value = 'true';
+    else if (primType === 'integer' || primType === 'number') value = '1';
+    else if (kind === 'array') value = `["test_${key}"]`;
+    else value = `"test_${key}"`;
+    return `${key}: ${value}`;
+  });
+  return `%{${entries.join(', ')}}`;
+}
+
+function testableOps(group: MountGroup, ctx: EmitterContext): TestableOp[] {
   const out: TestableOp[] = [];
   const seen = new Set<string>();
   for (const resolved of group.resolvedOps) {
-    if ((resolved as { urlBuilder?: boolean }).urlBuilder) continue;
+    if (!(resolved as { urlBuilder?: boolean }).urlBuilder) {
+      const fname = functionName(resolved.methodName);
+      if (!seen.has(fname)) {
+        seen.add(fname);
+        out.push({ resolved, fname, callArgs: pathCallArgs(resolved) });
+      }
+    }
+    for (const wrapper of resolved.wrappers ?? []) {
+      const wname = functionName(wrapper.name);
+      if (seen.has(wname)) continue;
+      seen.add(wname);
+      out.push({
+        resolved,
+        fname: wname,
+        callArgs: [...pathCallArgs(resolved), wrapperParamsLiteral(wrapper, ctx)],
+        wrapper,
+      });
+    }
+  }
+  return out;
+}
+
+/** URL-builder ops in a group (no HTTP request — tested separately). */
+function urlBuilderOps(group: MountGroup): TestableOp[] {
+  const out: TestableOp[] = [];
+  const seen = new Set<string>();
+  for (const resolved of group.resolvedOps) {
+    if (!(resolved as { urlBuilder?: boolean }).urlBuilder) continue;
     const fname = functionName(resolved.methodName);
     if (seen.has(fname)) continue;
     seen.add(fname);
-    const callArgs = parsePathTemplate(resolved.operation.path)
-      .filter((s) => s.kind === 'param')
-      .map((s) => `"test_${varName((s as { name: string }).name)}"`);
-    out.push({ resolved, fname, callArgs });
+    out.push({ resolved, fname, callArgs: pathCallArgs(resolved) });
   }
   return out;
 }
@@ -240,8 +304,9 @@ function renderGroupTests(
   modelNames: Set<string>,
 ): string | null {
   const ns = nsPascal(ctx);
-  const ops = testableOps(group);
-  if (ops.length === 0) return null;
+  const ops = testableOps(group, ctx);
+  const urlBuilders = urlBuilderOps(group);
+  if (ops.length === 0 && urlBuilders.length === 0) return null;
 
   const serviceModule = fullModuleName(ctx, target);
   const lines: string[] = [];
@@ -263,9 +328,42 @@ function renderGroupTests(
     lines.push(renderOpTest(op, group, serviceModule, ctx, fixtures, modelNames));
   }
 
-  lines.push('');
-  lines.push(renderErrorTest(ops[0], serviceModule, ctx));
+  for (const op of urlBuilders) {
+    lines.push('');
+    lines.push(renderUrlBuilderTest(op, serviceModule));
+  }
+
+  if (ops.length > 0) {
+    lines.push('');
+    lines.push(renderErrorTest(ops[0], serviceModule, ctx));
+  }
   lines.push('end');
+  return lines.join('\n');
+}
+
+/**
+ * URL-builder assertion: the function returns a string URL rooted at the
+ * client's base URL, containing the operation path and any constant defaults
+ * in the query string — without touching the network (no stub installed).
+ */
+function renderUrlBuilderTest(op: TestableOp, serviceModule: string): string {
+  const call = `${serviceModule}.${op.fname}(${['client', ...op.callArgs].join(', ')})`;
+  const defaults = getOpDefaults(op.resolved);
+  const specPath = op.resolved.operation.path;
+
+  const lines: string[] = [];
+  lines.push(`  test "${op.fname} builds a redirect URL without an HTTP request", %{client: client} do`);
+  lines.push(`    url = ${call}`);
+  lines.push('');
+  lines.push('    assert is_binary(url)');
+  lines.push('    assert String.starts_with?(url, client.base_url)');
+  // Path params are interpolated, so assert on the longest literal prefix.
+  const literalPrefix = specPath.split('{')[0];
+  lines.push(`    assert url =~ "${escapeString(literalPrefix)}"`);
+  for (const [key, value] of Object.entries(defaults)) {
+    lines.push(`    assert url =~ URI.encode_query(%{"${escapeString(key)}" => "${escapeString(String(value))}"})`);
+  }
+  lines.push('  end');
   return lines.join('\n');
 }
 
@@ -281,23 +379,49 @@ function renderOpTest(
   const fixture = fixtureName(group.name, op.fname);
   const hasFixture = fixtures.has(fixture);
   const call = `${serviceModule}.${op.fname}(${['client', ...op.callArgs].join(', ')})`;
-  const pattern = successPattern(op.resolved, ctx, modelNames);
+  const pattern = op.wrapper
+    ? wrapperSuccessPattern(op.wrapper, op.resolved, ctx, modelNames)
+    : successPattern(op.resolved, ctx, modelNames);
+  // Wrappers pin constant body defaults (grant_type, application_type) — assert
+  // they actually reach the wire, not just that the response deserializes.
+  const bodyAsserts =
+    op.wrapper && !['get', 'delete', 'head'].includes(op.resolved.operation.httpMethod)
+      ? Object.entries(op.wrapper.defaults)
+      : [];
 
   const lines: string[] = [];
   lines.push(`  test "${op.fname} succeeds", %{client: client} do`);
-  if (hasFixture) {
-    lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
-    lines.push(`      Req.Test.json(conn, ${ns}.TestFixtures.fixture("${fixture}"))`);
-    lines.push('    end)');
-  } else {
-    lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
-    lines.push('      Plug.Conn.send_resp(conn, 204, "")');
-    lines.push('    end)');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  if (bodyAsserts.length > 0) {
+    lines.push('      {:ok, req_body, conn} = Plug.Conn.read_body(conn)');
+    lines.push('      req_body = JSON.decode!(req_body)');
+    for (const [key, value] of bodyAsserts) {
+      const literal = typeof value === 'string' ? `"${escapeString(value)}"` : String(value);
+      lines.push(`      assert req_body["${escapeString(key)}"] == ${literal}`);
+    }
   }
+  if (hasFixture) {
+    lines.push(`      Req.Test.json(conn, ${ns}.TestFixtures.fixture("${fixture}"))`);
+  } else {
+    lines.push('      Plug.Conn.send_resp(conn, 204, "")');
+  }
+  lines.push('    end)');
   lines.push('');
   lines.push(`    assert ${pattern} = ${call}`);
   lines.push('  end');
   return lines.join('\n');
+}
+
+function wrapperSuccessPattern(
+  wrapper: ResolvedWrapper,
+  resolved: ResolvedOperation,
+  ctx: EmitterContext,
+  modelNames: Set<string>,
+): string {
+  if (wrapper.responseModelName && modelNames.has(wrapper.responseModelName)) {
+    return `{:ok, %${fullModuleName(ctx, wrapper.responseModelName)}{}}`;
+  }
+  return successPattern(resolved, ctx, modelNames);
 }
 
 function successPattern(resolved: ResolvedOperation, ctx: EmitterContext, modelNames: Set<string>): string {

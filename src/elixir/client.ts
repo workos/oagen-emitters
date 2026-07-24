@@ -108,6 +108,7 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   const sdk = ctx.spec.sdk;
   const retry = sdk.retry;
   const envVar = `${toUpperSnakeCase(ctx.namespace)}_API_KEY`;
+  const clientIdEnvVar = `${toUpperSnakeCase(ctx.namespace)}_CLIENT_ID`;
   const auth = authHeaderSetup(spec);
   const autoIdempotency = sdk.idempotency.autoGenerateForPost && retry.maxRetries > 0;
   const timeoutEnvVar = sdk.timeout.timeoutEnvVar;
@@ -126,6 +127,8 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('  ## Options for `new/1`');
   lines.push('');
   lines.push('    * `:api_key` — API key (required unless the env var is set)');
+  lines.push(`    * \`:client_id\` — client ID used by authentication flows and URL builders`);
+  lines.push(`      (falls back to the \`${clientIdEnvVar}\` environment variable)`);
   lines.push('    * `:base_url` — override the API base URL');
   lines.push('    * `:timeout` — receive timeout in milliseconds');
   lines.push('    * `:max_retries` — maximum retry attempts for retryable failures');
@@ -137,10 +140,11 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
     lines.push('  import Bitwise');
     lines.push('');
   }
-  lines.push('  defstruct [:api_key, :base_url, :timeout, :max_retries, :req_options]');
+  lines.push('  defstruct [:api_key, :client_id, :base_url, :timeout, :max_retries, :req_options]');
   lines.push('');
   lines.push('  @type t :: %__MODULE__{');
   lines.push('          api_key: String.t(),');
+  lines.push('          client_id: String.t() | nil,');
   lines.push('          base_url: String.t(),');
   lines.push('          timeout: pos_integer(),');
   lines.push('          max_retries: non_neg_integer(),');
@@ -148,6 +152,7 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('        }');
   lines.push('');
   lines.push(`  @api_key_env "${envVar}"`);
+  lines.push(`  @client_id_env "${clientIdEnvVar}"`);
   lines.push(`  @default_base_url "${escapeString(spec.baseUrl)}"`);
   lines.push(`  @default_timeout_ms ${intLiteral(sdk.timeout.defaultTimeoutSeconds * 1000)}`);
   lines.push(`  @default_max_retries ${retry.maxRetries}`);
@@ -175,6 +180,7 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('');
   lines.push('    %__MODULE__{');
   lines.push('      api_key: api_key,');
+  lines.push('      client_id: opts[:client_id] || System.get_env(@client_id_env),');
   lines.push('      base_url: String.trim_trailing(opts[:base_url] || @default_base_url, "/"),');
   if (timeoutEnvVar) {
     lines.push(`      timeout: opts[:timeout] || env_timeout() || @default_timeout_ms,`);
@@ -245,6 +251,44 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   // {:error, reason} fallback clause would trip dialyzer pattern_match_cov.
   lines.push('  defp handle_response({:error, %{__exception__: true} = exception}),');
   lines.push(`    do: {:error, %${ns}.TransportError{message: Exception.message(exception), reason: exception}}`);
+  lines.push('');
+
+  // URL builder + param-injection helpers (used by generated resource modules)
+  lines.push('  @doc """');
+  lines.push('  Builds a fully-qualified URL for browser-redirect flows. No HTTP request');
+  lines.push('  is made. `params` become the query string; nil values are dropped.');
+  lines.push('  """');
+  lines.push('  @spec build_url(t(), String.t(), map()) :: String.t()');
+  lines.push('  def build_url(%__MODULE__{} = client, path, params \\\\ %{}) do');
+  lines.push('    query =');
+  lines.push('      params');
+  lines.push('      |> Map.new(fn {k, v} -> {to_string(k), v} end)');
+  lines.push('      |> Enum.reject(fn {_k, v} -> is_nil(v) end)');
+  lines.push('      |> Enum.map(fn {k, v} -> {k, query_value(v)} end)');
+  lines.push('      |> URI.encode_query()');
+  lines.push('');
+  lines.push('    case query do');
+  lines.push('      "" -> client.base_url <> path');
+  lines.push('      query -> client.base_url <> path <> "?" <> query');
+  lines.push('    end');
+  lines.push('  end');
+  lines.push('');
+  lines.push('  defp query_value(value) when is_list(value), do: Enum.map_join(value, ",", &to_string/1)');
+  lines.push('  defp query_value(value) when is_map(value), do: JSON.encode!(value)');
+  lines.push('  defp query_value(value), do: to_string(value)');
+  lines.push('');
+  lines.push('  @doc false');
+  lines.push('  @spec merge_defaults(map(), map()) :: map()');
+  lines.push('  def merge_defaults(params, defaults) do');
+  lines.push('    params');
+  lines.push('    |> Map.new(fn {k, v} -> {to_string(k), v} end)');
+  lines.push('    |> Map.merge(defaults)');
+  lines.push('  end');
+  lines.push('');
+  lines.push('  @doc false');
+  lines.push('  @spec put_inferred(map(), String.t(), term()) :: map()');
+  lines.push('  def put_inferred(params, _key, nil), do: params');
+  lines.push('  def put_inferred(params, key, value), do: Map.put_new(params, key, value)');
   lines.push('');
 
   // helpers

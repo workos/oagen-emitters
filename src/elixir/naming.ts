@@ -93,9 +93,14 @@ export function fileName(name: string): string {
   return sanitizeSnake(toSnakeCase(moduleName(name)));
 }
 
-/** snake_case function name with reserved-word guard. */
+/**
+ * snake_case function name with reserved-word guard. Resolved operation names
+ * arrive already snake_case and pass through unchanged — re-splitting via
+ * toSnakeCase would corrupt digit-bearing reviewed names ("complete_oauth2"
+ * must not become "complete_oauth_2").
+ */
 export function functionName(name: string): string {
-  const snake = sanitizeSnake(toSnakeCase(name));
+  const snake = sanitizeSnake(/^[a-z][a-z0-9_]*$/.test(name) ? name : toSnakeCase(name));
   return ELIXIR_RESERVED_WORDS.has(snake) ? `${snake}_` : snake;
 }
 

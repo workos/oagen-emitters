@@ -30,13 +30,25 @@ export function buildFixtureEntries(ctx: EmitterContext): Map<string, unknown> {
   for (const group of scopedMountGroups(ctx).values()) {
     const seen = new Set<string>();
     for (const resolved of group.resolvedOps) {
-      if ((resolved as { urlBuilder?: boolean }).urlBuilder) continue;
-      const methodName = functionName(resolved.methodName);
-      if (seen.has(methodName)) continue;
-      seen.add(methodName);
-      const sample = responseSample(resolved.operation, models, enums);
-      if (sample === undefined) continue;
-      entries.set(fixtureName(group.name, methodName), sample);
+      if (!(resolved as { urlBuilder?: boolean }).urlBuilder) {
+        const methodName = functionName(resolved.methodName);
+        if (!seen.has(methodName)) {
+          seen.add(methodName);
+          const sample = responseSample(resolved.operation, models, enums);
+          if (sample !== undefined) entries.set(fixtureName(group.name, methodName), sample);
+        }
+      }
+      for (const wrapper of resolved.wrappers ?? []) {
+        const wname = functionName(wrapper.name);
+        if (seen.has(wname)) continue;
+        seen.add(wname);
+        const ref: TypeRef =
+          wrapper.responseModelName && models.has(wrapper.responseModelName)
+            ? { kind: 'model', name: wrapper.responseModelName }
+            : resolved.operation.response;
+        if (!isJsonShaped(ref)) continue;
+        entries.set(fixtureName(group.name, wname), sampleForType(ref, models, enums, 'response', 0, new Set()));
+      }
     }
   }
   return entries;
