@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateClient, normalizeVersion } from '../../src/elixir/client.js';
+import { generateClient } from '../../src/elixir/client.js';
 import { makeSpec, makeCtx } from './helpers.js';
 
 function generate(specOverrides = {}) {
@@ -8,36 +8,14 @@ function generate(specOverrides = {}) {
 }
 
 describe('elixir/client', () => {
-  it('emits the full SDK scaffolding', () => {
+  it('emits only spec-driven scaffolding — never static project files', () => {
     const files = generate();
     expect(files.map((f) => f.path)).toEqual([
-      'mix.exs',
-      '.formatter.exs',
-      '.gitignore',
-      'README.md',
       'lib/acme.ex',
       'lib/acme/client.ex',
       'lib/acme/cast.ex',
       'lib/acme/page.ex',
     ]);
-  });
-
-  it('skips the file header for non-Elixir files', () => {
-    const files = generate();
-    const readme = files.find((f) => f.path === 'README.md')!;
-    const gitignore = files.find((f) => f.path === '.gitignore')!;
-    expect(readme.headerPlacement).toBe('skip');
-    expect(gitignore.headerPlacement).toBe('skip');
-  });
-
-  it('generates a mix project pinned to Elixir 1.18 with Req and no Jason', () => {
-    const files = generate();
-    const mix = files.find((f) => f.path === 'mix.exs')!.content;
-    expect(mix).toContain('app: :acme');
-    expect(mix).toContain('elixir: "~> 1.18"');
-    expect(mix).toContain('{:req, "~> 0.5"}');
-    expect(mix).not.toContain('jason');
-    expect(mix).not.toContain('tesla');
   });
 
   it('derives the API key env var from the namespace', () => {
@@ -75,11 +53,12 @@ describe('elixir/client', () => {
     expect(client).not.toContain('Jason.');
   });
 
-  it('uses the spec base URL and interpolated user agent', () => {
+  it('uses the spec base URL and the legacy workos-elixir UA shape', () => {
     const files = generate();
     const client = files.find((f) => f.path === 'lib/acme/client.ex')!.content;
     expect(client).toContain('@default_base_url "https://api.example.com"');
-    expect(client).toContain('@user_agent_base "Test elixir/1.0.0"');
+    expect(client).toContain('defp user_agent, do: "acme-elixir/#{Application.spec(:acme, :vsn)}"');
+    expect(client).not.toContain('System.version()');
   });
 
   it('emits nil-safe Cast helpers', () => {
@@ -99,14 +78,6 @@ describe('elixir/client', () => {
     expect(page).toContain('Stream.resource(');
   });
 
-  it('normalizes versions to x.y.z', () => {
-    expect(normalizeVersion('1.0.0')).toBe('1.0.0');
-    expect(normalizeVersion('1.0')).toBe('1.0.0');
-    expect(normalizeVersion('2')).toBe('2.0.0');
-    expect(normalizeVersion('2026-07-01')).toBe('2026.0.0');
-    expect(normalizeVersion('garbage')).toBe('0.1.0');
-  });
-
   it('renders the entry module', () => {
     const files = generate();
     expect(files.find((f) => f.path === 'lib/acme.ex')!.content).toMatchInlineSnapshot(`
@@ -122,7 +93,7 @@ describe('elixir/client', () => {
         \`{:ok, result}\` or \`{:error, error}\` tuples.
         """
 
-        @version "1.0.0"
+        @version Mix.Project.config()[:version]
 
         @doc "The SDK version."
         @spec version() :: String.t()

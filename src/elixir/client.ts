@@ -5,37 +5,13 @@ import { escapeString, nsPascal } from './naming.js';
 
 /**
  * Generate the SDK scaffolding: entry module, HTTP client, casting helpers,
- * pagination, and project files (mix.exs, .formatter.exs, README, .gitignore).
- * Everything policy-driven reads from `ctx.spec.sdk`.
+ * and pagination. Everything policy-driven reads from `ctx.spec.sdk`.
+ *
+ * Project files (mix.exs, .formatter.exs, README, .gitignore) are static,
+ * hand-maintained files in the target SDK — never emitted here.
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   return [
-    {
-      path: 'mix.exs',
-      content: renderMixExs(spec, ctx),
-      integrateTarget: true,
-      overwriteExisting: true,
-    },
-    {
-      path: '.formatter.exs',
-      content: renderFormatterExs(),
-      integrateTarget: true,
-      overwriteExisting: true,
-    },
-    {
-      path: '.gitignore',
-      content: renderGitignore(),
-      headerPlacement: 'skip',
-      integrateTarget: false,
-      skipIfExists: true,
-    },
-    {
-      path: 'README.md',
-      content: renderReadme(spec, ctx),
-      headerPlacement: 'skip',
-      integrateTarget: false,
-      skipIfExists: true,
-    },
     {
       path: `lib/${ctx.namespace}.ex`,
       content: renderEntryModule(spec, ctx),
@@ -63,89 +39,6 @@ export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
   ];
 }
 
-/** Normalize a spec version to the x.y.z form mix requires. */
-export function normalizeVersion(version: string): string {
-  const m = version.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
-  if (!m) return '0.1.0';
-  return `${m[1]}.${m[2] ?? '0'}.${m[3] ?? '0'}`;
-}
-
-function renderMixExs(spec: ApiSpec, ctx: EmitterContext): string {
-  const lines: string[] = [];
-  lines.push(`defmodule ${nsPascal(ctx)}.MixProject do`);
-  lines.push('  use Mix.Project');
-  lines.push('');
-  lines.push('  def project do');
-  lines.push('    [');
-  lines.push(`      app: :${ctx.namespace},`);
-  lines.push(`      version: "${normalizeVersion(spec.version)}",`);
-  lines.push('      elixir: "~> 1.18",');
-  lines.push('      start_permanent: Mix.env() == :prod,');
-  lines.push('      elixirc_paths: elixirc_paths(Mix.env()),');
-  lines.push('      deps: deps(),');
-  lines.push(`      name: "${escapeString(spec.name)}",`);
-  lines.push(`      description: "${escapeString(spec.description ?? `${spec.name} SDK for Elixir.`)}"`);
-  lines.push('    ]');
-  lines.push('  end');
-  lines.push('');
-  lines.push('  def application do');
-  lines.push('    [extra_applications: [:logger, :crypto]]');
-  lines.push('  end');
-  lines.push('');
-  lines.push('  defp elixirc_paths(:test), do: ["lib", "test/support"]');
-  lines.push('  defp elixirc_paths(_), do: ["lib"]');
-  lines.push('');
-  lines.push('  defp deps do');
-  lines.push('    [');
-  lines.push('      {:req, "~> 0.5"},');
-  lines.push('      {:plug, "~> 1.16", only: :test},');
-  lines.push('      {:ex_doc, "~> 0.34", only: :dev, runtime: false},');
-  lines.push('      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},');
-  lines.push('      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}');
-  lines.push('    ]');
-  lines.push('  end');
-  lines.push('end');
-  return lines.join('\n');
-}
-
-function renderFormatterExs(): string {
-  return '[\n  inputs: ["{mix,.formatter}.exs", "{lib,test}/**/*.{ex,exs}"]\n]';
-}
-
-function renderGitignore(): string {
-  return ['/_build/', '/deps/', '/doc/', '/cover/', 'erl_crash.dump', '*.ez', '.elixir_ls/'].join('\n');
-}
-
-function renderReadme(spec: ApiSpec, ctx: EmitterContext): string {
-  const ns = nsPascal(ctx);
-  const envVar = `${toUpperSnakeCase(ctx.namespace)}_API_KEY`;
-  return [
-    `# ${spec.name} SDK for Elixir`,
-    '',
-    spec.description ?? `Elixir SDK for the ${spec.name} API.`,
-    '',
-    '## Installation',
-    '',
-    'Add the dependency to `mix.exs`:',
-    '',
-    '```elixir',
-    'defp deps do',
-    `  [{:${ctx.namespace}, "~> ${normalizeVersion(spec.version)}"}]`,
-    'end',
-    '```',
-    '',
-    '## Usage',
-    '',
-    '```elixir',
-    `client = ${ns}.client(api_key: "sk_...")`,
-    `# or set ${envVar} and call ${ns}.client()`,
-    '```',
-    '',
-    'All API functions take the client as their first argument and return',
-    '`{:ok, result}` or `{:error, error}` tuples.',
-  ].join('\n');
-}
-
 function renderEntryModule(spec: ApiSpec, ctx: EmitterContext): string {
   const ns = nsPascal(ctx);
   const lines: string[] = [];
@@ -161,7 +54,7 @@ function renderEntryModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('  `{:ok, result}` or `{:error, error}` tuples.');
   lines.push('  """');
   lines.push('');
-  lines.push(`  @version "${normalizeVersion(spec.version)}"`);
+  lines.push('  @version Mix.Project.config()[:version]');
   lines.push('');
   lines.push('  @doc "The SDK version."');
   lines.push('  @spec version() :: String.t()');
@@ -196,12 +89,7 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   const ns = nsPascal(ctx);
   const sdk = ctx.spec.sdk;
   const retry = sdk.retry;
-  const version = normalizeVersion(spec.version);
   const envVar = `${toUpperSnakeCase(ctx.namespace)}_API_KEY`;
-  const userAgentBase = sdk.userAgent.sdkIdentifierTemplate
-    .replace('{name}', spec.name)
-    .replace('{lang}', 'elixir')
-    .replace('{version}', version);
   const auth = authHeaderSetup(spec);
   const autoIdempotency = sdk.idempotency.autoGenerateForPost && retry.maxRetries > 0;
   const timeoutEnvVar = sdk.timeout.timeoutEnvVar;
@@ -252,7 +140,6 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push(`  @retry_jitter ${retry.backoff.jitterFactor}`);
   lines.push(`  @idempotency_header "${escapeString(sdk.idempotency.headerName.toLowerCase())}"`);
   lines.push(`  @request_id_header "${escapeString(sdk.telemetry.requestIdHeader.toLowerCase())}"`);
-  lines.push(`  @user_agent_base "${escapeString(userAgentBase)}"`);
   lines.push('');
 
   // new/1
@@ -380,13 +267,8 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('    end');
   lines.push('  end');
   lines.push('');
-  if (sdk.userAgent.includeRuntimeVersion) {
-    lines.push('  defp user_agent do');
-    lines.push('    @user_agent_base <> " Elixir/" <> System.version()');
-    lines.push('  end');
-  } else {
-    lines.push('  defp user_agent, do: @user_agent_base');
-  }
+  // Matches the pre-oagen SDK's UA shape exactly: "workos-elixir/2.0.0".
+  lines.push(`  defp user_agent, do: "${ctx.namespace}-elixir/#{Application.spec(:${ctx.namespace}, :vsn)}"`);
   lines.push('');
 
   // retry

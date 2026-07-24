@@ -92,7 +92,7 @@ export const elixirEmitter: Emitter = {
   formatCommand(targetDir: string): FormatCommand | null {
     void targetDir;
     // mix format only accepts Elixir sources; filter out fixtures/README/etc.
-    // cwd is the target dir, so mix picks up the generated .formatter.exs.
+    // cwd is the target dir, so mix picks up the repo's hand-owned .formatter.exs.
     return {
       cmd: 'bash',
       args: [
