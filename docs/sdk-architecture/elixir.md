@@ -373,6 +373,12 @@ The status → kind mapping is generated from `ctx.spec.sdk.errors`. All error m
 
 ## Client Architecture
 
+Nothing in the client layer is spec-dependent — Elixir resources are standalone
+modules that take the client as their first argument, so there are no service
+accessors to generate. The entry module, `client.ex`, `cast.ex`, `page.ex`, and
+`errors.ex` are hand-maintained in the target SDK (`@oagen-ignore-file`);
+`generateClient` and `generateErrors` return `[]`.
+
 ```elixir
 defmodule WorkOS.Client do
   @moduledoc """
@@ -485,27 +491,32 @@ end
 
 ## Directory Structure
 
+Files marked `[hand]` are hand-maintained in the target SDK with
+`@oagen-ignore-file` — the writer never overwrites them and the manifest prune
+preserves them. Everything else is regenerated on every run.
+
 ```
 {output}/
-├── mix.exs                          # package manifest (app: :{namespace})
-├── .formatter.exs
-├── README.md
+├── mix.exs                          # [hand] package manifest (app: :{namespace})
+├── .formatter.exs                   # [hand]
+├── README.md                        # [hand]
 ├── lib/
-│   ├── {namespace}.ex               # entry module: version/0 + moduledoc
+│   ├── {namespace}.ex               # [hand] entry module: version/0 + moduledoc
 │   └── {namespace}/
-│       ├── client.ex                # Client struct + request/5
-│       ├── cast.ex                  # shared casting helpers
-│       ├── page.ex                  # pagination
-│       ├── errors.ex                # Error, ApiError, TransportError, ConfigurationError
+│       ├── client.ex                # [hand] Client struct + request/5
+│       ├── cast.ex                  # [hand] shared casting helpers
+│       ├── page.ex                  # [hand] pagination
+│       ├── errors.ex                # [hand] Error, ApiError, TransportError, ConfigurationError
 │       ├── {service}.ex             # one resource module per service
 │       ├── {model}.ex               # one module per model
 │       └── {enum}.ex                # one module per enum
 └── test/
-    ├── test_helper.exs
+    ├── test_helper.exs              # [hand]
     ├── support/
-    │   ├── test_fixtures.ex
+    │   ├── test_fixtures.ex         # [hand] fixture loader
     │   └── fixtures/{service}/{method}.json
     └── {namespace}/
+        ├── client_runtime_test.exs  # [hand] runtime-contract tests
         └── {service}_test.exs
 ```
 
