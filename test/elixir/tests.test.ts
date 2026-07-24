@@ -112,4 +112,26 @@ describe('elixir/tests', () => {
     expect(test).toContain('|> Plug.Conn.put_status(401)');
     expect(test).toContain('assert {:error, %Acme.ApiError{status: 401}} =');
   });
+
+  it('emits runtime-contract tests for the client', () => {
+    const files = generate();
+    const test = files.find((f) => f.path === 'test/acme/client_runtime_test.exs')!.content;
+    expect(test).toContain('defmodule Acme.ClientRuntimeTest do');
+    expect(test).toContain('test "client configuration is instance-scoped" do');
+    expect(test).toContain('assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer sk_a"]');
+    expect(test).toContain('test "per-request headers and query options are sent on the wire" do');
+    expect(test).toContain('test "user agent reports the SDK package version" do');
+    expect(test).toContain('assert ua == "acme-elixir/" <> Acme.version()');
+    expect(test).toContain('assert {:error, %Acme.TransportError{}} =');
+  });
+
+  it('emits a multi-page auto-pagination test against the first paginated operation', () => {
+    const files = generate();
+    const test = files.find((f) => f.path === 'test/acme/client_runtime_test.exs')!.content;
+    expect(test).toContain('test "auto-pagination streams items across multiple pages" do');
+    expect(test).toContain('Acme.TestFixtures.fixture("organizations/list_organizations")');
+    expect(test).toContain('conn.query_params["after"] == "cursor_page_2"');
+    expect(test).toContain('Acme.Organizations.list_organizations(build_client())');
+    expect(test).toContain('assert page |> Acme.Page.stream() |> Enum.count() == 2');
+  });
 });

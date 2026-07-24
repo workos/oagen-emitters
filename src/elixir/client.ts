@@ -73,6 +73,18 @@ function renderEntryModule(spec: ApiSpec, ctx: EmitterContext): string {
   return lines.join('\n');
 }
 
+/** Header (name, value prefix) the client authenticates with; used by generated tests. */
+export function authAssertHeader(spec: ApiSpec): { name: string; valuePrefix: string } {
+  const schemes = spec.auth ?? [];
+  const apiKeyHeader = schemes.find(
+    (s): s is Extract<typeof s, { kind: 'apiKey' }> => s.kind === 'apiKey' && s.in === 'header',
+  );
+  if (schemes.some((s) => s.kind === 'bearer') || schemes.length === 0 || !apiKeyHeader) {
+    return { name: 'authorization', valuePrefix: 'Bearer ' };
+  }
+  return { name: apiKeyHeader.name.toLowerCase(), valuePrefix: '' };
+}
+
 /** Authorization strategy derived from the spec's auth schemes. */
 function authHeaderSetup(spec: ApiSpec): {
   reqOption: string | null;

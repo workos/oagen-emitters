@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, ResolvedOperation } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
-import { moduleName, fileName, fullModuleName, functionName, varName, nsPascal } from './naming.js';
+import { moduleName, fileName, fullModuleName, functionName, varName, nsPascal, escapeString } from './naming.js';
+import { authAssertHeader } from './client.js';
 import { buildFixtureEntries, generateFixtureFiles, fixtureName } from './fixtures.js';
 import { scopedMountGroups, type MountGroup } from '../shared/resolved-ops.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
@@ -46,7 +47,150 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       overwriteExisting: true,
     });
   }
+
+  files.push({
+    path: `test/${ctx.namespace}/client_runtime_test.exs`,
+    content: renderClientRuntimeTests(ctx, groups, exported, fixtures),
+    integrateTarget: true,
+    overwriteExisting: true,
+  });
   return files;
+}
+
+/** First paginated operation with a fixture — target for the auto-pagination test. */
+function findPaginatedOp(
+  ctx: EmitterContext,
+  groups: Map<string, MountGroup>,
+  exported: ReturnType<typeof buildExportedClassNameSet>,
+  fixtures: Map<string, unknown>,
+): { call: string; fixture: string; cursorParam: string } | null {
+  let fallback: { call: string; fixture: string; cursorParam: string } | null = null;
+  for (const group of [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const op of testableOps(group)) {
+      const operation = op.resolved.operation;
+      if (!planOperation(operation).isPaginated || !operation.pagination) continue;
+      const fixture = fixtureName(group.name, op.fname);
+      if (!fixtures.has(fixture)) continue;
+      const target = resolveServiceTarget(group.name, exported, moduleName);
+      const call = `${fullModuleName(ctx, target)}.${op.fname}(${['build_client()', ...op.callArgs].join(', ')})`;
+      const candidate = { call, fixture, cursorParam: operation.pagination.param };
+      if (op.callArgs.length === 0) return candidate;
+      fallback ??= candidate;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Runtime-contract behavior tests: instance-scoped configuration, per-request
+ * options on the wire, typed transport errors, and multi-page auto-pagination.
+ */
+function renderClientRuntimeTests(
+  ctx: EmitterContext,
+  groups: Map<string, MountGroup>,
+  exported: ReturnType<typeof buildExportedClassNameSet>,
+  fixtures: Map<string, unknown>,
+): string {
+  const ns = nsPascal(ctx);
+  const auth = authAssertHeader(ctx.spec);
+  const idemHeader = escapeString(ctx.spec.sdk.idempotency.headerName.toLowerCase());
+  const paginated = findPaginatedOp(ctx, groups, exported, fixtures);
+
+  const lines: string[] = [];
+  lines.push(`defmodule ${ns}.ClientRuntimeTest do`);
+  lines.push('  use ExUnit.Case, async: true');
+  lines.push('');
+  lines.push('  defp build_client(opts \\\\ []) do');
+  lines.push(`    [api_key: "sk_test_key", req_options: [plug: {Req.Test, ${ns}.Client}]]`);
+  lines.push('    |> Keyword.merge(opts)');
+  lines.push(`    |> ${ns}.Client.new()`);
+  lines.push('  end');
+  lines.push('');
+  lines.push('  test "client configuration is instance-scoped" do');
+  lines.push('    client_a = build_client(api_key: "sk_a")');
+  lines.push('    client_b = build_client(api_key: "sk_b")');
+  lines.push('');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push(`      assert Plug.Conn.get_req_header(conn, "${auth.name}") == ["${auth.valuePrefix}sk_a"]`);
+  lines.push('      Req.Test.json(conn, %{})');
+  lines.push('    end)');
+  lines.push('');
+  lines.push(`    assert {:ok, _} = ${ns}.Client.request(client_a, :get, "/instance-scope")`);
+  lines.push('');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push(`      assert Plug.Conn.get_req_header(conn, "${auth.name}") == ["${auth.valuePrefix}sk_b"]`);
+  lines.push('      Req.Test.json(conn, %{})');
+  lines.push('    end)');
+  lines.push('');
+  lines.push(`    assert {:ok, _} = ${ns}.Client.request(client_b, :get, "/instance-scope")`);
+  lines.push('  end');
+  lines.push('');
+  lines.push('  test "per-request headers and query options are sent on the wire" do');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push('      assert Plug.Conn.get_req_header(conn, "x-request-option") == ["honored"]');
+  lines.push('      assert Plug.Conn.fetch_query_params(conn).query_params["limit"] == "2"');
+  lines.push('      Req.Test.json(conn, %{})');
+  lines.push('    end)');
+  lines.push('');
+  lines.push('    assert {:ok, _} =');
+  lines.push(`             ${ns}.Client.request(build_client(), :get, "/option-check", %{limit: 2},`);
+  lines.push('               headers: [{"x-request-option", "honored"}]');
+  lines.push('             )');
+  lines.push('  end');
+  lines.push('');
+  lines.push('  test "per-request idempotency key is sent on the wire" do');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push(`      assert Plug.Conn.get_req_header(conn, "${idemHeader}") == ["idem_123"]`);
+  lines.push('      Req.Test.json(conn, %{})');
+  lines.push('    end)');
+  lines.push('');
+  lines.push('    assert {:ok, _} =');
+  lines.push(`             ${ns}.Client.request(build_client(), :post, "/option-check", %{},`);
+  lines.push('               idempotency_key: "idem_123"');
+  lines.push('             )');
+  lines.push('  end');
+  lines.push('');
+  lines.push('  test "user agent reports the SDK package version" do');
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push('      assert [ua] = Plug.Conn.get_req_header(conn, "user-agent")');
+  lines.push(`      assert ua == "${ctx.namespace}-elixir/" <> ${ns}.version()`);
+  lines.push('      Req.Test.json(conn, %{})');
+  lines.push('    end)');
+  lines.push('');
+  lines.push(`    assert {:ok, _} = ${ns}.Client.request(build_client(), :get, "/ua-check")`);
+  lines.push('  end');
+  lines.push('');
+  lines.push(`  test "transport failures surface as ${ns}.TransportError" do`);
+  lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+  lines.push('      Req.Test.transport_error(conn, :econnrefused)');
+  lines.push('    end)');
+  lines.push('');
+  lines.push('    client = build_client(max_retries: 0)');
+  lines.push(`    assert {:error, %${ns}.TransportError{}} = ${ns}.Client.request(client, :get, "/down")`);
+  lines.push('  end');
+  if (paginated) {
+    lines.push('');
+    lines.push('  test "auto-pagination streams items across multiple pages" do');
+    lines.push(`    base = ${ns}.TestFixtures.fixture("${paginated.fixture}")`);
+    lines.push('    page1 = Map.put(base, "list_metadata", %{"before" => nil, "after" => "cursor_page_2"})');
+    lines.push('    page2 = Map.put(base, "list_metadata", %{"before" => nil, "after" => nil})');
+    lines.push('');
+    lines.push(`    Req.Test.stub(${ns}.Client, fn conn ->`);
+    lines.push('      conn = Plug.Conn.fetch_query_params(conn)');
+    lines.push('');
+    lines.push(`      if conn.query_params["${escapeString(paginated.cursorParam)}"] == "cursor_page_2" do`);
+    lines.push('        Req.Test.json(conn, page2)');
+    lines.push('      else');
+    lines.push('        Req.Test.json(conn, page1)');
+    lines.push('      end');
+    lines.push('    end)');
+    lines.push('');
+    lines.push(`    assert {:ok, %${ns}.Page{} = page} = ${paginated.call}`);
+    lines.push(`    assert page |> ${ns}.Page.stream() |> Enum.count() == 2`);
+    lines.push('  end');
+  }
+  lines.push('end');
+  return lines.join('\n');
 }
 
 function renderTestFixturesModule(ns: string): string {
