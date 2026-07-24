@@ -117,7 +117,7 @@ describe('elixir/resources', () => {
     const content = files[0].content;
     expect(content).toContain('def list_organizations(client, params \\\\ %{}, opts \\\\ []) do');
     expect(content).toContain('fetch_next = fn cursor ->');
-    expect(content).toContain('|> Map.put("after", cursor)');
+    expect(content).toContain('Acme.Page.next_params(params, "after", cursor)');
     expect(content).toContain('{:ok, Acme.Page.from_map(body, "data", &Acme.Organization.from_map/1, fetch_next)}');
     expect(content).toContain('Acme.Page.t(Acme.Organization.t())');
   });

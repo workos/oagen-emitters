@@ -184,9 +184,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
     for (const arg of recallArgs) {
       lines.push(`          ${arg},`);
     }
-    lines.push(
-      `          params |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("${escapeString(cursorParam)}", cursor),`,
-    );
+    lines.push(`          ${ns}.Page.next_params(params, "${escapeString(cursorParam)}", cursor),`);
     lines.push('          opts');
     lines.push('        )');
     lines.push('      end');

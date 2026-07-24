@@ -3,6 +3,12 @@ import { toUpperSnakeCase } from '@workos/oagen';
 import { errorKindAtom } from './errors.js';
 import { escapeString, nsPascal } from './naming.js';
 
+/** Elixir integer literal; credo requires underscore digit groups above 9999. */
+function intLiteral(n: number): string {
+  const s = String(Math.round(n));
+  return s.length > 4 ? s.replace(/\B(?=(\d{3})+(?!\d))/g, '_') : s;
+}
+
 /**
  * Generate the SDK scaffolding: entry module, HTTP client, casting helpers,
  * and pagination. Everything policy-driven reads from `ctx.spec.sdk`.
@@ -131,12 +137,12 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('');
   lines.push(`  @api_key_env "${envVar}"`);
   lines.push(`  @default_base_url "${escapeString(spec.baseUrl)}"`);
-  lines.push(`  @default_timeout_ms ${Math.round(sdk.timeout.defaultTimeoutSeconds * 1000)}`);
+  lines.push(`  @default_timeout_ms ${intLiteral(sdk.timeout.defaultTimeoutSeconds * 1000)}`);
   lines.push(`  @default_max_retries ${retry.maxRetries}`);
   lines.push(`  @retryable_status_codes [${retry.retryableStatusCodes.join(', ')}]`);
-  lines.push(`  @initial_retry_delay_ms ${Math.round(retry.backoff.initialDelay * 1000)}`);
+  lines.push(`  @initial_retry_delay_ms ${intLiteral(retry.backoff.initialDelay * 1000)}`);
   lines.push(`  @retry_multiplier ${retry.backoff.multiplier}`);
-  lines.push(`  @max_retry_delay_ms ${Math.round(retry.backoff.maxDelay * 1000)}`);
+  lines.push(`  @max_retry_delay_ms ${intLiteral(retry.backoff.maxDelay * 1000)}`);
   lines.push(`  @retry_jitter ${retry.backoff.jitterFactor}`);
   lines.push(`  @idempotency_header "${escapeString(sdk.idempotency.headerName.toLowerCase())}"`);
   lines.push(`  @request_id_header "${escapeString(sdk.telemetry.requestIdHeader.toLowerCase())}"`);
@@ -214,20 +220,19 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('');
   lines.push('    req = Req.new(req_options) |> Req.merge(client.req_options)');
   lines.push('');
-  lines.push('    case Req.request(req) do');
-  lines.push('      {:ok, %Req.Response{status: status} = response} when status in 200..299 ->');
-  lines.push('        {:ok, decode_body(response)}');
-  lines.push('');
-  lines.push('      {:ok, %Req.Response{} = response} ->');
-  lines.push('        {:error, api_error(response)}');
-  lines.push('');
-  lines.push('      {:error, %{__exception__: true} = exception} ->');
-  lines.push(`        {:error, %${ns}.TransportError{message: Exception.message(exception), reason: exception}}`);
-  lines.push('');
-  lines.push('      {:error, reason} ->');
-  lines.push(`        {:error, %${ns}.TransportError{message: inspect(reason), reason: reason}}`);
-  lines.push('    end');
+  lines.push('    req |> Req.request() |> handle_response()');
   lines.push('  end');
+  lines.push('');
+  lines.push('  defp handle_response({:ok, %Req.Response{status: status} = response})');
+  lines.push('       when status in 200..299,');
+  lines.push('       do: {:ok, decode_body(response)}');
+  lines.push('');
+  lines.push('  defp handle_response({:ok, %Req.Response{} = response}), do: {:error, api_error(response)}');
+  lines.push('');
+  // Req.request/1's spec pins errors to Exception.t(); a broader
+  // {:error, reason} fallback clause would trip dialyzer pattern_match_cov.
+  lines.push('  defp handle_response({:error, %{__exception__: true} = exception}),');
+  lines.push(`    do: {:error, %${ns}.TransportError{message: Exception.message(exception), reason: exception}}`);
   lines.push('');
 
   // helpers
@@ -324,18 +329,14 @@ function renderClientModule(spec: ApiSpec, ctx: EmitterContext): string {
   lines.push('  defp error_message(%{"error" => message}, _status) when is_binary(message), do: message');
   lines.push('  defp error_message(_body, status), do: "HTTP " <> Integer.to_string(status)');
   lines.push('');
-  lines.push('  defp error_kind(status) do');
-  lines.push('    case status do');
   const statusCodes = Object.keys(sdk.errors.statusCodeMap)
     .map(Number)
     .sort((a, b) => a - b);
   for (const status of statusCodes) {
-    lines.push(`      ${status} -> ${errorKindAtom(sdk.errors.statusCodeMap[status])}`);
+    lines.push(`  defp error_kind(${status}), do: ${errorKindAtom(sdk.errors.statusCodeMap[status])}`);
   }
-  lines.push(`      status when status >= 500 -> ${errorKindAtom(sdk.errors.serverErrorKind)}`);
-  lines.push(`      _ -> ${errorKindAtom(sdk.errors.clientErrorKind)}`);
-  lines.push('    end');
-  lines.push('  end');
+  lines.push(`  defp error_kind(status) when status >= 500, do: ${errorKindAtom(sdk.errors.serverErrorKind)}`);
+  lines.push(`  defp error_kind(_status), do: ${errorKindAtom(sdk.errors.clientErrorKind)}`);
 
   if (timeoutEnvVar) {
     lines.push('');
@@ -459,6 +460,14 @@ function renderPageModule(ctx: EmitterContext): string {
   lines.push('');
   lines.push('  defp cast_data(values, fun) when is_list(values), do: Enum.map(values, fun)');
   lines.push('  defp cast_data(_other, _fun), do: []');
+  lines.push('');
+  lines.push('  @doc false');
+  lines.push('  @spec next_params(map() | keyword(), String.t(), String.t()) :: map()');
+  lines.push('  def next_params(params, cursor_key, cursor) do');
+  lines.push('    params');
+  lines.push('    |> Map.new(fn {k, v} -> {to_string(k), v} end)');
+  lines.push('    |> Map.put(cursor_key, cursor)');
+  lines.push('  end');
   lines.push('');
   lines.push('  @doc "The cursor for the next page, or nil when this is the last page."');
   lines.push('  @spec after_cursor(t(term())) :: String.t() | nil');

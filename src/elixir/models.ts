@@ -28,7 +28,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
 /** Required fields first (stable order within each partition). */
 function orderedFields(model: Model): Field[] {
-  return [...model.fields.filter((f) => f.required), ...model.fields.filter((f) => !f.required)];
+  // Deduplicate fields that map to the same snake_case struct key (e.g. a spec
+  // exposing both `created_at` and `createdAt`) — first occurrence in spec
+  // order wins, matching the Python emitter. Elixir rejects duplicate
+  // defstruct keys outright.
+  const seenFieldNames = new Set<string>();
+  const fields = model.fields.filter((f) => {
+    const name = fieldName(f.name);
+    if (seenFieldNames.has(name)) return false;
+    seenFieldNames.add(name);
+    return true;
+  });
+  return [...fields.filter((f) => f.required), ...fields.filter((f) => !f.required)];
 }
 
 function renderModel(model: Model, ctx: EmitterContext, baseNames: CastNames): string {

@@ -156,6 +156,23 @@ describe('elixir/models', () => {
     expect(files[0].content).toContain('def from_map(map) when is_map(map), do: %__MODULE__{}');
   });
 
+  it('deduplicates fields that snake_case to the same struct key', () => {
+    const files = generate([
+      {
+        name: 'Dupe',
+        fields: [
+          { name: 'created_at', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'createdAt', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ]);
+    const structKeys = files[0].content.match(/:created_at/g);
+    expect(structKeys).toHaveLength(1);
+    expect(files[0].content).toContain('created_at: map["created_at"]');
+    expect(files[0].content).not.toContain('map["createdAt"]');
+    expect(files[0].content).not.toContain('"createdAt" =>');
+  });
+
   it('escapes doc terminators in descriptions', () => {
     const files = generate([
       {

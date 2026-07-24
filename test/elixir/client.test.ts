@@ -31,17 +31,17 @@ describe('elixir/client', () => {
     expect(client).toContain('@retryable_status_codes [429, 500, 502, 503, 504]');
     expect(client).toContain('@default_max_retries 3');
     expect(client).toContain('@initial_retry_delay_ms 1000');
-    expect(client).toContain('@max_retry_delay_ms 30000');
+    expect(client).toContain('@max_retry_delay_ms 30_000');
     expect(client).toContain('retry: &retryable?/2');
   });
 
   it('maps status codes to error kinds from the error policy', () => {
     const files = generate();
     const client = files.find((f) => f.path === 'lib/acme/client.ex')!.content;
-    expect(client).toContain('400 -> :bad_request');
-    expect(client).toContain('401 -> :authentication');
-    expect(client).toContain('429 -> :rate_limit_exceeded');
-    expect(client).toContain('status when status >= 500 -> :server');
+    expect(client).toContain('defp error_kind(400), do: :bad_request');
+    expect(client).toContain('defp error_kind(401), do: :authentication');
+    expect(client).toContain('defp error_kind(429), do: :rate_limit_exceeded');
+    expect(client).toContain('defp error_kind(status) when status >= 500, do: :server');
   });
 
   it('decodes JSON with the native JSON module, never Jason', () => {
