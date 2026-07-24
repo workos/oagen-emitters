@@ -272,11 +272,11 @@ describe('elixir/resources', () => {
         ],
       },
     ];
-    const authResponse = {
+    const authResponse: Model = {
       name: 'AuthenticateResponse',
       fields: [{ name: 'user', type: { kind: 'primitive', type: 'string' }, required: true }],
     };
-    const variant = {
+    const variant: Model = {
       name: 'PasswordVariant',
       fields: [
         { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },

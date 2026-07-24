@@ -11,8 +11,6 @@ import type {
 import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
-import { generateClient } from './client.js';
-import { generateErrors } from './errors.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
@@ -64,12 +62,15 @@ export const elixirEmitter: Emitter = {
     return ensureTrailingNewlines(generateResources(services, ctx));
   },
 
-  generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateClient(spec, ctx));
+  generateClient(): GeneratedFile[] {
+    // The entry module, HTTP client, Cast, and Page are hand-maintained in the
+    // target SDK (@oagen-ignore-file) — nothing about them is spec-dependent.
+    return [];
   },
 
-  generateErrors(ctx: EmitterContext): GeneratedFile[] {
-    return ensureTrailingNewlines(generateErrors(ctx));
+  generateErrors(): GeneratedFile[] {
+    // errors.ex is hand-maintained in the target SDK (@oagen-ignore-file).
+    return [];
   },
 
   generateTypeSignatures(): GeneratedFile[] {
