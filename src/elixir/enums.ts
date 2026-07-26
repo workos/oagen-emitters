@@ -69,11 +69,13 @@ function renderEnum(enumDef: Enum, ctx: EmitterContext): string {
   lines.push(`defmodule ${fullModuleName(ctx, enumDef.name)} do`);
   lines.push('  @moduledoc """');
   lines.push(`  ${escapeDoc(enumDef.name)} enum.`);
-  const documented = values.filter((v) => v.description);
+  const documented = values.filter((v) => v.description || v.deprecated);
   if (documented.length > 0) {
     lines.push('');
     for (const v of documented) {
-      lines.push(`  - \`${String(v.value)}\` — ${escapeDoc(v.description ?? '')}`);
+      const tag = v.deprecated ? '(deprecated)' : '';
+      const doc = [tag, escapeDoc(v.description ?? '')].filter((s) => s.length > 0).join(' ');
+      lines.push(`  - \`${String(v.value)}\` — ${doc}`);
     }
   }
   lines.push('  """');

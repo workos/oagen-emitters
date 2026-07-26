@@ -2,6 +2,7 @@ import type {
   EmitterContext,
   GeneratedFile,
   Operation,
+  Parameter,
   Service,
   ResolvedOperation,
   ResolvedWrapper,
@@ -66,20 +67,24 @@ function renderService(group: MountGroup, target: string, ctx: EmitterContext, n
   const methods: string[] = [];
   const seen = new Set<string>();
   for (const resolved of group.resolvedOps) {
-    const fname = functionName(resolved.methodName);
-    if (!seen.has(fname)) {
-      seen.add(fname);
-      if ((resolved as { urlBuilder?: boolean }).urlBuilder) {
-        methods.push(renderUrlBuilder(resolved, fname, ctx));
-      } else {
-        methods.push(renderMethod(resolved, fname, ctx, names));
+    // When wrappers exist (union-body operations like Authenticate), emit only
+    // the wrappers — the raw base method is not part of the SDK surface.
+    if ((resolved.wrappers?.length ?? 0) > 0) {
+      for (const wrapper of resolved.wrappers!) {
+        const wname = functionName(wrapper.name);
+        if (seen.has(wname)) continue;
+        seen.add(wname);
+        methods.push(renderWrapper(resolved, wrapper, wname, ctx, names));
       }
+      continue;
     }
-    for (const wrapper of resolved.wrappers ?? []) {
-      const wname = functionName(wrapper.name);
-      if (seen.has(wname)) continue;
-      seen.add(wname);
-      methods.push(renderWrapper(resolved, wrapper, wname, ctx, names));
+    const fname = functionName(resolved.methodName);
+    if (seen.has(fname)) continue;
+    seen.add(fname);
+    if ((resolved as { urlBuilder?: boolean }).urlBuilder) {
+      methods.push(renderUrlBuilder(resolved, fname, ctx));
+    } else {
+      methods.push(renderMethod(resolved, fname, ctx, names));
     }
   }
   if (methods.length === 0) return null;
@@ -103,6 +108,17 @@ interface PathParamInfo {
   wireName: string;
   variable: string;
   description?: string;
+  deprecated?: boolean;
+}
+
+/** `:atom` doc entry for a query param, tagging spec-deprecated ones. */
+function queryParamDoc(p: Parameter): string {
+  return `\`:${varName(p.name)}\`${p.deprecated ? ' (deprecated)' : ''}`;
+}
+
+/** Doc bullet for a path param, tagging spec-deprecated ones. */
+function pathParamDocLine(p: PathParamInfo): string {
+  return `    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}${p.deprecated ? ' (deprecated)' : ''}`;
 }
 
 function pathParamInfos(op: Operation): PathParamInfo[] {
@@ -115,6 +131,7 @@ function pathParamInfos(op: Operation): PathParamInfo[] {
       wireName: segment.name,
       variable: varName(segment.name),
       description: irParam?.description,
+      deprecated: irParam?.deprecated,
     });
   }
   return infos;
@@ -229,13 +246,13 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   lines.push('  ## Parameters');
   lines.push('');
   for (const p of pathParams) {
-    lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
+    lines.push(pathParamDocLine(p));
   }
   if (hasParams) {
     const hidden = buildHiddenParams(resolved);
     const visibleQueryParams = op.queryParams.filter((p) => !hidden.has(p.name));
     if (isQueryMethod && visibleQueryParams.length > 0) {
-      const namesList = visibleQueryParams.map((p) => `\`:${varName(p.name)}\``).join(', ');
+      const namesList = visibleQueryParams.map(queryParamDoc).join(', ');
       lines.push(`    * \`params\` — query parameters: ${namesList}`);
     } else if (isQueryMethod) {
       lines.push('    * `params` — query parameters');
@@ -326,10 +343,10 @@ function renderUrlBuilder(resolved: ResolvedOperation, fname: string, ctx: Emitt
   lines.push('  ## Parameters');
   lines.push('');
   for (const p of pathParams) {
-    lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
+    lines.push(pathParamDocLine(p));
   }
   if (visibleQueryParams.length > 0) {
-    const namesList = visibleQueryParams.map((p) => `\`:${varName(p.name)}\``).join(', ');
+    const namesList = visibleQueryParams.map(queryParamDoc).join(', ');
     lines.push(`    * \`params\` — query parameters: ${namesList}`);
   } else {
     lines.push('    * `params` — query parameters');
@@ -394,7 +411,7 @@ function renderWrapper(
   lines.push('  ## Parameters');
   lines.push('');
   for (const p of pathParams) {
-    lines.push(`    * \`${p.variable}\` — ${escapeDoc(p.description ?? 'path parameter')}`);
+    lines.push(pathParamDocLine(p));
   }
   const paramsDocParts: string[] = [];
   if (required.length > 0) {

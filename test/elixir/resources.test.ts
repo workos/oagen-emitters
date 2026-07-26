@@ -301,8 +301,8 @@ describe('elixir/resources', () => {
     }));
     const files = generateResources(services, ctx);
     const content = files[0].content;
-    // Base method and wrapper both exist.
-    expect(content).toContain('def create_authenticate(client, params \\\\ %{}, opts \\\\ []) do');
+    // Split operations expose only their wrappers — no raw base method.
+    expect(content).not.toContain('def create_authenticate(');
     expect(content).toContain('def authenticate_with_password(client, params \\\\ %{}, opts \\\\ []) do');
     // Wrapper pins the grant type and fills client credentials.
     expect(content).toContain('Acme.Client.merge_defaults(%{"grant_type" => "password"})');
@@ -331,6 +331,36 @@ describe('elixir/resources', () => {
     ];
     const files = generateResources(services, ctxFor(services));
     expect(files[0].content).toContain('@deprecated');
+  });
+
+  it('tags deprecated query params in the @doc parameter list', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'listOrganizations',
+            queryParams: [
+              {
+                name: 'domain',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                deprecated: true,
+              },
+              {
+                name: 'limit',
+                type: { kind: 'primitive', type: 'integer' },
+                required: false,
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services));
+    expect(files[0].content).toContain('`:domain` (deprecated)');
+    expect(files[0].content).toContain('`:limit`');
+    expect(files[0].content).not.toContain('`:limit` (deprecated)');
   });
 
   it('renders a complete resource module', () => {

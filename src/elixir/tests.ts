@@ -88,7 +88,9 @@ function testableOps(group: MountGroup, ctx: EmitterContext): TestableOp[] {
   const out: TestableOp[] = [];
   const seen = new Set<string>();
   for (const resolved of group.resolvedOps) {
-    if (!(resolved as { urlBuilder?: boolean }).urlBuilder) {
+    // Split operations expose only their wrappers (matches resources.ts).
+    const hasWrappers = (resolved.wrappers?.length ?? 0) > 0;
+    if (!hasWrappers && !(resolved as { urlBuilder?: boolean }).urlBuilder) {
       const fname = functionName(resolved.methodName);
       if (!seen.has(fname)) {
         seen.add(fname);

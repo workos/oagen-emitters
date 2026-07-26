@@ -87,6 +87,26 @@ describe('elixir/models', () => {
     expect(file.content).not.toContain('WorkOS');
   });
 
+  it('lists deprecated fields in a moduledoc section', () => {
+    const model: Model = {
+      name: 'Widget',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'actors',
+          type: { kind: 'primitive', type: 'string' },
+          required: false,
+          deprecated: true,
+          description: 'Deprecated. Use `actor_names` instead.',
+        },
+      ],
+    };
+    const [file] = generate([model]);
+    expect(file.content).toContain('## Deprecated fields');
+    expect(file.content).toContain('* `:actors` — Deprecated. Use `actor_names` instead.');
+    expect(file.content).not.toContain('* `:id`');
+  });
+
   it('orders required fields before optional ones in defstruct and @type t', () => {
     const [file] = generate([organization, organizationDomain]);
     const structIdx = file.content.indexOf(':domains');

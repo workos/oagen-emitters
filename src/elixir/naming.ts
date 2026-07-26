@@ -1,6 +1,6 @@
 import type { EmitterContext } from '@workos/oagen';
 import { toPascalCase, toSnakeCase } from '@workos/oagen';
-import { applyAcronymFixes } from '../shared/naming-utils.js';
+import { applyAcronymFixes, stripUrnPrefix } from '../shared/naming-utils.js';
 
 /**
  * Core generated module short-names that a model/enum must not shadow.
@@ -67,7 +67,7 @@ function sanitizeSnake(snake: string): string {
 
 /** PascalCase module short name for a model/enum/service, acronym-fixed and collision-guarded. */
 export function moduleName(name: string): string {
-  const pascal = applyAcronymFixes(toPascalCase(name));
+  const pascal = applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));
   return RESERVED_MODULE_NAMES.has(pascal) ? `${pascal}Model` : pascal;
 }
 

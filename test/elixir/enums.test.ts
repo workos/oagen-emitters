@@ -33,6 +33,22 @@ describe('elixir/enums', () => {
     expect(file.content).toContain('def dump(:manual), do: "manual"');
   });
 
+  it('tags deprecated values in the moduledoc value list', () => {
+    const [file] = generate([
+      {
+        name: 'Status',
+        values: [
+          { name: 'ACTIVE', value: 'active' },
+          { name: 'LINKED', value: 'linked', deprecated: true },
+          { name: 'LEGACY', value: 'legacy', deprecated: true, description: 'Use `active` instead.' },
+        ],
+      },
+    ]);
+    expect(file.content).toContain('- `linked` — (deprecated)');
+    expect(file.content).toContain('- `legacy` — (deprecated) Use `active` instead.');
+    expect(file.content).not.toContain('- `active` —');
+  });
+
   it('passes unknown wire values through for forward compatibility', () => {
     const [file] = generate([strategy]);
     expect(file.content).toContain('def cast(other), do: other');

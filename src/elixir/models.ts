@@ -58,6 +58,18 @@ function renderModel(model: Model, ctx: EmitterContext, baseNames: CastNames): s
       .split('\n')
       .join('\n  ')}`,
   );
+  // Elixir has no struct-field @deprecated attribute — surface spec
+  // deprecations as a moduledoc section instead.
+  const deprecatedFields = fields.filter((f) => f.deprecated);
+  if (deprecatedFields.length > 0) {
+    lines.push('');
+    lines.push('  ## Deprecated fields');
+    lines.push('');
+    for (const field of deprecatedFields) {
+      const note = field.description ? ` — ${escapeDoc(field.description).split('\n').join(' ')}` : '';
+      lines.push(`    * \`:${fieldName(field.name)}\`${note}`);
+    }
+  }
   lines.push('  """');
   lines.push('');
 
