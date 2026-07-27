@@ -1078,4 +1078,68 @@ describe('generateResources', () => {
     // The old identity guard would leave NotGiven in the union → not iterable.
     expect(content).not.toContain('if redirect_uris is not NOT_GIVEN:');
   });
+
+  it('surfaces inferFromClient query params as optional overrides on url-builder ops', () => {
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/user_management/authorize',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'client_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                description: 'The unique identifier of the WorkOS environment client.',
+              },
+              { name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'state', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services },
+      resolvedOperations: [
+        {
+          operation: services[0].operations[0],
+          service: services[0],
+          methodName: 'get_authorization_url',
+          mountOn: 'UserManagement',
+          defaults: { response_type: 'code' },
+          inferFromClient: ['client_id'],
+          urlBuilder: true,
+        },
+      ] as any,
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // client_id surfaces as an optional keyword argument, not a required one
+    expect(content).toContain('def get_authorization_url(');
+    expect(content).toContain('client_id: Optional[str] = None,');
+    // Explicit argument lands in params (None is filtered by the comprehension)
+    expect(content).toContain('"client_id": client_id,');
+    // Constant defaults still injected
+    expect(content).toContain('params["response_type"] = "code"');
+    // Client config only fills client_id when the caller did not pass one
+    expect(content).toContain('if "client_id" not in params and self._client.client_id is not None:');
+    // Docstring documents the fallback
+    expect(content).toContain("Defaults to the client's configured client_id.");
+    // Still a client-side URL builder, no HTTP request
+    expect(content).toContain('return self._client.build_url(');
+    expect(content).not.toContain('self._client.request(');
+  });
 });

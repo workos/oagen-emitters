@@ -18,6 +18,7 @@ import {
   scopedMountGroups,
   getOpDefaults,
   getOpInferFromClient,
+  getUrlBuilderClientOverrides,
   buildHiddenParams,
   collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
@@ -79,13 +80,22 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
       if (emittedMethodNames.has(method)) continue;
 
       const resolved = lookupResolved(op, lookup);
-      // Skip url-builder operations: these are spec-marked client-side URL
-      // constructors (no HTTP), and the Ruby SDK provides them via
-      // hand-maintained inline @oagen-ignore extensions on the relevant
-      // service class instead of generating an HTTP wrapper that would
-      // incorrectly hit the API.
+      // Url-builder operations are spec-marked client-side URL constructors
+      // (no HTTP): emit a method that assembles the URL locally instead of an
+      // HTTP wrapper that would incorrectly hit the API.
       if (resolved?.urlBuilder) {
         emittedMethodNames.add(method);
+        requires.add('uri');
+        methodBodies.push(
+          emitUrlBuilderMethod({
+            op,
+            method,
+            defaults: getOpDefaults(resolved),
+            inferFromClient: getOpInferFromClient(resolved),
+            clientOverrides: getUrlBuilderClientOverrides(op, resolved),
+            hiddenParams: buildHiddenParams(resolved),
+          }),
+        );
         continue;
       }
 
@@ -137,6 +147,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // Zeitwerk autoloads every WorkOS::* constant; only stdlib requires.
     if (requires.has('json')) {
       lines.push(`require 'json'`);
+      if (requires.has('uri')) lines.push(`require 'uri'`);
       lines.push('');
     }
     lines.push('module WorkOS');
@@ -172,6 +183,152 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
   }
 
   return files;
+}
+
+/**
+ * Build a Ruby method for a url-builder operation: assembles the URL
+ * client-side from the configured base URL, makes no HTTP request.
+ *
+ * inferFromClient query params (e.g. `client_id` on an OAuth authorize URL)
+ * surface as optional keyword args that override the client's configured
+ * value — a multi-tenant caller builds URLs for several applications from
+ * one configured client. See getUrlBuilderClientOverrides.
+ */
+function emitUrlBuilderMethod(args: {
+  op: Operation;
+  method: string;
+  defaults: Record<string, string | number | boolean>;
+  inferFromClient: string[];
+  clientOverrides: Set<string>;
+  hiddenParams: Set<string>;
+}): string {
+  const { op, method, defaults, inferFromClient, clientOverrides, hiddenParams } = args;
+  for (const field of clientOverrides) hiddenParams.delete(field);
+
+  const pathParams = op.pathParams ?? [];
+  const queryParams = (op.queryParams ?? []).filter((q) => !hiddenParams.has(q.name));
+  const isOverride = (q: Parameter): boolean => clientOverrides.has(q.name);
+  const isRequiredKwarg = (q: Parameter): boolean => Boolean(q.required) && !isOverride(q);
+
+  const lines: string[] = [];
+
+  // YARD docs.
+  const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
+  lines.push(`    # ${summary.split('\n')[0] ?? ''}`);
+  lines.push('    # Builds the URL client-side; no HTTP request is made.');
+  if (op.deprecated) lines.push('    # @deprecated');
+  for (const p of pathParams) {
+    const n = safeParamName(p.name);
+    lines.push(`    # @param ${n} [${mapTypeRefForYard(p.type)}] ${oneLine(p.description)}`.trimEnd());
+  }
+  for (const q of queryParams) {
+    const n = safeParamName(q.name);
+    const type = mapTypeRefForYard(q.type);
+    const alreadyNilable = type.split(', ').includes('nil');
+    const suffix = isRequiredKwarg(q) || alreadyNilable ? '' : ', nil';
+    const overrideNote = isOverride(q) ? ` Defaults to the client's configured ${fieldName(q.name)}.` : '';
+    lines.push(`    # @param ${n} [${type}${suffix}] ${oneLine(q.description)}${overrideNote}`.trimEnd());
+  }
+  lines.push('    # @return [String]');
+
+  // Signature: required kwargs first, then optional (overrides default to nil).
+  const sigParts: string[] = [];
+  const seenParamNames = new Set<string>();
+  for (const p of pathParams) {
+    const n = safeParamName(p.name);
+    if (seenParamNames.has(n)) continue;
+    seenParamNames.add(n);
+    sigParts.push(`${n}:`);
+  }
+  for (const q of queryParams) {
+    if (!isRequiredKwarg(q)) continue;
+    const n = safeParamName(q.name);
+    if (seenParamNames.has(n)) continue;
+    seenParamNames.add(n);
+    sigParts.push(`${n}:`);
+  }
+  for (const q of queryParams) {
+    if (isRequiredKwarg(q)) continue;
+    const n = safeParamName(q.name);
+    if (seenParamNames.has(n)) continue;
+    seenParamNames.add(n);
+    // Unlike HTTP methods, spec defaults are not surfaced here: a URL builder
+    // must only emit query params the caller actually chose (e.g. screen_hint
+    // is only valid for the authkit provider), letting the server apply its
+    // own defaults. Matches the Python emitter's url-builder behavior.
+    sigParts.push(`${n}: nil`);
+  }
+
+  if (sigParts.length === 0) {
+    lines.push(`    def ${method}`);
+  } else if (sigParts.length === 1 && sigParts[0].length < 60) {
+    lines.push(`    def ${method}(${sigParts[0]})`);
+  } else {
+    lines.push(`    def ${method}(`);
+    for (let i = 0; i < sigParts.length; i++) {
+      const sep = i === sigParts.length - 1 ? '' : ',';
+      lines.push(`      ${sigParts[i]}${sep}`);
+    }
+    lines.push('    )');
+  }
+
+  if (op.deprecated) {
+    lines.push(`      warn "[DEPRECATION] \\\`${method}\\\` is deprecated.", uplevel: 1`);
+  }
+
+  // Query hash from visible params; `.compact` drops omitted optionals.
+  const queryHasNilable = queryParams.some((q) => !isRequiredKwarg(q));
+  if (queryParams.length > 0) {
+    lines.push('      params = {');
+    for (let i = 0; i < queryParams.length; i++) {
+      const q = queryParams[i];
+      const sep = i === queryParams.length - 1 ? '' : ',';
+      lines.push(`        ${rubyStringLit(q.name)} => ${safeParamName(q.name)}${sep}`);
+    }
+    lines.push(`      }${queryHasNilable ? '.compact' : ''}`);
+    // URI.encode_www_form can't serialize structured values the way the API
+    // expects: explode=false arrays are comma-joined (matching the Python
+    // emitter's serializeParameterValue) and map params are JSON-encoded
+    // (URI.encode_www_form would emit the Ruby Hash#to_s repr otherwise).
+    for (const q of queryParams) {
+      const t = q.type.kind === 'nullable' ? q.type.inner : q.type;
+      const n = safeParamName(q.name);
+      const explode = (q as Parameter & { explode?: boolean }).explode;
+      if (t.kind === 'array' && explode === false) {
+        lines.push(`      params[${rubyStringLit(q.name)}] = ${n}.join(",") unless ${n}.nil?`);
+      } else if (t.kind === 'map') {
+        lines.push(`      params[${rubyStringLit(q.name)}] = JSON.generate(${n}) unless ${n}.nil?`);
+      }
+    }
+  } else {
+    lines.push('      params = {}');
+  }
+
+  // Constant defaults (e.g. response_type=code).
+  for (const [k, v] of Object.entries(defaults)) {
+    lines.push(`      params[${rubyStringLit(k)}] = ${rubyDefaultLiteral(v)}`);
+  }
+
+  // Fields inferred from client config. Override params are already in the
+  // hash when the caller passed them explicitly — only fill when absent.
+  for (const fc of inferFromClient) {
+    const clientProp = fc === 'client_secret' ? 'api_key' : fc;
+    if (clientOverrides.has(fc)) {
+      lines.push(
+        `      params[${rubyStringLit(fc)}] = @client.${clientProp} if !params.key?(${rubyStringLit(fc)}) && !@client.${clientProp}.nil?`,
+      );
+    } else {
+      lines.push(`      params[${rubyStringLit(fc)}] = @client.${clientProp} unless @client.${clientProp}.nil?`);
+    }
+  }
+
+  const rubyPath = interpolateRubyPath(op.path, pathParams);
+  lines.push(`      uri = URI.join(@client.base_url, ${rubyPath})`);
+  lines.push('      uri.query = URI.encode_www_form(params) unless params.empty?');
+  lines.push('      uri.to_s');
+  lines.push('    end');
+
+  return lines.join('\n');
 }
 
 /** Build a single Ruby method from an Operation. */
