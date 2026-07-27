@@ -13,6 +13,7 @@ import { mapTypeRef } from './type-map.js';
 import {
   moduleName,
   fileName,
+  fieldName,
   fullModuleName,
   functionName,
   varName,
@@ -190,6 +191,32 @@ function injectionLines(ns: string, defaults: Record<string, string | number | b
   return lines;
 }
 
+/**
+ * ` Deprecated: `:a`, `:b` (see `Ns.Model`).` sentence for a request-body doc
+ * bullet, mirroring the `(deprecated)` tag on query/path params. Lists only
+ * body-model fields that survive the snake_case dedup applied to the struct
+ * (an alias collapsed into a non-deprecated canonical field is not deprecated
+ * on the SDK surface); the model's moduledoc carries the full notes. Empty
+ * when the body has no deprecated fields.
+ */
+function deprecatedBodyFieldsDoc(op: Operation, ctx: EmitterContext): string {
+  const reqBody = op.requestBody;
+  if (reqBody?.kind !== 'model') return '';
+  const model = ctx.spec.models.find((m) => m.name === reqBody.name);
+  if (!model) return '';
+  const seen = new Set<string>();
+  const deprecated: string[] = [];
+  for (const f of model.fields) {
+    const name = fieldName(f.name);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (f.deprecated) deprecated.push(name);
+  }
+  if (deprecated.length === 0) return '';
+  const names = deprecated.map((n) => `\`:${n}\``).join(', ');
+  return ` Deprecated: ${names} (see \`${fullModuleName(ctx, model.name)}\`).`;
+}
+
 /** Doc sentences describing hidden params the SDK fills in automatically. */
 function injectionDocLines(defaults: Record<string, string | number | boolean>, inferred: string[]): string[] {
   const lines: string[] = [];
@@ -257,7 +284,8 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
     } else if (isQueryMethod) {
       lines.push('    * `params` — query parameters');
     } else {
-      lines.push('    * `params` — request body map');
+      const bodyDeprecated = deprecatedBodyFieldsDoc(op, ctx);
+      lines.push(`    * \`params\` — request body map${bodyDeprecated ? `.${bodyDeprecated}` : ''}`);
     }
   }
   lines.push(`    * \`opts\` — per-request options (see \`${ns}.Client.request/5\`)`);
@@ -414,11 +442,13 @@ function renderWrapper(
     lines.push(pathParamDocLine(p));
   }
   const paramsDocParts: string[] = [];
+  const wrapperParamDoc = (p: (typeof wrapperParams)[number]): string =>
+    `\`:${varName(p.paramName)}\`${p.field?.deprecated ? ' (deprecated)' : ''}`;
   if (required.length > 0) {
-    paramsDocParts.push(`Required: ${required.map((p) => `\`:${varName(p.paramName)}\``).join(', ')}.`);
+    paramsDocParts.push(`Required: ${required.map(wrapperParamDoc).join(', ')}.`);
   }
   if (optional.length > 0) {
-    paramsDocParts.push(`Optional: ${optional.map((p) => `\`:${varName(p.paramName)}\``).join(', ')}.`);
+    paramsDocParts.push(`Optional: ${optional.map(wrapperParamDoc).join(', ')}.`);
   }
   lines.push(`    * \`params\` — request body map.${paramsDocParts.length > 0 ? ` ${paramsDocParts.join(' ')}` : ''}`);
   lines.push(`    * \`opts\` — per-request options (see \`${ns}.Client.request/5\`)`);
