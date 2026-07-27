@@ -243,6 +243,24 @@ export function hasHiddenParams(resolvedOp?: ResolvedOperation): boolean {
   return Object.keys(getOpDefaults(resolvedOp)).length > 0 || getOpInferFromClient(resolvedOp).length > 0;
 }
 
+/**
+ * For url-builder operations (client-side URL construction, no HTTP), the
+ * endpoint's client-config-bound query params (e.g. `client_id` on an OAuth
+ * authorize URL) must remain settable per call — a multi-tenant caller builds
+ * URLs for several applications from one configured client. Instead of hiding
+ * these inferFromClient params entirely, emitters surface them as optional
+ * override parameters that fall back to the client's configured value.
+ * Returns the set of query param names to surface this way.
+ */
+export function getUrlBuilderClientOverrides(op: Operation, resolvedOp?: ResolvedOperation): Set<string> {
+  const overrides = new Set<string>();
+  if (!resolvedOp?.urlBuilder) return overrides;
+  for (const field of getOpInferFromClient(resolvedOp)) {
+    if (op.queryParams.some((q) => q.name === field)) overrides.add(field);
+  }
+  return overrides;
+}
+
 // ---------------------------------------------------------------------------
 // Parameter group helpers
 // ---------------------------------------------------------------------------

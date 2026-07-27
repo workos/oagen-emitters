@@ -33,6 +33,7 @@ import {
   scopedMountGroups,
   getOpDefaults,
   getOpInferFromClient,
+  getUrlBuilderClientOverrides,
   buildHiddenParams as buildHiddenParamsShared,
   collectGroupedParamNames,
   collectBodyFieldTypes,
@@ -200,6 +201,8 @@ function emitMethodSignature(
   resolvedOp?: ResolvedOperation,
 ): SignatureMetadata {
   const hiddenParams = buildHiddenParams(resolvedOp);
+  const clientOverrides = getUrlBuilderClientOverrides(op, resolvedOp);
+  for (const field of clientOverrides) hiddenParams.delete(field);
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   // Redirect endpoints never await, so emit as plain def even in async class
@@ -288,7 +291,9 @@ function emitMethodSignature(
         if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
       }
       const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
-      if (usesClientCredentialDefaults && (param.name === 'client_id' || param.name === 'client_secret')) {
+      if (clientOverrides.has(param.name)) {
+        lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
+      } else if (usesClientCredentialDefaults && (param.name === 'client_id' || param.name === 'client_secret')) {
         lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
       } else if (param.required) {
         lines.push(`        ${paramName}: ${paramType},`);
@@ -413,6 +418,8 @@ function emitMethodDocstring(
   const { returnType, pathParamNames, hasBearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const hiddenParams = buildHiddenParams(resolvedOp);
+  const clientOverrides = getUrlBuilderClientOverrides(op, resolvedOp);
+  for (const field of clientOverrides) hiddenParams.delete(field);
 
   // Description — indent continuation lines to align with the opening `"""`
   if (op.description) {
@@ -478,6 +485,10 @@ function emitMethodDocstring(
       if (param.default != null) {
         const defaultStr = `Defaults to \`${param.default}\`.`;
         desc = desc ? `${desc} ${defaultStr}` : defaultStr;
+      }
+      if (clientOverrides.has(param.name)) {
+        const fallbackStr = `Defaults to the client's configured ${param.name}.`;
+        desc = desc ? `${desc} ${fallbackStr}` : fallbackStr;
       }
       allParams.push({ name: pn, desc });
     }
@@ -583,6 +594,8 @@ function emitMethodBody(
   const awaitPrefix = isAsync ? 'await ' : '';
   const usesClientCredentialDefaults = false;
   const hiddenParams = buildHiddenParams(resolvedOp);
+  const clientOverrides = getUrlBuilderClientOverrides(op, resolvedOp);
+  for (const field of clientOverrides) hiddenParams.delete(field);
   const opDefaults = getOpDefaults(resolvedOp);
   const opInferFromClient = getOpInferFromClient(resolvedOp);
 
@@ -642,11 +655,17 @@ function emitMethodBody(
           lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
         }
       }
-      // Inject fields from client config
+      // Inject fields from client config. Fields surfaced as optional
+      // override parameters (url-builder ops) are already in params when the
+      // caller passed them explicitly — only fill from config when absent.
       if (opInferFromClient.length > 0) {
         for (const field of opInferFromClient) {
           const expr = clientFieldExpression(field);
-          lines.push(`        if ${expr} is not None:`);
+          if (clientOverrides.has(field)) {
+            lines.push(`        if "${field}" not in params and ${expr} is not None:`);
+          } else {
+            lines.push(`        if ${expr} is not None:`);
+          }
           lines.push(`            params["${field}"] = ${expr}`);
         }
       }
@@ -916,11 +935,17 @@ function emitMethodBody(
           lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
         }
       }
-      // Inject fields from client config
+      // Inject fields from client config. Fields surfaced as optional
+      // override parameters (url-builder ops) are already in params when the
+      // caller passed them explicitly — only fill from config when absent.
       if (opInferFromClient.length > 0) {
         for (const field of opInferFromClient) {
           const expr = clientFieldExpression(field);
-          lines.push(`        if ${expr} is not None:`);
+          if (clientOverrides.has(field)) {
+            lines.push(`        if "${field}" not in params and ${expr} is not None:`);
+          } else {
+            lines.push(`        if ${expr} is not None:`);
+          }
           lines.push(`            params["${field}"] = ${expr}`);
         }
       }

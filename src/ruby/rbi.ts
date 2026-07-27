@@ -20,6 +20,7 @@ import {
   isModelInScope,
   lookupResolved,
   buildHiddenParams,
+  getUrlBuilderClientOverrides,
   collectGroupedParamNames,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
@@ -185,7 +186,52 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
 
       const resolved = lookupResolved(op, lookup);
       if (resolved?.urlBuilder) {
+        // Url-builder methods construct the URL client-side (no HTTP) and
+        // return it as a String. inferFromClient query params surface as
+        // nilable overrides of the client's configured value. Mirrors
+        // emitUrlBuilderMethod in ruby/resources.ts.
         emittedMethods.add(method);
+        const hidden = buildHiddenParams(resolved);
+        const overrides = getUrlBuilderClientOverrides(op, resolved);
+        for (const field of overrides) hidden.delete(field);
+        const visibleQuery = (op.queryParams ?? []).filter((q) => !hidden.has(q.name));
+        const sigParams: string[] = [];
+        const seen = new Set<string>();
+        for (const p of op.pathParams ?? []) {
+          const n = safeParamName(p.name);
+          if (seen.has(n)) continue;
+          seen.add(n);
+          sigParams.push(`${n}: ${mapSorbetType(p.type)}`);
+        }
+        for (const q of visibleQuery) {
+          if (!q.required || overrides.has(q.name)) continue;
+          const n = safeParamName(q.name);
+          if (seen.has(n)) continue;
+          seen.add(n);
+          sigParams.push(`${n}: ${mapSorbetType(q.type)}`);
+        }
+        for (const q of visibleQuery) {
+          if (q.required && !overrides.has(q.name)) continue;
+          const n = safeParamName(q.name);
+          if (seen.has(n)) continue;
+          seen.add(n);
+          sigParams.push(`${n}: ${wrapNilable(mapSorbetType(q.type))}`);
+        }
+        if (sigParams.length === 0) {
+          lines.push('    sig { returns(String) }');
+          lines.push(`    def ${method}; end`);
+        } else {
+          lines.push('    sig do');
+          lines.push('      params(');
+          for (let i = 0; i < sigParams.length; i++) {
+            const sep = i === sigParams.length - 1 ? '' : ',';
+            lines.push(`        ${sigParams[i]}${sep}`);
+          }
+          lines.push('      ).returns(String)');
+          lines.push('    end');
+          lines.push(`    def ${method}(${sigParams.map((p) => p.split(':')[0].trim() + ':').join(', ')}); end`);
+        }
+        lines.push('');
         continue;
       }
       emittedMethods.add(method);

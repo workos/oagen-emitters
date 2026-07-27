@@ -488,4 +488,60 @@ describe('ruby/resources', () => {
     expect(content).toContain('name:');
     expect(content).not.toContain('body_name');
   });
+
+  it('emits url-builder methods with inferFromClient params as optional overrides', () => {
+    const op = makeOp({
+      name: 'getAuthorizationUrl',
+      httpMethod: 'get',
+      path: '/user_management/authorize',
+      queryParams: [
+        {
+          name: 'client_id',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+          description: 'The unique identifier of the WorkOS environment client.',
+        },
+        { name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'state', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+      response: { kind: 'primitive', type: 'unknown' },
+    });
+    const services: Service[] = [{ name: 'UserManagement', operations: [op] }];
+    const spec = makeSpec(services);
+    const ctx = makeCtx(spec);
+    ctx.resolvedOperations = [
+      {
+        operation: op,
+        service: services[0],
+        methodName: 'get_authorization_url',
+        mountOn: 'UserManagement',
+        defaults: { response_type: 'code' },
+        inferFromClient: ['client_id'],
+        urlBuilder: true,
+      } as ResolvedOperation,
+    ];
+
+    const files = generateResources(services, ctx);
+    const content = files[0].content;
+
+    // Emits a method (no longer skipped) that builds the URL client-side
+    expect(content).toContain('def get_authorization_url(');
+    expect(content).toContain("uri = URI.join(@client.base_url, '/user_management/authorize')");
+    expect(content).toContain('uri.query = URI.encode_www_form(params) unless params.empty?');
+    expect(content).toContain("require 'uri'");
+    // No HTTP request
+    expect(content).not.toContain('@client.request(');
+    // client_id surfaces as an optional override, not a required kwarg
+    expect(content).toContain('client_id: nil');
+    expect(content).toContain('redirect_uri:,');
+    // Constant defaults injected
+    expect(content).toContain("params['response_type'] = 'code'");
+    // Client config only fills client_id when the caller did not pass one
+    expect(content).toContain(
+      "params['client_id'] = @client.client_id if !params.key?('client_id') && !@client.client_id.nil?",
+    );
+    // YARD documents the fallback and String return
+    expect(content).toContain("Defaults to the client's configured client_id.");
+    expect(content).toContain('# @return [String]');
+  });
 });
