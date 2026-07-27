@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/workos/oagen-emitters/compare/v0.21.0...v0.22.0) (2026-07-27)
+
+
+### Features
+
+* **python,ruby:** per-call client_id override on generated URL builders ([#202](https://github.com/workos/oagen-emitters/issues/202)) ([2be55ef](https://github.com/workos/oagen-emitters/commit/2be55ef58eff1595f249151d07d77f0dbabaaecb))
+
 ## [0.21.0](https://github.com/workos/oagen-emitters/compare/v0.20.3...v0.21.0) (2026-07-23)
 
 
