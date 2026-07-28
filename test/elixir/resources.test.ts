@@ -363,6 +363,88 @@ describe('elixir/resources', () => {
     expect(files[0].content).not.toContain('`:limit` (deprecated)');
   });
 
+  it('tags deprecated path params in the @doc parameter list', () => {
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'getOrganization',
+            path: '/organizations/{legacy_id}',
+            pathParams: [
+              {
+                name: 'legacy_id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+                description: 'Legacy organization ID.',
+                deprecated: true,
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services));
+    expect(files[0].content).toContain('* `legacy_id` — Legacy organization ID. (deprecated)');
+  });
+
+  it('notes deprecated request-body fields on the params doc bullet', () => {
+    // NB: spec-noise suffixes (`Dto`/`DTO`/`Urn…`) are already stripped upstream
+    // by `schemaNameTransform` in openapi-spec/src/policy/transforms.ts, so the
+    // emitter only ever sees the cleaned IR name.
+    const body: Model = {
+      name: 'UpdateOrganization',
+      fields: [
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'domains', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+      ],
+    };
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'updateOrganization',
+            httpMethod: 'put',
+            path: '/organizations/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            requestBody: { kind: 'model', name: 'UpdateOrganization' },
+          }),
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services, [organizationModel, body]));
+    expect(files[0].content).toContain('Deprecated: `:domains` (see `Acme.UpdateOrganization`).');
+  });
+
+  it('omits body fields whose deprecated alias collapses onto a non-deprecated twin', () => {
+    // `createdAt` is a deprecated camelCase alias of the canonical `created_at`.
+    // Both snake to `created_at`; the first (non-deprecated) field wins, so the
+    // surviving struct key is NOT deprecated and must not be listed.
+    const body: Model = {
+      name: 'CreateThing',
+      fields: [
+        { name: 'created_at', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'createdAt', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+      ],
+    };
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'createThing',
+            httpMethod: 'post',
+            path: '/things',
+            requestBody: { kind: 'model', name: 'CreateThing' },
+          }),
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services, [organizationModel, body]));
+    expect(files[0].content).not.toContain('Deprecated:');
+  });
+
   it('renders a complete resource module', () => {
     const services: Service[] = [
       {
