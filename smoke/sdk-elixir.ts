@@ -218,7 +218,12 @@ function parseDefmodule(path: string): string | null {
 
 function resolveSdkModules(sdkPath: string): SdkModules {
   const libDir = resolve(sdkPath, 'lib');
-  const entryFile = readdirSync(libDir, { withFileTypes: true }).find((e) => e.isFile() && e.name.endsWith('.ex'));
+  // Sort before picking: readdirSync order is filesystem-dependent (ext4 returns
+  // inode-creation order), so a stray second lib/*.ex would otherwise make the
+  // entry module -- and with it appName/rootModule -- vary by platform.
+  const entryFile = readdirSync(libDir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .find((e) => e.isFile() && e.name.endsWith('.ex'));
   if (!entryFile) {
     throw new Error(`No entry module (lib/*.ex) found under ${libDir}`);
   }
@@ -258,7 +263,12 @@ function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
   }
   const manifest = new Map<string, ManifestEntry>();
   for (const [httpKey, entry] of Object.entries(operations)) {
-    manifest.set(httpKey, entry as ManifestEntry);
+    // Union-split operations record an array of wrapper functions (the base
+    // method is never emitted). Any wrapper exercises the same endpoint, so
+    // take the first one.
+    const resolved = Array.isArray(entry) ? entry[0] : entry;
+    if (!resolved) continue;
+    manifest.set(httpKey, resolved as ManifestEntry);
   }
   return manifest;
 }
@@ -346,9 +356,19 @@ function buildElixirArgs(
 // Elixir value serialization for code generation
 // ---------------------------------------------------------------------------
 
+/**
+ * Quote a value as an Elixir string literal. `JSON.stringify` escapes
+ * backslashes and quotes, but Elixir also reads `#{` as an interpolation
+ * marker -- a spec-derived value containing it would compile as a variable
+ * reference (or fail with a CompileError) instead of staying literal text.
+ */
+function elixirString(value: string): string {
+  return JSON.stringify(value).replace(/#\{/g, '\\#{');
+}
+
 function toElixirValue(value: unknown, indent: number = 4): string {
   if (value === null || value === undefined) return 'nil';
-  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'string') return elixirString(value);
   if (typeof value === 'number') return `${value}`;
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (Array.isArray(value)) {
@@ -360,7 +380,7 @@ function toElixirValue(value: unknown, indent: number = 4): string {
     // renamed (the SDK's Client.request sends map keys as-is).
     const pad = ' '.repeat(indent);
     const entries = Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${pad}  ${JSON.stringify(k)} => ${toElixirValue(v, indent + 2)}`)
+      .map(([k, v]) => `${pad}  ${elixirString(k)} => ${toElixirValue(v, indent + 2)}`)
       .join(',\n');
     return `%{\n${entries}\n${pad}}`;
   }
@@ -410,7 +430,7 @@ function buildBatchedElixirScript(
     // Build method call arguments
     const { positionalArgs, bodyPayload, queryOpts } = buildElixirArgs(op, pathParams, spec);
 
-    const argsStr = positionalArgs.map((a) => JSON.stringify(a)).join(', ');
+    const argsStr = positionalArgs.map((a) => elixirString(a)).join(', ');
 
     let callArgs = 'client';
     if (argsStr) {
@@ -425,7 +445,13 @@ function buildBatchedElixirScript(
       callArgs += `, ${toElixirValue(queryOpts)}`;
     }
 
+    // main() drops calls whose service has no module before planning; assert the
+    // invariant rather than interpolating a bare null, which TypeScript allows
+    // and which would emit `null.method(...)` into the script.
     const elixirModule = sdk.moduleFor(resolution.service);
+    if (!elixirModule) {
+      throw new Error(`No SDK module for service "${resolution.service}" (operation ${op.name})`);
+    }
 
     // Marker: start
     lines.push(`IO.write(:stderr, "OAGEN_CALL_START:${index}\\n")`);
