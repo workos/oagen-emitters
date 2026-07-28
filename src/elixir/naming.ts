@@ -120,10 +120,15 @@ export function servicePropertyName(mountOn: string): string {
   return toSnakeCase(mountOn);
 }
 
-/** Render a string as an Elixir atom literal, quoting when necessary. */
+/**
+ * Render a string as an Elixir atom literal, quoting when necessary.
+ *
+ * The quoted form is interpolating, exactly like a double-quoted string, so it
+ * goes through `escapeString` rather than a hand-rolled subset.
+ */
 export function atomLiteral(value: string): string {
   if (/^[a-z_][a-zA-Z0-9_]*[?!]?$/.test(value)) return `:${value}`;
-  return `:"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `:"${escapeString(value)}"`;
 }
 
 /** Escape arbitrary text for embedding in an Elixir double-quoted string. */

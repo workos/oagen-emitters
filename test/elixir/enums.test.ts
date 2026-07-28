@@ -80,6 +80,18 @@ describe('elixir/enums', () => {
     expect(files[0].content).toContain('def cast("urn:ietf:params:oauth:grant-type:token-exchange"), do: :urn_grant');
   });
 
+  it('escapes interpolation markers in quoted atoms', () => {
+    const files = generate([
+      {
+        name: 'Odd',
+        // A non-identifier name forces the quoted-atom fallback, which -- like a
+        // double-quoted string -- would otherwise interpolate `#{...}`.
+        values: [{ name: '1', value: 'we#{ird}' }],
+      },
+    ]);
+    expect(files[0].content).toContain(':"we\\#{ird}"');
+  });
+
   it('deduplicates repeated wire values', () => {
     const files = generate([
       {
