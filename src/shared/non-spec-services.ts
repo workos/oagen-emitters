@@ -36,14 +36,22 @@ export interface NonSpecService {
  *
  * Order here determines emission order in the generated client.
  *
- * Not every emitter consumes this list at generate time: emitters whose
- * non-spec surface is hand-maintained in the target SDK (ios, kotlin via
- * same-module extensions — a generated accessor would reference a
- * hand-maintained type that does not exist in staging — and elixir via
- * standalone modules) pin their coverage of this list with a unit test
- * (`test/ios/non-spec.test.ts`, `test/kotlin/non-spec.test.ts`,
- * `test/elixir/non-spec.test.ts`; php pins via `test/php/client.test.ts`)
- * so adding an entry here fails their build until the helper exists.
+ * Not every emitter consumes this list at generate time. Two mechanisms keep
+ * the list authoritative for all of them, so adding an entry here fails the
+ * build until every language has the matching helper:
+ *
+ * 1. Generate-time consumers — go, php, python, ruby read this list and emit
+ *    the client accessor directly.
+ * 2. Pinned-by-test — emitters whose non-spec surface is hand-maintained in the
+ *    target SDK, because a generated accessor would reference a hand-maintained
+ *    type that does not exist in staging. Each pins its coverage in a unit test:
+ *      - ios, kotlin (same-module extensions): `test/{ios,kotlin}/non-spec.test.ts`
+ *      - elixir (standalone modules):          `test/elixir/non-spec.test.ts`
+ *      - node (Scenario A, `src/workos.ts` preserved via --api-surface):
+ *                                              `test/node/non-spec.test.ts`
+ *      - dotnet (hand-maintained C# services): `test/dotnet/non-spec.test.ts`
+ *      - rust (`src/helpers/` modules):        `test/rust/non-spec.test.ts`
+ *      - php additionally pins via `test/php/client.test.ts`
  */
 export const NON_SPEC_SERVICES: readonly NonSpecService[] = [
   {
