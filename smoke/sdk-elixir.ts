@@ -13,7 +13,7 @@
  * Requires `elixir` to be available on $PATH.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -192,6 +192,58 @@ function startProxy(
 }
 
 // ---------------------------------------------------------------------------
+// SDK module resolution
+//
+// The generated SDK has no accessor objects: resource functions live on
+// modules like `WorkOS.Organizations` and take the client as their first
+// argument. The manifest's `service` field is the resource file's basename
+// under lib/{app}/, so the real module name (acronym casing included) comes
+// from parsing that file's `defmodule` line.
+// ---------------------------------------------------------------------------
+
+interface SdkModules {
+  /** OTP app name (mix.exs app / lib entry basename), e.g. "workos". */
+  appName: string;
+  /** Root module parsed from the entry file, e.g. "WorkOS". */
+  rootModule: string;
+  /** Resolve a manifest service basename to its module name, or null. */
+  moduleFor: (service: string) => string | null;
+}
+
+function parseDefmodule(path: string): string | null {
+  const content = readFileSync(path, 'utf-8');
+  const m = content.match(/^defmodule\s+([A-Za-z0-9_.]+)\s+do/m);
+  return m ? m[1] : null;
+}
+
+function resolveSdkModules(sdkPath: string): SdkModules {
+  const libDir = resolve(sdkPath, 'lib');
+  // Sort before picking: readdirSync order is filesystem-dependent (ext4 returns
+  // inode-creation order), so a stray second lib/*.ex would otherwise make the
+  // entry module -- and with it appName/rootModule -- vary by platform.
+  const entryFile = readdirSync(libDir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .find((e) => e.isFile() && e.name.endsWith('.ex'));
+  if (!entryFile) {
+    throw new Error(`No entry module (lib/*.ex) found under ${libDir}`);
+  }
+  const appName = entryFile.name.replace(/\.ex$/, '');
+  const rootModule = parseDefmodule(join(libDir, entryFile.name)) ?? appName;
+  const cache = new Map<string, string | null>();
+  return {
+    appName,
+    rootModule,
+    moduleFor: (service: string) => {
+      if (cache.has(service)) return cache.get(service)!;
+      const file = join(libDir, appName, `${service}.ex`);
+      const mod = existsSync(file) ? parseDefmodule(file) : null;
+      cache.set(service, mod);
+      return mod;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Manifest loading
 // ---------------------------------------------------------------------------
 
@@ -211,7 +263,12 @@ function loadManifest(sdkPath: string): Map<string, ManifestEntry> | null {
   }
   const manifest = new Map<string, ManifestEntry>();
   for (const [httpKey, entry] of Object.entries(operations)) {
-    manifest.set(httpKey, entry as ManifestEntry);
+    // Union-split operations record an array of wrapper functions (the base
+    // method is never emitted). Any wrapper exercises the same endpoint, so
+    // take the first one.
+    const resolved = Array.isArray(entry) ? entry[0] : entry;
+    if (!resolved) continue;
+    manifest.set(httpKey, resolved as ManifestEntry);
   }
   return manifest;
 }
@@ -299,9 +356,19 @@ function buildElixirArgs(
 // Elixir value serialization for code generation
 // ---------------------------------------------------------------------------
 
+/**
+ * Quote a value as an Elixir string literal. `JSON.stringify` escapes
+ * backslashes and quotes, but Elixir also reads `#{` as an interpolation
+ * marker -- a spec-derived value containing it would compile as a variable
+ * reference (or fail with a CompileError) instead of staying literal text.
+ */
+function elixirString(value: string): string {
+  return JSON.stringify(value).replace(/#\{/g, '\\#{');
+}
+
 function toElixirValue(value: unknown, indent: number = 4): string {
   if (value === null || value === undefined) return 'nil';
-  if (typeof value === 'string') return `"${value}"`;
+  if (typeof value === 'string') return elixirString(value);
   if (typeof value === 'number') return `${value}`;
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (Array.isArray(value)) {
@@ -309,20 +376,15 @@ function toElixirValue(value: unknown, indent: number = 4): string {
     return `[${items.join(', ')}]`;
   }
   if (typeof value === 'object') {
+    // String keys, verbatim — payload keys are wire names and must not be
+    // renamed (the SDK's Client.request sends map keys as-is).
     const pad = ' '.repeat(indent);
     const entries = Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${pad}  ${toSnakeCase(k)}: ${toElixirValue(v, indent + 2)}`)
+      .map(([k, v]) => `${pad}  ${elixirString(k)} => ${toElixirValue(v, indent + 2)}`)
       .join(',\n');
     return `%{\n${entries}\n${pad}}`;
   }
   return `${value}`;
-}
-
-function toElixirKeywordList(obj: Record<string, unknown>, indent: number = 4): string {
-  const entries = Object.entries(obj)
-    .map(([k, v]) => `${toSnakeCase(k)}: ${toElixirValue(v, indent)}`)
-    .join(', ');
-  return entries;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,16 +403,25 @@ interface PlannedCall {
  * Build a single Elixir script that calls ALL planned operations sequentially.
  * Each call is wrapped with stderr markers for correlation.
  */
-function buildBatchedElixirScript(sdkPath: string, proxyPort: number, calls: PlannedCall[], spec: any): string {
+function buildBatchedElixirScript(
+  sdkPath: string,
+  proxyPort: number,
+  calls: PlannedCall[],
+  spec: any,
+  sdk: SdkModules,
+): string {
   const lines: string[] = [];
 
   // Preamble -- loaded once
   lines.push(`# Smoke test driver -- auto-generated, do not edit`);
   lines.push(`Mix.install([`);
-  lines.push(`  {:workos, path: "${resolve(sdkPath)}"}`);
+  lines.push(`  {:${sdk.appName}, path: ${JSON.stringify(resolve(sdkPath))}}`);
   lines.push(`])`);
   lines.push('');
-  lines.push(`client = WorkOS.Client.new("api_key", base_url: "http://127.0.0.1:${proxyPort}")`);
+  // max_retries: 0 keeps one HTTP capture per call (no retry duplicates).
+  lines.push(
+    `client = ${sdk.rootModule}.Client.new(api_key: "api_key", base_url: "http://127.0.0.1:${proxyPort}", max_retries: 0)`,
+  );
   lines.push('');
 
   for (const call of calls) {
@@ -359,30 +430,34 @@ function buildBatchedElixirScript(sdkPath: string, proxyPort: number, calls: Pla
     // Build method call arguments
     const { positionalArgs, bodyPayload, queryOpts } = buildElixirArgs(op, pathParams, spec);
 
-    const argsStr = positionalArgs.map((a) => `"${a}"`).join(', ');
+    const argsStr = positionalArgs.map((a) => elixirString(a)).join(', ');
 
     let callArgs = 'client';
     if (argsStr) {
       callArgs += `, ${argsStr}`;
     }
 
+    // Generated functions take one `params` map: body for POST/PUT/PATCH,
+    // query params for GET/DELETE/HEAD.
     if (bodyPayload) {
       callArgs += `, ${toElixirValue(bodyPayload)}`;
     } else if (queryOpts) {
-      callArgs += `, ${toElixirKeywordList(queryOpts)}`;
+      callArgs += `, ${toElixirValue(queryOpts)}`;
     }
 
-    // Convert service name to Elixir module form (e.g., "organizations" -> "Organizations")
-    const elixirModule = resolution.service
-      .split('_')
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join('');
+    // main() drops calls whose service has no module before planning; assert the
+    // invariant rather than interpolating a bare null, which TypeScript allows
+    // and which would emit `null.method(...)` into the script.
+    const elixirModule = sdk.moduleFor(resolution.service);
+    if (!elixirModule) {
+      throw new Error(`No SDK module for service "${resolution.service}" (operation ${op.name})`);
+    }
 
     // Marker: start
     lines.push(`IO.write(:stderr, "OAGEN_CALL_START:${index}\\n")`);
 
     lines.push('try do');
-    lines.push(`  case WorkOS.Resources.${elixirModule}.${resolution.method}(${callArgs}) do`);
+    lines.push(`  case ${elixirModule}.${resolution.method}(${callArgs}) do`);
     lines.push(`    {:ok, _result} ->`);
     lines.push(`      IO.write(:stderr, "OAGEN_CALL_OK:${index}\\n")`);
     lines.push(`    {:error, reason} ->`);
@@ -438,8 +513,10 @@ async function main(): Promise<void> {
   const spec = await parseSpec(specPath);
   console.log(`Spec: ${spec.name} v${spec.version}`);
 
-  // Load manifest
+  // Load manifest and resolve the SDK's actual module names
   const manifest = loadManifest(sdkPath);
+  const sdk = resolveSdkModules(sdkPath);
+  console.log(`SDK root module: ${sdk.rootModule} (app :${sdk.appName})`);
 
   const baseUrl = process.env.WORKOS_BASE_URL || spec.baseUrl;
   const apiHost = new URL(baseUrl).hostname;
@@ -490,6 +567,14 @@ async function main(): Promise<void> {
         waveSkipped.push({ op, irService, reason: 'No matching SDK method' });
         continue;
       }
+      if (!sdk.moduleFor(resolution.service)) {
+        waveSkipped.push({
+          op,
+          irService,
+          reason: `No SDK module for service "${resolution.service}"`,
+        });
+        continue;
+      }
       plannedCalls.push({
         index: globalCallIndex++,
         op,
@@ -513,7 +598,7 @@ async function main(): Promise<void> {
     console.log(`\n=== Wave ${waveNumber} (${plannedCalls.length} operations) ===`);
 
     // Generate batched Elixir script for this wave
-    const elixirScript = buildBatchedElixirScript(resolve(sdkPath), proxy.port, plannedCalls, spec);
+    const elixirScript = buildBatchedElixirScript(resolve(sdkPath), proxy.port, plannedCalls, spec, sdk);
 
     const scriptPath = join(tmpDir, `smoke_wave_${waveNumber}.exs`);
     writeFileSync(scriptPath, elixirScript);

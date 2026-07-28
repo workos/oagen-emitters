@@ -40,12 +40,12 @@
   "devDependencies": {
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "husky": "^9.1.7",
-    "oxfmt": "^0.60.0",
-    "oxlint": "^1.75.0",
+    "oxfmt": "^0.61.0",
+    "oxlint": "^1.76.0",
     "prettier": "^3.9.6",
-    "tsdown": "^0.22.13",
+    "tsdown": "^0.22.14",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
@@ -54,6 +54,6 @@
     "node": ">=24.10.0"
   },
   "dependencies": {
-    "@workos/oagen": "^0.27.0"
+    "@workos/oagen": "^0.28.1"
   }
 }

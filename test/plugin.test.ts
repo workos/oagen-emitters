@@ -13,7 +13,8 @@ describe('workosEmittersPlugin', () => {
     expect(languages).toContain('ruby');
     expect(languages).toContain('rust');
     expect(languages).toContain('ios');
-    expect(languages).toHaveLength(9);
+    expect(languages).toContain('elixir');
+    expect(languages).toHaveLength(10);
   });
 
   it('exports extractors for all supported languages', () => {

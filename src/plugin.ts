@@ -10,6 +10,7 @@ import { kotlinEmitter } from './kotlin/index.js';
 import { rubyEmitter } from './ruby/index.js';
 import { rustEmitter } from './rust/index.js';
 import { iosEmitter } from './ios/index.js';
+import { elixirEmitter } from './elixir/index.js';
 import { nodeExtractor } from './compat/extractors/node.js';
 import { rubyExtractor } from './compat/extractors/ruby.js';
 import { pythonExtractor } from './compat/extractors/python.js';
@@ -37,6 +38,7 @@ export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' |
     rubyEmitter,
     rustEmitter,
     iosEmitter,
+    elixirEmitter,
   ],
   extractors: [
     nodeExtractor,
