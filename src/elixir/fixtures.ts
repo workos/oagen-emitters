@@ -155,6 +155,71 @@ export function sampleForType(
   }
 }
 
+/**
+ * Sample for a model shaped so that `to_map(from_map(sample)) == sample` holds
+ * exactly, which the round-trip tests assert. Two adjustments versus
+ * {@link sampleForModel} are required:
+ *
+ *  - fields are deduplicated by their Elixir struct key, mirroring
+ *    `orderedFields` in models.ts. The spec ships deprecated camelCase aliases
+ *    (`createdAt` beside `created_at`) that collapse onto one struct key, so an
+ *    undeduplicated sample carries a key `to_map` will never emit back.
+ *  - null values are dropped recursively, because `Cast.drop_nils/1` strips them
+ *    on the way out.
+ *
+ * Both apply at every nesting level, hence the dedicated recursion.
+ */
+export function roundTripSample(
+  model: Model,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  depth = 0,
+  visited: Set<string> = new Set([model.name]),
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const seen = new Set<string>();
+  for (const field of model.fields) {
+    if (field.writeOnly) continue;
+    const key = toSnakeCase(field.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const value = roundTripValue(field.type, models, enums, field.name, depth + 1, visited);
+    if (value !== null && value !== undefined) out[field.name] = value;
+  }
+  return out;
+}
+
+function roundTripValue(
+  ref: TypeRef,
+  models: Map<string, Model>,
+  enums: Map<string, Enum>,
+  fieldName: string,
+  depth: number,
+  visited: Set<string>,
+): unknown {
+  switch (ref.kind) {
+    case 'nullable':
+      return roundTripValue(ref.inner, models, enums, fieldName, depth, visited);
+    case 'array': {
+      if (depth >= MAX_DEPTH) return [];
+      const item = roundTripValue(ref.items, models, enums, fieldName, depth + 1, visited);
+      return item === null || item === undefined ? [] : [item];
+    }
+    case 'model': {
+      const nested = models.get(ref.name);
+      if (!nested || visited.has(ref.name) || depth >= MAX_DEPTH) return {};
+      return roundTripSample(nested, models, enums, depth, new Set([...visited, ref.name]));
+    }
+    case 'union': {
+      // Unions deserialize through a variant-specific caster; keep them out of
+      // the round-trip payload rather than guessing which variant wins.
+      return undefined;
+    }
+    default:
+      return sampleForType(ref, models, enums, fieldName, depth, visited);
+  }
+}
+
 function sampleForModel(
   model: Model,
   models: Map<string, Model>,

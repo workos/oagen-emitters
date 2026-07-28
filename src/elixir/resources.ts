@@ -27,6 +27,7 @@ import {
   getOpDefaults,
   getOpInferFromClient,
   buildHiddenParams,
+  hasHiddenParams,
   type MountGroup,
 } from '../shared/resolved-ops.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
@@ -232,6 +233,16 @@ function injectionDocLines(defaults: Record<string, string | number | boolean>, 
   return lines;
 }
 
+/**
+ * Whether a non-wrapper method takes a `params` map argument. Exported so the
+ * test emitter builds calls with the same arity this renderer emits — getting
+ * these out of step produces generated tests that fail to compile.
+ */
+export function methodTakesParams(resolved: ResolvedOperation): boolean {
+  const plan = planOperation(resolved.operation);
+  return plan.hasBody || plan.hasQueryParams || plan.isPaginated || hasHiddenParams(resolved);
+}
+
 function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterContext, names: CastNames): string {
   const ns = nsPascal(ctx);
   const op = resolved.operation;
@@ -240,7 +251,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   const defaults = getOpDefaults(resolved);
   const inferred = getOpInferFromClient(resolved);
   const injection = injectionLines(ns, defaults, inferred);
-  const hasParams = plan.hasBody || plan.hasQueryParams || plan.isPaginated || injection.length > 0;
+  const hasParams = methodTakesParams(resolved);
   const isQueryMethod = ['get', 'delete', 'head'].includes(op.httpMethod);
 
   const args = ['client', ...pathParams.map((p) => p.variable)];
