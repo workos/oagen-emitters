@@ -1,5 +1,5 @@
 import type { TypeRef, UnionType, EmitterContext } from '@workos/oagen';
-import { fullModuleName, nsPascal } from './naming.js';
+import { escapeString, fullModuleName, nsPascal } from './naming.js';
 
 /**
  * Shared wire↔struct casting expression builders, used by model `from_map/1` /
@@ -89,9 +89,9 @@ function unionCast(ref: UnionType, accessor: string, ctx: EmitterContext, names:
   if (disc) {
     const entries = Object.entries(disc.mapping)
       .filter(([, modelName]) => knownModel(modelName, names))
-      .map(([value, modelName]) => `"${value}" => &${fullModuleName(ctx, modelName)}.from_map/1`);
+      .map(([value, modelName]) => `"${escapeString(value)}" => &${fullModuleName(ctx, modelName)}.from_map/1`);
     if (entries.length > 0) {
-      return `${ns}.Cast.discriminated(${accessor}, "${disc.property}", %{${entries.join(', ')}})`;
+      return `${ns}.Cast.discriminated(${accessor}, "${escapeString(disc.property)}", %{${entries.join(', ')}})`;
     }
   }
   return accessor;

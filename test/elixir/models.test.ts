@@ -194,6 +194,35 @@ describe('elixir/models', () => {
     );
   });
 
+  it('escapes wire names and discriminator strings embedded in Elixir literals', () => {
+    const oddModel: Model = {
+      name: 'Odd',
+      fields: [
+        { name: 'we"ird', type: { kind: 'primitive', type: 'string' }, required: true },
+        {
+          name: 'payload',
+          type: {
+            kind: 'union',
+            variants: [{ kind: 'model', name: 'Organization' }],
+            discriminator: {
+              property: 'ob#{ject}',
+              mapping: { 'organization#{x}': 'Organization' },
+            },
+          },
+          required: true,
+        },
+      ],
+    };
+    const files = generate([oddModel, organization]);
+    const odd = files.find((f) => f.path.endsWith('odd.ex'))!;
+    // Unescaped, `#{...}` would compile as interpolation and a bare quote would
+    // terminate the literal early.
+    expect(odd.content).toContain('map["we\\"ird"]');
+    expect(odd.content).toContain('"we\\"ird" => struct.we_ird');
+    expect(odd.content).toContain('"ob\\#{ject}"');
+    expect(odd.content).toContain('"organization\\#{x}" => &Acme.Organization.from_map/1');
+  });
+
   it('handles models with no fields', () => {
     const files = generate([{ name: 'EmptyThing', fields: [] }]);
     expect(files[0].content).toContain('defstruct []');

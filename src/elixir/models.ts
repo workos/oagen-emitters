@@ -1,6 +1,6 @@
 import type { Model, Field, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, addNil } from './type-map.js';
-import { fullModuleName, moduleName, fileName, fieldName, escapeDoc, nsPascal } from './naming.js';
+import { fullModuleName, moduleName, fileName, fieldName, escapeDoc, escapeString, nsPascal } from './naming.js';
 import { castExpr, dumpExpr, type CastNames } from './casting.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 import { getSyntheticEnums } from '../shared/model-utils.js';
@@ -119,7 +119,7 @@ function renderModel(model: Model, ctx: EmitterContext, baseNames: CastNames): s
   lines.push('  def from_map(map) when is_map(map) do');
   lines.push('    %__MODULE__{');
   for (const field of fields) {
-    const expr = castExpr(field.type, `map["${field.name}"]`, ctx, names);
+    const expr = castExpr(field.type, `map["${escapeString(field.name)}"]`, ctx, names);
     lines.push(`      ${fieldName(field.name)}: ${expr},`);
   }
   lines[lines.length - 1] = lines[lines.length - 1].replace(/,$/, '');
@@ -133,7 +133,7 @@ function renderModel(model: Model, ctx: EmitterContext, baseNames: CastNames): s
   lines.push(`    ${ns}.Cast.drop_nils(%{`);
   for (const field of fields) {
     const expr = dumpExpr(field.type, `struct.${fieldName(field.name)}`, ctx, names);
-    lines.push(`      "${field.name}" => ${expr},`);
+    lines.push(`      "${escapeString(field.name)}" => ${expr},`);
   }
   lines[lines.length - 1] = lines[lines.length - 1].replace(/,$/, '');
   lines.push('    })');
