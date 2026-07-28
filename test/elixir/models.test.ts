@@ -87,6 +87,30 @@ describe('elixir/models', () => {
     expect(file.content).not.toContain('WorkOS');
   });
 
+  it('names the emitted module in the fallback moduledoc, not the raw IR name', () => {
+    // Acronym fixes and URN stripping rename the module, so the raw IR schema
+    // name would name a symbol the SDK never defines.
+    const model: Model = {
+      name: 'MfaTotpSessionAuthenticateRequest',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const [file] = generate([model]);
+    expect(file.content).toContain('defmodule Acme.MFATotpSessionAuthenticateRequest do');
+    expect(file.content).toContain('MFATotpSessionAuthenticateRequest model.');
+    expect(file.content).not.toContain('MfaTotpSessionAuthenticateRequest model.');
+  });
+
+  it('prefers the spec description over the module-name fallback', () => {
+    const model: Model = {
+      name: 'CorsOriginResponse',
+      description: 'A CORS origin.',
+      fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+    };
+    const [file] = generate([model]);
+    expect(file.content).toContain('A CORS origin.');
+    expect(file.content).not.toContain('model.');
+  });
+
   it('lists deprecated fields in a moduledoc section', () => {
     const model: Model = {
       name: 'Widget',

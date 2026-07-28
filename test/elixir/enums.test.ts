@@ -25,6 +25,15 @@ describe('elixir/enums', () => {
     expect(files.map((f) => f.path)).toEqual(['lib/acme/verification_strategy.ex']);
   });
 
+  it('names the emitted module in the fallback moduledoc, not the raw IR name', () => {
+    // Acronym fixes rename the module (`Mfa…` → `MFA…`); a moduledoc naming the
+    // raw IR schema name would point at a symbol the SDK never defines.
+    const [file] = generate([{ name: 'MfaFactorType', values: [{ name: 'TOTP', value: 'totp' }] }]);
+    expect(file.content).toContain('defmodule Acme.MFAFactorType do');
+    expect(file.content).toContain('MFAFactorType enum.');
+    expect(file.content).not.toContain('MfaFactorType enum.');
+  });
+
   it('generates an atom union type with values/0, cast/1, and dump/1', () => {
     const [file] = generate([strategy]);
     expect(file.content).toContain('@type t :: :dns | :manual');

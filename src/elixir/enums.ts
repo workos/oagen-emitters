@@ -1,6 +1,6 @@
 import type { Enum, EnumValue, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toSnakeCase } from '@workos/oagen';
-import { fullModuleName, fileName, atomLiteral, escapeString, escapeDoc } from './naming.js';
+import { fullModuleName, moduleName, fileName, atomLiteral, escapeString, escapeDoc } from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
@@ -68,7 +68,8 @@ function renderEnum(enumDef: Enum, ctx: EmitterContext): string {
 
   lines.push(`defmodule ${fullModuleName(ctx, enumDef.name)} do`);
   lines.push('  @moduledoc """');
-  lines.push(`  ${escapeDoc(enumDef.name)} enum.`);
+  // Name the module, not the raw IR schema name — see the matching note in models.ts.
+  lines.push(`  ${escapeDoc(moduleName(enumDef.name))} enum.`);
   const documented = values.filter((v) => v.description || v.deprecated);
   if (documented.length > 0) {
     lines.push('');

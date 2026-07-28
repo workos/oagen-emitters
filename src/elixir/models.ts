@@ -1,6 +1,6 @@
 import type { Model, Field, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, addNil } from './type-map.js';
-import { fullModuleName, fileName, fieldName, escapeDoc, nsPascal } from './naming.js';
+import { fullModuleName, moduleName, fileName, fieldName, escapeDoc, nsPascal } from './naming.js';
 import { castExpr, dumpExpr, type CastNames } from './casting.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 import { getSyntheticEnums } from '../shared/model-utils.js';
@@ -53,8 +53,11 @@ function renderModel(model: Model, ctx: EmitterContext, baseNames: CastNames): s
 
   lines.push(`defmodule ${fullModuleName(ctx, model.name)} do`);
   lines.push('  @moduledoc """');
+  // The fallback names the module, not the raw IR schema name: acronym fixes and
+  // URN stripping mean those differ (`MfaTotp…` vs `MFATotp…`), and a doc that
+  // names a symbol the SDK does not define is worse than no doc at all.
   lines.push(
-    `  ${escapeDoc(model.description ?? `${model.name} model.`)
+    `  ${escapeDoc(model.description ?? `${moduleName(model.name)} model.`)
       .split('\n')
       .join('\n  ')}`,
   );
