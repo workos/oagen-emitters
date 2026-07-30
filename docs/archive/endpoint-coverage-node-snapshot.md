@@ -1,5 +1,19 @@
 # Endpoint Coverage: OpenAPI Spec vs Generated SDK vs workos-node
 
+> **ARCHIVED SNAPSHOT — DO NOT USE AS A SOURCE OF TRUTH.**
+> This is a frozen, node-only comparison captured from one smoke run. The spec has
+> moved on since (this table has 154 endpoints; the live resolve is higher), and no
+> process keeps it current. It is kept only for historical comparison.
+>
+> The operation table is **derived live**, never read from a copy:
+>
+> ```bash
+> cd "$SPEC_REPO"
+> npx oagen resolve --spec spec/open-api-spec.yaml --format json > /tmp/ops.json
+> ```
+>
+> See `docs/lang-gen/workspace.md`.
+
 Comparison of HTTP verb + path pairs across three sources, with path parameters normalized to `{}`.
 
 - **Spec**: OpenAPI spec baseline (from `smoke-results-spec-baseline.json`)
