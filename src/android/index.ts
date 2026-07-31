@@ -120,10 +120,29 @@ export const androidEmitter: Emitter = {
     // oagen appends is ignored — Gradle reformats every Kotlin file. oagen's
     // writer already runs the spawned process with `cwd: targetDir`, so we must
     // not `cd` again (a relative `targetDir` would re-resolve against itself).
+    // Must exit non-zero on failure, and must not swallow stderr.
+    //
+    // This used to end in `>/dev/null 2>&1; true`, which hid the most common
+    // failure completely: `gradlew` needs a JDK, and a shell running
+    // `oagen generate` frequently has no `JAVA_HOME`, so formatting never ran and
+    // every generation silently left its output unformatted. CI does not hit that
+    // — `setup-sdk-runtime` installs the JDK before the generate step.
+    //
+    // The exit code is what makes the failure visible at all: oagen's
+    // `formatTargetFiles` reports `[oagen] formatter batch failed: …` from its
+    // catch block and otherwise discards the child's output entirely. Exiting 0
+    // with a message on stderr therefore prints nothing — the message goes into a
+    // buffer nobody reads. The trailing marker below rides along in the reported
+    // error so the cause is greppable next to Gradle's own stderr.
+    //
+    // A non-zero exit does not fail generation; oagen catches it and continues.
     if (!fs.existsSync(path.join(targetDir, 'gradlew'))) return null;
+    const marker =
+      '[android] ktlintFormat failed, so generated files are unformatted. ' +
+      'Most often no JDK on PATH (JAVA_HOME unset). Run ./script/ci in the SDK repo to format.';
     return {
       cmd: 'bash',
-      args: ['-c', './gradlew ktlintFormat --quiet >/dev/null 2>&1; true'],
+      args: ['-c', `./gradlew ktlintFormat --quiet || { echo "${marker}" >&2; exit 1; }`],
     };
   },
 };

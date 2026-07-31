@@ -1,5 +1,6 @@
 import type { EmitterContext } from '@workos/oagen';
 import { subPackage, typeName } from './naming.js';
+import { getSyntheticEnums } from '../shared/model-utils.js';
 
 /**
  * Kotlin types that are always in scope (stdlib) or resolved by an explicit
@@ -48,7 +49,12 @@ export function extractTypeNames(expr: string): string[] {
  */
 export function resolveTypeImports(ctx: EmitterContext, exprs: Iterable<string>): string[] {
   const modelNames = new Set(ctx.spec.models.map((m) => typeName(m.name)));
-  const enumNames = new Set(ctx.spec.enums.map((e) => typeName(e.name)));
+  // Synthetic enums (minted from inline oneOf sets during model enrichment) are
+  // emitted into the enums package but are absent from `ctx.spec.enums`. Without
+  // them here, a model field typed as one would generate no import and the file
+  // would not compile. The WorkOS spec currently mints none, so this changes no
+  // output today.
+  const enumNames = new Set([...ctx.spec.enums, ...getSyntheticEnums()].map((e) => typeName(e.name)));
 
   const imports = new Set<string>();
   for (const expr of exprs) {

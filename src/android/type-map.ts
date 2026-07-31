@@ -34,7 +34,13 @@ function mapPrimitive(ref: PrimitiveType): string {
   if (ref.format === 'int64') return 'Long';
   switch (ref.type) {
     case 'string':
-      if (ref.format === 'date-time' || ref.format === 'date') return 'Instant';
+      // `date` is a calendar date with no time or offset, so it cannot be parsed
+      // as an Instant — mapping both to Instant would throw at decode time on the
+      // first date-only field the spec introduces. The WorkOS spec currently has
+      // none (413 `date-time`, 0 `date`), so this changes no output today; it is
+      // here so that adding one is a type change rather than a runtime failure.
+      if (ref.format === 'date') return 'LocalDate';
+      if (ref.format === 'date-time') return 'Instant';
       return 'String';
     case 'integer':
       return 'Long';
@@ -85,6 +91,7 @@ export function fieldKotlinType(ref: TypeRef, required: boolean): string {
 export function implicitImportsFor(kotlinType: string): string[] {
   const imports: string[] = [];
   if (/\bInstant\b/.test(kotlinType)) imports.push('kotlinx.datetime.Instant');
+  if (/\bLocalDate\b/.test(kotlinType)) imports.push('kotlinx.datetime.LocalDate');
   if (/\bJsonElement\b/.test(kotlinType)) imports.push('kotlinx.serialization.json.JsonElement');
   return imports;
 }
