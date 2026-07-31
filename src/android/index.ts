@@ -135,7 +135,19 @@ export const androidEmitter: Emitter = {
     // buffer nobody reads. The trailing marker below rides along in the reported
     // error so the cause is greppable next to Gradle's own stderr.
     //
-    // A non-zero exit does not fail generation; oagen catches it and continues.
+    // A non-zero exit does not fail generation: oagen catches it and continues.
+    // That is intentional and not something this hook can change — `FormatCommand`
+    // is `{cmd, args, batchSize}` with no failure-policy field, and the catch in
+    // `formatTargetFiles` is unconditional. Making it fatal would also be the
+    // wrong trade: formatting is cosmetic, so a missing JDK would break
+    // `oagen generate` on machines where the emitted Kotlin is perfectly valid.
+    //
+    // Correctness is gated after generation instead, by the SDK's own `script/ci`
+    // (`set -euo pipefail`, then ktlintFormat → ktlintCheck → test). CI runs it
+    // immediately after the generate step and does not allow it to fail, so
+    // invalid Kotlin fails the build there rather than reaching a consumer.
+    // If generation should ever hard-fail on a formatter error, the knob belongs
+    // on `FormatCommand` in oagen, not here.
     if (!fs.existsSync(path.join(targetDir, 'gradlew'))) return null;
     const marker =
       '[android] ktlintFormat failed, so generated files are unformatted. ' +
