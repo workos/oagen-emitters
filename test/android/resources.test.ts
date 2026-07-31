@@ -377,6 +377,56 @@ describe('android/resources', () => {
   });
 
   /**
+   * `before` must be sent on the first auto-paged request only.
+   *
+   * `after` and `before` are alternative windows into the list, not filters.
+   * Re-sending `before` while `after` advances asks the server for a
+   * contradictory range, which can return the same page forever — and
+   * `autoPagingFlow` breaks only when `after` is null, so the failure mode is an
+   * infinite flow emitting duplicates rather than one bad page. `cursor == null`
+   * identifies the first page exactly, so the guard needs no runtime support.
+   */
+  it('sends the reverse cursor on the first auto-paged request only', () => {
+    const service: Service = {
+      name: 'Organizations',
+      operations: [
+        {
+          name: 'list_organizations',
+          httpMethod: 'get',
+          path: '/organizations',
+          pathParams: [],
+          queryParams: [
+            { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+          ],
+          headerParams: [],
+          response: { kind: 'model', name: 'OrganizationList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: { strategy: 'cursor', param: 'after', itemType: { kind: 'model', name: 'Organization' } },
+        },
+      ],
+    };
+    const listModel: Model = {
+      name: 'OrganizationList',
+      fields: [
+        { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Organization' } }, required: true },
+        { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+      ],
+    };
+    const ctx = makeCtx([service], [organizationModel, listModel]);
+    const content = generateResources([service], ctx)[0].content ?? '';
+
+    // the forward cursor is driven by the flow...
+    expect(content).toContain('after = cursor');
+    // ...and the reverse cursor is dropped once the walk starts.
+    expect(content).toContain('before = if (cursor == null) before else null');
+    // an unrelated filter is passed through unchanged on every page
+    expect(content).toContain('limit = limit');
+  });
+
+  /**
    * The `requestOptions` doc must name the overrides `RequestOptions` actually
    * has. It previously claimed a per-request "API key" override — copied from the
    * iOS emitter — which no Kotlin `RequestOptions` field provides, while omitting

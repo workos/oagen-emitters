@@ -424,9 +424,28 @@ function renderAutoPagingMethod(
   const name = autoPagingMethodName(method);
 
   const passthrough = orderMethodParams(auto.params.filter((p) => p !== auto.cursorParam));
-  const callArgs = orderMethodParams(auto.params).map((p) =>
-    p === auto.cursorParam ? `${p.name} = cursor` : `${p.name} = ${p.name}`,
-  );
+
+  // The reverse cursor, sent on the first page only.
+  //
+  // WorkOS pagination pairs `after` (forward) with `before` (reverse). They are
+  // alternative windows, not filters, so re-sending `before` alongside an
+  // advancing `after` asks the server for a contradictory range — which can
+  // return the same page indefinitely. `autoPagingFlow` stops only when `after`
+  // is null, so that would be an infinite flow emitting duplicates, not a bad
+  // page. Passing it on the first request preserves "start from this reverse
+  // cursor" without corrupting the walk, and `cursor == null` is exactly the
+  // first page. The kotlin emitter solves the same problem inside its pagination
+  // engine; android has no engine to hook, so it is resolved at the call site.
+  const reverseCursor =
+    auto.cursorParam.wire === 'after'
+      ? auto.params.find((p) => p.kind === 'query' && p.wire === 'before' && p.type === 'String?')
+      : undefined;
+
+  const callArgs = orderMethodParams(auto.params).map((p) => {
+    if (p === auto.cursorParam) return `${p.name} = cursor`;
+    if (p === reverseCursor) return `${p.name} = if (cursor == null) ${p.name} else null`;
+    return `${p.name} = ${p.name}`;
+  });
   callArgs.push('requestOptions = requestOptions');
 
   const lines: string[] = [];
