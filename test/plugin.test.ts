@@ -13,8 +13,9 @@ describe('workosEmittersPlugin', () => {
     expect(languages).toContain('ruby');
     expect(languages).toContain('rust');
     expect(languages).toContain('ios');
+    expect(languages).toContain('android');
     expect(languages).toContain('elixir');
-    expect(languages).toHaveLength(10);
+    expect(languages).toHaveLength(11);
   });
 
   it('exports extractors for all supported languages', () => {
@@ -44,7 +45,8 @@ describe('workosEmittersPlugin', () => {
     expect(runners).toContain('dotnet');
     expect(runners).toContain('elixir');
     expect(runners).toContain('ios');
-    expect(runners).toHaveLength(10);
+    expect(runners).toContain('android');
+    expect(runners).toHaveLength(11);
   });
 
   it('smoke runner paths are absolute', () => {

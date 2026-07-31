@@ -25,6 +25,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       'rubyEmitter',
       'rustEmitter',
       'iosEmitter',
+      'androidEmitter',
       'elixirEmitter',
     ];
     for (const name of expectedEmitters) {
@@ -66,6 +67,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
       mod.rubyEmitter,
       mod.rustEmitter,
       mod.iosEmitter,
+      mod.androidEmitter,
       mod.elixirEmitter,
     ];
     for (const emitter of directEmitters) {
