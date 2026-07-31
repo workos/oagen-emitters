@@ -570,6 +570,31 @@ function renderQueryAppend(q: RenderedParam): string[] {
     }
     return out;
   }
+  // A map-valued query param expands to one bracketed entry per key —
+  // `provider_query_params[hd]=example.com` — which is the encoding the API and
+  // every other WorkOS SDK use. Falling through to the scalar branch below would
+  // emit `it.toString()`, i.e. Kotlin's own map rendering
+  // (`{hd=example.com, access_type=offline}`) as a single opaque value, so the
+  // provider would receive one meaningless parameter instead of the pairs.
+  if (base.kind === 'map') {
+    const valueExpr = isStringPrimitive(base.valueType) ? 'value' : 'value.toString()';
+    const loop = (indent: string): void => {
+      out.push(`${indent}for ((key, value) in ${q.optional ? 'it' : q.name}) {`);
+      // `[$key]` is a Kotlin template referencing the loop variable; the wire name
+      // itself must be literal text, so it goes through ktTemplatePart (which
+      // escapes `$` and quotes) rather than being wrapped in an interpolation.
+      out.push(`${indent}    query.add(QueryParam("${ktTemplatePart(q.wire)}[$key]", ${valueExpr}))`);
+      out.push(`${indent}}`);
+    };
+    if (q.optional) {
+      out.push(`        ${q.name}?.let {`);
+      loop('            ');
+      out.push('        }');
+    } else {
+      loop('        ');
+    }
+    return out;
+  }
   if (q.optional) {
     out.push(
       `        ${q.name}?.let { query.add(QueryParam(${ktStringLiteral(q.wire)}, ${queryValueExpr('it', base)})) }`,

@@ -377,6 +377,46 @@ describe('android/resources', () => {
   });
 
   /**
+   * A map-valued query param must expand to bracketed entries.
+   *
+   * `Map.toString()` renders Kotlin's own syntax — `{hd=example.com}` — so
+   * stringifying one sends a single opaque parameter and the provider never sees
+   * the pairs. `provider_query_params[hd]=example.com` is what the API and every
+   * other WorkOS SDK use.
+   */
+  it('expands a map query param into bracketed entries', () => {
+    const service: Service = {
+      name: 'SSO',
+      operations: [
+        {
+          name: 'get_authorization_url',
+          httpMethod: 'get',
+          path: '/sso/authorize',
+          pathParams: [],
+          queryParams: [
+            {
+              name: 'provider_query_params',
+              type: { kind: 'map', valueType: { kind: 'primitive', type: 'string' } },
+              required: false,
+            },
+          ],
+          headerParams: [],
+          response: { kind: 'primitive', type: 'unknown' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const ctx = makeCtx([service], [organizationModel]);
+    const content = generateResources([service], ctx)[0].content ?? '';
+
+    expect(content).toContain('for ((key, value) in it) {');
+    expect(content).toContain('query.add(QueryParam("provider_query_params[$key]", value))');
+    // the whole map must never be stringified as one value
+    expect(content).not.toContain('QueryParam("provider_query_params", it.toString())');
+  });
+
+  /**
    * `before` must be sent on the first auto-paged request only.
    *
    * `after` and `before` are alternative windows into the list, not filters.
