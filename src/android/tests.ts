@@ -147,6 +147,9 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       'kotlinx.coroutines.test.runTest',
       'org.junit.jupiter.api.Test',
       `${subPackage(rctx, 'support')}.testClient`,
+      // Bounded request retrieval: an unbounded takeRequest() hangs until the CI
+      // job times out when the SDK issues no request, instead of failing legibly.
+      `${subPackage(rctx, 'support')}.awaitRequest`,
       ...gen.imports,
     ]);
 
@@ -401,7 +404,7 @@ class SuiteGenerator {
       lines.push(`            ${call}`);
     }
     lines.push('');
-    lines.push('            val request = server.takeRequest()');
+    lines.push('            val request = server.awaitRequest()');
     lines.push(`            assertEquals(${ktStringLiteral(op.httpMethod.toUpperCase())}, request.method)`);
     this.supportImport('pathOnly');
     lines.push(`            assertEquals(${ktStringLiteral(expectedPath)}, request.pathOnly())`);
@@ -467,6 +470,26 @@ class SuiteGenerator {
     if (queryAssert) {
       lines.push(`        assertTrue(url.contains(${ktStringLiteral(`${queryAssert.wire}=`)}))`);
     }
+
+    // A map-valued query param is the one shape whose encoding is easy to get
+    // silently wrong: stringifying the map yields Kotlin's own `{k=v}` rendering
+    // as a single opaque value, which the provider cannot read. Assert the
+    // bracketed form explicitly, and assert the un-bracketed name is absent so a
+    // regression to `toString()` fails rather than merely looking different.
+    const mapQuery = params.find(
+      (p) => p.kind === 'query' && (p.ref.kind === 'nullable' ? p.ref.inner : p.ref).kind === 'map',
+    );
+    if (mapQuery) {
+      const call = [...args, `${mapQuery.name} = mapOf("k1" to "v1")`].join(', ');
+      lines.push('');
+      lines.push(`        val withMap = client.${accessor}.${method}(${call})`);
+      // Query names go through URLEncoder, so the brackets arrive percent-encoded —
+      // `name%5Bk1%5D=v1`. Assert those literal bytes, matching what workos-kotlin
+      // puts on the wire. The negative assertion is the un-bracketed `name=`, which
+      // is exactly what a regression to `toString()` would produce.
+      lines.push(`        assertTrue(withMap.contains(${ktStringLiteral(`${mapQuery.wire}%5Bk1%5D=v1`)}))`);
+      lines.push(`        assertTrue(!withMap.contains(${ktStringLiteral(`${mapQuery.wire}=`)}))`);
+    }
     lines.push('    }');
     return lines.join('\n');
   }
@@ -523,7 +546,7 @@ class SuiteGenerator {
       lines.push(`            ${call}`);
     }
     lines.push('');
-    lines.push('            val request = server.takeRequest()');
+    lines.push('            val request = server.awaitRequest()');
     lines.push(`            assertEquals(${ktStringLiteral(op.httpMethod.toUpperCase())}, request.method)`);
     this.supportImport('pathOnly');
     lines.push(`            assertEquals(${ktStringLiteral(expectedPath)}, request.pathOnly())`);
@@ -593,8 +616,8 @@ class SuiteGenerator {
     lines.push(`            val items = client.${accessor}.${autoName}().toList()`);
     lines.push('');
     lines.push('            assertEquals(2, items.size)');
-    lines.push('            server.takeRequest()');
-    lines.push('            val second = server.takeRequest()');
+    lines.push('            server.awaitRequest()');
+    lines.push('            val second = server.awaitRequest()');
     lines.push(`            assertEquals("cursor_2", second.queryParam(${ktStringLiteral(auto.cursorWire)}))`);
     lines.push('        }');
     return lines.join('\n');
@@ -705,7 +728,7 @@ class SuiteGenerator {
     lines.push('');
     lines.push(`            client.${accessor}.${target.method}(${args.join(', ')})`);
     lines.push('');
-    lines.push('            val request = server.takeRequest()');
+    lines.push('            val request = server.awaitRequest()');
     lines.push('            assertEquals("value", request.headerValue("X-Custom"))');
     lines.push('        }');
     return lines.join('\n');
@@ -753,7 +776,7 @@ class SuiteGenerator {
       lines.push('');
       lines.push(`            client.${accessor}.${method}(${args.join(', ')})`);
       lines.push('');
-      lines.push('            val request = server.takeRequest()');
+      lines.push('            val request = server.awaitRequest()');
       lines.push(
         `            assertEquals(${ktStringLiteral(raw)}, request.queryParam(${ktStringLiteral(target.wire)}))`,
       );
