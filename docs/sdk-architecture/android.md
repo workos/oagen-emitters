@@ -687,6 +687,7 @@ src/main/kotlin/{pkg}/
   helpers/                                       # hand-maintained (@oagen-ignore-file)
     Pkce.kt                                      #   H08 + `val {Namespace}Client.pkce`
     AuthKit.kt                                   #   H10 (composes the generated URL builder)
+    SSOAuthKit.kt                                #   H15 (H16 is impossible — see the file)
     PublicClient.kt                              #   H19 public/PKCE-only facade
     Passwordless.kt                              #   non-spec + `val {Namespace}Client.passwordless`
     Signing.kt                                   #   HMAC-SHA256 signature primitives (H02)
