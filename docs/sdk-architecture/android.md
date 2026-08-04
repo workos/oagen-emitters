@@ -850,11 +850,15 @@ call-site noise for a much smaller inlined footprint.
 
 ## Known Limitations
 
-- **Deep-object query params.** A `map`-typed query parameter (e.g. SSO's
-  `provider_query_params`) is serialized with `.toString()`, which is not a valid
-  wire encoding. The iOS emitter has the same gap. Correct handling needs OpenAPI
-  `style`/`explode` deep-object support in the query builder; until then such
-  parameters should be avoided or hand-wrapped in the SDK's helper layer.
+- **Deep-object query params are bracket-expanded, not `style`/`explode`-driven.**
+  A `map`-typed query parameter (e.g. SSO's `provider_query_params`) expands to one
+  bracketed entry per key — `provider_query_params[hd]=example.com` — which is what
+  the API and the other WorkOS SDKs send, and is pinned by the generated
+  `SSOTest`/`UserManagementTest` URL-builder tests. It is hard-coded rather than
+  read from the operation's OpenAPI `style`/`explode`, so a future parameter
+  wanting a different deep-object encoding would need real `style` support in the
+  query builder. Non-string map values go through `.toString()`. The iOS emitter
+  still has the original `.toString()`-the-whole-map gap.
 - **Heterogeneous unions widen to `JsonElement`.** Callers get raw JSON rather
   than a typed variant. Generated tests skip operations whose required body is
   such a union, so those paths are covered only by the live smoke runner.
