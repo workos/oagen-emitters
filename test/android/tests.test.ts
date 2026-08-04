@@ -81,6 +81,106 @@ describe('android/tests', () => {
     expect(content).not.toMatch(/assertNotNull\(client\.\w+\)/);
   });
 
+  it('asserts a real field value on responses with no string id (§6)', () => {
+    // Every response shape that used to degrade to `assertNotNull(result)`, which §6
+    // lists as an anti-pattern: the scalar must be found wherever it actually lives.
+    const models: Model[] = [
+      // no `id`, but a required string
+      {
+        name: 'TokenResponse',
+        fields: [{ name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      // no scalar at all — the value is one level down, behind a required model
+      {
+        name: 'UserEnvelope',
+        fields: [{ name: 'user', type: { kind: 'model', name: 'Organization' }, required: true }],
+      },
+      // a non-paginated list envelope
+      {
+        name: 'RoleList',
+        fields: [
+          { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Organization' } }, required: true },
+        ],
+      },
+      // required boolean, and an optional nested payload behind a safe call
+      {
+        name: 'CheckResponse',
+        fields: [{ name: 'authorized', type: { kind: 'primitive', type: 'boolean' }, required: true }],
+      },
+      {
+        name: 'OptionalPayload',
+        fields: [{ name: 'token', type: { kind: 'model', name: 'TokenResponse' }, required: false }],
+      },
+      organizationModel,
+    ];
+    const ops = models
+      .filter((m) => m.name !== 'Organization')
+      .map((m, i) => ({
+        name: `get_thing_${i}`,
+        httpMethod: 'get' as const,
+        path: `/things/${i}`,
+        pathParams: [],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model' as const, name: m.name },
+        errors: [],
+        injectIdempotencyKey: false,
+      }));
+    const ctx = makeCtx([{ name: 'Things', operations: ops }], models);
+    const content = generateTests(ctx.spec, ctx)[0].content ?? '';
+
+    expect(content).toContain('assertEquals("test_access_token", result.accessToken)');
+    expect(content).toContain('assertEquals("org_01234", result.user.id)');
+    expect(content).toContain('assertEquals(1, result.data.size)');
+    expect(content).toContain('assertEquals("org_01234", result.data.first().id)');
+    expect(content).toContain('assertEquals(true, result.authorized)');
+    // optional hop must use a safe call, or the Kotlin will not compile
+    expect(content).toContain('assertEquals("test_access_token", result.token?.accessToken)');
+    // and none of them fall back to the anti-pattern
+    expect(content).not.toMatch(/assertNotNull\(result\)/);
+  });
+
+  it('emits numeric literals typed to match the property (§6)', () => {
+    // `assertEquals(1, aLong)` compiles — both widen to Any — and then fails at
+    // runtime, so the literal has to carry the Kotlin type's suffix.
+    const models: Model[] = [
+      {
+        name: 'Counts',
+        fields: [
+          { name: 'total', type: { kind: 'primitive', type: 'integer' }, required: true },
+          { name: 'ratio', type: { kind: 'primitive', type: 'number' }, required: true },
+        ],
+      },
+      {
+        name: 'Small',
+        fields: [{ name: 'n', type: { kind: 'primitive', type: 'integer', format: 'int32' }, required: true }],
+      },
+      // no spec field reaches the Double branch today, so pin it here rather than
+      // discover it the first time one does.
+      {
+        name: 'Ratio',
+        fields: [{ name: 'ratio', type: { kind: 'primitive', type: 'number' }, required: true }],
+      },
+    ];
+    const ops = models.map((m, i) => ({
+      name: `get_thing_${i}`,
+      httpMethod: 'get' as const,
+      path: `/things/${i}`,
+      pathParams: [],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: m.name },
+      errors: [],
+      injectIdempotencyKey: false,
+    }));
+    const ctx = makeCtx([{ name: 'Things', operations: ops }], models);
+    const content = generateTests(ctx.spec, ctx)[0].content ?? '';
+    expect(content).toContain('assertEquals(1L, result.total)'); // Long
+    expect(content).toContain('assertEquals(1, result.n)'); // Int (format int32)
+    expect(content).toContain('assertEquals(1.5, result.ratio)'); // Double
+    expect(content).not.toContain('assertEquals(1, result.total)');
+  });
+
   it('emits §6 error-path tests derived from the spec error policy', () => {
     const ctx = makeCtx([service], [organizationModel, createBody]);
     const content = generateTests(ctx.spec, ctx)[0].content ?? '';

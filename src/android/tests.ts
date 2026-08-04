@@ -34,6 +34,7 @@ import {
   resolvePaginatedItemName,
 } from './resources.js';
 import type { RenderedParam } from './resources.js';
+import { fieldKotlinType } from './type-map.js';
 import { renderImportBlock } from './imports.js';
 import { generateModelFixture } from './fixtures.js';
 
@@ -572,7 +573,7 @@ class SuiteGenerator {
       lines.push(`            assertTrue(body.containsKey(${ktStringLiteral(firstBodyWire)}))`);
     }
     if (model && fixture) {
-      for (const assertion of this.idAssertion(model, fixture, 'result')) {
+      for (const assertion of this.fieldAssertion(model, fixture, 'result')) {
         lines.push(`            ${assertion}`);
       }
     }
@@ -967,7 +968,7 @@ class SuiteGenerator {
       const json = `{"data":[${JSON.stringify(item)}],"list_metadata":{"before":null,"after":null}}`;
       const assertions = [
         'assertEquals(1, result.data.size)',
-        ...this.idAssertion(itemModel, item, 'result.data.first()'),
+        ...this.fieldAssertion(itemModel, item, 'result.data.first()'),
       ];
       return { json, binding: true, assertions };
     }
@@ -988,23 +989,172 @@ class SuiteGenerator {
       return {
         json: JSON.stringify(fixture),
         binding: true,
-        assertions: this.idAssertion(model, fixture, 'result'),
+        assertions: this.fieldAssertion(model, fixture, 'result'),
       };
     }
     return { json: '{}', binding: false, assertions: [] };
   }
 
-  /** Assert the decoded `id` when the model has a plain required string id. */
-  private idAssertion(model: Model, fixture: Record<string, unknown>, target: string): string[] {
-    const idField = model.fields.find(
-      (f) => f.name === 'id' && f.required && f.type.kind === 'primitive' && f.type.type === 'string' && !f.type.format,
-    );
-    const value = fixture['id'];
-    if (!idField || typeof value !== 'string') {
-      this.imports.add('kotlin.test.assertNotNull');
-      return [`assertNotNull(${target})`];
+  /**
+   * Assert one real decoded field value on the response, which
+   * `docs/lang-gen/sdk-runtime-contract.md` §6 requires of every per-service test
+   * ("at least one meaningful field value"; existence-only assertions are listed
+   * as an anti-pattern).
+   *
+   * `id` is preferred so the common case reads consistently across suites, but any
+   * required scalar will do — otherwise every response model without a string `id`
+   * (`AuthenticateResponse`, `AuthorizationCheck`, …) degrades to `assertNotNull`
+   * even though its fixture carries a perfectly assertable `access_token` or
+   * `authorized`.
+   *
+   * Envelope responses (`{"user":{…}}`, `{"object":"list","data":[…]}`) hold no
+   * scalar of their own, so the search descends through required model and
+   * model-array fields to reach one. Descending only through REQUIRED fields is what
+   * keeps the emitted chain non-null, so no `?.` or `!!` is ever needed.
+   */
+  private fieldAssertion(model: Model, fixture: Record<string, unknown>, target: string): string[] {
+    const found = this.scalarAssertion(model, fixture, target, 0, new Set());
+    if (found) return found;
+    this.imports.add('kotlin.test.assertNotNull');
+    return [`assertNotNull(${target})`];
+  }
+
+  /**
+   * Depth-first search for an assertable scalar, `null` when the model has none.
+   *
+   * `nullableChain` tracks whether any hop so far was optional. Once one is, EVERY
+   * later hop must be a safe call: `a?.b.c` does not compile ("only safe calls are
+   * allowed on a nullable receiver"), so the separator is chosen from this flag
+   * rather than from the current field alone.
+   */
+  private scalarAssertion(
+    model: Model,
+    fixture: Record<string, unknown>,
+    target: string,
+    depth: number,
+    visited: Set<string>,
+    nullableChain = false,
+  ): string[] | null {
+    // Self-referential models (Role -> Role, Event -> Event) would otherwise
+    // recurse forever; the fixture generator caps itself at depth 4 the same way.
+    if (visited.has(model.name) || depth > 3) return null;
+    visited.add(model.name);
+    const sep = nullableChain ? '?.' : '.';
+
+    // Mirror the fixture generator's dedup so a flattened-union duplicate never
+    // points at a property the data class did not declare.
+    const seenProps = new Set<string>();
+    const all: { field: Model['fields'][number]; prop: string }[] = [];
+    for (const field of [...model.fields].sort((a, b) => Number(b.name === 'id') - Number(a.name === 'id'))) {
+      const prop = propertyName(field.domainName ?? field.name);
+      if (seenProps.has(prop)) continue;
+      seenProps.add(prop);
+      all.push({ field, prop });
     }
-    return [`assertEquals(${ktStringLiteral(value)}, ${target}.id)`];
+    const candidates = all.filter((c) => c.field.required);
+
+    // Tier 1 — a required scalar on this level. The shallowest assertion is the
+    // clearest, so this is preferred over anything reached by descending.
+    for (const { field, prop } of candidates) {
+      if (field.type.kind !== 'primitive') continue;
+      const literal = ktScalarLiteral(fieldKotlinType(field.type, true), fixture[field.name]);
+      if (literal) return [`assertEquals(${literal}, ${target}${sep}${prop})`];
+    }
+
+    // Tier 2 — descend through required models and model arrays.
+    for (const { field, prop } of candidates) {
+      const found = this.descend(field.type, fixture[field.name], `${target}${sep}${prop}`, depth, visited, false);
+      if (found) return found;
+    }
+
+    // Tier 3 — any scalar on this level, including optional and explicitly
+    // `nullable` ones. The fixture generator populates optionals and unwraps
+    // `nullable`, so the value is on the wire and decodes non-null; the Kotlin
+    // property is `T?`, which `assertEquals` accepts by inferring `T?`.
+    for (const { field, prop } of all) {
+      const scalar = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      if (scalar.kind !== 'primitive') continue;
+      const literal = ktScalarLiteral(fieldKotlinType(scalar, true), fixture[field.name]);
+      if (literal) return [`assertEquals(${literal}, ${target}${sep}${prop})`];
+    }
+
+    // Tier 4 — descend through an OPTIONAL model with a safe call. Reached only by
+    // responses whose every field is optional and whose payload is nested
+    // (`DataIntegrationAccessTokenResponse`: `active` is a discriminator literal and
+    // the real value sits in the optional `access_token`). Without this they fall
+    // back to `assertNotNull`, which §6 lists as an anti-pattern.
+    for (const { field, prop } of all) {
+      if (field.required) continue;
+      const inner = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      const found = this.descend(inner, fixture[field.name], `${target}${sep}${prop}`, depth, visited, true);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** Recurse into a model or model-array `TypeRef`, or return `null` if it is neither. */
+  private descend(
+    ref: TypeRef,
+    value: unknown,
+    target: string,
+    depth: number,
+    visited: Set<string>,
+    nullableChain: boolean,
+  ): string[] | null {
+    const sep = nullableChain ? '?.' : '.';
+    if (ref.kind === 'model') {
+      const nested = this.modelMap.get(ref.name);
+      if (!nested || typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+      return this.scalarAssertion(nested, value as Record<string, unknown>, target, depth + 1, visited, nullableChain);
+    }
+    // A non-paginated list envelope: the decoded element count is itself a real
+    // field value, and the first element usually carries an id worth asserting.
+    if (ref.kind === 'array' && ref.items.kind === 'model' && Array.isArray(value) && value.length > 0) {
+      const nested = this.modelMap.get(ref.items.name);
+      const size = `assertEquals(${value.length}, ${target}${sep}size)`;
+      const first = value[0];
+      if (!nested || typeof first !== 'object' || first === null) return [size];
+      const inner = this.scalarAssertion(
+        nested,
+        first as Record<string, unknown>,
+        `${target}${sep}first()`,
+        depth + 1,
+        visited,
+        nullableChain,
+      );
+      return inner ? [size, ...inner] : [size];
+    }
+    return null;
+  }
+}
+
+/**
+ * Render a fixture value as a Kotlin literal of exactly `kotlinType`, or `null`
+ * when it cannot be. The type is the one the model generator declared for the
+ * property, so the literal can never drift from it — which matters for the
+ * numerics: `assertEquals(1, aLong)` compiles (both widen to `Any`) and then
+ * fails at runtime, so `Long` must get `1L` and `Double` must get `1.0`.
+ */
+function ktScalarLiteral(kotlinType: string, value: unknown): string | null {
+  switch (kotlinType) {
+    case 'String':
+      return typeof value === 'string' ? ktStringLiteral(value) : null;
+    case 'Boolean':
+      return typeof value === 'boolean' ? String(value) : null;
+    case 'Int':
+      return typeof value === 'number' && Number.isInteger(value) ? String(value) : null;
+    case 'Long':
+      return typeof value === 'number' && Number.isInteger(value) ? `${value}L` : null;
+    case 'Double':
+      return typeof value === 'number' && Number.isFinite(value)
+        ? Number.isInteger(value)
+          ? `${value}.0`
+          : String(value)
+        : null;
+    default:
+      // Instant, LocalDate, ByteArray, JsonElement: no literal form that compares
+      // equal to a JSON string, so those fields are not assertion candidates.
+      return null;
   }
 }
 
