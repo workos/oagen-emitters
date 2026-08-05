@@ -43,9 +43,15 @@ export function generateResources(_services: Service[], ctx: EmitterContext): Ge
 
 // --- TypeRef helpers --------------------------------------------------------
 
-function isStringPrimitive(ref: TypeRef): boolean {
-  const base = unwrapNullableRef(ref);
-  return base.kind === 'primitive' && base.type === 'string' && base.format !== 'date-time' && base.format !== 'date';
+/**
+ * True when a `TypeRef` renders as Kotlin `String` — the case where `.toString()`
+ * would be redundant. Covers primitive strings AND string-valued literals
+ * (`{ kind: 'literal', value: 'login' }`), which `mapTypeRef` also renders as
+ * `String`. Date/date-time strings are excluded: `mapTypeRef` renders those as
+ * `Instant`/`LocalDate`, so they still need `.toString()` to produce wire text.
+ */
+function rendersAsString(ref: TypeRef): boolean {
+  return mapTypeRef(unwrapNullableRef(ref)) === 'String';
 }
 
 // --- rendering --------------------------------------------------------------
@@ -537,7 +543,7 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
 
 function queryValueExpr(name: string, ref: TypeRef): string {
   if (isEnumTypeRef(ref)) return `${name}.rawValue`;
-  if (isStringPrimitive(ref)) return name;
+  if (rendersAsString(ref)) return name;
   return `${name}.toString()`;
 }
 
@@ -546,7 +552,7 @@ function renderQueryAppend(q: RenderedParam): string[] {
   const out: string[] = [];
   if (base.kind === 'array') {
     const elem = base.items;
-    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : isStringPrimitive(elem) ? 'value' : 'value.toString()';
+    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : rendersAsString(elem) ? 'value' : 'value.toString()';
     const loop = (indent: string): void => {
       out.push(`${indent}for (value in ${q.optional ? 'it' : q.name}) {`);
       out.push(`${indent}    query.add(QueryParam(${ktStringLiteral(q.wire)}, ${elemExpr}))`);
@@ -568,7 +574,7 @@ function renderQueryAppend(q: RenderedParam): string[] {
   // (`{hd=example.com, access_type=offline}`) as a single opaque value, so the
   // provider would receive one meaningless parameter instead of the pairs.
   if (base.kind === 'map') {
-    const valueExpr = isStringPrimitive(base.valueType) ? 'value' : 'value.toString()';
+    const valueExpr = rendersAsString(base.valueType) ? 'value' : 'value.toString()';
     const loop = (indent: string): void => {
       out.push(`${indent}for ((key, value) in ${q.optional ? 'it' : q.name}) {`);
       // `[$key]` is a Kotlin template referencing the loop variable; the wire name

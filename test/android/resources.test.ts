@@ -150,6 +150,38 @@ describe('android/resources', () => {
     expect(content).toContain('limit?.let { query.add(QueryParam("limit", it.toString())) }');
   });
 
+  it('emits a string-valued literal query param without a redundant .toString()', () => {
+    // A `literal` TypeRef (e.g. the spec's `prompt: "login"` or
+    // `code_challenge_method: "S256"`) renders as Kotlin `String`, so
+    // `it.toString()` is redundant and Kotlin 2.4 flags it as a warning.
+    // Regression for the SSO/UserManagement authorize warnings.
+    const service: Service = {
+      name: 'Sso',
+      operations: [
+        {
+          name: 'get_authorization_url',
+          httpMethod: 'get',
+          path: '/sso/authorize',
+          pathParams: [],
+          queryParams: [
+            { name: 'prompt', type: { kind: 'literal', value: 'login' }, required: false },
+            { name: 'code_challenge_method', type: { kind: 'literal', value: 'S256' }, required: false },
+          ],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const ctx = makeCtx([service]);
+    const content = generateResources([service], ctx)[0].content;
+    expect(content).toContain('prompt?.let { query.add(QueryParam("prompt", it)) }');
+    expect(content).toContain('codeChallengeMethod?.let { query.add(QueryParam("code_challenge_method", it)) }');
+    expect(content).not.toContain('QueryParam("prompt", it.toString())');
+    expect(content).not.toContain('QueryParam("code_challenge_method", it.toString())');
+  });
+
   it('emits an auto-paging Flow companion for a cursor-paginated operation', () => {
     const listService: Service = {
       name: 'Organizations',
