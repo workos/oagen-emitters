@@ -32,7 +32,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
 import { parsePathTemplate } from '../shared/path-template.js';
-import { getSyntheticEnums } from '../shared/model-utils.js';
+import { getSyntheticEnums, resolvePaginationItemType } from '../shared/model-utils.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
 
 /**
@@ -254,6 +254,13 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   const hasParams = methodTakesParams(resolved);
   const isQueryMethod = ['get', 'delete', 'head'].includes(op.httpMethod);
 
+  // `Page.from_map/4` casts each element of the `data` array, so paginated ops
+  // need the element type — not the list envelope the response names.
+  const pageItemType =
+    plan.isPaginated && op.pagination
+      ? resolvePaginationItemType(op.pagination.itemType, new Map(ctx.spec.models.map((m) => [m.name, m])))
+      : null;
+
   const args = ['client', ...pathParams.map((p) => p.variable)];
   if (hasParams) args.push('params \\\\ %{}');
   args.push('opts \\\\ []');
@@ -307,8 +314,8 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   }
 
   // Spec
-  const returnSpec = plan.isPaginated
-    ? `${ns}.Page.t(${mapTypeRef(op.pagination!.itemType, { nsPascal: ns })})`
+  const returnSpec = pageItemType
+    ? `${ns}.Page.t(${mapTypeRef(pageItemType, { nsPascal: ns })})`
     : mapTypeRef(op.response, { nsPascal: ns });
   lines.push(`  @spec ${fname}(${specArgs.join(', ')}) ::`);
   lines.push(`          {:ok, ${returnSpec}} | {:error, ${ns}.Error.error()}`);
@@ -319,7 +326,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
 
   if (plan.isPaginated && op.pagination) {
     const dataKey = op.pagination.dataPath ?? 'data';
-    const itemCaster = casterFun(op.pagination.itemType, ctx, names) ?? '&Function.identity/1';
+    const itemCaster = casterFun(pageItemType ?? op.pagination.itemType, ctx, names) ?? '&Function.identity/1';
     const cursorParam = op.pagination.param;
     const recallArgs = ['client', ...pathParams.map((p) => p.variable)];
     lines.push(`    with {:ok, body} <- ${requestCall} do`);
