@@ -955,6 +955,131 @@ describe('generateResources', () => {
     expect(files[0].content).toContain('    role_slugs: List[str]');
   });
 
+  it('emits optional variant members with a None default, trailing order, omit-when-unset dispatch, and imports', () => {
+    const models: Model[] = [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'password_hash_type',
+            type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+            required: false,
+          },
+          {
+            name: 'password_salt_position',
+            type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      // The optional member is listed first on purpose: the
+                      // emitter must reorder it after the required fields so
+                      // the dataclass default is legal.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: {
+        ...emptySpec,
+        services,
+        models,
+        enums: [
+          {
+            name: 'CreateUserPasswordHashType',
+            values: [
+              { name: 'BCRYPT', value: 'bcrypt' },
+              { name: 'SSHA_256', value: 'ssha256' },
+            ],
+          },
+          {
+            name: 'CreateUserPasswordSaltPosition',
+            values: [
+              { name: 'PREFIX', value: 'prefix' },
+              { name: 'SUFFIX', value: 'suffix' },
+            ],
+          },
+        ],
+      },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files[0].content;
+
+    // Optional member trails the required fields and defaults to None.
+    const hashedClass = content.slice(content.indexOf('class PasswordHashed:'));
+    const hashTypeIndex = hashedClass.indexOf('password_hash_type: Union[CreateUserPasswordHashType, str]');
+    const saltPositionIndex = hashedClass.indexOf(
+      'password_salt_position: Union[CreateUserPasswordSaltPosition, str] | None = None',
+    );
+    expect(hashTypeIndex).toBeGreaterThan(-1);
+    expect(saltPositionIndex).toBeGreaterThan(hashTypeIndex);
+
+    // Dispatch omits the optional member when unset, and writes required
+    // members unconditionally.
+    expect(content).toContain('if password.password_salt_position is not None:');
+    expect(content).toContain('body["password_hash"] = password.password_hash');
+
+    // The enum types referenced only by the variant dataclass are imported.
+    expect(content).toContain('CreateUserPasswordSaltPosition,');
+    expect(content).toContain('CreateUserPasswordHashType,');
+  });
+
   it('lets nullable optional body fields be cleared with an explicit None', () => {
     const models: Model[] = [
       {

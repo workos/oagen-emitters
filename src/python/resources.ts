@@ -113,11 +113,23 @@ function generateParameterGroupDataclasses(
         const readableGroup = group.name.replace(/_/g, ' ');
         const readableVariant = variant.name.replace(/_/g, ' ');
         lines.push(`    """Identify ${readableGroup} ${readableVariant}."""`);
-        for (const param of variant.parameters) {
+        // Optional members default to None, so they must trail the required
+        // ones — Python dataclasses reject a defaulted field before a
+        // non-defaulted one.
+        const optionalNames = new Set(variant.optionalParameters ?? []);
+        const orderedParams = [
+          ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+          ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+        ];
+        for (const param of orderedParams) {
           const pyField = fieldName(param.name);
           const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
           const pyType = mapTypeRefUnquoted(effectiveType, specEnumNames, true);
-          lines.push(`    ${pyField}: ${pyType}`);
+          if (optionalNames.has(param.name)) {
+            lines.push(`    ${pyField}: ${pyType} | None = None`);
+          } else {
+            lines.push(`    ${pyField}: ${pyType}`);
+          }
         }
       }
     }
@@ -1034,13 +1046,21 @@ function emitGroupDispatch(
       const keyword = first ? 'if' : 'elif';
       first = false;
       lines.push(`        ${indent}${keyword} isinstance(${groupParam}, ${variantClass}):`);
+      const optionalNames = new Set(variant.optionalParameters ?? []);
       for (const param of variant.parameters) {
         const pyField = fieldName(param.name);
         const resolvedType = bodyFieldTypes?.get(param.name) ?? param.type;
         const effectiveType = resolvedType.kind === 'nullable' ? resolvedType.inner : resolvedType;
         const isEnum = effectiveType.kind === 'enum';
         const value = isEnum ? `enum_value(${groupParam}.${pyField})` : `${groupParam}.${pyField}`;
-        lines.push(`            ${indent}${target}["${param.name}"] = ${value}`);
+        if (optionalNames.has(param.name)) {
+          // Optional variant members are omitted from the wire format when
+          // unset rather than sent as null.
+          lines.push(`            ${indent}if ${groupParam}.${pyField} is not None:`);
+          lines.push(`                ${indent}${target}["${param.name}"] = ${value}`);
+        } else {
+          lines.push(`            ${indent}${target}["${param.name}"] = ${value}`);
+        }
       }
     }
   }
@@ -1129,9 +1149,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         // Also collect types from body model fields (expanded as keyword params)
         const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyRef.name);
         if (bodyModel) {
-          const importGroupedParams = collectGroupedParamNames(op);
+          // Grouped params are excluded from the flat keyword expansion, but
+          // their types are still referenced by the variant dataclasses
+          // emitted into this file, so their model/enum refs must be
+          // imported like any other body field's.
           for (const f of bodyModel.fields) {
-            if (importGroupedParams.has(f.name)) continue;
             for (const ref of collectModelRefs(f.type)) modelImports.add(ref);
             for (const ref of collectEnumRefs(f.type)) enumImports.add(ref);
           }

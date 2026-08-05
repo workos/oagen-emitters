@@ -679,8 +679,16 @@ function parameterGroupStubExpr(
     .join('');
   const fqn = `${crate}::${accessor}::${enumName}`;
   if (firstVariant.parameters.length === 0) return `${fqn}::${variantName}`;
+  // Members the IR marks optional are `Option<T>` on the generated variant, so
+  // the fixture wraps their stub in `Some(…)`. Every member gets a value —
+  // struct-variant literals name their fields, so the emitter's required-first
+  // reordering doesn't affect this list.
+  const optionalNames = new Set(firstVariant.optionalParameters ?? []);
   const fields = firstVariant.parameters
-    .map((p) => `${p.name}: ${JSON.stringify(`stub_${p.name}`)}.to_string()`)
+    .map((p) => {
+      const value = `${JSON.stringify(`stub_${p.name}`)}.to_string()`;
+      return `${p.name}: ${optionalNames.has(p.name) ? `Some(${value})` : value}`;
+    })
     .join(', ');
   return `${fqn}::${variantName} { ${fields} }`;
 }

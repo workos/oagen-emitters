@@ -589,6 +589,134 @@ describe('generateResources', () => {
     expect(roleMultiple!.content).toContain('public readonly array $slugs');
   });
 
+  it('emits optional variant members as trailing nullable properties omitted from the body when unset', () => {
+    const userModels: Model[] = [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'password_hash_type',
+            type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+            required: false,
+          },
+          {
+            name: 'password_salt_position',
+            type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const userServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      // The optional member is listed first on purpose: PHP
+                      // deprecates a required parameter after a defaulted one,
+                      // so the emitter must move it last.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const userSpec: ApiSpec = {
+      ...emptySpec,
+      services: userServices,
+      models: userModels,
+      enums: [
+        {
+          name: 'CreateUserPasswordHashType',
+          values: [
+            { name: 'BCRYPT', value: 'bcrypt' },
+            { name: 'SSHA_256', value: 'ssha256' },
+          ],
+        },
+        {
+          name: 'CreateUserPasswordSaltPosition',
+          values: [
+            { name: 'PREFIX', value: 'prefix' },
+            { name: 'SUFFIX', value: 'suffix' },
+          ],
+        },
+      ],
+    };
+
+    const result = generateResources(userServices, { ...ctx, spec: userSpec });
+
+    // The optional member trails the required ones and defaults to null.
+    const hashed = result.find((file) => file.path === 'lib/Service/PasswordHashed.php');
+    expect(hashed).toBeDefined();
+    const hashIndex = hashed!.content.indexOf('public readonly string $hash,');
+    const hashTypeIndex = hashed!.content.indexOf(
+      'public readonly \\WorkOS\\Resource\\CreateUserPasswordHashType $hashType,',
+    );
+    const saltPositionIndex = hashed!.content.indexOf(
+      'public readonly ?\\WorkOS\\Resource\\CreateUserPasswordSaltPosition $saltPosition = null,',
+    );
+    expect(hashIndex).toBeGreaterThan(-1);
+    expect(hashTypeIndex).toBeGreaterThan(hashIndex);
+    expect(saltPositionIndex).toBeGreaterThan(hashTypeIndex);
+
+    // A variant with no optional members is untouched.
+    const plaintext = result.find((file) => file.path === 'lib/Service/PasswordPlaintext.php');
+    expect(plaintext!.content).toContain('public readonly string $password,');
+    expect(plaintext!.content).not.toContain('= null');
+
+    // Dispatch writes the optional member only when set, required ones always.
+    const resource = result.find((file) => file.path === 'lib/Service/UserManagement.php');
+    expect(resource!.content).toContain("$body['password_hash'] = $password->hash;");
+    expect(resource!.content).toContain('if ($password->saltPosition !== null) {');
+    expect(resource!.content).toContain("            $body['password_salt_position'] = $password->saltPosition;");
+  });
+
   it('requires inferred client credentials in wrapper methods', () => {
     const lines = generateWrapperMethods(
       {

@@ -6,6 +6,7 @@ import type {
   GeneratedFile,
   ResolvedOperation,
   Parameter,
+  ParameterGroupVariant,
 } from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
@@ -161,6 +162,37 @@ export function deriveVariantFieldName(paramName: string, groupName: string): st
 }
 
 /**
+ * Widen a PHP parameter type hint to accept null, matching the form the model
+ * emitter uses for optional promoted properties. `?T` is illegal for unions and
+ * for `mixed`, so those fall back to the `|null` / bare-`mixed` spellings.
+ */
+function nullableTypeHint(phpType: string): string {
+  if (phpType.startsWith('?') || phpType === 'mixed') return phpType;
+  if (phpType.includes('|')) return phpType.endsWith('|null') ? phpType : `${phpType}|null`;
+  return `?${phpType}`;
+}
+
+/**
+ * Split a variant's parameters into declaration order: required members first,
+ * then the ones named in `optionalParameters`. PHP deprecates a required
+ * parameter after an optional (defaulted) one, so the optional members must
+ * trail. With no `optionalParameters` this is the variant's original order.
+ */
+function orderVariantParameters(variant: ParameterGroupVariant): {
+  ordered: ParameterGroupVariant['parameters'];
+  optionalNames: Set<string>;
+} {
+  const optionalNames = new Set(variant.optionalParameters ?? []);
+  return {
+    ordered: [
+      ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+      ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+    ],
+    optionalNames,
+  };
+}
+
+/**
  * Generate PHP variant class files for all parameter groups on an operation.
  * Each variant becomes a simple PHP class with readonly constructor properties.
  */
@@ -182,13 +214,18 @@ function generateParameterGroupFiles(
       lines.push(`class ${variantClass}`);
       lines.push('{');
       lines.push('    public function __construct(');
-      for (let i = 0; i < variant.parameters.length; i++) {
-        const param = variant.parameters[i];
+      const { ordered, optionalNames } = orderVariantParameters(variant);
+      for (let i = 0; i < ordered.length; i++) {
+        const param = ordered[i];
         const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
         const phpType = mapTypeRef(effectiveType, { qualified: true });
         const phpName = deriveVariantFieldName(param.name, group.name);
         const comma = ',';
-        lines.push(`        public readonly ${phpType} $${phpName}${comma}`);
+        if (optionalNames.has(param.name)) {
+          lines.push(`        public readonly ${nullableTypeHint(phpType)} $${phpName} = null${comma}`);
+        } else {
+          lines.push(`        public readonly ${phpType} $${phpName}${comma}`);
+        }
       }
       lines.push('    ) {');
       lines.push('    }');
@@ -222,9 +259,18 @@ function generateGroupDispatch(op: Operation, indent: string, target: '$query' |
 
       lines.push(`${indent}${keyword} ($${phpParamName} instanceof ${variantClass}) {`);
 
+      const optionalNames = new Set(variant.optionalParameters ?? []);
       for (const param of variant.parameters) {
         const phpField = deriveVariantFieldName(param.name, group.name);
-        lines.push(`${indent}    ${target}['${param.name}'] = $${phpParamName}->${phpField};`);
+        const accessor = `$${phpParamName}->${phpField}`;
+        if (optionalNames.has(param.name)) {
+          // Optional members stay off the wire when unset rather than being sent as null.
+          lines.push(`${indent}    if (${accessor} !== null) {`);
+          lines.push(`${indent}        ${target}['${param.name}'] = ${accessor};`);
+          lines.push(`${indent}    }`);
+        } else {
+          lines.push(`${indent}    ${target}['${param.name}'] = ${accessor};`);
+        }
       }
 
       lines.push(`${indent}}`);

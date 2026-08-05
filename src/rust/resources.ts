@@ -183,7 +183,7 @@ interface GroupEnumSpec {
   name: string;
   variants: Array<{
     name: string;
-    fields: Array<{ rustName: string; wireName: string; rustType: string }>;
+    fields: Array<{ rustName: string; wireName: string; rustType: string; optional: boolean }>;
   }>;
 }
 
@@ -216,17 +216,34 @@ class GroupEmitter {
   /** Register a parameter-group enum, returning the PascalCase Rust name. */
   registerEnum(group: ParameterGroup): string {
     const name = typeName(group.name);
-    const variants = group.variants.map((v) => ({
-      name: typeName(v.name),
-      fields: v.parameters.map((p) => ({
-        rustName: fieldName(p.name),
-        wireName: p.name,
-        // Group variant params are always treated as required within their
-        // variant — picking the variant is the caller's commitment to supply
-        // the variant's full payload.
-        rustType: rustTypeForGroupParam(p.type),
-      })),
-    }));
+    const variants = group.variants.map((v) => {
+      const optionalNames = new Set(v.optionalParameters ?? []);
+      // Optional members trail the required ones, matching every other
+      // emitter's variant field order. Two filter passes keep the order
+      // byte-identical to the required-only case when `optionalParameters` is
+      // absent or empty.
+      const orderedParams = [
+        ...v.parameters.filter((p) => !optionalNames.has(p.name)),
+        ...v.parameters.filter((p) => optionalNames.has(p.name)),
+      ];
+      return {
+        name: typeName(v.name),
+        fields: orderedParams.map((p) => {
+          // A member not listed in `optionalParameters` is required within its
+          // variant — picking the variant is the caller's commitment to supply
+          // that much of the payload. Listed members are `Option<T>` and are
+          // skipped on the wire when `None`.
+          const optional = optionalNames.has(p.name);
+          const base = rustTypeForGroupParam(p.type);
+          return {
+            rustName: fieldName(p.name),
+            wireName: p.name,
+            rustType: optional ? makeOptional(base) : base,
+            optional,
+          };
+        }),
+      };
+    });
     if (!this.seenEnums.has(name)) {
       this.seenEnums.add(name);
       this.enums.push({ name, variants });
@@ -257,6 +274,12 @@ class GroupEmitter {
         }
         lines.push(`    ${v.name} {`);
         for (const f of v.fields) {
+          // Optional members are omitted from the wire format when unset
+          // rather than sent as null — same treatment optional flat fields get
+          // on the synthetic body struct below.
+          if (f.optional) {
+            lines.push('        #[serde(skip_serializing_if = "Option::is_none")]');
+          }
           if (f.rustName !== f.wireName) {
             lines.push(`        #[serde(rename = ${JSON.stringify(f.wireName)})]`);
           }
@@ -345,14 +368,16 @@ class GroupEmitter {
 }
 
 /**
- * Render the Rust type for a parameter-group variant field. Variants commit
- * the caller to supplying their full payload, so optional individual params
- * still flow as `String` (not `Option<String>`); the enum-level choice is the
- * one source of truth for "did the caller pick this variant or not."
+ * Render the base (non-`Option`) Rust type for a parameter-group variant
+ * field. Picking a variant commits the caller to its payload, so a member's
+ * own IR `required` flag is ignored and the type flows as `String` rather than
+ * `Option<String>`; the enum-level choice is the one source of truth for "did
+ * the caller pick this variant or not." Members the IR lists in the variant's
+ * `optionalParameters` are the exception — `registerEnum` re-wraps those in
+ * `Option<…>` so they can be left out of that payload.
  */
 function rustTypeForGroupParam(type: TypeRef): string {
   const rust = mapTypeRef(type);
-  // Variant fields are non-optional regardless of the IR's per-param flag.
   if (rust.startsWith('Option<')) return rust.slice('Option<'.length, -1);
   return rust;
 }

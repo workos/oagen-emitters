@@ -502,6 +502,73 @@ describe('rust/tests', () => {
     expect(content).not.toContain('encodes_query_params');
   });
 
+  it('wraps optional parameter-group members in Some(..) in the variant fixture', () => {
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: false,
+                variants: [
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      {
+                        name: 'password_hash',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const files = generateTests(
+      { ...baseSpec, services },
+      ctxWithResolved(services, [
+        { name: 'User', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+        {
+          name: 'CreateUserRequest',
+          fields: [
+            { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'password_salt_position', type: { kind: 'primitive', type: 'string' }, required: false },
+          ],
+        },
+      ]),
+    );
+    const content = getMountTestFile(files, 'user_management');
+    // The variant's optional member is `Option<String>` in the generated enum,
+    // so the fixture literal has to wrap its stub; the required member stays
+    // bare. Every member gets a value, keeping the literal exhaustive.
+    expect(content).toContain(
+      'workos::user_management::Password::Hashed { password_hash: "stub_password_hash".to_string(), password_salt_position: Some("stub_password_salt_position".to_string()) }',
+    );
+  });
+
   describe('minimal scoped generation', () => {
     const svc = (name: string): Service => ({
       name,

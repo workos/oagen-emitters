@@ -104,6 +104,16 @@ function groupVariantClassName(mountName: string, groupName: string, variantName
 }
 
 /**
+ * Widen a parameter group member's type for a variant that lists it in
+ * `optionalParameters`. Optional members may be omitted when the variant is
+ * used, which on the C# side means a nullable property and a null guard when
+ * serializing.
+ */
+function optionalMemberType(type: TypeRef): TypeRef {
+  return type.kind === 'nullable' ? type : { kind: 'nullable', inner: type };
+}
+
+/**
  * Generate C# abstract base class + concrete subtypes for all parameter groups
  * on an operation. Each group becomes an abstract class with concrete subclasses
  * for each variant containing the variant's parameters as properties.
@@ -130,11 +140,22 @@ function generateParameterGroupTypes(
       lines.push('');
       lines.push(`    public class ${variantName} : ${baseName}`);
       lines.push('    {');
-      for (const param of variant.parameters) {
+      // Members the variant marks optional are nullable and left unset by
+      // default, and trail the required ones so the declaration order matches
+      // the other emitters' variant types.
+      const optionalNames = new Set(variant.optionalParameters ?? []);
+      const orderedParams = [
+        ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+        ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+      ];
+      for (const param of orderedParams) {
         const csField = fieldName(param.name);
         const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
-        const csType = mapTypeRef(effectiveType);
-        lines.push(`        public ${csType} ${csField} { get; set; } = default!;`);
+        if (optionalNames.has(param.name)) {
+          lines.push(`        public ${mapTypeRef(optionalMemberType(effectiveType))} ${csField} { get; set; }`);
+        } else {
+          lines.push(`        public ${mapTypeRef(effectiveType)} ${csField} { get; set; } = default!;`);
+        }
         lines.push('');
       }
       lines.push('    }');
@@ -174,9 +195,14 @@ function emitGroupSerialization(
       lines.push(`${indent}${keyword} (options?.${groupField} is ${variantName} ${localVar})`);
       lines.push(`${indent}{`);
       let prevWasBlock = false;
+      const optionalNames = new Set(variant.optionalParameters ?? []);
       for (const param of variant.parameters) {
         const csField = fieldName(param.name);
-        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
+        const declaredType = bodyFieldTypes.get(param.name) ?? param.type;
+        // Optional members are nullable on the variant class, so serializing
+        // them through the nullable form of the type gives them a null guard —
+        // an unset member is omitted from the wire format, not sent as null.
+        const effectiveType = optionalNames.has(param.name) ? optionalMemberType(declaredType) : declaredType;
         const accessor = `${localVar}.${csField}`;
         const paramLines = emitParamValue(param.name, accessor, effectiveType, indent + '    ', target);
         // SA1513: closing brace must be followed by a blank line before the next statement

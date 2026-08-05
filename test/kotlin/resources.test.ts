@@ -329,4 +329,164 @@ describe('kotlin/resources', () => {
     expect(file.content).toContain('Usage from Kotlin:');
     expect(file.content).toContain('Usage from Java:');
   });
+
+  it('emits optional variant members as trailing nullable properties omitted from the body when unset', () => {
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'AuthenticateResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      // The optional member is listed first on purpose: the
+                      // emitter must reorder it after the required fields so
+                      // its `= null` default is legal in the data class.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const enums = [
+      {
+        name: 'CreateUserPasswordHashType',
+        values: [{ value: 'bcrypt' }, { value: 'ssha256' }],
+      },
+      {
+        name: 'CreateUserPasswordSaltPosition',
+        values: [{ value: 'prefix' }, { value: 'suffix' }],
+      },
+    ];
+    const spec = {
+      ...baseSpec,
+      services,
+      enums,
+      models: [
+        ...baseSpec.models,
+        {
+          name: 'CreateUserRequest',
+          fields: [
+            { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+            {
+              name: 'password_hash_type',
+              type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+              required: false,
+            },
+            {
+              name: 'password_salt_position',
+              type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+              required: false,
+            },
+          ],
+        },
+      ],
+    };
+    const files = generateResources(services, {
+      ...ctxFor(services, enums as never),
+      spec: spec as ApiSpec,
+    });
+    const content = files.find((f) => f.path.endsWith('/UserManagement.kt'))!.content;
+
+    // The optional member trails the required ones and is nullable with a
+    // `= null` default so callers can omit it.
+    const hashed = content.slice(content.indexOf('data class Hashed('));
+    const hashTypeIndex = hashed.indexOf('val hashType: CreateUserPasswordHashType,');
+    const saltPositionIndex = hashed.indexOf('val saltPosition: CreateUserPasswordSaltPosition? = null');
+    expect(hashTypeIndex).toBeGreaterThan(-1);
+    expect(saltPositionIndex).toBeGreaterThan(hashTypeIndex);
+
+    // Body dispatch writes required members unconditionally and the optional
+    // member only when it is set.
+    expect(content).toContain('body["password_hash"] = createUserPassword.hash');
+    expect(content).toContain('createUserPassword.saltPosition?.let { body["password_salt_position"] = it }');
+  });
+
+  it('mirrors optional variant members in the query dispatch and the flat Java overload', () => {
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'listResources',
+            httpMethod: 'get',
+            path: '/authorization/resources',
+            pathParams: [],
+            queryParams: [
+              { name: 'resource_external_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'resource_target',
+                optional: false,
+                variants: [
+                  {
+                    name: 'ByExternalId',
+                    parameters: [
+                      // Optional member listed first so the test proves reordering.
+                      { name: 'resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+                      { name: 'resource_external_id', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                    optionalParameters: ['resource_type_slug'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services));
+    const content = files.find((f) => f.path.endsWith('/Authorization.kt'))!.content;
+
+    // Query dispatch: required member unconditional, optional member guarded.
+    expect(content).toContain('params += "resource_external_id" to resourceTarget.resourceExternalId');
+    expect(content).toContain('resourceTarget.resourceTypeSlug?.let { params += "resource_type_slug" to it }');
+
+    // The flat Java overload's parameter types match the variant constructor's.
+    expect(content).toMatch(
+      /fun listResourcesByExternalId\(\n\s+resourceExternalId: String,\n\s+resourceTypeSlug: String\? = null,/,
+    );
+  });
 });

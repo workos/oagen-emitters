@@ -35,6 +35,7 @@ import {
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
+import { orderedVariantParameters } from './resources.js';
 import { resolveKotlinWrapperParams } from './wrappers.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
@@ -343,7 +344,12 @@ function buildOperationTest(
     const variant = group.variants[0];
     const sealedName = sealedGroupName(group.name);
     const variantName = className(variant.name);
-    const variantArgs = variant.parameters.map((_p) => ktStringLiteral('sample-arg')).join(', ');
+    // Positional construction, so walk the variant's parameters in the same
+    // order [generateSealedClass] declares them — optional members trail the
+    // required ones. Every member gets a value, including the optional ones.
+    const variantArgs = orderedVariantParameters(variant)
+      .parameters.map((_p) => ktStringLiteral('sample-arg'))
+      .join(', ');
     imports.add(`com.workos.${mountPackage}.${sealedName}`);
     argParts.push(`${groupParamNames.get(group.name)!} = ${sealedName}.${variantName}(${variantArgs})`);
   }

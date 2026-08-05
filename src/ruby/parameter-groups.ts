@@ -56,7 +56,12 @@ export interface CollectedVariant {
   variantName: string;
   /** PascalCase mount target this variant is scoped under (e.g. "UserManagement"). */
   mountTarget: string;
-  parameters: { name: string; type: TypeRef }[];
+  /**
+   * Variant members in emission order: required first, then optional (members
+   * named in the IR's `optionalParameters`). Optional members carry a `nil`
+   * default, so they must trail the required ones in the keyword signature.
+   */
+  parameters: { name: string; type: TypeRef; optional: boolean }[];
 }
 
 /**
@@ -98,8 +103,14 @@ export function buildGroupOwnerMap(ctx: EmitterContext): Map<string, string> {
  * leaf is a bare primitive but the request body model has a richer type
  * (array/enum/model/map), we fall back to the body type to recover fidelity
  * the IR drops. Body nullability is stripped — when a parameter group is
- * optional, the body field for the group becomes nullable, but within a
- * variant the leaf is always required (selecting the variant means passing it).
+ * optional, the body field for the group becomes nullable, but that reflects
+ * the group's optionality, not the leaf's.
+ *
+ * Within a variant a leaf is required unless the IR lists it in the variant's
+ * `optionalParameters` — those members may be omitted when the variant is
+ * selected, so they are reordered after the required ones and get a `nil`
+ * default. When `optionalParameters` is absent or empty the order (and every
+ * byte of emitted output) is unchanged.
  */
 export function collectVariantsForMountTarget(
   ctx: EmitterContext,
@@ -120,14 +131,23 @@ export function collectVariantsForMountTarget(
         const cls = groupVariantClassName(group.name, variant.name);
         if (seen.has(cls)) continue;
         seen.add(cls);
+        // Optional members carry a `nil` default, so they trail the required
+        // ones — Ruby rejects a defaulted positional before a required one and
+        // a trailing order keeps the keyword signature readable.
+        const optionalNames = new Set(variant.optionalParameters ?? []);
+        const orderedParams = [
+          ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+          ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+        ];
         out.push({
           className: cls,
           groupName: group.name,
           variantName: variant.name,
           mountTarget,
-          parameters: variant.parameters.map((p) => ({
+          parameters: orderedParams.map((p) => ({
             name: p.name,
             type: pickVariantParamType(p.type, bodyFieldTypes.get(p.name)),
+            optional: optionalNames.has(p.name),
           })),
         });
       }
@@ -166,6 +186,20 @@ function readableName(name: string): string {
 }
 
 /**
+ * Wrap a variant member's type in `nullable` so the YARD/Sorbet mappers render
+ * it as optional (`[String, nil]` / `T.nilable(String)`) with their existing
+ * duplicate-nil handling. Already-nullable types pass through untouched.
+ */
+function nilableTypeRef(ref: TypeRef): TypeRef {
+  return ref.kind === 'nullable' ? ref : { kind: 'nullable', inner: ref };
+}
+
+/** YARD/Sorbet type for a variant member, nilable when the member is optional. */
+function variantMemberType(p: { type: TypeRef; optional: boolean }, map: (ref: TypeRef) => string): string {
+  return map(p.optional ? nilableTypeRef(p.type) : p.type);
+}
+
+/**
  * Render the inline `Data.define` block for a single variant, indented for
  * inclusion inside a `class <Service>` body. Returns an array of lines with
  * 4-space indent (the resource file's class members are 4-space indented).
@@ -175,16 +209,28 @@ export function emitInlineVariantClass(v: CollectedVariant): string[] {
   lines.push(`    # Identifies the ${readableName(v.groupName)} (${readableName(v.variantName)} variant).`);
   lines.push('    #');
   for (const p of v.parameters) {
-    const yardType = mapTypeRefForYard(p.type);
+    const yardType = variantMemberType(p, mapTypeRefForYard);
     lines.push(`    # @!attribute [r] ${fieldName(p.name)}`);
     lines.push(`    #   @return [${yardType}]`);
   }
   if (v.parameters.length === 0) {
     lines.push(`    ${v.className} = Data.define`);
-  } else {
-    const fields = v.parameters.map((p) => `:${fieldName(p.name)}`).join(', ');
-    lines.push(`    ${v.className} = Data.define(${fields})`);
+    return lines;
   }
+  const fields = v.parameters.map((p) => `:${fieldName(p.name)}`).join(', ');
+  if (!v.parameters.some((p) => p.optional)) {
+    lines.push(`    ${v.className} = Data.define(${fields})`);
+    return lines;
+  }
+  // `Data` requires every member at construction time, so members the API lets
+  // callers omit get a `nil` default via an `initialize` override that forwards
+  // to `super` (the idiom from Ruby's own Data docs).
+  const kwargs = v.parameters.map((p) => (p.optional ? `${fieldName(p.name)}: nil` : `${fieldName(p.name)}:`));
+  lines.push(`    ${v.className} = Data.define(${fields}) do`);
+  lines.push(`      def initialize(${kwargs.join(', ')})`);
+  lines.push('        super');
+  lines.push('      end');
+  lines.push('    end');
   return lines;
 }
 
@@ -198,7 +244,7 @@ export function emitInlineVariantRbi(v: CollectedVariant): string[] {
   const fqcn = `WorkOS::${v.mountTarget}::${v.className}`;
   lines.push(`    class ${v.className}`);
   for (const p of v.parameters) {
-    lines.push(`      sig { returns(${mapSorbetType(p.type)}) }`);
+    lines.push(`      sig { returns(${variantMemberType(p, mapSorbetType)}) }`);
     lines.push(`      def ${fieldName(p.name)}; end`);
     lines.push('');
   }
@@ -211,7 +257,7 @@ export function emitInlineVariantRbi(v: CollectedVariant): string[] {
     for (let i = 0; i < v.parameters.length; i++) {
       const p = v.parameters[i];
       const sep = i === v.parameters.length - 1 ? '' : ',';
-      lines.push(`          ${fieldName(p.name)}: ${mapSorbetType(p.type)}${sep}`);
+      lines.push(`          ${fieldName(p.name)}: ${variantMemberType(p, mapSorbetType)}${sep}`);
     }
     lines.push(`        ).returns(${fqcn})`);
     lines.push('      end');

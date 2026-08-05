@@ -593,6 +593,119 @@ describe('rust/resources', () => {
     expect(f.content).toContain('pub body: CheckParamsBody,');
   });
 
+  it('types variant members listed in optionalParameters as Option, trailing the required members, and skips them when None', () => {
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [
+                      {
+                        name: 'password',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                    ],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      // The optional member is listed first on purpose: the
+                      // emitter must reorder it after the required members so
+                      // the variant's field order matches the other emitters'.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_hash',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctxWithModels: EmitterContext = {
+      ...baseCtx,
+      spec: {
+        ...baseCtx.spec,
+        models: [
+          {
+            name: 'CreateUserRequest',
+            fields: [
+              { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'password_hash_type',
+                type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                required: false,
+              },
+              {
+                name: 'password_salt_position',
+                type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                required: false,
+              },
+            ],
+          },
+        ],
+        enums: [
+          { name: 'CreateUserPasswordHashType', values: [{ name: 'BCRYPT', value: 'bcrypt' }] },
+          { name: 'CreateUserPasswordSaltPosition', values: [{ name: 'PREFIX', value: 'prefix' }] },
+        ],
+      },
+    };
+    const f = generateResources(services, ctxWithModels, new UnionRegistry()).find(
+      (x) => x.path === 'src/resources/user_management.rs',
+    )!;
+    // Required members keep their bare types and stay first; the optional one
+    // trails them as an `Option` that serde omits when unset — the same
+    // treatment optional flat fields get on the synthetic body struct.
+    expect(f.content).toContain(
+      [
+        '    Hashed {',
+        '        password_hash: String,',
+        '        password_hash_type: CreateUserPasswordHashType,',
+        '        #[serde(skip_serializing_if = "Option::is_none")]',
+        '        password_salt_position: Option<CreateUserPasswordSaltPosition>,',
+        '    },',
+      ].join('\n'),
+    );
+    // A variant with no `optionalParameters` is untouched: bare type, no skip.
+    expect(f.content).toContain(['    Plaintext {', '        password: String,', '    },'].join('\n'));
+  });
+
   it('drives auto-paging from op.pagination and uses the IR cursor param name', () => {
     const services: Service[] = [
       {
