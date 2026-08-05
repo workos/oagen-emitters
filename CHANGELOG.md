@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.24.0](https://github.com/workos/oagen-emitters/compare/v0.23.0...v0.24.0) (2026-08-05)
+
+
+### Features
+
+* **android:** add Android emitter (kotlinx.serialization + OkHttp, suspend API) ([#206](https://github.com/workos/oagen-emitters/issues/206)) ([bab043e](https://github.com/workos/oagen-emitters/commit/bab043e7c446f0d0f89a1488d202375f69fcee50))
+* **python:** support optional variant members in parameter groups ([#209](https://github.com/workos/oagen-emitters/issues/209)) ([968942a](https://github.com/workos/oagen-emitters/commit/968942a65d6eed75d25c24442f168237b2d78bdf))
+
+
+### Bug Fixes
+
+* **elixir:** use element type, not envelope, for paginated casting ([#210](https://github.com/workos/oagen-emitters/issues/210)) ([cae73bc](https://github.com/workos/oagen-emitters/commit/cae73bc6cdb5e8fdf1a7eaa91f16de15b20467cf))
+* **kotlin:** sort required wrapper params before optional ones ([#212](https://github.com/workos/oagen-emitters/issues/212)) ([d6246e0](https://github.com/workos/oagen-emitters/commit/d6246e0d668659bcd5d8578b2856f42322afe384))
+
 ## [0.23.0](https://github.com/workos/oagen-emitters/compare/v0.22.0...v0.23.0) (2026-07-28)
 
 
