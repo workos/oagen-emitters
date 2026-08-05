@@ -9,10 +9,21 @@ import {
   maybeShortenEnumParamDescription,
 } from './naming.js';
 import { mapTypeRef, mapTypeRefOptional } from './type-map.js';
-import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 import { sortPathParamsByTemplateOrder } from './resources.js';
 import { buildKotlinPathExpression } from './path-expression.js';
 import { emitSuspendVariant, type SuspendParam } from './suspend.js';
+
+/**
+ * Resolve wrapper params with required params sorted before optional ones
+ * (stable, so relative order within each group is preserved). Kotlin wrapper
+ * signatures give optional params `= null` defaults; a required param after a
+ * defaulted one cannot be bound positionally (generated tests call wrappers
+ * positionally) and defeats the `@JvmOverloads` overloads for Java callers.
+ */
+export function resolveKotlinWrapperParams(wrapper: ResolvedWrapper, ctx: EmitterContext): ResolvedWrapperParam[] {
+  return resolveWrapperParams(wrapper, ctx).sort((a, b) => Number(a.isOptional) - Number(b.isOptional));
+}
 
 /**
  * Emit Kotlin wrapper methods for a union-split operation. Each wrapper
@@ -37,7 +48,7 @@ export function generateWrapperMethods(resolvedOp: ResolvedOperation, ctx: Emitt
 function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapper, ctx: EmitterContext): string[] {
   const op = resolvedOp.operation;
   const method = propertyName(wrapper.name);
-  const resolvedParams = resolveWrapperParams(wrapper, ctx);
+  const resolvedParams = resolveKotlinWrapperParams(wrapper, ctx);
   const responseClass = wrapper.responseModelName ? className(wrapper.responseModelName) : null;
 
   const pathParams = sortPathParamsByTemplateOrder(op);

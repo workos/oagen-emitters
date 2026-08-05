@@ -33,9 +33,9 @@ import {
   isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
-import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
+import { resolveKotlinWrapperParams } from './wrappers.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
 
@@ -532,7 +532,7 @@ function buildWrapperTest(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterC
 
   for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
 
-  const resolved = resolveWrapperParams(wrapper, ctx);
+  const resolved = resolveKotlinWrapperParams(wrapper, ctx);
   for (const rp of resolved) {
     if (rp.isOptional) continue;
     if (!rp.field) {
