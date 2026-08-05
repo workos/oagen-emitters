@@ -8,6 +8,20 @@ const organizationModel: Model = {
   fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
 };
 
+/** The standard paginated list envelope the spec names as a list op's response. */
+const organizationListModel: Model = {
+  name: 'OrganizationList',
+  fields: [
+    { name: 'object', type: { kind: 'literal', value: 'list' }, required: true },
+    {
+      name: 'data',
+      type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+      required: true,
+    },
+    { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+  ],
+};
+
 function ctxFor(services: Service[], models: Model[] = [organizationModel]): EmitterContext {
   return makeCtx(makeSpec({ services, models }));
 }
@@ -120,6 +134,36 @@ describe('elixir/resources', () => {
     expect(content).toContain('Acme.Page.next_params(params, "after", cursor)');
     expect(content).toContain('{:ok, Acme.Page.from_map(body, "data", &Acme.Organization.from_map/1, fetch_next)}');
     expect(content).toContain('Acme.Page.t(Acme.Organization.t())');
+  });
+
+  it('unwraps a list-envelope itemType to the element caster', () => {
+    // `op.pagination.itemType` is the operation *response* type, which for most
+    // list endpoints is the named envelope. Page.from_map/4 casts each element,
+    // so passing the envelope through makes every item parse as an empty
+    // envelope with its real fields dropped.
+    const services: Service[] = [
+      {
+        name: 'Organizations',
+        operations: [
+          makeOp({
+            name: 'listOrganizations',
+            response: { kind: 'model', name: 'OrganizationList' },
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'OrganizationList' },
+            },
+          }),
+        ],
+      },
+    ];
+    const files = generateResources(services, ctxFor(services, [organizationModel, organizationListModel]));
+    const content = files[0].content;
+    expect(content).toContain('{:ok, Acme.Page.from_map(body, "data", &Acme.Organization.from_map/1, fetch_next)}');
+    expect(content).toContain('Acme.Page.t(Acme.Organization.t())');
+    expect(content).not.toContain('&Acme.OrganizationList.from_map/1');
+    expect(content).not.toContain('Acme.Page.t(Acme.OrganizationList.t())');
   });
 
   it('sends body params for POST and returns the raw body for primitive responses', () => {

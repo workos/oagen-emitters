@@ -2,6 +2,7 @@ import type {
   ApiSpec,
   EmitterContext,
   GeneratedFile,
+  Model,
   TypeRef,
   ResolvedOperation,
   ResolvedWrapper,
@@ -18,7 +19,7 @@ import {
   escapeString,
 } from './naming.js';
 import { buildFixtureEntries, generateFixtureFiles, fixtureName, roundTripSample } from './fixtures.js';
-import { getSyntheticEnums } from '../shared/model-utils.js';
+import { getSyntheticEnums, resolvePaginationItemType } from '../shared/model-utils.js';
 import { scopedMountGroups, getOpDefaults, isModelInScope, type MountGroup } from '../shared/resolved-ops.js';
 import { methodTakesParams } from './resources.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
@@ -68,13 +69,13 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 }
 
 /** Response models reachable from a mount group's operations, in stable order. */
-function groupResponseModels(group: MountGroup, modelNames: Set<string>): string[] {
+function groupResponseModels(group: MountGroup, modelNames: Set<string>, models: Map<string, Model>): string[] {
   const out = new Set<string>();
   for (const resolved of group.resolvedOps) {
     const op = resolved.operation;
     const plan = planOperation(op);
     if (plan.isPaginated && op.pagination) {
-      const item = modelRefName(op.pagination.itemType, modelNames);
+      const item = modelRefName(resolvePaginationItemType(op.pagination.itemType, models), modelNames);
       if (item) out.add(item);
     }
     const response = modelRefName(op.response, modelNames);
@@ -119,7 +120,7 @@ function renderRoundTripTests(
   const models = new Map(ctx.spec.models.map((m) => [m.name, m]));
   const enums = new Map([...ctx.spec.enums, ...getSyntheticEnums()].map((e) => [e.name, e]));
 
-  const testable = groupResponseModels(group, modelNames)
+  const testable = groupResponseModels(group, modelNames, models)
     .map((name) => models.get(name))
     .filter((m): m is NonNullable<typeof m> => !!m && m.fields.length > 0 && isModelInScope(m.name, ctx));
   if (testable.length === 0) return null;
@@ -486,7 +487,8 @@ function successShape(resolved: ResolvedOperation, ctx: EmitterContext, modelNam
   const plan = planOperation(op);
 
   if (plan.isPaginated && op.pagination) {
-    const itemModel = modelRefName(op.pagination.itemType, modelNames);
+    const models = new Map(ctx.spec.models.map((m) => [m.name, m]));
+    const itemModel = modelRefName(resolvePaginationItemType(op.pagination.itemType, models), modelNames);
     if (itemModel) {
       const mod = fullModuleName(ctx, itemModel);
       return {

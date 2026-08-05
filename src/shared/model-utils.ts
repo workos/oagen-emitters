@@ -57,6 +57,32 @@ export function isListWrapperModel(model: Model): boolean {
 }
 
 /**
+ * Resolve the element type a paginated operation's `data` array actually holds.
+ *
+ * `op.pagination.itemType` is the operation's *response* type. When the spec
+ * names a list envelope for that response (`data` + `list_metadata`), the
+ * response type is the envelope, not the element — so emitters that
+ * deserialize items one at a time must unwrap one level first. Endpoints whose
+ * response has no named wrapper already carry the element type; those are
+ * returned unchanged.
+ *
+ * Passing the envelope through to per-item deserialization is silently wrong:
+ * every element parses as an empty envelope and its real fields are dropped.
+ */
+export function resolvePaginationItemType(itemType: TypeRef, modelMap: Map<string, Model>): TypeRef {
+  if (itemType.kind === 'nullable') return resolvePaginationItemType(itemType.inner, modelMap);
+  if (itemType.kind !== 'model') return itemType;
+
+  const model = modelMap.get(itemType.name);
+  if (!model || !isListWrapperModel(model)) return itemType;
+
+  const dataField = model.fields.find((f) => f.name === 'data');
+  // isListWrapperModel already guarantees `data` is an array; re-narrow for TS.
+  if (dataField?.type.kind !== 'array') return itemType;
+  return dataField.type.items;
+}
+
+/**
  * Resolve the inner item model of a list-wrapper envelope (`data` array +
  * `list_metadata`). Returns the item model when the wrapper convention
  * matches and the item is a named model present in `modelMap`, else null.
