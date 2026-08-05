@@ -1,5 +1,6 @@
 import type { EmitterContext, Operation, ResolvedOperation, ResolvedWrapper, TypeRef } from '@workos/oagen';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
+import { isEnumTypeRef } from '../shared/model-utils.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import { methodName, propertyName, typeName, swiftStringLiteral } from './naming.js';
 import { mapTypeRef } from './type-map.js';
@@ -22,13 +23,6 @@ interface WParam {
   optional: boolean;
   description?: string;
   deprecated?: boolean;
-}
-
-function unwrapNullable(ref: TypeRef): TypeRef {
-  return ref.kind === 'nullable' ? ref.inner : ref;
-}
-function isEnumRef(ref: TypeRef): boolean {
-  return unwrapNullable(ref).kind === 'enum';
 }
 
 function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterContext): string {
@@ -159,7 +153,7 @@ function renderPathExpr(op: Operation, pathParams: { name: string; wire: string;
     } else {
       const p = byWire.get(seg.name);
       const name = p ? p.name : propertyName(seg.name);
-      const accessor = p && isEnumRef(p.ref) ? `${name}.rawValue` : name;
+      const accessor = p && isEnumTypeRef(p.ref) ? `${name}.rawValue` : name;
       expr += `\\(PathEncoding.segment(${accessor}))`;
     }
   }

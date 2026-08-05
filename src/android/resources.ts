@@ -9,7 +9,7 @@ import type {
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { parsePathTemplate } from '../shared/path-template.js';
-import { unwrapListModel } from '../shared/model-utils.js';
+import { isEnumTypeRef, resolvePaginatedItemModelName, unwrapNullableRef } from '../shared/model-utils.js';
 import { scopedMountGroups, buildHiddenParams, getOpDefaults, getOpInferFromClient } from '../shared/resolved-ops.js';
 import {
   typeName,
@@ -43,14 +43,8 @@ export function generateResources(_services: Service[], ctx: EmitterContext): Ge
 
 // --- TypeRef helpers --------------------------------------------------------
 
-function unwrapNullable(ref: TypeRef): TypeRef {
-  return ref.kind === 'nullable' ? ref.inner : ref;
-}
-function isEnumRef(ref: TypeRef): boolean {
-  return unwrapNullable(ref).kind === 'enum';
-}
 function isStringPrimitive(ref: TypeRef): boolean {
-  const base = unwrapNullable(ref);
+  const base = unwrapNullableRef(ref);
   return base.kind === 'primitive' && base.type === 'string' && base.format !== 'date-time' && base.format !== 'date';
 }
 
@@ -519,10 +513,7 @@ function returnType(plan: ReturnType<typeof planOperation>, ctx: EmitterContext)
  * element must be the inner item (`Organization`), not the wrapper.
  */
 export function resolvePaginatedItemName(name: string, ctx: EmitterContext): string {
-  const model = ctx.spec.models.find((m) => m.name === name);
-  if (!model) return name;
-  const modelMap = new Map(ctx.spec.models.map((m) => [m.name, m]));
-  return unwrapListModel(model, modelMap)?.name ?? name;
+  return resolvePaginatedItemModelName(name, ctx.spec.models);
 }
 
 function renderPathExpr(op: Operation, params: RenderedParam[]): string {
@@ -536,7 +527,7 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
     } else {
       const p = byWire.get(seg.name);
       const name = p ? p.name : propertyName(seg.name);
-      const accessor = p && isEnumRef(p.ref) ? `${name}.rawValue` : name;
+      const accessor = p && isEnumTypeRef(p.ref) ? `${name}.rawValue` : name;
       expr += `\${PathEncoding.segment(${accessor})}`;
     }
   }
@@ -545,17 +536,17 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
 }
 
 function queryValueExpr(name: string, ref: TypeRef): string {
-  if (isEnumRef(ref)) return `${name}.rawValue`;
+  if (isEnumTypeRef(ref)) return `${name}.rawValue`;
   if (isStringPrimitive(ref)) return name;
   return `${name}.toString()`;
 }
 
 function renderQueryAppend(q: RenderedParam): string[] {
-  const base = unwrapNullable(q.ref);
+  const base = unwrapNullableRef(q.ref);
   const out: string[] = [];
   if (base.kind === 'array') {
     const elem = base.items;
-    const elemExpr = isEnumRef(elem) ? 'value.rawValue' : isStringPrimitive(elem) ? 'value' : 'value.toString()';
+    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : isStringPrimitive(elem) ? 'value' : 'value.toString()';
     const loop = (indent: string): void => {
       out.push(`${indent}for (value in ${q.optional ? 'it' : q.name}) {`);
       out.push(`${indent}    query.add(QueryParam(${ktStringLiteral(q.wire)}, ${elemExpr}))`);
@@ -607,7 +598,7 @@ function renderQueryAppend(q: RenderedParam): string[] {
 
 /** True when a raw request body is a model ref, whose serializer the emitter can name. */
 function rawBodyIsModel(ref: TypeRef): boolean {
-  return unwrapNullable(ref).kind === 'model';
+  return unwrapNullableRef(ref).kind === 'model';
 }
 
 /**
@@ -641,7 +632,7 @@ function renderBody(
     const local = uniqueLocalName('payload', params);
     lines.push(`        val ${local} = JsonBody()`);
     if (rawBodyIsModel(raw.ref)) {
-      const modelType = mapTypeRef(unwrapNullable(raw.ref));
+      const modelType = mapTypeRef(unwrapNullableRef(raw.ref));
       lines.push(`        ${local}.setRaw(${modelType}.serializer(), ${raw.name})`);
     } else {
       lines.push(`        ${local}.setRawJson(${raw.name})`);
