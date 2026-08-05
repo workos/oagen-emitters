@@ -731,7 +731,8 @@ function emitOneJavaOverload(
   // doesn't shadow the operation's own path/query/body params.
   const variantFieldDecls: ParamSpec[] = [];
   const variantArgPairs: { sealedField: string; localName: string }[] = [];
-  for (const p of variant.parameters) {
+  const { parameters: variantParams, optionalNames } = orderedVariantParameters(variant);
+  for (const p of variantParams) {
     const sealedField = deriveShortPropertyName(p.name, group.name);
     let localName = sealedField;
     if (existingNames.has(localName)) {
@@ -740,17 +741,19 @@ function emitOneJavaOverload(
       localName = camel;
     }
     existingNames.add(localName);
-    // Variant fields are always required when their variant is selected — the
-    // sealed-class data class declares them non-nullable (see
-    // [generateSealedClass]). Mirror that here so the overload's flat
-    // parameter types match the variant-constructor argument types exactly.
+    // A variant field is required unless the spec lists it in the variant's
+    // `optionalParameters` — the sealed-class data class declares it
+    // non-nullable in the former case and nullable-with-a-null-default in the
+    // latter (see [generateSealedClass]). Mirror that here so the overload's
+    // flat parameter types match the variant-constructor argument types
+    // exactly.
     // Also: prefer the body model's field type via [bodyFieldTypes] when the
     // parameter-group IR has lost type fidelity. Inside this scope we don't
     // have bodyFieldTypes; the canonical method's type rendering for variant
     // fields hasn't been needed elsewhere, so fall back to p.type — which is
     // correct for non-body groups (path/query) and for body groups whose
     // types weren't degraded.
-    const decl = renderParamNamed(localName, p.type, true);
+    const decl = renderParamNamed(localName, p.type, !optionalNames.has(p.name));
     variantFieldDecls.push({ decl, name: localName });
     variantArgPairs.push({ sealedField, localName });
   }
@@ -1189,6 +1192,31 @@ function deriveShortPropertyName(paramName: string, groupName: string): string {
 }
 
 /**
+ * A variant's parameters in constructor order — required members first, then
+ * the ones named in `optionalParameters` — plus the optional name set.
+ *
+ * Optional members are emitted as nullable properties with a `= null` default,
+ * so they have to trail the non-defaulted ones: Kotlin permits the reverse, but
+ * it makes the positional Java constructor (and the flat Java overloads) unusable
+ * without naming every argument. When `optionalParameters` is absent or empty
+ * both filters preserve IR order, so output is unchanged for variants whose
+ * members are all required.
+ */
+export function orderedVariantParameters(variant: import('@workos/oagen').ParameterGroupVariant): {
+  parameters: Parameter[];
+  optionalNames: Set<string>;
+} {
+  const optionalNames = new Set(variant.optionalParameters ?? []);
+  return {
+    parameters: [
+      ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+      ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+    ],
+    optionalNames,
+  };
+}
+
+/**
  * Generate sealed class definitions for all parameter groups in an operation.
  *
  * [bodyFieldTypes] is a fallback map from wire field name → TypeRef built from
@@ -1209,9 +1237,8 @@ function generateSealedClass(
   const example = group.variants[0];
   if (example) {
     const exampleVariant = className(example.name);
-    const exampleArgs = example.parameters
-      .map((p) => `${deriveShortPropertyName(p.name, group.name)} = "..."`)
-      .join(', ');
+    const exampleParams = orderedVariantParameters(example).parameters;
+    const exampleArgs = exampleParams.map((p) => `${deriveShortPropertyName(p.name, group.name)} = "..."`).join(', ');
     lines.push('/**');
     lines.push(` * Mutually exclusive ${humanize(group.name)} parameter variants.`);
     lines.push(' *');
@@ -1223,7 +1250,7 @@ function generateSealedClass(
     lines.push(' * Usage from Java:');
     lines.push(' * ```java');
     lines.push(
-      ` * ${sealedName} target = new ${sealedName}.${exampleVariant}(${example.parameters.map(() => '"..."').join(', ')});`,
+      ` * ${sealedName} target = new ${sealedName}.${exampleVariant}(${exampleParams.map(() => '"..."').join(', ')});`,
     );
     lines.push(' * ```');
     lines.push(' *');
@@ -1238,12 +1265,18 @@ function generateSealedClass(
   for (let vi = 0; vi < group.variants.length; vi++) {
     const variant = group.variants[vi];
     const variantName = className(variant.name);
-    const fields = variant.parameters.map((p) => {
+    const { parameters, optionalNames } = orderedVariantParameters(variant);
+    const fields = parameters.map((p) => {
       const prop = deriveShortPropertyName(p.name, group.name);
       // Prefer the body model's field type when available — the IR parameter
       // group may have lost array/object type info for body fields.
       const effectiveType = bodyFieldTypes?.get(p.name) ?? p.type;
-      return { decl: `val ${prop}: ${mapTypeRef(effectiveType)}`, name: p.name };
+      // Members the spec marks optional for this variant may be omitted by the
+      // caller, so they are nullable with a null default.
+      const decl = optionalNames.has(p.name)
+        ? `val ${prop}: ${mapTypeRefOptional(effectiveType)} = null`
+        : `val ${prop}: ${mapTypeRef(effectiveType)}`;
+      return { decl, name: p.name };
     });
     // ktlint requires blank line before each declaration inside a sealed class
     if (vi > 0) lines.push('');
@@ -1323,8 +1356,16 @@ function emitWhenBlock(
   lines.push(`${indent}when (${prop}) {`);
   for (const variant of group.variants) {
     const variantName = className(variant.name);
-    const entries = variant.parameters.map((p) => {
+    const { parameters, optionalNames } = orderedVariantParameters(variant);
+    const entries = parameters.map((p) => {
       const fieldProp = deriveShortPropertyName(p.name, group.name);
+      if (optionalNames.has(p.name)) {
+        // Optional members drop out of the query string when unset rather than
+        // serializing as the literal "null".
+        const guarded = `${ktLiteral(p.name)} to it`;
+        const add = receiverMode ? `add(${guarded})` : `params += ${guarded}`;
+        return `${prop}.${fieldProp}?.let { ${add} }`;
+      }
       const pair = `${ktLiteral(p.name)} to ${prop}.${fieldProp}`;
       return receiverMode ? `add(${pair})` : `params += ${pair}`;
     });
@@ -1371,8 +1412,14 @@ function emitBodyWhenBlock(
   lines.push(`${indent}when (${prop}) {`);
   for (const variant of group.variants) {
     const variantName = className(variant.name);
-    const entries = variant.parameters.map((p) => {
+    const { parameters, optionalNames } = orderedVariantParameters(variant);
+    const entries = parameters.map((p) => {
       const fieldProp = deriveShortPropertyName(p.name, group.name);
+      // Optional members are omitted from the body when unset — `bodyOf` only
+      // drops nulls for the fields it builds, not for these later writes.
+      if (optionalNames.has(p.name)) {
+        return `${prop}.${fieldProp}?.let { body[${ktLiteral(p.name)}] = it }`;
+      }
       return `body[${ktLiteral(p.name)}] = ${prop}.${fieldProp}`;
     });
     if (entries.length === 1) {

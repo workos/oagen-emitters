@@ -384,4 +384,201 @@ describe('dotnet/resources', () => {
     expect(svcContent).toContain('AddQueryParam("parent_resource_type_slug"');
     expect(svcContent).toContain('AddQueryParam("parent_resource_external_id"');
   });
+
+  it('emits optional variant members as trailing nullable properties omitted from the body when unset', () => {
+    const models: Model[] = [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'password_hash_type',
+            type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+            required: false,
+          },
+          {
+            name: 'password_salt_position',
+            type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      // The optional member is listed first on purpose: the
+                      // emitter must move it after the required members.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const enums = [
+      {
+        name: 'CreateUserPasswordHashType',
+        values: [
+          { name: 'BCRYPT', value: 'bcrypt' },
+          { name: 'SSHA_256', value: 'ssha256' },
+        ],
+      },
+      {
+        name: 'CreateUserPasswordSaltPosition',
+        values: [
+          { name: 'PREFIX', value: 'prefix' },
+          { name: 'SUFFIX', value: 'suffix' },
+        ],
+      },
+    ];
+
+    primeEnumAliases(enums);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models, enums },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+
+    const optContent = files.find((f) => f.path.includes('Options.cs'))!.content;
+    const hashedClass = optContent.slice(optContent.indexOf('public class UserManagementPasswordHashed'));
+
+    // The optional member is nullable, has no `= default!` initializer, and
+    // trails the required members.
+    const hashTypeIndex = hashedClass.indexOf(
+      'public CreateUserPasswordHashType PasswordHashType { get; set; } = default!;',
+    );
+    const saltPositionIndex = hashedClass.indexOf(
+      'public CreateUserPasswordSaltPosition? PasswordSaltPosition { get; set; }\n',
+    );
+    expect(hashTypeIndex).toBeGreaterThan(-1);
+    expect(saltPositionIndex).toBeGreaterThan(hashTypeIndex);
+    expect(hashedClass).not.toContain('PasswordSaltPosition { get; set; } = default!;');
+
+    const svcContent = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+
+    // The optional member is only written when set; the required enum member,
+    // a value type, is written unconditionally.
+    expect(svcContent).toContain('if (hashed.PasswordSaltPosition != null)');
+    expect(svcContent).toContain(
+      'request.AddBodyParam("password_salt_position", JsonConvert.SerializeObject(hashed.PasswordSaltPosition).Trim(\'"\'));',
+    );
+    expect(svcContent).toContain(
+      '            request.AddBodyParam("password_hash_type", JsonConvert.SerializeObject(hashed.PasswordHashType).Trim(\'"\'));',
+    );
+  });
+
+  it('leaves variants without optionalParameters byte-identical', () => {
+    const models: Model[] = [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    const buildServices = (optionalParameters?: string[]): Service[] => [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                    ],
+                    ...(optionalParameters ? { optionalParameters } : {}),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const render = (optionalParameters?: string[]): string => {
+      const services = buildServices(optionalParameters);
+      const files = generateResources(services, {
+        ...ctx,
+        spec: { ...emptySpec, services, models },
+      });
+      return files.map((f) => `${f.path}\n${f.content}`).join('\n');
+    };
+
+    expect(render([])).toBe(render(undefined));
+  });
 });

@@ -561,9 +561,15 @@ function emitMethod(args: {
         }
         for (const variant of group.variants) {
           const variantClass = variantClassRef(group, variant.name);
+          const optionalNames = new Set(variant.optionalParameters ?? []);
           lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        params[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
+            const reader = `${prop}.${fieldName(p.name)}`;
+            const key = rubyStringLit(p.name);
+            // Optional members are left out of the wire format when unset
+            // rather than sent as null.
+            const guard = optionalNames.has(p.name) ? ` unless ${reader}.nil?` : '';
+            lines.push(`        params[${key}] = ${reader}${guard}`);
           }
         }
         lines.push(`      else`);
@@ -641,9 +647,15 @@ function emitMethod(args: {
         }
         for (const variant of group.variants) {
           const variantClass = variantClassRef(group, variant.name);
+          const optionalNames = new Set(variant.optionalParameters ?? []);
           lines.push(`      when ${variantClass}`);
           for (const p of variant.parameters) {
-            lines.push(`        body[${rubyStringLit(p.name)}] = ${prop}.${fieldName(p.name)}`);
+            const reader = `${prop}.${fieldName(p.name)}`;
+            const key = rubyStringLit(p.name);
+            // Optional members are left out of the wire format when unset
+            // rather than sent as null.
+            const guard = optionalNames.has(p.name) ? ` unless ${reader}.nil?` : '';
+            lines.push(`        body[${key}] = ${reader}${guard}`);
           }
         }
         lines.push(`      else`);

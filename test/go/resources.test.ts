@@ -659,6 +659,165 @@ describe('go/resources', () => {
 
       expect(content).toContain('"net/url"');
     });
+
+    it('emits optional variant members as trailing pointer fields omitted from the body when nil', () => {
+      const services: Service[] = [
+        {
+          name: 'UserManagement',
+          operations: [
+            makeOp({
+              name: 'createUser',
+              httpMethod: 'post',
+              path: '/user_management/users',
+              requestBody: { kind: 'model', name: 'CreateUserRequest' },
+              response: { kind: 'model', name: 'User' },
+              parameterGroups: [
+                {
+                  name: 'password',
+                  optional: true,
+                  variants: [
+                    {
+                      name: 'plaintext',
+                      parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                    },
+                    {
+                      name: 'hashed',
+                      parameters: [
+                        // The optional member is listed first on purpose: the
+                        // emitter must move it after the required members.
+                        {
+                          name: 'password_salt_position',
+                          type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                          required: false,
+                        },
+                        { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                        {
+                          name: 'password_hash_type',
+                          type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                          required: false,
+                        },
+                      ],
+                      optionalParameters: ['password_salt_position'],
+                    },
+                  ],
+                },
+              ],
+            }),
+          ],
+        },
+      ];
+      const spec = makeSpec(services, [
+        {
+          name: 'CreateUserRequest',
+          fields: [
+            { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+            {
+              name: 'password_hash_type',
+              type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+              required: false,
+            },
+            {
+              name: 'password_salt_position',
+              type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+              required: false,
+            },
+          ],
+        },
+      ]);
+      const content = generateResources(services, makeCtx(spec))[0].content;
+
+      // Optional member is pointer-typed and trails the required members.
+      expect(content).toContain(
+        [
+          'type UserManagementPasswordHashed struct {',
+          '\tHash string',
+          '\tHashType CreateUserPasswordHashType',
+          '\tSaltPosition *CreateUserPasswordSaltPosition',
+          '}',
+        ].join('\n'),
+      );
+
+      // Required members are written unconditionally; the optional member only
+      // when set, dereferenced so the body carries a value rather than a pointer.
+      expect(content).toContain('\tm["password_hash"] = p.Hash');
+      expect(content).toContain('\tm["password_hash_type"] = p.HashType');
+      expect(content).toContain(
+        ['\tif p.SaltPosition != nil {', '\t\tm["password_salt_position"] = *p.SaltPosition', '\t}'].join('\n'),
+      );
+    });
+
+    it('guards optional variant members in applyToQuery', () => {
+      const services: Service[] = [
+        {
+          name: 'Authorization',
+          operations: [
+            makeOp({
+              name: 'listResources',
+              httpMethod: 'get',
+              path: '/authorization/resources',
+              queryParams: [
+                { name: 'parent_resource_type_slug', type: { kind: 'primitive', type: 'string' }, required: false },
+                { name: 'parent_resource_external_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+              parameterGroups: [
+                {
+                  name: 'parent_resource',
+                  optional: true,
+                  variants: [
+                    {
+                      name: 'by_external_id',
+                      parameters: [
+                        {
+                          name: 'parent_resource_external_id',
+                          type: { kind: 'primitive', type: 'string' },
+                          required: false,
+                        },
+                        {
+                          name: 'parent_resource_type_slug',
+                          type: { kind: 'primitive', type: 'string' },
+                          required: false,
+                        },
+                      ],
+                      optionalParameters: ['parent_resource_external_id'],
+                    },
+                  ],
+                },
+              ],
+            }),
+          ],
+        },
+      ];
+      const content = generateResources(services, makeCtx(makeSpec(services)))[0].content;
+
+      expect(content).toContain(
+        [
+          'type AuthorizationParentResourceByExternalID struct {',
+          '\tTypeSlug string',
+          '\tExternalID *string',
+          '}',
+        ].join('\n'),
+      );
+      expect(content).toContain('\tv.Set("parent_resource_type_slug", p.TypeSlug)');
+      expect(content).toContain(
+        ['\tif p.ExternalID != nil {', '\t\tv.Set("parent_resource_external_id", *p.ExternalID)', '\t}'].join('\n'),
+      );
+    });
+
+    it('leaves output unchanged when optionalParameters is absent', () => {
+      const services = makeGroupedServices();
+      const content = generateResources(services, makeCtx(makeSpec(services)))[0].content;
+
+      // Declaration order follows variant.parameters and every member stays a
+      // plain value written unconditionally.
+      expect(content).toContain(
+        ['type AuthorizationParentResourceByExternalID struct {', '\tTypeSlug string', '\tExternalID string', '}'].join(
+          '\n',
+        ),
+      );
+      expect(content).not.toContain('if p.ExternalID != nil {');
+    });
   });
 
   it('adds NullFields and MarshalJSON for nullable optional body fields', () => {

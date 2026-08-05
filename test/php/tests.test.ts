@@ -106,6 +106,71 @@ describe('generateTests', () => {
     expect(resourceTest!.content).toContain('foreach ($result as $item)');
   });
 
+  it('builds variant fixtures with named arguments so optional-member reordering stays valid', () => {
+    const userModels: Model[] = [
+      { name: 'User', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_salt_position', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    const userServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: false,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'primitive', type: 'string' },
+                        required: false,
+                      },
+                      { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const userSpec: ApiSpec = { ...spec, services: userServices, models: userModels };
+    const result = generateTests(userSpec, { ...ctx, spec: userSpec });
+
+    // Named arguments are order-independent, so the fixture stays valid even
+    // though the variant class declares $saltPosition last. Every member gets a
+    // value, including the optional one, so the body assertions still hold.
+    const resourceTest = result.find((f) => f.path === 'tests/Service/UserManagementTest.php');
+    expect(resourceTest).toBeDefined();
+    expect(resourceTest!.content).toContain(
+      "new \\WorkOS\\Service\\PasswordPlaintext(saltPosition: 'test_value', password: 'test_value')",
+    );
+  });
+
   it('generates redirect endpoint test with query param assertions', () => {
     const ssoServices: Service[] = [
       {

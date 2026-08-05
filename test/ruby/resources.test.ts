@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Service, Operation, Model, ResolvedOperation } from '@workos/oagen';
 import { defaultSdkBehavior, toSnakeCase, toPascalCase } from '@workos/oagen';
 import { generateResources } from '../../src/ruby/resources.js';
+import { generateRbiFiles } from '../../src/ruby/rbi.js';
 
 function makeSpec(services: Service[], models: Model[] = []): ApiSpec {
   return {
@@ -543,5 +544,160 @@ describe('ruby/resources', () => {
     // YARD documents the fallback and String return
     expect(content).toContain("Defaults to the client's configured client_id.");
     expect(content).toContain('# @return [String]');
+  });
+
+  it('emits optional variant members with a nil default, trailing order, and omit-when-unset dispatch', () => {
+    const models: Model[] = [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+          {
+            name: 'password_hash_type',
+            type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+            required: false,
+          },
+          {
+            name: 'password_salt_position',
+            type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+            required: false,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          makeOp({
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: false }],
+                  },
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      // The optional member is listed first on purpose: the
+                      // emitter must reorder it after the required members so
+                      // the `nil` default trails in the keyword signature.
+                      {
+                        name: 'password_salt_position',
+                        type: { kind: 'enum', name: 'CreateUserPasswordSaltPosition' },
+                        required: false,
+                      },
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      {
+                        name: 'password_hash_type',
+                        type: { kind: 'enum', name: 'CreateUserPasswordHashType' },
+                        required: false,
+                      },
+                    ],
+                    optionalParameters: ['password_salt_position'],
+                  },
+                ],
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+
+    const spec = makeSpec(services, models);
+    const ctx = makeCtx(spec);
+    const content = generateResources(services, ctx)[0].content;
+
+    // Optional member trails the required ones in the Data.define member list
+    // and defaults to nil in the initialize override.
+    expect(content).toContain('Data.define(:password_hash, :password_hash_type, :password_salt_position) do');
+    expect(content).toContain('def initialize(password_hash:, password_hash_type:, password_salt_position: nil)');
+    expect(content).toContain('super');
+    // YARD marks it nilable; required members stay non-nil.
+    expect(content).toContain('#   @return [WorkOS::Types::CreateUserPasswordSaltPosition, nil]');
+    expect(content).toContain('#   @return [WorkOS::Types::CreateUserPasswordHashType]');
+
+    // Dispatch omits the optional member when unset, and writes required
+    // members unconditionally.
+    expect(content).toContain(
+      "body['password_salt_position'] = password.password_salt_position unless password.password_salt_position.nil?",
+    );
+    expect(content).toContain("body['password_hash'] = password.password_hash\n");
+    expect(content).not.toContain("body['password_hash'] = password.password_hash unless");
+
+    // The Sorbet sigs mirror the optionality.
+    const rbi = generateRbiFiles(spec, ctx).find((f) => f.content.includes('class PasswordHashed'));
+    expect(rbi).toBeDefined();
+    const hashedRbi = rbi!.content.slice(rbi!.content.indexOf('class PasswordHashed'));
+    expect(hashedRbi).toContain('sig { returns(T.nilable(String)) }\n      def password_salt_position; end');
+    expect(hashedRbi).toContain('password_hash: String,');
+    expect(hashedRbi).toContain('password_salt_position: T.nilable(String)');
+  });
+
+  it('leaves variants without optional members byte-identical to a bare Data.define', () => {
+    const services: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          makeOp({
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'model', name: 'User' },
+            parameterGroups: [
+              {
+                name: 'password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'hashed',
+                    parameters: [
+                      { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+                      { name: 'password_hash_type', type: { kind: 'primitive', type: 'string' }, required: false },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'User',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'CreateUserRequest',
+        fields: [
+          { name: 'password_hash', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'password_hash_type', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ]);
+    const content = generateResources(services, makeCtx(spec))[0].content;
+
+    // No initialize override, no nil defaults, no guarded body writes.
+    expect(content).toContain('PasswordHashed = Data.define(:password_hash, :password_hash_type)\n');
+    expect(content).not.toContain('def initialize(password_hash:');
+    expect(content).toContain("body['password_hash_type'] = password.password_hash_type\n");
+    expect(content).not.toContain('unless password.');
   });
 });

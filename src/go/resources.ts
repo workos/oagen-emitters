@@ -352,11 +352,27 @@ function emitCollectedGroupTypes(
     for (const variant of group.variants) {
       const typeName = groupVariantTypeName(mountName, group.name, variant.name);
 
-      lines.push(`type ${typeName} struct {`);
-      for (const param of variant.parameters) {
+      // Members named in optionalParameters may be omitted when this variant is
+      // used: they become pointer fields (Go's optional convention) and trail
+      // the required members so the struct reads required-first.
+      const optionalNames = new Set(variant.optionalParameters ?? []);
+      const orderedParams = [
+        ...variant.parameters.filter((p) => !optionalNames.has(p.name)),
+        ...variant.parameters.filter((p) => optionalNames.has(p.name)),
+      ];
+      const members = orderedParams.map((param) => {
         const goField = deriveVariantFieldName(param.name, group.name);
-        const effectiveType = bodyFieldTypes.get(param.name) ?? param.type;
-        const goType = mapTypeRefValue(effectiveType);
+        const baseType = mapTypeRefValue(bodyFieldTypes.get(param.name) ?? param.type);
+        const isOptional = optionalNames.has(param.name);
+        const goType = isOptional ? makeOptional(baseType) : baseType;
+        // makeOptional leaves already-nil-able types (slices, maps, model
+        // pointers) alone, so only pointer-wrapped members need dereferencing.
+        const valueExpr = goType === baseType ? `p.${goField}` : `*p.${goField}`;
+        return { param, goField, goType, isOptional, valueExpr };
+      });
+
+      lines.push(`type ${typeName} struct {`);
+      for (const { goField, goType } of members) {
         lines.push(`\t${goField} ${goType}`);
       }
       lines.push('}');
@@ -366,18 +382,29 @@ function emitCollectedGroupTypes(
 
       if (group.needsQuery) {
         lines.push(`func (p ${typeName}) applyToQuery(v url.Values) {`);
-        for (const param of variant.parameters) {
-          const goField = deriveVariantFieldName(param.name, group.name);
-          lines.push(`\tv.Set("${param.name}", ${formatQueryValue(`p.${goField}`, param.type)})`);
+        for (const { param, goField, isOptional, valueExpr } of members) {
+          const setLine = `v.Set("${param.name}", ${formatQueryValue(valueExpr, param.type)})`;
+          if (isOptional) {
+            lines.push(`\tif p.${goField} != nil {`);
+            lines.push(`\t\t${setLine}`);
+            lines.push('\t}');
+          } else {
+            lines.push(`\t${setLine}`);
+          }
         }
         lines.push('}');
       }
 
       if (group.needsBody) {
         lines.push(`func (p ${typeName}) applyToBody(m map[string]any) {`);
-        for (const param of variant.parameters) {
-          const goField = deriveVariantFieldName(param.name, group.name);
-          lines.push(`\tm["${param.name}"] = p.${goField}`);
+        for (const { param, goField, isOptional, valueExpr } of members) {
+          if (isOptional) {
+            lines.push(`\tif p.${goField} != nil {`);
+            lines.push(`\t\tm["${param.name}"] = ${valueExpr}`);
+            lines.push('\t}');
+          } else {
+            lines.push(`\tm["${param.name}"] = ${valueExpr}`);
+          }
         }
         lines.push('}');
       }
