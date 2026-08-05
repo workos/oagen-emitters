@@ -19,7 +19,12 @@ import {
   escapeString,
 } from './naming.js';
 import { buildFixtureEntries, generateFixtureFiles, fixtureName, roundTripSample } from './fixtures.js';
-import { getSyntheticEnums, resolvePaginationItemType } from '../shared/model-utils.js';
+import {
+  buildListScaffoldingSkip,
+  getSyntheticEnums,
+  isPartialListMetadataModel,
+  resolvePaginationItemType,
+} from '../shared/model-utils.js';
 import { scopedMountGroups, getOpDefaults, isModelInScope, type MountGroup } from '../shared/resolved-ops.js';
 import { methodTakesParams } from './resources.js';
 import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/service-name-collision.js';
@@ -119,10 +124,16 @@ function renderRoundTripTests(
 ): string | null {
   const models = new Map(ctx.spec.models.map((m) => [m.name, m]));
   const enums = new Map([...ctx.spec.enums, ...getSyntheticEnums()].map((e) => [e.name, e]));
+  // A paginated op's response IS the list envelope, which generateModels does
+  // not emit — round-tripping it would reference a module that was never written.
+  const skipListScaffolding = buildListScaffoldingSkip(ctx.spec.models, ctx.spec.services, isPartialListMetadataModel);
 
   const testable = groupResponseModels(group, modelNames, models)
     .map((name) => models.get(name))
-    .filter((m): m is NonNullable<typeof m> => !!m && m.fields.length > 0 && isModelInScope(m.name, ctx));
+    .filter(
+      (m): m is NonNullable<typeof m> =>
+        !!m && m.fields.length > 0 && isModelInScope(m.name, ctx) && !skipListScaffolding(m),
+    );
   if (testable.length === 0) return null;
 
   const lines: string[] = [];
