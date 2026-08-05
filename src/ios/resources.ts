@@ -40,9 +40,16 @@ export function generateResources(_services: Service[], ctx: EmitterContext): Ge
 
 // --- TypeRef helpers --------------------------------------------------------
 
-function isStringPrimitive(ref: TypeRef): boolean {
-  const base = unwrapNullableRef(ref);
-  return base.kind === 'primitive' && base.type === 'string' && base.format !== 'date-time' && base.format !== 'date';
+/**
+ * True when a `TypeRef` renders as Swift `String` — the case where wrapping it
+ * in `"\(value)"` interpolation would be redundant. Covers primitive strings
+ * AND string-valued literals (`{ kind: 'literal', value: 'login' }`), which
+ * `mapTypeRef` also renders as `String`. Date/date-time strings are excluded:
+ * `mapTypeRef` renders those as `Date`, so they still need interpolation to
+ * produce wire text.
+ */
+function rendersAsString(ref: TypeRef): boolean {
+  return mapTypeRef(unwrapNullableRef(ref)) === 'String';
 }
 
 // --- rendering --------------------------------------------------------------
@@ -490,7 +497,7 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
 
 function queryValueExpr(name: string, ref: TypeRef): string {
   if (isEnumTypeRef(ref)) return `${name}.rawValue`;
-  if (isStringPrimitive(ref)) return name;
+  if (rendersAsString(ref)) return name;
   return `"\\(${name})"`;
 }
 
@@ -499,7 +506,7 @@ function renderQueryAppend(q: RenderedParam): string[] {
   const out: string[] = [];
   if (base.kind === 'array') {
     const elem = base.items;
-    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : isStringPrimitive(elem) ? 'value' : '"\\(value)"';
+    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : rendersAsString(elem) ? 'value' : '"\\(value)"';
     if (q.optional) {
       out.push(`        if let ${q.name} {`);
       out.push(`            for value in ${q.name} {`);
