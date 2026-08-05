@@ -339,8 +339,9 @@ describe('android/resources', () => {
     };
     const content = generateResources([splitService], { ...ctx, resolvedOperations: [resolved] })[0].content ?? '';
     expect(content).toContain('public suspend fun createOAuthApplication(');
-    // the variant line...
-    expect(content).toContain('Create oauth application');
+    // the variant line, whose acronym casing must agree with the method name
+    // directly below it rather than lower-casing the raw IR wrapper name...
+    expect(content).toContain('Create OAuth application');
     // ...and the spec body beneath it. The spec's own short title is dropped as a
     // duplicate of the variant line.
     expect(content).toContain('Supports both OAuth and M2M application types.');
