@@ -1,7 +1,7 @@
 # Android / Kotlin SDK Architecture
 
 Design document for the `android` oagen emitter, which generates an idiomatic
-**Kotlin** SDK packaged as an **Android library** from the language-agnostic IR.
+**Kotlin** SDK for **Android consumers** from the language-agnostic IR.
 
 > **Emitter identifier:** `android`. Target language: Kotlin (Android). Emitter
 > source lives in `src/android/`; unit tests in `test/android/`; smoke runner at
@@ -10,12 +10,43 @@ Design document for the `android` oagen emitter, which generates an idiomatic
 This is a **Scenario B (fresh)** emitter: there is no existing published Android
 SDK to preserve. The emitter generates only the **spec-driven surface** — models,
 enums, resources, the client's resource-accessor file, and the per-mount test
-suites. Everything spec-independent (the HTTP runtime: `Configuration`,
-`Transport`, errors, pagination, JSON body building; the test support:
-`MockWebServer` wiring and `testClient`; and the repo resources:
-`build.gradle.kts`, `settings.gradle.kts`, `AndroidManifest.xml`,
-`.editorconfig`, `proguard-rules.pro`) is **hand-maintained in the SDK repo**,
-marked with `// @oagen-ignore-file` so generation never overwrites or prunes it.
+suites. Everything spec-independent is **hand-maintained in the SDK repo**, in two
+categories:
+
+- **Extracted source the emitter once wrote** — the HTTP runtime (`Configuration`,
+  `Transport`, errors, pagination, JSON body building) and the test support
+  (`MockWebServer` wiring and `testClient`). These carry `// @oagen-ignore-file`.
+- **Repo resources the emitter has never written** — `build.gradle.kts`,
+  `settings.gradle.kts`, `.editorconfig`. These carry no marker.
+
+What actually protects both categories today is the same thing: **the emitter does
+not write those paths, so they are absent from `.oagen-manifest.json` and
+`pruneStaleFiles` has no record of them to act on.** The marker is not currently
+load-bearing — it earned its place during the extraction itself, when the paths
+_were_ still in the manifest and prune's "content no longer starts with the autogen
+header" guard was the only thing preserving them, and it stays as insurance in case
+a future emitter change re-emits one of those paths.
+
+Do not infer either category from the marker alone. Intersect the marker grep with
+the manifest:
+
+```bash
+cd "$SDK_TARGET"
+grep -rl 'oagen-ignore-file' src | while read -r f; do
+  node -e "process.exit(require('./.oagen-manifest.json').files.includes('$f')?0:1)" \
+    && echo "in-manifest  $f" || echo "not-emitted  $f"
+done
+```
+
+Every hit should print `not-emitted`. An `in-manifest` hit means the emitter still
+claims that path and only the header guard is keeping the hand-maintained content
+alive — fix the emitter rather than relying on the guard.
+
+Note what is **absent** from that repo-resource list: there is no
+`AndroidManifest.xml` and no `proguard-rules.pro`, because the module builds with
+the `org.jetbrains.kotlin.jvm` plugin rather than the Android Gradle plugin. See
+[Why the JVM plugin, not `com.android.library`](#why-the-jvm-plugin-not-comandroidlibrary).
+
 This matches the iOS and Go emitters' static-code-extraction model.
 
 Throughout this document, `{Namespace}` is `ctx.namespacePascal` (e.g. `WorkOS`)
@@ -37,7 +68,7 @@ every axis that matters for an Android artifact:
 | HTTP        | JVM HTTP stack                        | OkHttp                                      |
 | Async       | `suspend` + `@JvmOverloads`           | `suspend`, no Java-interop overloads        |
 | Package     | hardcoded `com.workos`                | namespace-driven `com.{namespace}.android`  |
-| Layout      | `src/main/kotlin/` JVM library        | Android Gradle library module               |
+| Layout      | `src/main/kotlin/` JVM library        | `src/main/kotlin/`, Android-targeted deps   |
 | Integration | merges into live `workos-kotlin`      | fully generated (Scenario B)                |
 
 The decisive constraint is **Jackson**. It relies on runtime reflection, which
@@ -60,9 +91,9 @@ classpath. The package prefix is overridable via
 | Category                   | Choice                                                                                                                                 |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | **Language / concurrency** | Kotlin, `suspend` functions (coroutines). One `suspend fun` per operation — no callback or `Flow` variants except the auto-pager       |
-| **Package manager**        | Gradle with the Android Library plugin (`com.android.library`)                                                                         |
+| **Package manager**        | Gradle with `org.jetbrains.kotlin.jvm` — **not** `com.android.library`; see the note below                                             |
 | **Build tool**             | Gradle Kotlin DSL (`build.gradle.kts`) — **hand-maintained**, not generated                                                            |
-| **Android baseline**       | `minSdk 24`, `compileSdk 35`, JVM target 17 (declared in the hand-maintained Gradle files)                                             |
+| **Android baseline**       | `jvmTarget`/`jvmToolchain` 17. No `minSdk`/`compileSdk` is declared — there is no Android plugin to declare them to                    |
 | **HTTP client**            | OkHttp — the de-facto Android standard, already present in most apps, and pairs with MockWebServer for wire-level tests                |
 | **JSON**                   | kotlinx.serialization (`@Serializable`, `@SerialName`) — compile-time, reflection-free, R8-safe                                        |
 | **Dates**                  | `kotlinx.datetime.Instant`, ISO-8601 (avoids the `java.time` desugaring requirement below API 26)                                      |
@@ -73,11 +104,27 @@ classpath. The package prefix is overridable via
 | **HTTP mocking (tests)**   | OkHttp `MockWebServer` — records the outgoing request for wire-parity assertions                                                       |
 | **Pagination**             | List methods return `Page<T>`; an opt-in `…AutoPaging` companion returns `Flow<T>`                                                     |
 
+### Why the JVM plugin, not `com.android.library`
+
+The target builds with `org.jetbrains.kotlin.jvm`. Nothing in the generated
+surface requires the Android SDK — OkHttp, kotlinx.serialization, and
+kotlinx.datetime are all plain JVM libraries, and the R8-safety argument for
+kotlinx.serialization over Jackson holds regardless of which plugin builds the
+module. Keeping the JVM plugin means the SDK builds and tests with no Android SDK
+installed, which is what CI actually does.
+
+The consequences to keep in mind when reading the rest of this document:
+`minSdk`/`compileSdk` do not exist as declared properties, and there is no
+`AndroidManifest.xml` or `proguard-rules.pro`. `minSdk 24` survives only as the
+consumer baseline the JVM target is chosen for, noted in a `build.gradle.kts`
+comment. Switching to `com.android.library` to publish an AAR is a build-file
+change in the target repo and needs nothing from this emitter.
+
 ---
 
 ## Architecture Overview
 
-The generated SDK is a single Android library module. A consumer:
+The generated SDK is a single Gradle module. A consumer:
 
 ```kotlin
 import com.workos.android.WorkOSClient
@@ -673,10 +720,10 @@ first attempt and the test blocks waiting for one that was never enqueued.
 ```
 build.gradle.kts                                 # repo resource (hand-maintained)
 settings.gradle.kts                              # repo resource (hand-maintained)
-gradle/libs.versions.toml                        # repo resource (hand-maintained)
-proguard-rules.pro                               # repo resource (hand-maintained)
+gradle.properties                                # repo resource (hand-maintained)
+gradle/wrapper/                                  # repo resource (hand-maintained)
+script/ci                                        # repo resource (hand-maintained)
 .editorconfig                                    # repo resource (hand-maintained)
-src/main/AndroidManifest.xml                     # repo resource (hand-maintained)
 src/main/kotlin/{pkg}/
   {Namespace}Client.kt                           # hand-maintained (@oagen-ignore-file)
   {Namespace}ClientResources.kt                  # client.ts (accessor extensions)
@@ -712,8 +759,19 @@ src/test/kotlin/{pkg}/
   support/
     TestClient.kt                                # hand-maintained (@oagen-ignore-file)
   TransportBehaviorTest.kt                       # hand-maintained (@oagen-ignore-file)
+  ActionsTest.kt                                 # hand-maintained (@oagen-ignore-file) H03
+  HelpersTest.kt                                 # hand-maintained (@oagen-ignore-file) H08-H11, H19
+  IronTest.kt                                    # hand-maintained (@oagen-ignore-file) H06
+  SessionTest.kt                                 # hand-maintained (@oagen-ignore-file) H04, H05, H07, H13
+  SSOAuthKitTest.kt                              # hand-maintained (@oagen-ignore-file) H15
+  VaultCryptoTest.kt                             # hand-maintained (@oagen-ignore-file) H18
+  WebhookVerificationTest.kt                     # hand-maintained (@oagen-ignore-file) H01, H02
   {MountGroup}Test.kt                            # tests.ts (one per mount group)
 ```
+
+Every hand-maintained test above covers a non-spec helper, so the H-ID it proves is
+named inline: that mapping is what `prompt-3` re-derives, and leaving it implicit is
+what made it re-derivable-but-not-checkable.
 
 > Test suites live in the SDK's **root** package, not a `resources` sub-package,
 > because the resource accessors are extension properties declared there —
