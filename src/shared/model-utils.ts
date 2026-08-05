@@ -103,6 +103,32 @@ export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Mod
 }
 
 /**
+ * The name of the item model a paginated response actually yields.
+ *
+ * A spec's pagination `itemType` frequently resolves to the list *wrapper*
+ * (`OrganizationList { data: [Organization], list_metadata }`) rather than the
+ * item, which would make a generated signature read `Page<OrganizationList>` and
+ * fail to decode. Unwraps one level when the wrapper convention matches, and
+ * returns `name` unchanged otherwise.
+ */
+export function resolvePaginatedItemModelName(name: string, models: readonly Model[]): string {
+  const model = models.find((m) => m.name === name);
+  if (!model) return name;
+  const modelMap = new Map(models.map((m) => [m.name, m]));
+  return unwrapListModel(model, modelMap)?.name ?? name;
+}
+
+/** Strip one `nullable` layer off a type reference. */
+export function unwrapNullableRef(ref: TypeRef): TypeRef {
+  return ref.kind === 'nullable' ? ref.inner : ref;
+}
+
+/** Whether a type reference is an enum, ignoring nullability. */
+export function isEnumTypeRef(ref: TypeRef): boolean {
+  return unwrapNullableRef(ref).kind === 'enum';
+}
+
+/**
  * Detect whether a model is a list metadata model (e.g., ListMetadata).
  * These models typically have exactly `before` and `after` nullable string fields.
  */

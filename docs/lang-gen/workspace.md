@@ -34,19 +34,24 @@ does not exist, say which one is missing and how to point at it
 | Emitter source        | `src/{lang}/`                           | The only place to fix generated-output defects.                                                                                                                                                              |
 | Emitter tests         | `test/{lang}/`                          | vitest unit tests, including the `non-spec.test.ts` coverage pins.                                                                                                                                           |
 
-Emitters currently in `src/`: `dotnet`, `elixir`, `go`, `ios`, `kotlin`, `node`,
-`php`, `python`, `ruby`, `rust`. Confirm with `ls src` rather than trusting this
-list — and note that `compat`, `shared`, and `snippets` are also directories under
-`src/` but are not emitters. There is no `android` emitter; if someone asks for one
-by name, say so instead of generating something.
+Emitters currently in `src/`: `android`, `dotnet`, `elixir`, `go`, `ios`, `kotlin`,
+`node`, `php`, `python`, `ruby`, `rust`. Confirm with `ls src` rather than trusting
+this list — and note that `compat`, `shared`, and `snippets` are also directories
+under `src/` but are not emitters.
+
+`android` and `kotlin` are both Kotlin emitters and are **not** interchangeable.
+`kotlin` targets the JVM and uses Jackson; `android` uses kotlinx.serialization
+(compile-time serializers, no reflection, no R8 keep rules) and emits `suspend`
+methods. Pick by target runtime, not by language name.
 
 `{lang}` is the **emitter identifier**, not the language name — `dotnet` emits C#
 into `workos-dotnet`, `ios` emits Swift, `node` emits TypeScript.
 
 ### When `docs/sdk-architecture/{lang}.md` is missing
 
-The design docs cover a subset of emitters (currently `dotnet`, `elixir`, `go`,
-`ios`, `node`, `php`, `python`, `rust`; `kotlin` and `ruby` have none). A missing
+The design docs cover a subset of emitters (currently `android`, `dotnet`,
+`elixir`, `go`, `ios`, `node`, `php`, `python`, `rust`; `kotlin` and `ruby` have
+none). A missing
 doc is not a reason to stop, and it is not a licence to guess — derive the same
 facts from code and say that you did:
 
@@ -137,11 +142,14 @@ Notes:
 - `scripts/sdk-generate.sh` accepts only `--lang`, `--output`, `--namespace`,
   `--services`. It hard-errors on anything else, including `--target`.
 - It defaults `--namespace` to `WorkOS` for `php`, `ios`, and `android`, and
-  `workos` elsewhere. Do not override unless the language design doc says to. Two
-  quirks in that branch, both in the spec repo and out of scope here: the `android`
-  case is dead (no such emitter), and `kotlin` is _not_ in the cased list even
-  though the script's own comment says a Kotlin client class needs the cased form —
-  so a kotlin run gets `workos`. If kotlin output looks wrong, check that first.
+  `workos` elsewhere. Do not override unless the language design doc says to.
+  `android` genuinely needs the cased form: the namespace becomes the client type
+  prefix, so `workos` yields `WorkosClient` accessors that do not match the
+  hand-maintained `WorkOSClient` and the SDK will not compile. One quirk remains in
+  that branch, in the spec repo and out of scope here: `kotlin` is _not_ in the
+  cased list even though the script's own comment says a Kotlin client class needs
+  the cased form — so a kotlin run gets `workos`. If kotlin output looks wrong,
+  check that first.
 - The old `npm run sdk:generate:{lang}` scripts and the `--output` staging +
   `--target` live split are **gone**. If you need staging separate from the live
   repo, skip the wrapper and call the CLI directly:

@@ -6,6 +6,8 @@ import { generateModels as rbModels } from '../src/ruby/models.js';
 import { generateEnums as rbEnums } from '../src/ruby/enums.js';
 import { generateModels as rustModels } from '../src/rust/models.js';
 import { UnionRegistry } from '../src/rust/type-map.js';
+import { generateEnums as androidEnums } from '../src/android/enums.js';
+import { generateModels as androidModels } from '../src/android/models.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -99,5 +101,45 @@ describe('emitter injection escaping', () => {
     expect(content).toContain('rename = "a\\")]');
     // ...so the payload never breaks out into a real struct field or free item.
     expect(content).not.toMatch(/^\s*pub owned: String,/m);
+  });
+
+  it('android: escapes `$` so enum wire values cannot become string templates', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [
+          { name: 'active', value: 'active' },
+          { name: 'evil', value: '${System.getenv()}' },
+        ],
+      },
+    ];
+    const content = androidEnums(enums, ctx)
+      .map((f) => f.content)
+      .join('\n');
+    expect(content).toContain('\\${System.getenv()}');
+    expect(content).not.toMatch(/[^\\]\$\{System\.getenv\(\)\}/);
+  });
+
+  it('android: escapes KDoc block-comment terminators in field descriptions', () => {
+    const models: Model[] = [
+      {
+        name: 'Thing',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            description: 'ends the comment */ public val pwned: String = "x" /*',
+          },
+        ],
+      },
+    ];
+    const content = androidModels(models, { ...ctx, spec: { ...emptySpec, models } })
+      .map((f) => f.content)
+      .join('\n');
+    // The terminator is neutralized, so the payload stays inert inside the KDoc...
+    expect(content).not.toContain('*/ public val pwned');
+    // ...and never becomes a real property declaration.
+    expect(content).not.toMatch(/^\s*public val pwned:/m);
   });
 });

@@ -1,5 +1,5 @@
 import type { EmitterContext, Field, ResolvedWrapper } from '@workos/oagen';
-import { toSnakeCase } from '@workos/oagen';
+import { toPascalCase, toSnakeCase } from '@workos/oagen';
 import { enrichModelsFromSpec } from './model-utils.js';
 
 /**
@@ -61,10 +61,30 @@ export function resolveWrapperParams(wrapper: ResolvedWrapper, ctx: EmitterConte
 /**
  * Format a snake_case wrapper name into a human-readable description.
  * "authenticate_with_password" → "Authenticate with password"
+ *
+ * Each `_`-separated segment is recased through `toPascalCase`, so acronyms
+ * inherit oagen's `ACRONYM_SET` — the same source of truth the emitted method
+ * name uses. Lower-casing the raw segments instead produced a doc line that
+ * contradicted the symbol directly below it ("Create oauth application" over
+ * `createOAuthApplication`).
+ *
+ * Segments are kept at their original boundaries rather than re-split out of the
+ * camelCased whole: `splitPascalWords` mis-splits digit-adjacent acronyms
+ * (`M2M` → `2` + `MApplication`), and it also drives public method naming, so it
+ * is not the place to absorb a doc-formatting concern.
+ *
+ * A recased segment is preserved when `toPascalCase` marked it as an acronym
+ * (interior capitals, or a capital adjacent to a digit); otherwise it is
+ * lower-cased. The first word is capitalized to open the sentence.
  */
 export function formatWrapperDescription(name: string): string {
   return name
     .split('_')
-    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .map((segment, i) => {
+      const cased = toPascalCase(segment);
+      const isAcronym = /[A-Z].*[A-Z]|[A-Z][0-9]|[0-9][A-Z]/.test(cased);
+      const word = isAcronym ? cased : segment.toLowerCase();
+      return i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+    })
     .join(' ');
 }
