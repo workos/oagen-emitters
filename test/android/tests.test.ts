@@ -181,6 +181,45 @@ describe('android/tests', () => {
     expect(content).not.toContain('assertEquals(1, result.total)');
   });
 
+  it('samples date fields as LocalDate and date-time as Instant (§6)', () => {
+    // `mapPrimitive` maps `format: date` to `LocalDate` and `date-time` to
+    // `Instant`. The sample constructor must match, or the generated test would
+    // not compile: an `Instant` cannot be passed to a `LocalDate` parameter.
+    // The WorkOS spec has no `date` field, so this pins the branch here.
+    const datedBody: Model = {
+      name: 'ScheduleOptions',
+      fields: [
+        { name: 'start_date', type: { kind: 'primitive', type: 'string', format: 'date' }, required: true },
+        { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+      ],
+    };
+    const datedService: Service = {
+      name: 'Schedules',
+      operations: [
+        {
+          name: 'create_schedule',
+          httpMethod: 'post',
+          path: '/schedules',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          requestBody: { kind: 'model', name: 'ScheduleOptions' },
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const ctx = makeCtx([datedService], [organizationModel, datedBody]);
+    const content = generateTests(ctx.spec, ctx)[0].content ?? '';
+    expect(content).toContain('startDate = LocalDate.parse("2023-01-01")');
+    expect(content).toContain('createdAt = Instant.parse("2023-01-01T00:00:00Z")');
+    expect(content).toContain('import kotlinx.datetime.LocalDate');
+    expect(content).toContain('import kotlinx.datetime.Instant');
+    // the regression: a `date` field must not sample as an `Instant`
+    expect(content).not.toContain('startDate = Instant.parse(');
+  });
+
   it('emits §6 error-path tests derived from the spec error policy', () => {
     const ctx = makeCtx([service], [organizationModel, createBody]);
     const content = generateTests(ctx.spec, ctx)[0].content ?? '';

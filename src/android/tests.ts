@@ -866,7 +866,17 @@ class SuiteGenerator {
       case 'primitive':
         switch (ref.type) {
           case 'string': {
-            if (ref.format === 'date-time' || ref.format === 'date') {
+            // Keep the sample type in lockstep with `mapPrimitive` in type-map.ts:
+            // `date` maps to `LocalDate` (no time or offset), `date-time` to
+            // `Instant`. Emitting an `Instant` sample for a `date` field would not
+            // compile against a `LocalDate` parameter.
+            if (ref.format === 'date') {
+              return {
+                expr: 'LocalDate.parse("2023-01-01")',
+                imports: ['kotlinx.datetime.LocalDate'],
+              };
+            }
+            if (ref.format === 'date-time') {
               return {
                 expr: 'Instant.parse("2023-01-01T00:00:00Z")',
                 imports: ['kotlinx.datetime.Instant'],
