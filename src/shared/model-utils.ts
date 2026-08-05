@@ -57,6 +57,32 @@ export function isListWrapperModel(model: Model): boolean {
 }
 
 /**
+ * Resolve the element type a paginated operation's `data` array actually holds.
+ *
+ * `op.pagination.itemType` is the operation's *response* type. When the spec
+ * names a list envelope for that response (`data` + `list_metadata`), the
+ * response type is the envelope, not the element — so emitters that
+ * deserialize items one at a time must unwrap one level first. Endpoints whose
+ * response has no named wrapper already carry the element type; those are
+ * returned unchanged.
+ *
+ * Passing the envelope through to per-item deserialization is silently wrong:
+ * every element parses as an empty envelope and its real fields are dropped.
+ */
+export function resolvePaginationItemType(itemType: TypeRef, modelMap: Map<string, Model>): TypeRef {
+  if (itemType.kind === 'nullable') return resolvePaginationItemType(itemType.inner, modelMap);
+  if (itemType.kind !== 'model') return itemType;
+
+  const model = modelMap.get(itemType.name);
+  if (!model || !isListWrapperModel(model)) return itemType;
+
+  const dataField = model.fields.find((f) => f.name === 'data');
+  // isListWrapperModel already guarantees `data` is an array; re-narrow for TS.
+  if (dataField?.type.kind !== 'array') return itemType;
+  return dataField.type.items;
+}
+
+/**
  * Resolve the inner item model of a list-wrapper envelope (`data` array +
  * `list_metadata`). Returns the item model when the wrapper convention
  * matches and the item is a named model present in `modelMap`, else null.
@@ -77,6 +103,32 @@ export function unwrapListModel(model: Model, modelMap: Map<string, Model>): Mod
 }
 
 /**
+ * The name of the item model a paginated response actually yields.
+ *
+ * A spec's pagination `itemType` frequently resolves to the list *wrapper*
+ * (`OrganizationList { data: [Organization], list_metadata }`) rather than the
+ * item, which would make a generated signature read `Page<OrganizationList>` and
+ * fail to decode. Unwraps one level when the wrapper convention matches, and
+ * returns `name` unchanged otherwise.
+ */
+export function resolvePaginatedItemModelName(name: string, models: readonly Model[]): string {
+  const model = models.find((m) => m.name === name);
+  if (!model) return name;
+  const modelMap = new Map(models.map((m) => [m.name, m]));
+  return unwrapListModel(model, modelMap)?.name ?? name;
+}
+
+/** Strip one `nullable` layer off a type reference. */
+export function unwrapNullableRef(ref: TypeRef): TypeRef {
+  return ref.kind === 'nullable' ? ref.inner : ref;
+}
+
+/** Whether a type reference is an enum, ignoring nullability. */
+export function isEnumTypeRef(ref: TypeRef): boolean {
+  return unwrapNullableRef(ref).kind === 'enum';
+}
+
+/**
  * Detect whether a model is a list metadata model (e.g., ListMetadata).
  * These models typically have exactly `before` and `after` nullable string fields.
  */
@@ -90,6 +142,22 @@ export function isListMetadataModel(model: Model): boolean {
   if (!before || !after) return false;
 
   return isNullableString(before) && isNullableString(after);
+}
+
+/**
+ * Like {@link isListMetadataModel}, but also matches the degenerate one-cursor
+ * shape some specs declare (e.g. `EventListListMetadata`, which has `after`
+ * only). Such a model is the same redundant pagination scaffolding, so an
+ * emitter that skips list metadata wants to skip these too — otherwise it emits
+ * a model whose only referent was the envelope it just dropped.
+ *
+ * Opt-in rather than folded into `isListMetadataModel`: widening the shared
+ * shape test would remove types from every SDK's public surface at once.
+ */
+export function isPartialListMetadataModel(model: Model): boolean {
+  if (model.fields.length === 0 || model.fields.length > 2) return false;
+
+  return model.fields.every((f) => (f.name === 'before' || f.name === 'after') && isNullableString(f));
 }
 
 /**
@@ -108,16 +176,20 @@ export function isListMetadataModel(model: Model): boolean {
  * Pass the same `nonPaginatedRefs` set the emitter uses for its own
  * wrapper-survival decision so the two answers stay in sync.
  */
-export function collectReferencedListMetadataModels(models: Model[], nonPaginatedRefs: Set<string>): Set<string> {
+export function collectReferencedListMetadataModels(
+  models: Model[],
+  nonPaginatedRefs: Set<string>,
+  isMetadata: (model: Model) => boolean = isListMetadataModel,
+): Set<string> {
   const listMetadataNames = new Set<string>();
   for (const m of models) {
-    if (isListMetadataModel(m)) listMetadataNames.add(m.name);
+    if (isMetadata(m)) listMetadataNames.add(m.name);
   }
   if (listMetadataNames.size === 0) return new Set();
 
   const referenced = new Set<string>();
   for (const model of models) {
-    if (isListMetadataModel(model)) continue;
+    if (isMetadata(model)) continue;
     if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     const deps = collectFieldDependencies(model);
     for (const dep of deps.models) {
@@ -125,6 +197,38 @@ export function collectReferencedListMetadataModels(models: Model[], nonPaginate
     }
   }
   return referenced;
+}
+
+/**
+ * Build the predicate for "this model is redundant list scaffolding": a list
+ * wrapper (`data` + `list_metadata`) or its `ListMetadata` companion. Each SDK
+ * has its own pagination type that replaces the envelope at runtime, so these
+ * are not emitted as models.
+ *
+ * The exception both survival rules encode: a wrapper returned by a
+ * *non-paginated* operation (e.g. vault's `VersionListResponse`) is still
+ * referenced by name in the resource code, and must be emitted along with any
+ * `ListMetadata` model its fields reach.
+ *
+ * Emitters that decide model emission in more than one place (models, tests,
+ * fixtures) should share a single predicate so the answers cannot drift.
+ */
+export function buildListScaffoldingSkip(
+  models: Model[],
+  services: Service[],
+  /**
+   * Which models count as list metadata. Defaults to the strict two-cursor
+   * shape; pass {@link isPartialListMetadataModel} to also sweep one-cursor
+   * variants. Callers that omit it get byte-identical output to before.
+   */
+  isMetadata: (model: Model) => boolean = isListMetadataModel,
+): (model: Model) => boolean {
+  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(services);
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs, isMetadata);
+
+  return (model: Model): boolean =>
+    (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) ||
+    (isMetadata(model) && !listMetadataNeeded.has(model.name));
 }
 
 /** Check if a field type is nullable string (nullable<string> or just string). */

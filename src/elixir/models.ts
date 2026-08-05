@@ -3,7 +3,7 @@ import { mapTypeRef, addNil } from './type-map.js';
 import { fullModuleName, moduleName, fileName, fieldName, escapeDoc, escapeString, nsPascal } from './naming.js';
 import { castExpr, dumpExpr, type CastNames } from './casting.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
-import { getSyntheticEnums } from '../shared/model-utils.js';
+import { buildListScaffoldingSkip, getSyntheticEnums, isPartialListMetadataModel } from '../shared/model-utils.js';
 
 /**
  * Generate one Elixir module per IR model: `defstruct` + `@type t` +
@@ -13,9 +13,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const enumNames = new Set([...ctx.spec.enums.map((e) => e.name), ...getSyntheticEnums().map((e) => e.name)]);
   const modelNames = new Set(models.map((m) => m.name));
 
+  // List envelopes and their ListMetadata companions are replaced by
+  // `Page` at runtime, so they are not emitted as structs. The partial test
+  // also sweeps one-cursor metadata models, whose only referent is the envelope.
+  const skipListScaffolding = buildListScaffoldingSkip(models, ctx.spec.services, isPartialListMetadataModel);
+
   const files: GeneratedFile[] = [];
   for (const model of models) {
     if (!isModelInScope(model.name, ctx)) continue;
+    if (skipListScaffolding(model)) continue;
     files.push({
       path: `lib/${ctx.namespace}/${fileName(model.name)}.ex`,
       content: renderModel(model, ctx, { modelNames, enumNames }),

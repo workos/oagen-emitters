@@ -2,7 +2,7 @@ import type { EmitterContext, GeneratedFile, Model, Enum, TypeRef, Operation } f
 import { toSnakeCase, planOperation } from '@workos/oagen';
 import { functionName } from './naming.js';
 import { scopedMountGroups } from '../shared/resolved-ops.js';
-import { getSyntheticEnums } from '../shared/model-utils.js';
+import { getSyntheticEnums, resolvePaginationItemType } from '../shared/model-utils.js';
 
 const MAX_DEPTH = 4;
 
@@ -77,7 +77,9 @@ export function responseSample(
 ): unknown | undefined {
   const plan = planOperation(op);
   if (plan.isPaginated && op.pagination) {
-    const item = sampleForType(op.pagination.itemType, models, enums, 'item', 0, new Set());
+    // The fixture must mirror the wire: `data` holds elements, not envelopes.
+    const itemType = resolvePaginationItemType(op.pagination.itemType, models);
+    const item = sampleForType(itemType, models, enums, 'item', 0, new Set());
     return {
       [op.pagination.dataPath ?? 'data']: [item],
       list_metadata: { before: null, after: null },

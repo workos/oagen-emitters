@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Model } from '@workos/oagen';
 import { generateModels } from '../../src/elixir/models.js';
-import { makeSpec, makeCtx } from './helpers.js';
+import { makeSpec, makeCtx, makeOp } from './helpers.js';
 
 const organization: Model = {
   name: 'Organization',
@@ -297,5 +297,123 @@ describe('elixir/models', () => {
         end
       end"
     `);
+  });
+
+  describe('list scaffolding', () => {
+    const listMetadata: Model = {
+      name: 'ListMetadata',
+      fields: [
+        { name: 'before', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+        { name: 'after', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+      ],
+    };
+
+    const organizationList: Model = {
+      name: 'OrganizationList',
+      fields: [
+        { name: 'object', type: { kind: 'literal', value: 'list' }, required: true },
+        {
+          name: 'data',
+          type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+          required: true,
+        },
+        { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+      ],
+    };
+
+    const paginatedListOp = makeOp({
+      name: 'listOrganizations',
+      response: { kind: 'model', name: 'OrganizationList' },
+      pagination: {
+        strategy: 'cursor',
+        param: 'after',
+        dataPath: 'data',
+        itemType: { kind: 'model', name: 'OrganizationList' },
+      },
+    });
+
+    it('does not emit list envelopes or their ListMetadata — Page replaces them', () => {
+      const ctx = makeCtx(
+        makeSpec({
+          models: [organization, organizationList, listMetadata],
+          services: [{ name: 'Organizations', operations: [paginatedListOp] }],
+        }),
+      );
+
+      expect(generateModels(ctx.spec.models, ctx).map((f) => f.path)).toEqual(['lib/acme/organization.ex']);
+    });
+
+    it('sweeps one-cursor metadata models too, whose only referent was the envelope', () => {
+      const cursorOnlyMetadata: Model = {
+        name: 'EventListListMetadata',
+        fields: [
+          { name: 'after', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+        ],
+      };
+      const eventList: Model = {
+        name: 'EventList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+            required: true,
+          },
+          { name: 'list_metadata', type: { kind: 'model', name: 'EventListListMetadata' }, required: true },
+        ],
+      };
+
+      const ctx = makeCtx(
+        makeSpec({
+          models: [organization, eventList, cursorOnlyMetadata],
+          services: [
+            {
+              name: 'Organizations',
+              operations: [
+                makeOp({
+                  name: 'listEvents',
+                  response: { kind: 'model', name: 'EventList' },
+                  pagination: {
+                    strategy: 'cursor',
+                    param: 'after',
+                    dataPath: 'data',
+                    itemType: { kind: 'model', name: 'EventList' },
+                  },
+                }),
+              ],
+            },
+          ],
+        }),
+      );
+
+      expect(generateModels(ctx.spec.models, ctx).map((f) => f.path)).toEqual(['lib/acme/organization.ex']);
+    });
+
+    it('still emits an envelope returned by a non-paginated operation, and its ListMetadata', () => {
+      // e.g. GET /vault/v1/kv/{id}/versions — a list-shaped response with no
+      // pagination params, so the resource code references the envelope by name.
+      const ctx = makeCtx(
+        makeSpec({
+          models: [organization, organizationList, listMetadata],
+          services: [
+            {
+              name: 'Organizations',
+              operations: [
+                makeOp({
+                  name: 'listOrganizationVersions',
+                  path: '/organizations/versions',
+                  response: { kind: 'model', name: 'OrganizationList' },
+                }),
+              ],
+            },
+          ],
+        }),
+      );
+
+      expect(generateModels(ctx.spec.models, ctx).map((f) => f.path)).toEqual([
+        'lib/acme/organization.ex',
+        'lib/acme/organization_list.ex',
+        'lib/acme/list_metadata.ex',
+      ]);
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateResources } from '../../src/ios/resources.js';
 import { buildOperationsMap } from '../../src/ios/manifest.js';
@@ -120,6 +120,42 @@ describe('ios/resources', () => {
     expect(content).toContain('var query: [URLQueryItem] = []');
     expect(content).toContain('if let limit {');
     expect(content).toContain('query.append(URLQueryItem(name: "limit", value: "\\(limit)"))');
+  });
+
+  it('emits a string-valued literal query param without redundant interpolation', () => {
+    // A `literal` TypeRef (e.g. the spec's `prompt: "login"` or
+    // `code_challenge_method: "S256"`) renders as Swift `String`, so wrapping
+    // it in `"\(value)"` is redundant. Mirrors the android-emitter regression
+    // for the SSO/UserManagement authorize params.
+    const service: Service = {
+      name: 'Sso',
+      operations: [
+        {
+          name: 'get_authorization_url',
+          httpMethod: 'get',
+          path: '/sso/authorize',
+          pathParams: [],
+          queryParams: [
+            { name: 'prompt', type: { kind: 'literal', value: 'login' }, required: false },
+            { name: 'code_challenge_method', type: { kind: 'literal', value: 'S256' }, required: false },
+          ],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const literalCtx: EmitterContext = {
+      namespace: 'workos',
+      namespacePascal: 'WorkOS',
+      spec: { ...spec, services: [service] },
+    };
+    const content = generateResources([service], literalCtx)[0].content;
+    expect(content).toContain('query.append(URLQueryItem(name: "prompt", value: prompt))');
+    expect(content).toContain('query.append(URLQueryItem(name: "code_challenge_method", value: codeChallengeMethod))');
+    expect(content).not.toContain('value: "\\(prompt)"');
+    expect(content).not.toContain('value: "\\(codeChallengeMethod)"');
   });
 
   it('uses requestVoid for delete operations', () => {

@@ -10,6 +10,7 @@ import { kotlinEmitter } from './kotlin/index.js';
 import { rubyEmitter } from './ruby/index.js';
 import { rustEmitter } from './rust/index.js';
 import { iosEmitter } from './ios/index.js';
+import { androidEmitter } from './android/index.js';
 import { elixirEmitter } from './elixir/index.js';
 import { nodeExtractor } from './compat/extractors/node.js';
 import { rubyExtractor } from './compat/extractors/ruby.js';
@@ -38,6 +39,7 @@ export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' |
     rubyEmitter,
     rustEmitter,
     iosEmitter,
+    androidEmitter,
     elixirEmitter,
   ],
   extractors: [
@@ -63,5 +65,6 @@ export const workosEmittersPlugin: Pick<OagenConfig, 'emitters' | 'extractors' |
     kotlin: path.join(smokeDir, 'sdk-kotlin.ts'),
     dotnet: path.join(smokeDir, 'sdk-dotnet.ts'),
     ios: path.join(smokeDir, 'sdk-ios.ts'),
+    android: path.join(smokeDir, 'sdk-android.ts'),
   },
 };

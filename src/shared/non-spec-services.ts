@@ -45,7 +45,8 @@ export interface NonSpecService {
  * 2. Pinned-by-test — emitters whose non-spec surface is hand-maintained in the
  *    target SDK, because a generated accessor would reference a hand-maintained
  *    type that does not exist in staging. Each pins its coverage in a unit test:
- *      - ios, kotlin (same-module extensions): `test/{ios,kotlin}/non-spec.test.ts`
+ *      - ios, kotlin, android (same-module extensions):
+ *                                              `test/{ios,kotlin,android}/non-spec.test.ts`
  *      - elixir (standalone modules):          `test/elixir/non-spec.test.ts`
  *      - node (Scenario A, `src/workos.ts` preserved via --api-surface):
  *                                              `test/node/non-spec.test.ts`
