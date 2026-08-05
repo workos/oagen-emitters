@@ -625,6 +625,15 @@ function renderBody(
   defaults: Record<string, string | number | boolean>,
   infer: string[],
 ): string {
+  // Every body is built as a `JsonBody` regardless of `op.requestBodyEncoding`.
+  // The IR does carry that field (`'json' | 'form-data' | 'form-urlencoded' |
+  // 'binary' | 'text'`), and the `kotlin` and `node` emitters branch on it, but
+  // the hand-maintained Android transport only exposes `JsonBody` — there is no
+  // `FormBody` to dispatch to. Sending JSON is still correct for the two
+  // form-urlencoded operations in the spec (`POST /sso/token`, User Management
+  // authenticate): the API accepts JSON for those as well, the same fallback the
+  // `kotlin` emitter documents (wrappers.ts). If a genuine form-only endpoint is
+  // ever added, the runtime gains a `FormBody` and this branch appears here.
   const raw = params.find((p) => p.kind === 'bodyRaw');
   if (raw) {
     // The transport takes a `JsonBody`, so a whole-object body goes through the raw
