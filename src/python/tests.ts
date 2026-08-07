@@ -35,6 +35,7 @@ import {
   fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
+import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
 import { pythonLiteral } from './wrappers.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 
@@ -108,14 +109,21 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
 
   // Generate per-mount-target test files (merges all sub-services into one file)
   const mountGroups = scopedMountGroups(ctx);
-  const testEntries: Array<{ name: string; operations: Operation[]; resolvedOps?: ResolvedOperation[] }> =
+  const testEntries: Array<{
+    name: string;
+    operations: Operation[];
+    resolvedOps?: ResolvedOperation[];
+  }> =
     mountGroups.size > 0 || ctx.scopedServices?.size
       ? [...mountGroups].map(([name, group]) => ({
           name,
           operations: group.operations,
           resolvedOps: group.resolvedOps,
         }))
-      : spec.services.map((s) => ({ name: resolveResourceClassName(s, ctx), operations: s.operations }));
+      : spec.services.map((s) => ({
+          name: resolveResourceClassName(s, ctx),
+          operations: s.operations,
+        }));
 
   for (const { name: mountName, operations, resolvedOps } of testEntries) {
     if (operations.length === 0) continue;
@@ -382,7 +390,10 @@ function generateServiceTest(
         const discModel = unwrappedItemName ? spec.models.find((m) => m.name === unwrappedItemName) : null;
         const disc =
           discModel && (discModel as any).discriminator
-            ? ((discModel as any).discriminator as { property: string; mapping: Record<string, string> })
+            ? ((discModel as any).discriminator as {
+                property: string;
+                mapping: Record<string, string>;
+              })
             : null;
         const discEntries = disc ? Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b)) : [];
         if (disc && discEntries.length > 0) {
@@ -697,7 +708,10 @@ function generateServiceTest(
         const discModel = unwrappedItemName ? spec.models.find((m) => m.name === unwrappedItemName) : null;
         const disc =
           discModel && (discModel as any).discriminator
-            ? ((discModel as any).discriminator as { property: string; mapping: Record<string, string> })
+            ? ((discModel as any).discriminator as {
+                property: string;
+                mapping: Record<string, string>;
+              })
             : null;
         const discEntries = disc ? Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b)) : [];
         if (disc && discEntries.length > 0) {
@@ -1030,7 +1044,11 @@ function pickAssertableFields(
       results.push({ field: domainFieldName(f), value: `"${val}"` });
     } else if (typeof val === 'boolean') {
       // Use "is True/False" to satisfy ruff E712
-      results.push({ field: domainFieldName(f), value: val ? 'True' : 'False', isBool: true });
+      results.push({
+        field: domainFieldName(f),
+        value: val ? 'True' : 'False',
+        isBool: true,
+      });
     } else if (typeof val === 'number') {
       results.push({ field: domainFieldName(f), value: String(val) });
     }
@@ -1549,13 +1567,15 @@ function buildDirRoundTripFile(
 
   const modelMap = new Map(spec.models.map((m) => [m.name, m]));
   const enumMap = new Map(spec.enums.map((e) => [e.name, e]));
-  const body: string[] = [];
 
-  if (roundTripModels.length > 0) {
-    body.push('');
-    body.push('');
-    body.push('class TestModelRoundTrip:');
+  // Per-model method groups, kept as discrete blocks so a scoped run can freeze
+  // out-of-scope models to their prior on-disk text (see reconciliation below).
+  const roundTripBlocks: AggregateBlock[] = [];
+  const discriminatorBlocks: AggregateBlock[] = [];
+
+  {
     for (const model of roundTripModels) {
+      const body: string[] = [];
       // Deduplicate fields by DOMAIN identifier (mirrors models.ts, which honors
       // `domainName`); the wire key stays `field.name`.
       const seenFieldNames = new Set<string>();
@@ -1576,7 +1596,6 @@ function buildDirRoundTripFile(
       const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
       const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
 
-      body.push('');
       body.push(`    def test_${fileName(model.name)}_round_trip(self):`);
       body.push(`        data = load_fixture("${fixtureName}")`);
       body.push(`        instance = ${modelClass}.from_dict(data)`);
@@ -1630,15 +1649,22 @@ function buildDirRoundTripFile(
         body.push(`        instance = ${modelClass}.from_dict(data)`);
         body.push('        assert instance.to_dict() == data');
       }
+
+      roundTripBlocks.push({
+        key: fileName(model.name),
+        text: body.join('\n'),
+        inScope: isModelInScope(model.name, ctx),
+      });
     }
   }
 
-  if (discriminatorModels.length > 0) {
-    body.push('');
-    body.push('');
-    body.push('class TestDiscriminatorDispatch:');
+  {
     for (const model of discriminatorModels) {
-      const disc = (model as any).discriminator as { property: string; mapping: Record<string, string> };
+      const body: string[] = [];
+      const disc = (model as any).discriminator as {
+        property: string;
+        mapping: Record<string, string>;
+      };
       const modelClass = className(model.name);
       const unknownClass = `${modelClass}Unknown`;
 
@@ -1652,7 +1678,6 @@ function buildDirRoundTripFile(
       addImport(model.name, unknownClass);
       addImport(firstVariantName, firstVariantClass);
 
-      body.push('');
       body.push(`    def test_${fileName(model.name)}_dispatches_known_variant(self):`);
       body.push(`        data = load_fixture("${firstVariantFixture}")`);
       body.push(`        result = ${modelClass}.from_dict(data)`);
@@ -1679,7 +1704,74 @@ function buildDirRoundTripFile(
       body.push(`        data = {**data, "${disc.property}": None}`);
       body.push('        with pytest.raises(Exception):');
       body.push(`            ${modelClass}.from_dict(data)`);
+
+      discriminatorBlocks.push({
+        key: fileName(model.name),
+        text: body.join('\n'),
+        inScope: isModelInScope(model.name, ctx),
+      });
     }
+  }
+
+  // Freeze out-of-scope models' method groups to their prior on-disk text. Their
+  // per-model `.py` was NOT regenerated this run, but the payloads above are
+  // synthesized from the CURRENT spec — re-rendering them would assert a shape
+  // the stale model can't produce (e.g. a field the spec gained since the model
+  // was last written, which `to_dict` then never emits). Only the
+  // `load_fixture`-driven test would survive, and only because the fixture is
+  // stale in lockstep. Freezing also keeps an unrelated same-delta change to an
+  // out-of-scope model out of a scoped batch.
+  const path = `tests/test_${dirName.replace(/\//g, '_')}_models_round_trip.py`;
+  const scoped = isScopedRun(ctx);
+  let prior: PriorRoundTripFile = {
+    roundTrip: [],
+    discriminator: [],
+    imports: new Map(),
+  };
+  if (scoped) {
+    try {
+      prior = parsePriorRoundTripFile(readPriorFile(path, ctx));
+    } catch (err) {
+      // The prior file exists but is unreadable. Emitting now would reconcile
+      // against an empty prior and silently drop every out-of-scope method
+      // group; leave the on-disk copy untouched instead.
+      console.warn(
+        `[oagen] python: leaving ${path} untouched — could not read prior file: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+  const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped);
+  const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped);
+  if (roundTripMethods.length === 0 && discriminatorMethods.length === 0) return null;
+
+  const body: string[] = [];
+  if (roundTripMethods.length > 0) {
+    body.push('', '', 'class TestModelRoundTrip:');
+    for (const method of roundTripMethods) body.push('', ...method.split('\n'));
+  }
+  if (discriminatorMethods.length > 0) {
+    body.push('', '', 'class TestDiscriminatorDispatch:');
+    for (const method of discriminatorMethods) body.push('', ...method.split('\n'));
+  }
+  const bodyText = body.join('\n');
+
+  // Imports: the fresh ones this run computed, plus any the prior file carried
+  // (a frozen block may reference a class the current spec no longer produces).
+  // Keep only symbols the reconciled body actually references, so a frozen-out
+  // block never leaves behind an import of a class whose file may not exist.
+  const importsByModule = new Map<string, Set<string>>();
+  const addModuleImport = (module: string, symbol: string) => {
+    if (!importsByModule.has(module)) importsByModule.set(module, new Set());
+    importsByModule.get(module)!.add(symbol);
+  };
+  for (const [dir, names] of importsByDir) {
+    for (const name of names) addModuleImport(`${ctx.namespace}.${dirToModule(dir)}.models`, name);
+  }
+  for (const [module, names] of prior.imports) {
+    for (const name of names) addModuleImport(module, name);
   }
 
   const lines: string[] = [];
@@ -1689,16 +1781,93 @@ function buildDirRoundTripFile(
   lines.push('');
   lines.push('from tests.generated_helpers import load_fixture');
   lines.push('');
-  for (const [dir, names] of [...importsByDir].sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(`from ${ctx.namespace}.${dirToModule(dir)}.models import ${[...names].sort().join(', ')}`);
+  for (const [module, names] of [...importsByModule].sort(([a], [b]) => a.localeCompare(b))) {
+    const used = [...names].filter((name) => new RegExp(`\\b${name}\\b`).test(bodyText)).sort();
+    if (used.length > 0) lines.push(`from ${module} import ${used.join(', ')}`);
   }
 
   return {
-    path: `tests/test_${dirName.replace(/\//g, '_')}_models_round_trip.py`,
+    path,
     content: [...lines, ...body].join('\n'),
     integrateTarget: true,
     overwriteExisting: true,
   };
+}
+
+interface PriorRoundTripFile {
+  /** `TestModelRoundTrip` method groups, keyed by the model's snake_case file name. */
+  roundTrip: AggregateBlock[];
+  /** `TestDiscriminatorDispatch` method groups, keyed the same way. */
+  discriminator: AggregateBlock[];
+  /** `from <module> import <names>` lines, excluding the fixed test-helper imports. */
+  imports: Map<string, Set<string>>;
+}
+
+/**
+ * Parse a prior round-trip file into per-model method groups so a scoped run can
+ * freeze out-of-scope groups verbatim.
+ *
+ * A group starts at its model's FIRST method — always `_round_trip` in
+ * `TestModelRoundTrip` and `_dispatches_known_variant` in
+ * `TestDiscriminatorDispatch`, by construction above — and runs to just before
+ * the next such anchor (or the end of the class). Anchoring on the first method
+ * rather than enumerating every suffix keeps the parser correct when a new
+ * per-model assertion is added: it lands inside the preceding group.
+ */
+function parsePriorRoundTripFile(content: string | null): PriorRoundTripFile {
+  const result: PriorRoundTripFile = {
+    roundTrip: [],
+    discriminator: [],
+    imports: new Map(),
+  };
+  if (!content) return result;
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    const imp = line.match(/^from (\S+) import (.+)$/);
+    if (!imp || imp[1] === 'tests.generated_helpers') continue;
+    const names = imp[2]
+      .split(',')
+      .map((n) => n.trim())
+      .filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
+    if (names.length === 0) continue;
+    if (!result.imports.has(imp[1])) result.imports.set(imp[1], new Set());
+    for (const name of names) result.imports.get(imp[1])!.add(name);
+  }
+
+  const anchors: { cls: string; re: RegExp; into: AggregateBlock[] }[] = [
+    {
+      cls: 'TestModelRoundTrip',
+      re: /^ {4}def test_(.+)_round_trip\(self\):$/,
+      into: result.roundTrip,
+    },
+    {
+      cls: 'TestDiscriminatorDispatch',
+      re: /^ {4}def test_(.+)_dispatches_known_variant\(self\):$/,
+      into: result.discriminator,
+    },
+  ];
+
+  for (const { cls, re, into } of anchors) {
+    const start = lines.findIndex((l) => l === `class ${cls}:`);
+    if (start === -1) continue;
+    let end = start + 1;
+    while (end < lines.length && !/^\S/.test(lines[end])) end++;
+
+    const starts: number[] = [];
+    for (let i = start + 1; i < end; i++) if (re.test(lines[i])) starts.push(i);
+    for (let s = 0; s < starts.length; s++) {
+      const from = starts[s];
+      let to = (s + 1 < starts.length ? starts[s + 1] : end) - 1;
+      while (to > from && lines[to].trim() === '') to--;
+      into.push({
+        key: lines[from].match(re)![1],
+        text: lines.slice(from, to + 1).join('\n'),
+      });
+    }
+  }
+
+  return result;
 }
 
 /**

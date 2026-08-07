@@ -23,6 +23,7 @@ import {
   isScopedRun,
   fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
+import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { classifyUnassignedModel } from './models.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -66,7 +67,12 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
     lines.push('  end');
 
     const emittedTestMethods = new Set<string>();
-    const authMethodManifest: { method: string; httpMethodSym: string; stubUrl: string; callArgs: string }[] = [];
+    const authMethodManifest: {
+      method: string;
+      httpMethodSym: string;
+      stubUrl: string;
+      callArgs: string;
+    }[] = [];
 
     for (const op of group.operations) {
       const ownerService = group.resolvedOps.find((r) => r.operation === op)?.service;
@@ -230,16 +236,24 @@ const LEGACY_ROUNDTRIP_PATH = 'test/workos/test_model_round_trip.rb';
  * non-wrapper model in that dir through `.new(json)`/`.to_h`, asserting a Hash
  * result and that seeded keys survive.
  *
- * Only IN-SCOPE models are emitted (`isModelInScope`: everything on a full run,
- * selected-only under `--services`), so a scoped run regenerates a dir's
- * round-trip file in lockstep with that dir's regenerated per-model `.rb`
- * files. This replaces the former single wholesale file, which a scoped run
- * skipped entirely — leaving it asserting the OLD shape of a model the same run
- * had just regenerated (the failure this fixes). Dirs with no in-scope models
- * are skipped, so untouched services' files are left byte-for-byte alone
- * (scoped runs never prune). Because every emitted model is in-scope, its
- * `WorkOS::<Class>` constant is written by this same run — the reference can't
- * dangle into an `uninitialized constant`.
+ * A dir's file is regenerated only when at least one of its models is IN SCOPE
+ * (`isModelInScope`: everything on a full run, selected-only under
+ * `--services`), so it moves in lockstep with that dir's regenerated per-model
+ * `.rb` files. This replaces the former single wholesale file, which a scoped
+ * run skipped entirely — leaving it asserting the OLD shape of a model the same
+ * run had just regenerated. Dirs with no in-scope models are skipped, so
+ * untouched services' files are left byte-for-byte alone (scoped runs never
+ * prune).
+ *
+ * A regenerated dir covers in-scope ∪ on-disk models (`fileExistsAfterRun`) so
+ * out-of-scope models keep their coverage, and every referenced
+ * `WorkOS::<Class>` still has a file on disk for Zeitwerk to autoload. Their
+ * METHODS are frozen to the prior on-disk text (`reconcileScopedBlocks`) rather
+ * than re-rendered: the fixture is synthesized from the CURRENT spec, but an
+ * out-of-scope model's `.rb` was not rewritten this run, so re-rendering asserts
+ * a shape the stale model can't produce — a spec-added field lands in the
+ * fixture and `to_h` never returns it. Freezing also keeps an unrelated
+ * same-delta change to an out-of-scope model out of a scoped batch.
  */
 function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const models = (spec.models as Model[]).filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
@@ -281,14 +295,19 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
 
   const files: GeneratedFile[] = [];
   for (const [dirName, dirModels] of [...modelsByDir].sort(([a], [b]) => a.localeCompare(b))) {
-    const file = buildDirRoundTripFile(dirName, dirModels, enumNames);
+    const file = buildDirRoundTripFile(dirName, dirModels, enumNames, ctx);
     if (file) files.push(file);
   }
   return files;
 }
 
 /** Build one service dir's round-trip test file, or null when it has no models. */
-function buildDirRoundTripFile(dirName: string, dirModels: Model[], enumNames: Set<string>): GeneratedFile | null {
+function buildDirRoundTripFile(
+  dirName: string,
+  dirModels: Model[],
+  enumNames: Set<string>,
+  ctx: EmitterContext,
+): GeneratedFile | null {
   // Each dir gets a distinct test-class name so two files never reopen the same
   // Minitest class (which would merge — and clash — their methods).
   const dirClass = dirName
@@ -297,20 +316,17 @@ function buildDirRoundTripFile(dirName: string, dirModels: Model[], enumNames: S
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
     .join('');
 
-  const lines: string[] = [];
-  lines.push(`require 'test_helper'`);
-  lines.push('');
-  lines.push(`class ${dirClass}ModelRoundTripTest < Minitest::Test`);
+  const path = `test/workos/test_${dirName.replace(/\//g, '_')}_model_round_trip.rb`;
+  const scoped = isScopedRun(ctx);
 
+  const newBlocks: AggregateBlock[] = [];
   const emitted = new Set<string>();
-  let count = 0;
   for (const model of dirModels) {
     // Avoid duplicate test names when two IR model names collapse to the same
     // snake_case file name (we use the file name as the test suffix).
     const fileBase = fileName(model.name);
     if (emitted.has(fileBase)) continue;
     emitted.add(fileBase);
-    count += 1;
 
     // Build a fixture hash with string keys and stub values for every field.
     const fixtureEntries: string[] = [];
@@ -344,37 +360,92 @@ function buildDirRoundTripFile(dirName: string, dirModels: Model[], enumNames: S
       }
     }
 
-    lines.push('');
-    lines.push(`  def test_${fileBase}_round_trip`);
+    const block: string[] = [];
+    block.push(`  def test_${fileBase}_round_trip`);
     if (fixtureEntries.length === 0) {
-      lines.push(`    model = WorkOS::${className(model.name)}.new('{}')`);
-      lines.push('    json = model.to_h');
-      lines.push('    assert_kind_of Hash, json');
+      block.push(`    model = WorkOS::${className(model.name)}.new('{}')`);
+      block.push('    json = model.to_h');
+      block.push('    assert_kind_of Hash, json');
     } else {
-      lines.push('    fixture = {');
-      for (const line of fixtureEntries) lines.push(line);
-      lines.push('    }');
-      lines.push(`    model = WorkOS::${className(model.name)}.new(fixture.to_json)`);
-      lines.push('    json = model.to_h');
-      lines.push('    assert_kind_of Hash, json');
-      for (const a of assertions) lines.push(a);
+      block.push('    fixture = {');
+      for (const line of fixtureEntries) block.push(line);
+      block.push('    }');
+      block.push(`    model = WorkOS::${className(model.name)}.new(fixture.to_json)`);
+      block.push('    json = model.to_h');
+      block.push('    assert_kind_of Hash, json');
+      for (const a of assertions) block.push(a);
       // T23: Assert every fixture key round-trips into to_h (handles both symbol and string keys).
-      lines.push(
+      block.push(
         '    fixture.each_key { |k| assert json.key?(k.to_sym) || json.key?(k), "Expected to_h to include key #{k}" }',
       );
     }
-    lines.push('  end');
+    block.push('  end');
+
+    newBlocks.push({
+      key: fileBase,
+      text: block.join('\n'),
+      inScope: isModelInScope(model.name, ctx),
+    });
   }
 
+  // Freeze out-of-scope models' methods to their prior on-disk text. Their
+  // `.rb` was NOT regenerated this run, so re-rendering their fixture from the
+  // CURRENT spec would assert a shape the stale model can't produce (e.g. a
+  // field the spec gained since the model was last written).
+  let priorBlocks: AggregateBlock[] = [];
+  if (scoped) {
+    try {
+      priorBlocks = parseRoundTripMethods(readPriorFile(path, ctx));
+    } catch (err) {
+      // The prior file exists but is unreadable. Emitting now would reconcile
+      // against an empty prior and silently drop every out-of-scope method;
+      // leave the on-disk copy untouched instead.
+      console.warn(
+        `[oagen] ruby: leaving ${path} untouched — could not read prior file: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
+  if (methods.length === 0) return null;
+
+  const lines: string[] = [];
+  lines.push(`require 'test_helper'`);
+  lines.push('');
+  lines.push(`class ${dirClass}ModelRoundTripTest < Minitest::Test`);
+  for (const method of methods) lines.push('', ...method.split('\n'));
   lines.push('end');
-  if (count === 0) return null;
 
   return {
-    path: `test/workos/test_${dirName.replace(/\//g, '_')}_model_round_trip.rb`,
+    path,
     content: lines.join('\n'),
     integrateTarget: true,
     overwriteExisting: true,
   };
+}
+
+/**
+ * Parse a prior round-trip file's per-model `def test_<base>_round_trip` methods,
+ * keyed by `<base>` (the model's snake_case file name), so a scoped run can
+ * freeze out-of-scope methods verbatim. Each generated method runs from its
+ * `  def ` line to the first `  end` at method indent — the emitted bodies are
+ * flat (hash literal + assertions), so no inner 2-space `end` can appear.
+ */
+function parseRoundTripMethods(content: string | null): AggregateBlock[] {
+  if (!content) return [];
+  const lines = content.split('\n');
+  const blocks: AggregateBlock[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^ {2}def (test_(.+)_round_trip)$/);
+    if (!m) continue;
+    let end = i + 1;
+    while (end < lines.length && lines[end] !== '  end') end++;
+    if (end < lines.length) blocks.push({ key: m[2], text: lines.slice(i, end + 1).join('\n') });
+    i = end;
+  }
+  return blocks;
 }
 
 /**
