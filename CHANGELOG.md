@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/workos/oagen-emitters/compare/v0.24.0...v0.24.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **python,ruby:** freeze out-of-scope round-trip blocks in scoped runs ([#213](https://github.com/workos/oagen-emitters/issues/213)) ([7e87e40](https://github.com/workos/oagen-emitters/commit/7e87e40d7f2953dcb0c09937162240706e244b33))
+
 ## [0.24.0](https://github.com/workos/oagen-emitters/compare/v0.23.0...v0.24.0) (2026-08-05)
 
 
