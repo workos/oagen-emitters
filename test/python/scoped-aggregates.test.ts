@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { generateModels } from '../../src/python/models.js';
 import { generateTests } from '../../src/python/tests.js';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
@@ -21,7 +24,13 @@ const services: Service[] = [
         name: 'getWidget',
         httpMethod: 'get',
         path: '/widgets/{id}',
-        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        pathParams: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
         queryParams: [],
         headerParams: [],
         response: { kind: 'model', name: 'WidgetA' },
@@ -37,7 +46,13 @@ const services: Service[] = [
         name: 'getGadgetBrandNew',
         httpMethod: 'get',
         path: '/gadgets/brand-new/{id}',
-        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        pathParams: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
         queryParams: [],
         headerParams: [],
         response: { kind: 'model', name: 'GadgetBrandNew' },
@@ -48,7 +63,13 @@ const services: Service[] = [
         name: 'getGadgetOnDisk',
         httpMethod: 'get',
         path: '/gadgets/on-disk/{id}',
-        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        pathParams: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
         queryParams: [],
         headerParams: [],
         response: { kind: 'model', name: 'GadgetOnDisk' },
@@ -63,22 +84,46 @@ const models: Model[] = [
   {
     name: 'WidgetA',
     fields: [
-      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-      { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'id',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
+      {
+        name: 'name',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
     ],
   },
   {
     name: 'GadgetBrandNew',
     fields: [
-      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-      { name: 'color', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'id',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
+      {
+        name: 'color',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
     ],
   },
   {
     name: 'GadgetOnDisk',
     fields: [
-      { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
-      { name: 'size', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'id',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
+      {
+        name: 'size',
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      },
     ],
   },
 ];
@@ -252,7 +297,13 @@ describe('python scoped aggregates', () => {
       name,
       httpMethod: 'get' as const,
       path,
-      pathParams: [{ name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      pathParams: [
+        {
+          name: 'id',
+          type: { kind: 'primitive' as const, type: 'string' as const },
+          required: true,
+        },
+      ],
       queryParams: [],
       headerParams: [],
       response: { kind: 'model' as const, name: model },
@@ -261,11 +312,38 @@ describe('python scoped aggregates', () => {
     });
     const localModels: Model[] = [
       // In scope this run.
-      { name: 'WidgetA', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'WidgetA',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
       // Out of scope this run, but its model + fixture are on disk (prior manifest).
-      { name: 'WidgetLegacy', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'WidgetLegacy',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
       // Out of scope AND brand-new (no fixture on disk) → nothing to test.
-      { name: 'WidgetBrandNew', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'WidgetBrandNew',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
     ];
     const localSpec: ApiSpec = {
       name: 'TestAPI',
@@ -288,32 +366,136 @@ describe('python scoped aggregates', () => {
     // Scoped to Widgets; only WidgetA is regenerated this run. The prior manifest
     // records WidgetLegacy's model + fixture (left untouched on disk), but NOT
     // WidgetBrandNew's.
-    const ctx = {
-      namespace: 'workos',
-      namespacePascal: 'WorkOS',
-      spec: localSpec,
-      scopedServices: new Set(['Widgets']),
-      scopedModelNames: new Set(['WidgetA']),
-      scopedEnumNames: new Set<string>(),
-      priorTargetManifestPaths: new Set([
-        'src/workos/widgets/models/widget_a.py',
-        'src/workos/widgets/models/widget_legacy.py',
-        'tests/fixtures/widget_a.json',
-        'tests/fixtures/widget_legacy.json',
-      ]),
-    } as EmitterContext;
+    const RT_PATH = 'tests/test_widgets_models_round_trip.py';
+    const mkCtx = (outputDir: string) =>
+      ({
+        namespace: 'workos',
+        namespacePascal: 'WorkOS',
+        spec: localSpec,
+        outputDir,
+        scopedServices: new Set(['Widgets']),
+        scopedModelNames: new Set(['WidgetA']),
+        scopedEnumNames: new Set<string>(),
+        priorTargetManifestPaths: new Set([
+          'src/workos/widgets/models/widget_a.py',
+          'src/workos/widgets/models/widget_legacy.py',
+          'tests/fixtures/widget_a.json',
+          'tests/fixtures/widget_legacy.json',
+        ]),
+      }) as EmitterContext;
+
+    /** Seed a prior round-trip file carrying WidgetLegacy's method group. */
+    const seedPrior = (methodBody: string[]): string => {
+      const outputDir = mkdtempSync(join(tmpdir(), 'oagen-py-rt-'));
+      const abs = join(outputDir, RT_PATH);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(
+        abs,
+        [
+          '"""Model round-trip tests: from_dict(to_dict()) preserves data."""',
+          '',
+          'import pytest',
+          '',
+          'from tests.generated_helpers import load_fixture',
+          '',
+          'from workos.widgets.models import WidgetLegacy',
+          '',
+          '',
+          'class TestModelRoundTrip:',
+          '',
+          ...methodBody,
+          '',
+        ].join('\n'),
+      );
+      return outputDir;
+    };
 
     it('RETAINS the out-of-scope on-disk model and excludes the brand-new one', () => {
-      const files = generateTests(localSpec, ctx);
-      const rt = files.find((f) => f.path === 'tests/test_widgets_models_round_trip.py');
+      // The out-of-scope model's coverage is carried over from the prior on-disk
+      // file, so seed one — with a `legacy_only` assertion the current spec
+      // wouldn't produce, proving the group is frozen rather than re-rendered.
+      const outputDir = seedPrior([
+        '    def test_widget_legacy_round_trip(self):',
+        '        data = load_fixture("widget_legacy.json")',
+        '        instance = WidgetLegacy.from_dict(data)',
+        '        serialized = instance.to_dict()',
+        '        assert serialized == data',
+        '        assert "legacy_only" not in serialized',
+      ]);
+
+      const files = generateTests(localSpec, mkCtx(outputDir));
+      const rt = files.find((f) => f.path === RT_PATH);
       expect(rt).toBeDefined();
-      // In-scope model is covered.
+      // In-scope model is covered, refreshed from the current spec.
       expect(rt!.content).toContain('def test_widget_a_round_trip(self):');
-      // Out-of-scope model still on disk → coverage retained (the regression).
+      // Out-of-scope model still on disk → coverage retained (the regression),
+      // frozen to its prior group, with its import carried over.
       expect(rt!.content).toContain('def test_widget_legacy_round_trip(self):');
       expect(rt!.content).toContain('WidgetLegacy');
+      expect(rt!.content).toContain('assert "legacy_only" not in serialized');
       // Out-of-scope model with no on-disk fixture → no test, no dangling import.
       expect(rt!.content).not.toContain('WidgetBrandNew');
+
+      rmSync(outputDir, { recursive: true, force: true });
+    });
+
+    it('freezes an out-of-scope group instead of re-synthesizing payloads from the current spec', () => {
+      // The bug: the payload assertions below are synthesized from the CURRENT
+      // spec, but an out-of-scope model's `.py` was NOT regenerated this run —
+      // so a spec-added field landed in `data` while `to_dict()` never emits it
+      // (`KeyError`). Re-rendering must not happen; the prior group stands.
+      const drifted: ApiSpec = {
+        ...localSpec,
+        models: localModels.map((m) =>
+          m.name === 'WidgetLegacy'
+            ? {
+                ...m,
+                fields: [
+                  ...m.fields,
+                  // Added to the spec after the on-disk model was last written.
+                  {
+                    name: 'waitlist_id',
+                    type: {
+                      kind: 'nullable' as const,
+                      inner: {
+                        kind: 'primitive' as const,
+                        type: 'string' as const,
+                      },
+                    },
+                    required: false,
+                  },
+                ],
+              }
+            : m,
+        ),
+      };
+
+      // A FULL run does pick the new field up — it regenerates the model too.
+      const fullRt = generateTests(drifted, {
+        namespace: 'workos',
+        namespacePascal: 'WorkOS',
+        spec: drifted,
+      } as EmitterContext).find((f) => f.path === RT_PATH);
+      expect(fullRt!.content).toContain('waitlist_id');
+
+      const outputDir = seedPrior([
+        '    def test_widget_legacy_round_trip(self):',
+        '        data = load_fixture("widget_legacy.json")',
+        '        instance = WidgetLegacy.from_dict(data)',
+        '        serialized = instance.to_dict()',
+        '        assert serialized == data',
+      ]);
+      const scopedCtx = {
+        ...mkCtx(outputDir),
+        spec: drifted,
+      } as EmitterContext;
+      const rt = generateTests(drifted, scopedCtx).find((f) => f.path === RT_PATH);
+      // Coverage retained...
+      expect(rt!.content).toContain('def test_widget_legacy_round_trip(self):');
+      // ...but the spec-added field is NOT asserted against the untouched model.
+      expect(rt!.content).not.toContain('waitlist_id');
+
+      rmSync(outputDir, { recursive: true, force: true });
     });
   });
 
@@ -326,7 +508,13 @@ describe('python scoped aggregates', () => {
             name: 'getWidget',
             httpMethod: 'get',
             path: '/widgets/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'WidgetA' },
@@ -342,7 +530,13 @@ describe('python scoped aggregates', () => {
             name: 'getAgent',
             httpMethod: 'get',
             path: '/agents/{id}',
-            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            pathParams: [
+              {
+                name: 'id',
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              },
+            ],
             queryParams: [],
             headerParams: [],
             response: { kind: 'model', name: 'AgentThing' },
@@ -353,8 +547,26 @@ describe('python scoped aggregates', () => {
       },
     ];
     const localModels: Model[] = [
-      { name: 'WidgetA', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
-      { name: 'AgentThing', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'WidgetA',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'AgentThing',
+        fields: [
+          {
+            name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+        ],
+      },
     ];
     const localSpec: ApiSpec = {
       name: 'TestAPI',
