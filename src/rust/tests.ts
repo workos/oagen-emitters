@@ -534,6 +534,11 @@ function encodesQueryParamsTest(
   lines.push('        .mount(&server)');
   lines.push('        .await;');
   lines.push('    let client = common::test_client(&server).await;');
+  // Required params are `Vec<String>`; optional ones are `Option<Vec<String>>`
+  // and need a `Some(...)` wrapper to compile.
+  const arrayValue = target.required
+    ? `vec!["foo".to_string(), "bar".to_string()]`
+    : `Some(vec!["foo".to_string(), "bar".to_string()])`;
   // Clippy's `field_reassign_with_default` fires when fields are mutated on a
   // value created via `T::default()`. Use struct-update syntax in that case;
   // otherwise (`Type::new(...)` etc.), fall back to the mutable-binding form
@@ -541,12 +546,12 @@ function encodesQueryParamsTest(
   if (paramsExpr.endsWith('::default()')) {
     const ty = paramsExpr.slice(0, -'::default()'.length);
     lines.push(`    let params = ${ty} {`);
-    lines.push(`        ${fieldIdent(target.name)}: Some(vec!["foo".to_string(), "bar".to_string()]),`);
+    lines.push(`        ${fieldIdent(target.name)}: ${arrayValue},`);
     lines.push('        ..Default::default()');
     lines.push('    };');
   } else {
     lines.push(`    let mut params = ${paramsExpr};`);
-    lines.push(`    params.${fieldIdent(target.name)} = Some(vec!["foo".to_string(), "bar".to_string()]);`);
+    lines.push(`    params.${fieldIdent(target.name)} = ${arrayValue};`);
   }
   // Drop the array param onto the params; ignore any required-cursor fields
   // — they're already populated by buildCallArgs.

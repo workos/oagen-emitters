@@ -458,6 +458,67 @@ describe('rust/tests', () => {
     expect(content).toContain('tags=foo&tags=bar');
   });
 
+  it('does not wrap a required Vec<String> query param in Some()', () => {
+    const services: Service[] = [
+      {
+        name: 'Events',
+        operations: [
+          {
+            name: 'listEvents',
+            httpMethod: 'get',
+            path: '/events',
+            pathParams: [],
+            queryParams: [
+              {
+                name: 'events',
+                type: {
+                  kind: 'array',
+                  items: { kind: 'primitive', type: 'string' },
+                },
+                required: true,
+                explode: false,
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'EventList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'EventSchema' },
+            },
+          },
+        ],
+      },
+    ];
+    const files = generateTests(
+      { ...baseSpec, services },
+      ctxWithResolved(services, [
+        {
+          name: 'EventList',
+          fields: [
+            {
+              name: 'data',
+              type: {
+                kind: 'array',
+                items: { kind: 'model', name: 'EventSchema' },
+              },
+              required: true,
+            },
+          ],
+        },
+      ]),
+    );
+    const content = getMountTestFile(files, 'events');
+    expect(content).toContain('async fn events_list_events_encodes_query_params()');
+    // A required param is `Vec<String>`, not `Option<Vec<String>>`, so the
+    // generated fixture must not wrap it in `Some(...)` (which would be E0308).
+    expect(content).not.toContain('Some(vec!["foo".to_string(), "bar".to_string()])');
+    expect(content).toContain('vec!["foo".to_string(), "bar".to_string()]');
+  });
+
   it('skips encodes_query_params for ops with no Vec<String> query params', () => {
     const services: Service[] = [
       {
