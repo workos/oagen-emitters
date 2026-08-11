@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.2](https://github.com/workos/oagen-emitters/compare/v0.24.1...v0.24.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* **rust:** no Some() for required Vec query params ([#216](https://github.com/workos/oagen-emitters/issues/216)) ([fed1654](https://github.com/workos/oagen-emitters/commit/fed1654278c4926c47dabef52eeb97247aaca88d))
+
 ## [0.24.1](https://github.com/workos/oagen-emitters/compare/v0.24.0...v0.24.1) (2026-08-07)
 
 
