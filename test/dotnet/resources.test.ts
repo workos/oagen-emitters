@@ -222,6 +222,98 @@ describe('dotnet/resources', () => {
     );
   });
 
+  it('mirrors emission-loop name reservation for union-split wrappers named DeleteAsync', () => {
+    const deleteOp = (name: string, path: string, pathParams: string[]) => ({
+      name,
+      httpMethod: 'delete' as const,
+      path,
+      pathParams: pathParams.map((p) => ({
+        name: p,
+        type: { kind: 'primitive', type: 'string' } as const,
+        required: true,
+      })),
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'unknown' } as const,
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    const deleteWrapper = {
+      name: 'delete',
+      targetVariant: 'RevokeRequest',
+      defaults: {},
+      inferFromClient: [],
+      exposedParams: [],
+    };
+
+    const services: Service[] = [
+      {
+        // The `delete` wrapper claims the DeleteAsync name and emits
+        // DeleteAsync(TokensDeleteOptions, ...) — one leading parameter, so it
+        // captures nothing. The suppressed two-path-param op must NOT be
+        // treated as capturing: `base.` in the sibling would trip SA1100.
+        name: 'Tokens',
+        operations: [
+          deleteOp('revokeAll', '/tokens', []),
+          deleteOp('delete', '/tokens/{group_id}/{token_id}', ['group_id', 'token_id']),
+          deleteOp('deleteThing', '/tokens/things/{id}', ['id']),
+        ],
+      },
+      {
+        // Here the union-split op has one path param, so the `delete` wrapper
+        // emits DeleteAsync(string, GrantsDeleteOptions, ...) — two leading
+        // parameters. It captures the sibling's null-argument call AND its own
+        // helper call, so both must be qualified with base.
+        name: 'Grants',
+        operations: [
+          deleteOp('revokeAll', '/grants/{id}/revoke', ['id']),
+          deleteOp('deleteThing', '/grants/things/{id}', ['id']),
+        ],
+      },
+    ];
+
+    // Resolve every op (real runs do — generateResources groups by the
+    // resolved set when one is present); the `revokeAll` ops are union-split.
+    const resolvedOperations = services.flatMap((service) =>
+      service.operations.map((operation) => ({
+        service,
+        operation,
+        methodName: operation.name,
+        mountOn: service.name,
+        ...(operation.name === 'revokeAll' ? { wrappers: [deleteWrapper] } : {}),
+      })),
+    ) as never[];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+      resolvedOperations: resolvedOperations as never,
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const tokens = files.find((f) => f.path.includes('TokensService.cs'))!.content;
+    const grants = files.find((f) => f.path.includes('GrantsService.cs'))!.content;
+
+    // Tokens: wrapper DeleteAsync exists but does not capture; the suppressed
+    // raw op leaves no two-string-param overload behind.
+    expect(tokens).toContain('public async Task DeleteAsync(DeleteOptions options');
+    expect(tokens).not.toContain('DeleteAsync(string groupId');
+    expect(tokens).not.toContain('await base.DeleteAsync(');
+    expect(tokens).toContain(
+      'await this.DeleteAsync($"/tokens/things/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+
+    // Grants: the capturing wrapper qualifies its own call and the sibling's.
+    expect(grants).toContain(
+      'await base.DeleteAsync($"/grants/{Uri.EscapeDataString(id)}/revoke", options, requestOptions, cancellationToken);',
+    );
+    expect(grants).toContain(
+      'await base.DeleteAsync($"/grants/things/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+    expect(grants).not.toContain('await this.DeleteAsync(');
+  });
+
   it('generates options classes for operations with params', () => {
     const models: Model[] = [
       {

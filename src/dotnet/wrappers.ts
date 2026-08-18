@@ -118,7 +118,13 @@ function emitWrapperMethod(
       `            return await this.${helper}<${responseType}>(${pathExpr}, options, requestOptions, cancellationToken);`,
     );
   } else if (helper === 'DeleteAsync') {
-    lines.push(`            await this.${helper}(${pathExpr}, options, requestOptions, cancellationToken);`);
+    // A wrapper named DeleteAsync with one path parameter has the shape
+    // (string, XOptions, RequestOptions?, CancellationToken), so this call
+    // would bind to the wrapper itself instead of Service.DeleteAsync and
+    // recurse. Only then may the call say `base.` — StyleCop SA1100 rejects
+    // it wherever `this.` already resolves to the helper.
+    const receiver = method === 'DeleteAsync' && op.pathParams.length + 1 === 2 ? 'base' : 'this';
+    lines.push(`            await ${receiver}.${helper}(${pathExpr}, options, requestOptions, cancellationToken);`);
   } else {
     lines.push(`            await this.${helper}<object>(${pathExpr}, options, requestOptions, cancellationToken);`);
   }

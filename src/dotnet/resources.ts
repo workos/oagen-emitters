@@ -347,18 +347,33 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   // null literal, or silent recursion. Those call sites must say `base.`, and
   // only those: StyleCop SA1100 (warnings-as-errors in workos-dotnet) rejects
   // `base.` wherever `this.` already resolves to the same helper.
+  // The scan mirrors the emission loop's name reservation below: a
+  // union-split operation claims its raw method name without emitting it
+  // (suppressing any later operation that resolves to the same name) and
+  // emits typed wrappers instead, whose signatures are path params plus a
+  // required options parameter (see emitWrapperMethod).
   let hasCapturingDeleteAsync = false;
   {
     const seen = new Set<string>();
     for (const op of operations) {
-      const resolvedOp = lookupResolved(op, resolvedLookup);
-      if ((resolvedOp?.wrappers?.length ?? 0) > 0) continue;
       const method = resolveCsMethodName(op, mountName, ctx);
       if (seen.has(method)) continue;
       seen.add(method);
-      if (method !== 'DeleteAsync') continue;
-      hasCapturingDeleteAsync = leadingParamCount(op, planOperation(op), ctx, resolvedOp) === 2;
-      break;
+      const resolvedOp = lookupResolved(op, resolvedLookup);
+      const wrappers = resolvedOp?.wrappers ?? [];
+      if (wrappers.length === 0) {
+        if (method === 'DeleteAsync' && leadingParamCount(op, planOperation(op), ctx, resolvedOp) === 2) {
+          hasCapturingDeleteAsync = true;
+        }
+        continue;
+      }
+      for (const w of wrappers) {
+        const wrapperMethod = appendAsyncSuffix(methodName(w.name));
+        seen.add(wrapperMethod);
+        if (wrapperMethod === 'DeleteAsync' && op.pathParams.length + 1 === 2) {
+          hasCapturingDeleteAsync = true;
+        }
+      }
     }
   }
 
