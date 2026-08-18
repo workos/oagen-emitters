@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.3](https://github.com/workos/oagen-emitters/compare/v0.24.2...v0.24.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dotnet,python:** keep list-metadata models a wrapper needs ([#220](https://github.com/workos/oagen-emitters/issues/220)) ([86338c5](https://github.com/workos/oagen-emitters/commit/86338c556cb5324f0b14e291ee2ad830d1b698c6))
+
 ## [0.24.2](https://github.com/workos/oagen-emitters/compare/v0.24.1...v0.24.2) (2026-08-11)
 
 
