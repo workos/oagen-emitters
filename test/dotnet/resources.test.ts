@@ -92,6 +92,70 @@ describe('dotnet/resources', () => {
     expect(content).toContain('DeleteAsync');
   });
 
+  it('qualifies delete helper calls with base. when a generated DeleteAsync would capture them', () => {
+    const stringParam = (name: string) => ({
+      name,
+      type: { kind: 'primitive', type: 'string' } as const,
+      required: true,
+    });
+    const deleteOp = (name: string, path: string, pathParams: string[]) => ({
+      name,
+      httpMethod: 'delete' as const,
+      path,
+      pathParams: pathParams.map(stringParam),
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'unknown' } as const,
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+
+    const services: Service[] = [
+      {
+        // Bare `delete` op with two path params emits DeleteAsync(string, string, ...),
+        // which hides Service.DeleteAsync from the 4-argument helper calls.
+        name: 'ItContacts',
+        operations: [
+          deleteOp('delete', '/organizations/{organization_id}/it_contacts/{contact_id}', [
+            'organization_id',
+            'contact_id',
+          ]),
+          // Sibling delete in the same class is captured too and must also use base.
+          deleteOp('deleteInvitation', '/organizations/{organization_id}/it_contacts/{contact_id}/invitation', [
+            'organization_id',
+            'contact_id',
+          ]),
+        ],
+      },
+      {
+        // One leading param: DeleteAsync(string, RequestOptions?, CT) cannot take the
+        // 4-argument call, so `this.` still reaches the helper — and `base.` here
+        // would trip StyleCop SA1100.
+        name: 'Widgets',
+        operations: [deleteOp('delete', '/widgets/{id}', ['id'])],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const itContacts = files.find((f) => f.path.includes('ItContactsService.cs'))!.content;
+    const widgets = files.find((f) => f.path.includes('WidgetsService.cs'))!.content;
+
+    expect(itContacts).toContain(
+      'await base.DeleteAsync($"/organizations/{Uri.EscapeDataString(organizationId)}/it_contacts/{Uri.EscapeDataString(contactId)}", null, requestOptions, cancellationToken);',
+    );
+    expect(itContacts).not.toContain('await this.DeleteAsync(');
+    expect(widgets).toContain(
+      'await this.DeleteAsync($"/widgets/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+    expect(widgets).not.toContain('await base.DeleteAsync(');
+  });
+
   it('generates options classes for operations with params', () => {
     const models: Model[] = [
       {
