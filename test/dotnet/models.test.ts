@@ -332,4 +332,124 @@ describe('dotnet/models', () => {
     expect(baseFile.content).toContain('/// <remarks>');
     expect(baseFile.content).toContain('forward-compatible');
   });
+
+  it('emits a list-metadata model referenced by a surviving non-paginated wrapper', () => {
+    const service: Service = {
+      name: 'OrganizationsItContacts',
+      operations: [
+        {
+          name: 'listItContacts',
+          httpMethod: 'get',
+          path: '/organizations/{organization_id}/it_contacts',
+          pathParams: [{ name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          // No pagination: the wrapper survives as a real model, so its
+          // list_metadata field type must be emitted too.
+          response: { kind: 'model', name: 'ItContactList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'ItContact',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'ItContactList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'ItContact' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ItContactListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ItContactListListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const filePaths = files.map((f) => f.path);
+
+    expect(filePaths).toContain('Entities/ItContactList.cs');
+    expect(filePaths).toContain('Entities/ItContactListListMetadata.cs');
+  });
+
+  it('never emits ListMetadata itself — the SDK ships a hand-written one', () => {
+    const service: Service = {
+      name: 'Authorization',
+      operations: [
+        {
+          name: 'setRoleAssignments',
+          httpMethod: 'put',
+          path: '/authorization/groups/{id}/role_assignments',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          // Non-paginated wrapper response referencing ListMetadata by name.
+          response: { kind: 'model', name: 'GroupRoleAssignmentList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const models: Model[] = [
+      {
+        name: 'GroupRoleAssignment',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'GroupRoleAssignmentList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'GroupRoleAssignment' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const filePaths = files.map((f) => f.path);
+
+    expect(filePaths).toContain('Entities/GroupRoleAssignmentList.cs');
+    // Emitting it would duplicate the hand-written WorkOS.ListMetadata.
+    expect(filePaths).not.toContain('Entities/ListMetadata.cs');
+  });
 });

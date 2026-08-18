@@ -1037,4 +1037,112 @@ describe('generateModels', () => {
     expect(files.find((f) => f.path === 'src/workos/authorization/models/pinned_thing.py')).toBeDefined();
     expect(files.find((f) => f.path === 'src/workos/common/models/pinned_thing.py')).toBeUndefined();
   });
+
+  it('emits a dataclass for a needed list-metadata model whose structural twin is skipped scaffolding', () => {
+    // A paginated wrapper's metadata model is skipped (the pagination
+    // machinery subsumes it), but a structurally identical metadata model
+    // referenced by a NON-paginated wrapper must be emitted. It must not be
+    // deduped into a TypeAlias of the skipped twin — that file is never
+    // written, so the alias would import a module that doesn't exist.
+    const authorization: Service = {
+      name: 'Authorization',
+      operations: [
+        {
+          name: 'listPermissions',
+          httpMethod: 'get',
+          path: '/authorization/permissions',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuthorizationPermissionList' },
+          errors: [],
+          injectIdempotencyKey: false,
+          pagination: {
+            strategy: 'cursor',
+            param: 'after',
+            dataPath: 'data',
+            itemType: { kind: 'model', name: 'AuthorizationPermission' },
+          },
+        },
+      ],
+    };
+    const itContacts: Service = {
+      name: 'OrganizationsItContacts',
+      operations: [
+        {
+          name: 'listItContacts',
+          httpMethod: 'get',
+          path: '/organizations/{organization_id}/it_contacts',
+          pathParams: [{ name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'ItContactList' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const cursorFields = [
+      { name: 'before', type: { kind: 'primitive', type: 'string' }, required: false },
+      { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+    ] as Model['fields'];
+
+    const models: Model[] = [
+      {
+        name: 'AuthorizationPermission',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'AuthorizationPermissionList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'AuthorizationPermission' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'AuthorizationPermissionListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      { name: 'AuthorizationPermissionListListMetadata', fields: cursorFields },
+      {
+        name: 'ItContact',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'ItContactList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'ItContact' } },
+            required: true,
+          },
+          {
+            name: 'list_metadata',
+            type: { kind: 'model', name: 'ItContactListListMetadata' },
+            required: true,
+          },
+        ],
+      },
+      { name: 'ItContactListListMetadata', fields: cursorFields },
+    ];
+
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services: [authorization, itContacts], models },
+    };
+
+    const files = generateModels(models, ctxWithServices);
+    const metadataFile = files.find((f) => f.path.endsWith('it_contact_list_list_metadata.py'));
+    expect(metadataFile).toBeDefined();
+    // A real dataclass, not a TypeAlias re-export of the never-emitted twin.
+    expect(metadataFile!.content).toContain('class ItContactListListMetadata');
+    expect(metadataFile!.content).not.toContain('authorization_permission_list_list_metadata');
+    // The paginated twin stays skipped.
+    expect(files.some((f) => f.path.endsWith('authorization_permission_list_list_metadata.py'))).toBe(false);
+  });
 });

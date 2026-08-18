@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
-import { detectDiscriminators } from '../shared/model-utils.js';
+import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
 
 /**
  * Walk every operation across all services and tally, per schema, the set of
@@ -332,12 +332,14 @@ function canAliasModels(canonical: string, alias: string, usage: ModelUsage): bo
 export function computeModelAliases(spec: ApiSpec): Map<string, string> {
   const recursiveHashes = buildRecursiveHashMap(spec.models, spec.enums);
   const usage = collectModelUsage(spec);
+  // List scaffolding the emitter never writes (paginated wrappers and their
+  // metadata) must not participate in dedup: a surviving metadata model whose
+  // canonical is a skipped twin would alias to a module that doesn't exist.
+  const skipScaffolding = buildListScaffoldingSkip(spec.models, spec.services);
 
   const hashGroups = new Map<string, string[]>();
   for (const model of spec.models) {
-    if (model.fields.length === 0 && !(model as { discriminator?: unknown }).discriminator) {
-      // skipped by emit anyway when listmeta/wrapper, but we rely on emit-side filter.
-    }
+    if (skipScaffolding(model)) continue;
     const hash = recursiveHashes.get(model.name) ?? '';
     if (!hashGroups.has(hash)) hashGroups.set(hash, []);
     hashGroups.get(hash)!.push(model.name);

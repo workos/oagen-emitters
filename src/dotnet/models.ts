@@ -25,6 +25,7 @@ import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
+  collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 export { isListWrapperModel, isListMetadataModel };
@@ -85,6 +86,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // code references them by name and the pagination iterator doesn't unwrap them.
   const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
   const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+  // A metadata model referenced by a surviving non-paginated wrapper must be
+  // emitted — the wrapper's list_metadata property names it. `ListMetadata`
+  // itself is the exception: the SDK ships a hand-written WorkOS.ListMetadata
+  // (Services/_common/Entities) that generated references resolve against, so
+  // emitting the spec's model of the same name would duplicate the type.
+  const listMetadataNeeded = collectReferencedListMetadataModels(models, nonPaginatedRefs);
+  const skipAsListMetadata = (m: Model): boolean =>
+    isListMetadataModel(m) && (!listMetadataNeeded.has(m.name) || modelClassName(m.name) === 'ListMetadata');
 
   // Build a lookup of base model field C# names → C# types for inheritance.
   // Variant models skip inherited fields and use `new` for type-divergent ones.
@@ -108,7 +117,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   }
 
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (requestBodyOnlyNames.has(model.name)) continue;
 
     const csClassName = modelClassName(model.name);
