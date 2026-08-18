@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.4](https://github.com/workos/oagen-emitters/compare/v0.24.3...v0.24.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dotnet:** qualify delete helper calls with base. when captured ([#222](https://github.com/workos/oagen-emitters/issues/222)) ([4c46bf0](https://github.com/workos/oagen-emitters/commit/4c46bf0e3cc7c29df98c3e37fba07d787cadae8b))
+
 ## [0.24.3](https://github.com/workos/oagen-emitters/compare/v0.24.2...v0.24.3) (2026-08-18)
 
 
