@@ -840,7 +840,7 @@ function generateMethod(
     // options argument only by this method itself (no other DeleteAsync can
     // take this options class, and string parameters don't accept it).
     const captured = optionsClass
-      ? method === 'DeleteAsync' && op.pathParams.length + 1 === 2
+      ? method === 'DeleteAsync' && leadingParamCount(op, plan, ctx, resolvedOp) === 2
       : hasCapturingDeleteAsync;
     const receiver = captured ? 'base' : 'this';
     lines.push(

@@ -156,6 +156,72 @@ describe('dotnet/resources', () => {
     expect(widgets).not.toContain('await base.DeleteAsync(');
   });
 
+  it('counts a bearer-override parameter when detecting DeleteAsync capture', () => {
+    const models: Model[] = [
+      {
+        name: 'RevokeSessionRequest',
+        fields: [{ name: 'session_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Sessions',
+        operations: [
+          {
+            // Bearer override + typed options and no path params: emits
+            // DeleteAsync(string accessToken, SessionsDeleteOptions options, ...) —
+            // two leading params, so it captures the sibling's 4-argument call.
+            // Its own body uses the inlined WorkOSRequest form (bearer overrides
+            // never reach the helper one-liner).
+            name: 'delete',
+            httpMethod: 'delete' as const,
+            path: '/sessions',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'RevokeSessionRequest' } as const,
+            response: { kind: 'primitive', type: 'unknown' } as const,
+            errors: [],
+            injectIdempotencyKey: false,
+            security: [{ schemeName: 'access_token', scopes: [] }],
+          },
+          {
+            name: 'deleteToken',
+            httpMethod: 'delete' as const,
+            path: '/sessions/tokens/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' } as const,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const sessions = files.find((f) => f.path.includes('SessionsService.cs'))!.content;
+
+    // The bearer-override delete keeps the inlined request form — no helper
+    // call it could recurse into.
+    expect(sessions).toContain('AccessToken = accessToken,');
+    expect(sessions).not.toContain('this.DeleteAsync("/sessions"');
+    expect(sessions).not.toContain('base.DeleteAsync("/sessions"');
+    // The sibling's null-argument call is captured by the two-leading-parameter
+    // DeleteAsync signature and must be qualified with base.
+    expect(sessions).toContain(
+      'await base.DeleteAsync($"/sessions/tokens/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+  });
+
   it('generates options classes for operations with params', () => {
     const models: Model[] = [
       {
