@@ -92,6 +92,228 @@ describe('dotnet/resources', () => {
     expect(content).toContain('DeleteAsync');
   });
 
+  it('qualifies delete helper calls with base. when a generated DeleteAsync would capture them', () => {
+    const stringParam = (name: string) => ({
+      name,
+      type: { kind: 'primitive', type: 'string' } as const,
+      required: true,
+    });
+    const deleteOp = (name: string, path: string, pathParams: string[]) => ({
+      name,
+      httpMethod: 'delete' as const,
+      path,
+      pathParams: pathParams.map(stringParam),
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'unknown' } as const,
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+
+    const services: Service[] = [
+      {
+        // Bare `delete` op with two path params emits DeleteAsync(string, string, ...),
+        // which hides Service.DeleteAsync from the 4-argument helper calls.
+        name: 'ItContacts',
+        operations: [
+          deleteOp('delete', '/organizations/{organization_id}/it_contacts/{contact_id}', [
+            'organization_id',
+            'contact_id',
+          ]),
+          // Sibling delete in the same class is captured too and must also use base.
+          deleteOp('deleteInvitation', '/organizations/{organization_id}/it_contacts/{contact_id}/invitation', [
+            'organization_id',
+            'contact_id',
+          ]),
+        ],
+      },
+      {
+        // One leading param: DeleteAsync(string, RequestOptions?, CT) cannot take the
+        // 4-argument call, so `this.` still reaches the helper — and `base.` here
+        // would trip StyleCop SA1100.
+        name: 'Widgets',
+        operations: [deleteOp('delete', '/widgets/{id}', ['id'])],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const itContacts = files.find((f) => f.path.includes('ItContactsService.cs'))!.content;
+    const widgets = files.find((f) => f.path.includes('WidgetsService.cs'))!.content;
+
+    expect(itContacts).toContain(
+      'await base.DeleteAsync($"/organizations/{Uri.EscapeDataString(organizationId)}/it_contacts/{Uri.EscapeDataString(contactId)}", null, requestOptions, cancellationToken);',
+    );
+    expect(itContacts).not.toContain('await this.DeleteAsync(');
+    expect(widgets).toContain(
+      'await this.DeleteAsync($"/widgets/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+    expect(widgets).not.toContain('await base.DeleteAsync(');
+  });
+
+  it('counts a bearer-override parameter when detecting DeleteAsync capture', () => {
+    const models: Model[] = [
+      {
+        name: 'RevokeSessionRequest',
+        fields: [{ name: 'session_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'Sessions',
+        operations: [
+          {
+            // Bearer override + typed options and no path params: emits
+            // DeleteAsync(string accessToken, SessionsDeleteOptions options, ...) —
+            // two leading params, so it captures the sibling's 4-argument call.
+            // Its own body uses the inlined WorkOSRequest form (bearer overrides
+            // never reach the helper one-liner).
+            name: 'delete',
+            httpMethod: 'delete' as const,
+            path: '/sessions',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'RevokeSessionRequest' } as const,
+            response: { kind: 'primitive', type: 'unknown' } as const,
+            errors: [],
+            injectIdempotencyKey: false,
+            security: [{ schemeName: 'access_token', scopes: [] }],
+          },
+          {
+            name: 'deleteToken',
+            httpMethod: 'delete' as const,
+            path: '/sessions/tokens/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' } as const,
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const sessions = files.find((f) => f.path.includes('SessionsService.cs'))!.content;
+
+    // The bearer-override delete keeps the inlined request form — no helper
+    // call it could recurse into.
+    expect(sessions).toContain('AccessToken = accessToken,');
+    expect(sessions).not.toContain('this.DeleteAsync("/sessions"');
+    expect(sessions).not.toContain('base.DeleteAsync("/sessions"');
+    // The sibling's null-argument call is captured by the two-leading-parameter
+    // DeleteAsync signature and must be qualified with base.
+    expect(sessions).toContain(
+      'await base.DeleteAsync($"/sessions/tokens/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+  });
+
+  it('mirrors emission-loop name reservation for union-split wrappers named DeleteAsync', () => {
+    const deleteOp = (name: string, path: string, pathParams: string[]) => ({
+      name,
+      httpMethod: 'delete' as const,
+      path,
+      pathParams: pathParams.map((p) => ({
+        name: p,
+        type: { kind: 'primitive', type: 'string' } as const,
+        required: true,
+      })),
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'unknown' } as const,
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    const deleteWrapper = {
+      name: 'delete',
+      targetVariant: 'RevokeRequest',
+      defaults: {},
+      inferFromClient: [],
+      exposedParams: [],
+    };
+
+    const services: Service[] = [
+      {
+        // The `delete` wrapper claims the DeleteAsync name and emits
+        // DeleteAsync(TokensDeleteOptions, ...) — one leading parameter, so it
+        // captures nothing. The suppressed two-path-param op must NOT be
+        // treated as capturing: `base.` in the sibling would trip SA1100.
+        name: 'Tokens',
+        operations: [
+          deleteOp('revokeAll', '/tokens', []),
+          deleteOp('delete', '/tokens/{group_id}/{token_id}', ['group_id', 'token_id']),
+          deleteOp('deleteThing', '/tokens/things/{id}', ['id']),
+        ],
+      },
+      {
+        // Here the union-split op has one path param, so the `delete` wrapper
+        // emits DeleteAsync(string, GrantsDeleteOptions, ...) — two leading
+        // parameters. It captures the sibling's null-argument call AND its own
+        // helper call, so both must be qualified with base.
+        name: 'Grants',
+        operations: [
+          deleteOp('revokeAll', '/grants/{id}/revoke', ['id']),
+          deleteOp('deleteThing', '/grants/things/{id}', ['id']),
+        ],
+      },
+    ];
+
+    // Resolve every op (real runs do — generateResources groups by the
+    // resolved set when one is present); the `revokeAll` ops are union-split.
+    const resolvedOperations = services.flatMap((service) =>
+      service.operations.map((operation) => ({
+        service,
+        operation,
+        methodName: operation.name,
+        mountOn: service.name,
+        ...(operation.name === 'revokeAll' ? { wrappers: [deleteWrapper] } : {}),
+      })),
+    ) as never[];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models: [] },
+      resolvedOperations: resolvedOperations as never,
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const tokens = files.find((f) => f.path.includes('TokensService.cs'))!.content;
+    const grants = files.find((f) => f.path.includes('GrantsService.cs'))!.content;
+
+    // Tokens: wrapper DeleteAsync exists but does not capture; the suppressed
+    // raw op leaves no two-string-param overload behind.
+    expect(tokens).toContain('public async Task DeleteAsync(DeleteOptions options');
+    expect(tokens).not.toContain('DeleteAsync(string groupId');
+    expect(tokens).not.toContain('await base.DeleteAsync(');
+    expect(tokens).toContain(
+      'await this.DeleteAsync($"/tokens/things/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+
+    // Grants: the capturing wrapper qualifies its own call and the sibling's.
+    expect(grants).toContain(
+      'await base.DeleteAsync($"/grants/{Uri.EscapeDataString(id)}/revoke", options, requestOptions, cancellationToken);',
+    );
+    expect(grants).toContain(
+      'await base.DeleteAsync($"/grants/things/{Uri.EscapeDataString(id)}", null, requestOptions, cancellationToken);',
+    );
+    expect(grants).not.toContain('await this.DeleteAsync(');
+  });
+
   it('generates options classes for operations with params', () => {
     const models: Model[] = [
       {

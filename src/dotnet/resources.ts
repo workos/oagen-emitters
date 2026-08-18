@@ -302,12 +302,80 @@ function groupsNeedJsonConvert(operations: Operation[], models: Model[]): boolea
   return false;
 }
 
+/**
+ * Number of leading value parameters (path params, bearer token, options) the
+ * generated signature for `op` carries before the trailing
+ * `RequestOptions?`/`CancellationToken` pair. Mirrors the signature
+ * construction in generateMethod.
+ */
+function leadingParamCount(
+  op: Operation,
+  plan: OperationPlan,
+  ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
+): number {
+  const hidden = buildHiddenParams(resolvedOp);
+  const groupedParams = collectGroupedParamNames(op);
+  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
+  const hasVisibleQueryParams =
+    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
+  const hasBody = plan.hasBody && op.requestBody;
+  let hasVisibleBodyFields = false;
+  if (hasBody && op.requestBody?.kind === 'model') {
+    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
+  } else if (hasBody) {
+    hasVisibleBodyFields = true;
+  }
+  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
+  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  return op.pathParams.length + (hasBearerOverride ? 1 : 0) + (hasParams ? 1 : 0);
+}
+
 function generateServiceFile(mountName: string, operations: Operation[], ctx: EmitterContext): GeneratedFile | null {
   const lines: string[] = [];
   const svcTypeName = serviceTypeName(mountName);
   const csFile = `Services/${className(mountName)}/${svcTypeName}.cs`;
 
   const resolvedLookup = buildResolvedLookup(ctx);
+
+  // A generated method named DeleteAsync with exactly two leading parameters
+  // (e.g. two path params) hides Service.DeleteAsync from the 4-argument
+  // helper calls the isDelete branch emits: C# discards base-class overloads
+  // once any derived candidate is applicable, so `this.DeleteAsync(path,
+  // null, requestOptions, ct)` binds to the API method itself — CS8625 on the
+  // null literal, or silent recursion. Those call sites must say `base.`, and
+  // only those: StyleCop SA1100 (warnings-as-errors in workos-dotnet) rejects
+  // `base.` wherever `this.` already resolves to the same helper.
+  // The scan mirrors the emission loop's name reservation below: a
+  // union-split operation claims its raw method name without emitting it
+  // (suppressing any later operation that resolves to the same name) and
+  // emits typed wrappers instead, whose signatures are path params plus a
+  // required options parameter (see emitWrapperMethod).
+  let hasCapturingDeleteAsync = false;
+  {
+    const seen = new Set<string>();
+    for (const op of operations) {
+      const method = resolveCsMethodName(op, mountName, ctx);
+      if (seen.has(method)) continue;
+      seen.add(method);
+      const resolvedOp = lookupResolved(op, resolvedLookup);
+      const wrappers = resolvedOp?.wrappers ?? [];
+      if (wrappers.length === 0) {
+        if (method === 'DeleteAsync' && leadingParamCount(op, planOperation(op), ctx, resolvedOp) === 2) {
+          hasCapturingDeleteAsync = true;
+        }
+        continue;
+      }
+      for (const w of wrappers) {
+        const wrapperMethod = appendAsyncSuffix(methodName(w.name));
+        seen.add(wrapperMethod);
+        if (wrapperMethod === 'DeleteAsync' && op.pathParams.length + 1 === 2) {
+          hasCapturingDeleteAsync = true;
+        }
+      }
+    }
+  }
 
   lines.push(`namespace ${ctx.namespacePascal}`);
   lines.push('{');
@@ -357,7 +425,17 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     // get a 422 from the API. Only emit the typed AuthenticateWith* wrappers.
     if (!isUnionSplit) {
       lines.push('');
-      const methodCode = generateMethod(svcTypeName, mountName, method, methodStem, op, plan, ctx, resolvedOp);
+      const methodCode = generateMethod(
+        svcTypeName,
+        mountName,
+        method,
+        methodStem,
+        op,
+        plan,
+        ctx,
+        resolvedOp,
+        hasCapturingDeleteAsync,
+      );
       lines.push(methodCode);
 
       if (!(resolvedOp?.urlBuilder ?? false) && method !== methodStem) {
@@ -599,6 +677,7 @@ function generateMethod(
   plan: OperationPlan,
   ctx: EmitterContext,
   resolvedOp?: ResolvedOperation,
+  hasCapturingDeleteAsync = false,
 ): string {
   const lines: string[] = [];
   const isPaginated = plan.isPaginated;
@@ -771,7 +850,17 @@ function generateMethod(
       lines.push('            await this.Client.MakeRawAPIRequest(request, cancellationToken);');
     }
   } else if (isDelete) {
-    lines.push(`            await this.DeleteAsync(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`);
+    // See hasCapturingDeleteAsync in generateServiceFile. A null argument is
+    // captured by any two-leading-parameter DeleteAsync in the class; a typed
+    // options argument only by this method itself (no other DeleteAsync can
+    // take this options class, and string parameters don't accept it).
+    const captured = optionsClass
+      ? method === 'DeleteAsync' && leadingParamCount(op, plan, ctx, resolvedOp) === 2
+      : hasCapturingDeleteAsync;
+    const receiver = captured ? 'base' : 'this';
+    lines.push(
+      `            await ${receiver}.DeleteAsync(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
+    );
   } else if (returnType.startsWith('Task<')) {
     const innerType = returnType.slice(5, -1);
     const helper = httpMethodHelperName(op.httpMethod);
