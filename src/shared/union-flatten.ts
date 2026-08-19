@@ -1,5 +1,11 @@
 import type { Model, Field, TypeRef, UnionType } from '@workos/oagen';
 
+/** Options for {@link flattenDiscriminatedUnionFields}. */
+export interface FlattenOptions {
+  /** Return true to leave a union un-flattened (the caller emits it itself). */
+  skipUnion?: (union: UnionType) => boolean;
+}
+
 /**
  * Flatten field-level discriminated unions into a single superset model for
  * the flat-emit languages (Go, Kotlin, Node) that have no native sum type.
@@ -26,8 +32,14 @@ import type { Model, Field, TypeRef, UnionType } from '@workos/oagen';
  * Returns a new models array; the input models are not mutated. Union-emitting
  * languages (Python, PHP, Rust, Ruby, .NET) must NOT call this — they emit a
  * real discriminated union and lose nothing.
+ *
+ * `options.skipUnion` opts individual unions out of the flatten so the caller
+ * can emit a real union for them instead. Go uses this for the unions it emits
+ * as sealed wrappers; those keep their `union` TypeRef so the wrapper emitter
+ * can still see the variants. Callers that pass nothing get the flatten for
+ * every discriminated union, unchanged.
  */
-export function flattenDiscriminatedUnionFields(models: Model[]): Model[] {
+export function flattenDiscriminatedUnionFields(models: Model[], options: FlattenOptions = {}): Model[] {
   const byName = new Map(models.map((m) => [m.name, m]));
   // Canonical (first-variant) model name → its merged superset field list.
   const mergedFieldsByCanonical = new Map<string, Field[]>();
@@ -39,6 +51,8 @@ export function flattenDiscriminatedUnionFields(models: Model[]): Model[] {
    */
   function planUnion(union: UnionType): string | null {
     if (!union.discriminator) return null;
+    // The caller emits this one as a real union; leave the TypeRef intact.
+    if (options.skipUnion?.(union)) return null;
 
     const variantNames = union.variants.map((v) => (v.kind === 'model' ? v.name : null));
     // Require that *every* variant is a model ref (the inline-object oneOf
