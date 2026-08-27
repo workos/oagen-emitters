@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.5](https://github.com/workos/oagen-emitters/compare/v0.24.4...v0.24.5) (2026-08-27)
+
+
+### Bug Fixes
+
+* **shared:** drop stale aggregate blocks for in-scope models ([#225](https://github.com/workos/oagen-emitters/issues/225)) ([44962f6](https://github.com/workos/oagen-emitters/commit/44962f6a1a0a6d84d28ce5ada9ab28e42dc0d038))
+
 ## [0.24.4](https://github.com/workos/oagen-emitters/compare/v0.24.3...v0.24.4) (2026-08-18)
 
 
