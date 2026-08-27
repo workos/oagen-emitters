@@ -1572,6 +1572,14 @@ function buildDirRoundTripFile(
   // out-of-scope models to their prior on-disk text (see reconciliation below).
   const roundTripBlocks: AggregateBlock[] = [];
   const discriminatorBlocks: AggregateBlock[] = [];
+  // Keys of every in-scope model this dir CONSIDERED, whether or not it goes on
+  // to produce a block below. A scoped run drops the prior block of an in-scope
+  // model that produced none — its per-model `.py` WAS regenerated, so the
+  // frozen block asserts a shape the fresh model can't produce (see
+  // reconcileScopedBlocks) — instead of carrying the stale text over. Shared by
+  // both aggregates so a model that gains or loses a discriminator (moving
+  // between the two) doesn't strand its block in the class it left.
+  const inScopeKeys = new Set(dirModels.filter((m) => isModelInScope(m.name, ctx)).map((m) => fileName(m.name)));
 
   {
     for (const model of roundTripModels) {
@@ -1743,8 +1751,8 @@ function buildDirRoundTripFile(
       return null;
     }
   }
-  const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped);
-  const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped);
+  const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped, inScopeKeys);
+  const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped, inScopeKeys);
   if (roundTripMethods.length === 0 && discriminatorMethods.length === 0) return null;
 
   const body: string[] = [];

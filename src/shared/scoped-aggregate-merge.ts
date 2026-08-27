@@ -25,7 +25,11 @@ import { resolve } from 'node:path';
  *   - out-of-scope, brand-new      → dropped (its per-model file isn't emitted
  *                                    this run, so a block referencing it would
  *                                    dangle).
- * Prior blocks the new spec no longer produces are carried over verbatim.
+ * Prior blocks the new spec no longer produces are carried over verbatim —
+ * EXCEPT for keys the caller reports as in scope (see `inScopeKeys`), which are
+ * dropped instead: an in-scope model that produced no block was disqualified on
+ * purpose, and its per-model file WAS regenerated, so the prior block asserts a
+ * shape the fresh model no longer has.
  *
  * A full (non-scoped) run skips reconciliation and emits every fresh block.
  */
@@ -71,11 +75,20 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
  *                    to in-scope ∪ on-disk models.
  * @param priorBlocks Blocks parsed from the prior on-disk file (parser-specific).
  * @param scoped      Whether a scoped (`--services`) run is active.
+ * @param inScopeKeys Every key the caller CONSIDERED whose owning model is in
+ *                    scope this run, whether or not it produced a block. A key
+ *                    in this set that produced no block was disqualified on
+ *                    purpose (e.g. the model gained an optional field and no
+ *                    longer satisfies the round-trip fixture gate), so its prior
+ *                    block is dropped rather than carried over — the freshly
+ *                    regenerated model would fail the stale assertion. Omit to
+ *                    keep the pre-existing carry-over-everything behavior.
  */
 export function reconcileScopedBlocks(
   newBlocks: AggregateBlock[],
   priorBlocks: AggregateBlock[],
   scoped: boolean,
+  inScopeKeys?: ReadonlySet<string>,
 ): string[] {
   // Full run: emit everything the new spec produced, unchanged.
   if (!scoped) return newBlocks.map((b) => b.text);
@@ -102,11 +115,19 @@ export function reconcileScopedBlocks(
 
   // Carry over prior blocks the new spec no longer produces at all (renamed /
   // removed models whose per-model file this run left untouched on disk).
+  //
+  // An in-scope key is NOT carried over: its per-model file WAS regenerated, so
+  // "no fresh block" means the generator disqualified it deliberately and the
+  // prior block now asserts a shape the new model can't produce. Carrying it
+  // over resurrected the stale block at the end of the file and broke the build
+  // (e.g. a model that gained an optional field: the frozen fixture omits it,
+  // the regenerated model serializes it as null, and the round-trip assertion
+  // fails).
   for (const block of priorBlocks) {
-    if (!emitted.has(block.key)) {
-      out.push(block.text);
-      emitted.add(block.key);
-    }
+    if (emitted.has(block.key)) continue;
+    if (inScopeKeys?.has(block.key)) continue;
+    out.push(block.text);
+    emitted.add(block.key);
   }
 
   return out;

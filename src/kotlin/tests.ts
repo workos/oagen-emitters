@@ -1070,7 +1070,14 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   // primitives-only filter.
   const targets: { model: Model; json: string }[] = [];
   const seenModelClassNames = new Set<string>();
+  // Every in-scope class name this loop considered, whether or not it survived
+  // the gates below. A scoped run uses it to DROP the prior block of an in-scope
+  // model that no longer qualifies (its `.kt` was regenerated, so the stale
+  // fixture would assert a shape the fresh data class can't produce) instead of
+  // carrying it over. See reconcileScopedBlocks.
+  const inScopeKeys = new Set<string>();
   for (const m of spec.models) {
+    if (isModelInScope(m.name, ctx)) inScopeKeys.add(className(m.name));
     if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
     if (m.fields.length === 0) continue;
     // AGGREGATE gate: this whole-suite test references `${cls}::class.java`. In a
@@ -1119,7 +1126,7 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
       return null;
     }
   }
-  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped, inScopeKeys);
   if (methods.length === 0) return null;
 
   const lines: string[] = [

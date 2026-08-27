@@ -321,6 +321,12 @@ function buildDirRoundTripFile(
 
   const newBlocks: AggregateBlock[] = [];
   const emitted = new Set<string>();
+  // Keys of every in-scope model this dir CONSIDERED, whether or not it goes on
+  // to produce a block. A scoped run drops the prior block of an in-scope model
+  // that produced none rather than carrying stale text over — its `.rb` WAS
+  // regenerated, so the frozen fixture asserts a shape the fresh model can't
+  // produce (see reconcileScopedBlocks).
+  const inScopeKeys = new Set(dirModels.filter((m) => isModelInScope(m.name, ctx)).map((m) => fileName(m.name)));
   for (const model of dirModels) {
     // Avoid duplicate test names when two IR model names collapse to the same
     // snake_case file name (we use the file name as the test suffix).
@@ -408,7 +414,7 @@ function buildDirRoundTripFile(
       return null;
     }
   }
-  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped, inScopeKeys);
   if (methods.length === 0) return null;
 
   const lines: string[] = [];

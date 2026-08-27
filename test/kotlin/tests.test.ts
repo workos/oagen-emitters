@@ -251,6 +251,81 @@ describe('kotlin/tests', () => {
     rmSync(outputDir, { recursive: true, force: true });
   });
 
+  it('scoped run: drops an in-scope model block when the model stops qualifying for a fixture', () => {
+    // Regression (workos-kotlin CI): Organization is IN SCOPE and the current
+    // spec gives it an OPTIONAL field, so the all-fields-required fixture gate
+    // disqualifies it and no fresh block is produced. Its `.kt` IS regenerated
+    // though (now carrying `val provider: String? = null`), so carrying the
+    // prior block over resurrected a fixture that omits the field while Jackson
+    // serializes it as null — `assertEquals(tree1, tree2)` then fails and the
+    // SDK build breaks. The stale in-scope block must be DROPPED; Directory
+    // (out of scope, untouched on disk) must still be carried over.
+    const outputDir = mkdtempSync(join(tmpdir(), 'oagen-rt-'));
+    const rtPath = join(outputDir, 'src/test/kotlin/com/workos/models/GeneratedModelRoundTripTest.kt');
+    mkdirSync(dirname(rtPath), { recursive: true });
+    const method = (cls: string) =>
+      [
+        '  @Test',
+        `  fun \`${cls} round-trips through Jackson\`() {`,
+        '    val json = "{\\"id\\": \\"sample\\", \\"name\\": \\"sample\\"}"',
+        `    val parsed = mapper.readValue(json, ${cls}::class.java)`,
+        '    val reserialized = mapper.writeValueAsString(parsed)',
+        '    val tree1 = mapper.readTree(json)',
+        '    val tree2 = mapper.readTree(reserialized)',
+        '    assertEquals(tree1, tree2)',
+        '  }',
+      ].join('\n');
+    writeFileSync(
+      rtPath,
+      [
+        'package com.workos.models',
+        '',
+        'import com.workos.common.json.ObjectMapperFactory',
+        'import org.junit.jupiter.api.Assertions.assertEquals',
+        'import org.junit.jupiter.api.Test',
+        '',
+        'class GeneratedModelRoundTripTest {',
+        '  private val mapper = ObjectMapperFactory.create()',
+        '',
+        method('Organization'),
+        '',
+        method('Directory'),
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const disqualified: Model = {
+      name: 'Organization',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+        // Newly added and OPTIONAL → the model no longer round-trips from a
+        // required-fields-only fixture.
+        { name: 'provider', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+    };
+    const scopedSpec: ApiSpec = { ...spec, models: [disqualified, roundTripModel('Directory')] };
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      spec: scopedSpec,
+      outputDir,
+      resolvedOperations: buildResolvedOps(services),
+      scopedServices: new Set(['Organizations']),
+      scopedModelNames: new Set(['Organization']),
+      priorTargetManifestPaths: new Set(['src/main/kotlin/com/workos/models/Directory.kt']),
+    };
+
+    const roundTrip = generateTests(scopedSpec, scopedCtx).find((f) =>
+      f.path.endsWith('GeneratedModelRoundTripTest.kt'),
+    )!;
+    expect(roundTrip).toBeDefined();
+    expect(roundTrip.content).not.toContain('Organization round-trips through Jackson');
+    expect(roundTrip.content).toContain('Directory round-trips through Jackson');
+
+    rmSync(outputDir, { recursive: true, force: true });
+  });
+
   it('scoped run: does NOT emit the round-trip test when the prior file exists but is unreadable', () => {
     // Guard against silent data loss: if the prior aggregate can't be read, we
     // must not overwrite it with only fresh in-scope blocks (which would drop

@@ -43,4 +43,31 @@ describe('reconcileScopedBlocks', () => {
     );
     expect(out).toEqual(['A:fresh', 'B:prior', 'Z:prior']);
   });
+
+  it('scoped: drops the prior block of an IN-SCOPE model that no longer qualifies', () => {
+    // D is in scope and its per-model file WAS regenerated, but the generator
+    // disqualified it this run (e.g. it gained an optional field, so its
+    // all-fields-required round-trip fixture no longer holds). Carrying the
+    // prior block over resurrects a fixture the fresh model can't satisfy and
+    // breaks the SDK build — drop it instead.
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A'), prior('D')], true, new Set(['A', 'D']));
+    expect(out).toEqual(['A:fresh']);
+  });
+
+  it('scoped: still carries over a prior block whose model is out of scope', () => {
+    // Same shape as above, but D is NOT in scope: its file was left untouched on
+    // disk, so its coverage must survive the scoped run.
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A'), prior('D')], true, new Set(['A']));
+    expect(out).toEqual(['A:fresh', 'D:prior']);
+  });
+
+  it('scoped: an in-scope key that DID produce a block is unaffected by the drop rule', () => {
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A')], true, new Set(['A']));
+    expect(out).toEqual(['A:fresh']);
+  });
+
+  it('full run ignores inScopeKeys (no prior is consulted at all)', () => {
+    const out = reconcileScopedBlocks([fresh('A', false)], [prior('A'), prior('D')], false, new Set(['A', 'D']));
+    expect(out).toEqual(['A:fresh']);
+  });
 });
