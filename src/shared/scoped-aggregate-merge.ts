@@ -67,6 +67,29 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
 }
 
 /**
+ * Build the `inScopeKeys` set for {@link reconcileScopedBlocks} from every
+ * (key, inScope) pair the caller considered.
+ *
+ * Block keys are NORMALIZED names (a generated class or file name), and two
+ * distinct IR model names can collapse to the same one. A key is reported as in
+ * scope only when EVERY model that maps to it is in scope: a single
+ * out-of-scope owner vetoes it, so its prior block is carried over rather than
+ * dropped. The veto is deliberately conservative — the worst case is keeping a
+ * block the reconciler could have refreshed, whereas the reverse would silently
+ * delete coverage for a model this run never touched.
+ */
+export function exclusivelyInScopeKeys(owners: Iterable<{ key: string; inScope: boolean }>): Set<string> {
+  const inScope = new Set<string>();
+  const vetoed = new Set<string>();
+  for (const { key, inScope: owned } of owners) {
+    if (owned) inScope.add(key);
+    else vetoed.add(key);
+  }
+  for (const key of vetoed) inScope.delete(key);
+  return inScope;
+}
+
+/**
  * Reconcile freshly generated per-model blocks against the prior on-disk blocks.
  * Returns the ordered block texts to emit (new-spec order, then carry-overs).
  *
@@ -75,12 +98,13 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
  *                    to in-scope ∪ on-disk models.
  * @param priorBlocks Blocks parsed from the prior on-disk file (parser-specific).
  * @param scoped      Whether a scoped (`--services`) run is active.
- * @param inScopeKeys Every key the caller CONSIDERED whose owning model is in
- *                    scope this run, whether or not it produced a block. A key
- *                    in this set that produced no block was disqualified on
- *                    purpose (e.g. the model gained an optional field and no
- *                    longer satisfies the round-trip fixture gate), so its prior
- *                    block is dropped rather than carried over — the freshly
+ * @param inScopeKeys Keys the caller CONSIDERED that are owned EXCLUSIVELY by
+ *                    in-scope models, whether or not they produced a block —
+ *                    build it with {@link exclusivelyInScopeKeys}. A key in this
+ *                    set that produced no block was disqualified on purpose
+ *                    (e.g. the model gained an optional field and no longer
+ *                    satisfies the round-trip fixture gate), so its prior block
+ *                    is dropped rather than carried over — the freshly
  *                    regenerated model would fail the stale assertion. Omit to
  *                    keep the pre-existing carry-over-everything behavior.
  */

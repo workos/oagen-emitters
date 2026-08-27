@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileScopedBlocks, type AggregateBlock } from '../../src/shared/scoped-aggregate-merge.js';
+import {
+  exclusivelyInScopeKeys,
+  reconcileScopedBlocks,
+  type AggregateBlock,
+} from '../../src/shared/scoped-aggregate-merge.js';
 
 const fresh = (key: string, inScope: boolean): AggregateBlock => ({ key, text: `${key}:fresh`, inScope });
 const prior = (key: string): AggregateBlock => ({ key, text: `${key}:prior` });
@@ -69,5 +73,38 @@ describe('reconcileScopedBlocks', () => {
   it('full run ignores inScopeKeys (no prior is consulted at all)', () => {
     const out = reconcileScopedBlocks([fresh('A', false)], [prior('A'), prior('D')], false, new Set(['A', 'D']));
     expect(out).toEqual(['A:fresh']);
+  });
+});
+
+describe('exclusivelyInScopeKeys', () => {
+  it('keeps a key owned only by in-scope models', () => {
+    expect([...exclusivelyInScopeKeys([{ key: 'A', inScope: true }])]).toEqual(['A']);
+  });
+
+  it('omits a key owned only by out-of-scope models', () => {
+    expect([...exclusivelyInScopeKeys([{ key: 'A', inScope: false }])]).toEqual([]);
+  });
+
+  it('lets a single out-of-scope owner veto a colliding key', () => {
+    // Two distinct IR model names normalize onto one generated class/file name.
+    // Suppressing the carry-over here would delete the OUT-OF-SCOPE model's
+    // coverage even though this run never regenerated it — so the key is vetoed
+    // regardless of which owner is seen first.
+    const owners = [
+      { key: 'Shared', inScope: true },
+      { key: 'Shared', inScope: false },
+      { key: 'Solo', inScope: true },
+    ];
+    expect([...exclusivelyInScopeKeys(owners)].sort()).toEqual(['Solo']);
+    expect([...exclusivelyInScopeKeys([...owners].reverse())].sort()).toEqual(['Solo']);
+  });
+
+  it('a vetoed key still carries its prior block over', () => {
+    const keys = exclusivelyInScopeKeys([
+      { key: 'Shared', inScope: true },
+      { key: 'Shared', inScope: false },
+    ]);
+    const out = reconcileScopedBlocks([], [prior('Shared')], true, keys);
+    expect(out).toEqual(['Shared:prior']);
   });
 });

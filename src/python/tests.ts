@@ -35,7 +35,12 @@ import {
   fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
+import {
+  type AggregateBlock,
+  exclusivelyInScopeKeys,
+  readPriorFile,
+  reconcileScopedBlocks,
+} from '../shared/scoped-aggregate-merge.js';
 import { pythonLiteral } from './wrappers.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 
@@ -1572,14 +1577,18 @@ function buildDirRoundTripFile(
   // out-of-scope models to their prior on-disk text (see reconciliation below).
   const roundTripBlocks: AggregateBlock[] = [];
   const discriminatorBlocks: AggregateBlock[] = [];
-  // Keys of every in-scope model this dir CONSIDERED, whether or not it goes on
-  // to produce a block below. A scoped run drops the prior block of an in-scope
-  // model that produced none — its per-model `.py` WAS regenerated, so the
-  // frozen block asserts a shape the fresh model can't produce (see
-  // reconcileScopedBlocks) — instead of carrying the stale text over. Shared by
-  // both aggregates so a model that gains or loses a discriminator (moving
-  // between the two) doesn't strand its block in the class it left.
-  const inScopeKeys = new Set(dirModels.filter((m) => isModelInScope(m.name, ctx)).map((m) => fileName(m.name)));
+  // Scope of every key this dir CONSIDERED, whether or not it goes on to produce
+  // a block below. A scoped run drops the prior block of an in-scope model that
+  // produced none — its per-model `.py` WAS regenerated, so the frozen block
+  // asserts a shape the fresh model can't produce (see reconcileScopedBlocks) —
+  // instead of carrying the stale text over. `fileName` is normalized, so two IR
+  // names can share a key; exclusivelyInScopeKeys lets an out-of-scope owner veto
+  // the drop. Shared by both aggregates so a model that gains or loses a
+  // discriminator (moving between the two) doesn't strand its block in the class
+  // it left.
+  const inScopeKeys = exclusivelyInScopeKeys(
+    dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
+  );
 
   {
     for (const model of roundTripModels) {

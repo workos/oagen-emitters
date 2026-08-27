@@ -23,7 +23,12 @@ import {
   isScopedRun,
   fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
-import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
+import {
+  type AggregateBlock,
+  exclusivelyInScopeKeys,
+  readPriorFile,
+  reconcileScopedBlocks,
+} from '../shared/scoped-aggregate-merge.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { classifyUnassignedModel } from './models.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -321,12 +326,16 @@ function buildDirRoundTripFile(
 
   const newBlocks: AggregateBlock[] = [];
   const emitted = new Set<string>();
-  // Keys of every in-scope model this dir CONSIDERED, whether or not it goes on
-  // to produce a block. A scoped run drops the prior block of an in-scope model
-  // that produced none rather than carrying stale text over — its `.rb` WAS
+  // Scope of every key this dir CONSIDERED, whether or not it goes on to produce
+  // a block. A scoped run drops the prior block of an in-scope model that
+  // produced none rather than carrying stale text over — its `.rb` WAS
   // regenerated, so the frozen fixture asserts a shape the fresh model can't
-  // produce (see reconcileScopedBlocks).
-  const inScopeKeys = new Set(dirModels.filter((m) => isModelInScope(m.name, ctx)).map((m) => fileName(m.name)));
+  // produce (see reconcileScopedBlocks). `fileName` is normalized and two IR
+  // names can collapse onto one (the dedup below), so exclusivelyInScopeKeys lets
+  // an out-of-scope owner veto the drop.
+  const inScopeKeys = exclusivelyInScopeKeys(
+    dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
+  );
   for (const model of dirModels) {
     // Avoid duplicate test names when two IR model names collapse to the same
     // snake_case file name (we use the file name as the test suffix).
