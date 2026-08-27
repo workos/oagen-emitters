@@ -35,7 +35,12 @@ import {
   fileExistsAfterRun,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
+import {
+  type AggregateBlock,
+  keysWithInScopeOwner,
+  readPriorFile,
+  reconcileScopedBlocks,
+} from '../shared/scoped-aggregate-merge.js';
 import { pythonLiteral } from './wrappers.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 
@@ -1572,6 +1577,20 @@ function buildDirRoundTripFile(
   // out-of-scope models to their prior on-disk text (see reconciliation below).
   const roundTripBlocks: AggregateBlock[] = [];
   const discriminatorBlocks: AggregateBlock[] = [];
+  // Scope of every key this dir CONSIDERED, whether or not it goes on to produce
+  // a block below. A scoped run drops the prior block of an in-scope model that
+  // produced none — its per-model `.py` WAS regenerated, so the frozen block
+  // asserts a shape the fresh model can't produce (see reconcileScopedBlocks) —
+  // instead of carrying the stale text over. `fileName` is normalized, so two IR
+  // names can share a key; it is also the `.py` and fixture path, so colliding
+  // models share ONE artifact and any in-scope owner regenerates it —
+  // keysWithInScopeOwner claims the key on that basis. Shared by both
+  // aggregates so a model that gains or loses a
+  // discriminator (moving between the two) doesn't strand its block in the class
+  // it left.
+  const inScopeKeys = keysWithInScopeOwner(
+    dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
+  );
 
   {
     for (const model of roundTripModels) {
@@ -1743,8 +1762,8 @@ function buildDirRoundTripFile(
       return null;
     }
   }
-  const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped);
-  const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped);
+  const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped, inScopeKeys);
+  const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped, inScopeKeys);
   if (roundTripMethods.length === 0 && discriminatorMethods.length === 0) return null;
 
   const body: string[] = [];

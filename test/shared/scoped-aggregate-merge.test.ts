@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileScopedBlocks, type AggregateBlock } from '../../src/shared/scoped-aggregate-merge.js';
+import {
+  keysWithInScopeOwner,
+  reconcileScopedBlocks,
+  type AggregateBlock,
+} from '../../src/shared/scoped-aggregate-merge.js';
 
 const fresh = (key: string, inScope: boolean): AggregateBlock => ({ key, text: `${key}:fresh`, inScope });
 const prior = (key: string): AggregateBlock => ({ key, text: `${key}:prior` });
@@ -42,5 +46,78 @@ describe('reconcileScopedBlocks', () => {
       true,
     );
     expect(out).toEqual(['A:fresh', 'B:prior', 'Z:prior']);
+  });
+
+  it('scoped: drops the prior block of an IN-SCOPE model that no longer qualifies', () => {
+    // D is in scope and its per-model file WAS regenerated, but the generator
+    // disqualified it this run (e.g. it gained an optional field, so its
+    // all-fields-required round-trip fixture no longer holds). Carrying the
+    // prior block over resurrects a fixture the fresh model can't satisfy and
+    // breaks the SDK build — drop it instead.
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A'), prior('D')], true, new Set(['A', 'D']));
+    expect(out).toEqual(['A:fresh']);
+  });
+
+  it('scoped: still carries over a prior block whose model is out of scope', () => {
+    // Same shape as above, but D is NOT in scope: its file was left untouched on
+    // disk, so its coverage must survive the scoped run.
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A'), prior('D')], true, new Set(['A']));
+    expect(out).toEqual(['A:fresh', 'D:prior']);
+  });
+
+  it('scoped: an in-scope key that DID produce a block is unaffected by the drop rule', () => {
+    const out = reconcileScopedBlocks([fresh('A', true)], [prior('A')], true, new Set(['A']));
+    expect(out).toEqual(['A:fresh']);
+  });
+
+  it('full run ignores inScopeKeys (no prior is consulted at all)', () => {
+    const out = reconcileScopedBlocks([fresh('A', false)], [prior('A'), prior('D')], false, new Set(['A', 'D']));
+    expect(out).toEqual(['A:fresh']);
+  });
+});
+
+describe('keysWithInScopeOwner', () => {
+  it('keeps a key owned only by in-scope models', () => {
+    expect([...keysWithInScopeOwner([{ key: 'A', inScope: true }])]).toEqual(['A']);
+  });
+
+  it('omits a key owned only by out-of-scope models', () => {
+    expect([...keysWithInScopeOwner([{ key: 'A', inScope: false }])]).toEqual([]);
+  });
+
+  it('claims a colliding key when ANY owner is in scope, whatever the order', () => {
+    // Two distinct IR model names normalize onto one generated class/file name.
+    // They do not have separate artifacts — the key IS the file path, so they
+    // share ONE file and the in-scope owner regenerates it. An out-of-scope
+    // co-owner must therefore NOT veto the key: there is no untouched artifact
+    // whose coverage carrying the prior block would preserve.
+    const owners = [
+      { key: 'Shared', inScope: true },
+      { key: 'Shared', inScope: false },
+      { key: 'Solo', inScope: false },
+    ];
+    expect([...keysWithInScopeOwner(owners)].sort()).toEqual(['Shared']);
+    expect([...keysWithInScopeOwner([...owners].reverse())].sort()).toEqual(['Shared']);
+  });
+
+  it('a colliding key with an in-scope owner drops its stale prior block', () => {
+    // The regression this ordering protects: the shared artifact was rewritten
+    // from the in-scope owner, so its prior block asserts a shape that no longer
+    // exists and would fail the generated suite.
+    const keys = keysWithInScopeOwner([
+      { key: 'Shared', inScope: true },
+      { key: 'Shared', inScope: false },
+    ]);
+    const out = reconcileScopedBlocks([], [prior('Shared')], true, keys);
+    expect(out).toEqual([]);
+  });
+
+  it('a colliding key with no in-scope owner keeps its prior block', () => {
+    const keys = keysWithInScopeOwner([
+      { key: 'Shared', inScope: false },
+      { key: 'Shared', inScope: false },
+    ]);
+    const out = reconcileScopedBlocks([], [prior('Shared')], true, keys);
+    expect(out).toEqual(['Shared:prior']);
   });
 });

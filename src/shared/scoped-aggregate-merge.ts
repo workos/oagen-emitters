@@ -25,7 +25,11 @@ import { resolve } from 'node:path';
  *   - out-of-scope, brand-new      → dropped (its per-model file isn't emitted
  *                                    this run, so a block referencing it would
  *                                    dangle).
- * Prior blocks the new spec no longer produces are carried over verbatim.
+ * Prior blocks the new spec no longer produces are carried over verbatim —
+ * EXCEPT for keys the caller reports as in scope (see `inScopeKeys`), which are
+ * dropped instead: an in-scope model that produced no block was disqualified on
+ * purpose, and its per-model file WAS regenerated, so the prior block asserts a
+ * shape the fresh model no longer has.
  *
  * A full (non-scoped) run skips reconciliation and emits every fresh block.
  */
@@ -63,6 +67,32 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
 }
 
 /**
+ * Build the `inScopeKeys` set for {@link reconcileScopedBlocks} from every
+ * (key, inScope) pair the caller considered.
+ *
+ * Block keys are NORMALIZED names (a generated class or file name), and two
+ * distinct IR model names can collapse onto one — Kotlin and Ruby both carry an
+ * explicit dedup for exactly that. A key is in scope when ANY model mapping to
+ * it is in scope.
+ *
+ * "Any", not "every", because the key IS the generated artifact's identity: it
+ * is the same normalized name that forms the file path each emitter writes
+ * (`…/models/<className>.kt`, `lib/workos/<dir>/<fileName>.rb`,
+ * `…/models/<fileName>.py` plus its flat fixture). Colliding owners therefore
+ * do not have separate artifacts — they share ONE file, and a single in-scope
+ * owner regenerates it. There is no out-of-scope coverage to preserve in that
+ * case, only a prior block describing a shape the shared artifact no longer
+ * has, so the key must be treated as in scope and the stale block dropped.
+ */
+export function keysWithInScopeOwner(owners: Iterable<{ key: string; inScope: boolean }>): Set<string> {
+  const keys = new Set<string>();
+  for (const { key, inScope } of owners) {
+    if (inScope) keys.add(key);
+  }
+  return keys;
+}
+
+/**
  * Reconcile freshly generated per-model blocks against the prior on-disk blocks.
  * Returns the ordered block texts to emit (new-spec order, then carry-overs).
  *
@@ -71,11 +101,21 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
  *                    to in-scope ∪ on-disk models.
  * @param priorBlocks Blocks parsed from the prior on-disk file (parser-specific).
  * @param scoped      Whether a scoped (`--services`) run is active.
+ * @param inScopeKeys Keys the caller CONSIDERED that have at least one in-scope
+ *                    owner, whether or not they produced a block — build it with
+ *                    {@link keysWithInScopeOwner}. A key in this set that
+ *                    produced no block was disqualified on purpose
+ *                    (e.g. the model gained an optional field and no longer
+ *                    satisfies the round-trip fixture gate), so its prior block
+ *                    is dropped rather than carried over — the freshly
+ *                    regenerated model would fail the stale assertion. Omit to
+ *                    keep the pre-existing carry-over-everything behavior.
  */
 export function reconcileScopedBlocks(
   newBlocks: AggregateBlock[],
   priorBlocks: AggregateBlock[],
   scoped: boolean,
+  inScopeKeys?: ReadonlySet<string>,
 ): string[] {
   // Full run: emit everything the new spec produced, unchanged.
   if (!scoped) return newBlocks.map((b) => b.text);
@@ -102,11 +142,19 @@ export function reconcileScopedBlocks(
 
   // Carry over prior blocks the new spec no longer produces at all (renamed /
   // removed models whose per-model file this run left untouched on disk).
+  //
+  // An in-scope key is NOT carried over: its per-model file WAS regenerated, so
+  // "no fresh block" means the generator disqualified it deliberately and the
+  // prior block now asserts a shape the new model can't produce. Carrying it
+  // over resurrected the stale block at the end of the file and broke the build
+  // (e.g. a model that gained an optional field: the frozen fixture omits it,
+  // the regenerated model serializes it as null, and the round-trip assertion
+  // fails).
   for (const block of priorBlocks) {
-    if (!emitted.has(block.key)) {
-      out.push(block.text);
-      emitted.add(block.key);
-    }
+    if (emitted.has(block.key)) continue;
+    if (inScopeKeys?.has(block.key)) continue;
+    out.push(block.text);
+    emitted.add(block.key);
   }
 
   return out;

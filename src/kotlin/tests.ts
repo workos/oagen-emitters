@@ -33,7 +33,12 @@ import {
   isScopedRun,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
-import { type AggregateBlock, readPriorFile, reconcileScopedBlocks } from '../shared/scoped-aggregate-merge.js';
+import {
+  type AggregateBlock,
+  keysWithInScopeOwner,
+  readPriorFile,
+  reconcileScopedBlocks,
+} from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
 import { orderedVariantParameters } from './resources.js';
 import { resolveKotlinWrapperParams } from './wrappers.js';
@@ -1070,7 +1075,17 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   // primitives-only filter.
   const targets: { model: Model; json: string }[] = [];
   const seenModelClassNames = new Set<string>();
+  // Scope of every class name this loop considered, whether or not it survived
+  // the gates below. A scoped run uses it to DROP the prior block of an in-scope
+  // model that no longer qualifies (its `.kt` was regenerated, so the stale
+  // fixture would assert a shape the fresh data class can't produce) instead of
+  // carrying it over. Two IR names can collapse to one class name (see the
+  // `seenModelClassNames` dedup below); that class name is also the `.kt` path,
+  // so colliding models share ONE file and any in-scope owner regenerates it —
+  // keysWithInScopeOwner claims the key on that basis.
+  const keyOwners: { key: string; inScope: boolean }[] = [];
   for (const m of spec.models) {
+    keyOwners.push({ key: className(m.name), inScope: isModelInScope(m.name, ctx) });
     if (isListWrapperModel(m) || isListMetadataModel(m)) continue;
     if (m.fields.length === 0) continue;
     // AGGREGATE gate: this whole-suite test references `${cls}::class.java`. In a
@@ -1119,7 +1134,7 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
       return null;
     }
   }
-  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped);
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped, keysWithInScopeOwner(keyOwners));
   if (methods.length === 0) return null;
 
   const lines: string[] = [
