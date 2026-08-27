@@ -71,22 +71,25 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
  * (key, inScope) pair the caller considered.
  *
  * Block keys are NORMALIZED names (a generated class or file name), and two
- * distinct IR model names can collapse to the same one. A key is reported as in
- * scope only when EVERY model that maps to it is in scope: a single
- * out-of-scope owner vetoes it, so its prior block is carried over rather than
- * dropped. The veto is deliberately conservative — the worst case is keeping a
- * block the reconciler could have refreshed, whereas the reverse would silently
- * delete coverage for a model this run never touched.
+ * distinct IR model names can collapse onto one — Kotlin and Ruby both carry an
+ * explicit dedup for exactly that. A key is in scope when ANY model mapping to
+ * it is in scope.
+ *
+ * "Any", not "every", because the key IS the generated artifact's identity: it
+ * is the same normalized name that forms the file path each emitter writes
+ * (`…/models/<className>.kt`, `lib/workos/<dir>/<fileName>.rb`,
+ * `…/models/<fileName>.py` plus its flat fixture). Colliding owners therefore
+ * do not have separate artifacts — they share ONE file, and a single in-scope
+ * owner regenerates it. There is no out-of-scope coverage to preserve in that
+ * case, only a prior block describing a shape the shared artifact no longer
+ * has, so the key must be treated as in scope and the stale block dropped.
  */
-export function exclusivelyInScopeKeys(owners: Iterable<{ key: string; inScope: boolean }>): Set<string> {
-  const inScope = new Set<string>();
-  const vetoed = new Set<string>();
-  for (const { key, inScope: owned } of owners) {
-    if (owned) inScope.add(key);
-    else vetoed.add(key);
+export function keysWithInScopeOwner(owners: Iterable<{ key: string; inScope: boolean }>): Set<string> {
+  const keys = new Set<string>();
+  for (const { key, inScope } of owners) {
+    if (inScope) keys.add(key);
   }
-  for (const key of vetoed) inScope.delete(key);
-  return inScope;
+  return keys;
 }
 
 /**
@@ -98,10 +101,10 @@ export function exclusivelyInScopeKeys(owners: Iterable<{ key: string; inScope: 
  *                    to in-scope ∪ on-disk models.
  * @param priorBlocks Blocks parsed from the prior on-disk file (parser-specific).
  * @param scoped      Whether a scoped (`--services`) run is active.
- * @param inScopeKeys Keys the caller CONSIDERED that are owned EXCLUSIVELY by
- *                    in-scope models, whether or not they produced a block —
- *                    build it with {@link exclusivelyInScopeKeys}. A key in this
- *                    set that produced no block was disqualified on purpose
+ * @param inScopeKeys Keys the caller CONSIDERED that have at least one in-scope
+ *                    owner, whether or not they produced a block — build it with
+ *                    {@link keysWithInScopeOwner}. A key in this set that
+ *                    produced no block was disqualified on purpose
  *                    (e.g. the model gained an optional field and no longer
  *                    satisfies the round-trip fixture gate), so its prior block
  *                    is dropped rather than carried over — the freshly

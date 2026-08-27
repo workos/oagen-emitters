@@ -35,7 +35,7 @@ import {
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import {
   type AggregateBlock,
-  exclusivelyInScopeKeys,
+  keysWithInScopeOwner,
   readPriorFile,
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
@@ -1080,8 +1080,9 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
   // model that no longer qualifies (its `.kt` was regenerated, so the stale
   // fixture would assert a shape the fresh data class can't produce) instead of
   // carrying it over. Two IR names can collapse to one class name (see the
-  // `seenModelClassNames` dedup below), so ownership is resolved by
-  // exclusivelyInScopeKeys — an out-of-scope owner vetoes the drop.
+  // `seenModelClassNames` dedup below); that class name is also the `.kt` path,
+  // so colliding models share ONE file and any in-scope owner regenerates it —
+  // keysWithInScopeOwner claims the key on that basis.
   const keyOwners: { key: string; inScope: boolean }[] = [];
   for (const m of spec.models) {
     keyOwners.push({ key: className(m.name), inScope: isModelInScope(m.name, ctx) });
@@ -1133,7 +1134,7 @@ function generateModelRoundTripTest(spec: ApiSpec, ctx: EmitterContext): Generat
       return null;
     }
   }
-  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped, exclusivelyInScopeKeys(keyOwners));
+  const methods = reconcileScopedBlocks(newBlocks, priorBlocks, scoped, keysWithInScopeOwner(keyOwners));
   if (methods.length === 0) return null;
 
   const lines: string[] = [

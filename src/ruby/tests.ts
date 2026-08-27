@@ -25,7 +25,7 @@ import {
 } from '../shared/resolved-ops.js';
 import {
   type AggregateBlock,
-  exclusivelyInScopeKeys,
+  keysWithInScopeOwner,
   readPriorFile,
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
@@ -331,9 +331,10 @@ function buildDirRoundTripFile(
   // produced none rather than carrying stale text over — its `.rb` WAS
   // regenerated, so the frozen fixture asserts a shape the fresh model can't
   // produce (see reconcileScopedBlocks). `fileName` is normalized and two IR
-  // names can collapse onto one (the dedup below), so exclusivelyInScopeKeys lets
-  // an out-of-scope owner veto the drop.
-  const inScopeKeys = exclusivelyInScopeKeys(
+  // names can collapse onto one (the dedup below); it is also the `.rb` path
+  // within this dir, so colliding models share ONE file and any in-scope owner
+  // regenerates it — keysWithInScopeOwner claims the key on that basis.
+  const inScopeKeys = keysWithInScopeOwner(
     dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
   );
   for (const model of dirModels) {

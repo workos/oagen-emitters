@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  exclusivelyInScopeKeys,
+  keysWithInScopeOwner,
   reconcileScopedBlocks,
   type AggregateBlock,
 } from '../../src/shared/scoped-aggregate-merge.js';
@@ -76,32 +76,45 @@ describe('reconcileScopedBlocks', () => {
   });
 });
 
-describe('exclusivelyInScopeKeys', () => {
+describe('keysWithInScopeOwner', () => {
   it('keeps a key owned only by in-scope models', () => {
-    expect([...exclusivelyInScopeKeys([{ key: 'A', inScope: true }])]).toEqual(['A']);
+    expect([...keysWithInScopeOwner([{ key: 'A', inScope: true }])]).toEqual(['A']);
   });
 
   it('omits a key owned only by out-of-scope models', () => {
-    expect([...exclusivelyInScopeKeys([{ key: 'A', inScope: false }])]).toEqual([]);
+    expect([...keysWithInScopeOwner([{ key: 'A', inScope: false }])]).toEqual([]);
   });
 
-  it('lets a single out-of-scope owner veto a colliding key', () => {
+  it('claims a colliding key when ANY owner is in scope, whatever the order', () => {
     // Two distinct IR model names normalize onto one generated class/file name.
-    // Suppressing the carry-over here would delete the OUT-OF-SCOPE model's
-    // coverage even though this run never regenerated it — so the key is vetoed
-    // regardless of which owner is seen first.
+    // They do not have separate artifacts — the key IS the file path, so they
+    // share ONE file and the in-scope owner regenerates it. An out-of-scope
+    // co-owner must therefore NOT veto the key: there is no untouched artifact
+    // whose coverage carrying the prior block would preserve.
     const owners = [
       { key: 'Shared', inScope: true },
       { key: 'Shared', inScope: false },
-      { key: 'Solo', inScope: true },
+      { key: 'Solo', inScope: false },
     ];
-    expect([...exclusivelyInScopeKeys(owners)].sort()).toEqual(['Solo']);
-    expect([...exclusivelyInScopeKeys([...owners].reverse())].sort()).toEqual(['Solo']);
+    expect([...keysWithInScopeOwner(owners)].sort()).toEqual(['Shared']);
+    expect([...keysWithInScopeOwner([...owners].reverse())].sort()).toEqual(['Shared']);
   });
 
-  it('a vetoed key still carries its prior block over', () => {
-    const keys = exclusivelyInScopeKeys([
+  it('a colliding key with an in-scope owner drops its stale prior block', () => {
+    // The regression this ordering protects: the shared artifact was rewritten
+    // from the in-scope owner, so its prior block asserts a shape that no longer
+    // exists and would fail the generated suite.
+    const keys = keysWithInScopeOwner([
       { key: 'Shared', inScope: true },
+      { key: 'Shared', inScope: false },
+    ]);
+    const out = reconcileScopedBlocks([], [prior('Shared')], true, keys);
+    expect(out).toEqual([]);
+  });
+
+  it('a colliding key with no in-scope owner keeps its prior block', () => {
+    const keys = keysWithInScopeOwner([
+      { key: 'Shared', inScope: false },
       { key: 'Shared', inScope: false },
     ]);
     const out = reconcileScopedBlocks([], [prior('Shared')], true, keys);

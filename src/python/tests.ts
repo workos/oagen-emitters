@@ -37,7 +37,7 @@ import {
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import {
   type AggregateBlock,
-  exclusivelyInScopeKeys,
+  keysWithInScopeOwner,
   readPriorFile,
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
@@ -1582,11 +1582,13 @@ function buildDirRoundTripFile(
   // produced none — its per-model `.py` WAS regenerated, so the frozen block
   // asserts a shape the fresh model can't produce (see reconcileScopedBlocks) —
   // instead of carrying the stale text over. `fileName` is normalized, so two IR
-  // names can share a key; exclusivelyInScopeKeys lets an out-of-scope owner veto
-  // the drop. Shared by both aggregates so a model that gains or loses a
+  // names can share a key; it is also the `.py` and fixture path, so colliding
+  // models share ONE artifact and any in-scope owner regenerates it —
+  // keysWithInScopeOwner claims the key on that basis. Shared by both
+  // aggregates so a model that gains or loses a
   // discriminator (moving between the two) doesn't strand its block in the class
   // it left.
-  const inScopeKeys = exclusivelyInScopeKeys(
+  const inScopeKeys = keysWithInScopeOwner(
     dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
   );
 
