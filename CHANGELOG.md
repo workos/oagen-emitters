@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.6](https://github.com/workos/oagen-emitters/compare/v0.24.5...v0.24.6) (2026-08-28)
+
+
+### Bug Fixes
+
+* **kotlin:** spell `number` round-trip fixtures with a decimal point ([#227](https://github.com/workos/oagen-emitters/issues/227)) ([9335f29](https://github.com/workos/oagen-emitters/commit/9335f292512e36f15679cedca4f9159d2a33418e))
+
 ## [0.24.5](https://github.com/workos/oagen-emitters/compare/v0.24.4...v0.24.5) (2026-08-27)
 
 
