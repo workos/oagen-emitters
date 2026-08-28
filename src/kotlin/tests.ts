@@ -702,8 +702,13 @@ function synthJsonValue(type: TypeRef, ctx: EmitterContext, visited: Set<string>
       case 'string':
         return '"sample"';
       case 'integer':
-      case 'number':
         return '0';
+      // `number` maps to Kotlin `Double`, which Jackson reserializes as `0.0`.
+      // The round-trip test compares parsed JsonNode trees, and Jackson's
+      // numeric nodes are type-strict (`IntNode(0) != DoubleNode(0.0)`), so an
+      // integer literal here fails the round trip. Carry the decimal point.
+      case 'number':
+        return '0.0';
       case 'boolean':
         return 'false';
     }
