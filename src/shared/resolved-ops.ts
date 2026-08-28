@@ -1,4 +1,12 @@
-import type { Operation, EmitterContext, Service, ResolvedOperation, Model, TypeRef } from '@workos/oagen';
+import type {
+  Operation,
+  EmitterContext,
+  Service,
+  ResolvedOperation,
+  Model,
+  ParameterGroup,
+  TypeRef,
+} from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 
 /**
@@ -264,6 +272,25 @@ export function getUrlBuilderClientOverrides(op: Operation, resolvedOp?: Resolve
 // ---------------------------------------------------------------------------
 // Parameter group helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Base name to build a parameter group's generated *type* names from.
+ *
+ * Use this everywhere a group contributes to a type name (wrapper class,
+ * sealed/interface name, enum name, generated file name) and keep `group.name`
+ * for anything caller-facing: the method's parameter name, doc prose, and the
+ * prefix stripped from member field names.
+ *
+ * Two operations sharing a group name normally share one generated wrapper.
+ * When their members genuinely diverge — connection create takes a
+ * `CreateConnectionSAMLOptions`, update takes a `PatchConnectionSAMLOptions` —
+ * oagen qualifies `wrapperName` with the operation name so the two get separate
+ * types instead of one silently mistyping an operation. Groups that agree keep
+ * the bare group name, so published wrapper names never move.
+ */
+export function groupTypeBaseName(group: ParameterGroup): string {
+  return group.wrapperName ?? group.name;
+}
 
 /**
  * Collect all parameter names that belong to any mutually-exclusive parameter group.

@@ -22,6 +22,7 @@ import {
   buildHiddenParams,
   getUrlBuilderClientOverrides,
   collectGroupedParamNames,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
@@ -252,7 +253,9 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
           throw new Error(`No owner mount target found for parameter group '${group.name}'`);
         }
         const resolvedOwner = resolveServiceTarget(owner, exportedClasses);
-        const variants = group.variants.map((v) => scopedGroupVariantClassName(resolvedOwner, group.name, v.name));
+        const variants = group.variants.map((v) =>
+          scopedGroupVariantClassName(resolvedOwner, groupTypeBaseName(group), v.name),
+        );
         if (variants.length === 1) return variants[0];
         return `T.any(${variants.join(', ')})`;
       };

@@ -25,6 +25,7 @@ import {
   getOpDefaults,
   getOpInferFromClient,
   collectGroupedParamNames,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
@@ -379,9 +380,12 @@ function buildTestArgs(
   for (const group of op.parameterGroups ?? []) {
     if (!group.optional || includeOptional) {
       const variant = group.variants[0];
-      const variantClass = `${className(group.name)}${className(variant.name)}`;
+      const variantClass = `${className(groupTypeBaseName(group))}${className(variant.name)}`;
+      // A group member is not always a string — it can be a model, an enum, or
+      // an array (a connection's `saml_options`, a membership's `role_slugs`).
+      // Route through generateTestValue so the stub matches the member type.
       const variantArgs = variant.parameters
-        .map((p) => `${deriveVariantFieldName(p.name, group.name)}: 'test_value'`)
+        .map((p) => `${deriveVariantFieldName(p.name, group.name)}: ${generateTestValue(p.type, ctx)}`)
         .join(', ');
       args.push(`${toCamelCase(group.name)}: new \\${ctx.namespacePascal}\\Service\\${variantClass}(${variantArgs})`);
     }

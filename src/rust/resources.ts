@@ -14,7 +14,13 @@ import { fieldName, domainFieldName, methodName, typeName, moduleName, variantNa
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
 import { parsePathTemplate } from '../shared/path-template.js';
-import { groupByMount, buildResolvedLookup, isMountInScope, getMountTarget } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  isMountInScope,
+  getMountTarget,
+  groupTypeBaseName,
+} from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 
 /**
@@ -215,7 +221,7 @@ class GroupEmitter {
 
   /** Register a parameter-group enum, returning the PascalCase Rust name. */
   registerEnum(group: ParameterGroup): string {
-    const name = typeName(group.name);
+    const name = typeName(groupTypeBaseName(group));
     const variants = group.variants.map((v) => {
       const optionalNames = new Set(v.optionalParameters ?? []);
       // Optional members trail the required ones, matching every other

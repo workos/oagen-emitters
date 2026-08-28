@@ -1,7 +1,7 @@
 import type { EmitterContext, TypeRef, Model } from '@workos/oagen';
 import { className, fieldName, groupVariantClassName } from './naming.js';
 import { mapTypeRefForYard } from './type-map.js';
-import { collectBodyFieldTypes, groupByMount } from '../shared/resolved-ops.js';
+import { collectBodyFieldTypes, groupByMount, groupTypeBaseName } from '../shared/resolved-ops.js';
 
 /**
  * Sorbet type string for a TypeRef. Mirrors `mapSorbetType` in rbi.ts but
@@ -128,7 +128,7 @@ export function collectVariantsForMountTarget(
     for (const group of op.parameterGroups ?? []) {
       if (owner.get(group.name) !== mountTarget) continue;
       for (const variant of group.variants) {
-        const cls = groupVariantClassName(group.name, variant.name);
+        const cls = groupVariantClassName(groupTypeBaseName(group), variant.name);
         if (seen.has(cls)) continue;
         seen.add(cls);
         // Optional members carry a `nil` default, so they trail the required

@@ -31,6 +31,7 @@ import {
   isEnumInScope,
   fileExistsAfterRun,
   isScopedRun,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
 import {
@@ -347,14 +348,18 @@ function buildOperationTest(
   const groupParamNames = assignGroupParameterNames(op, hidden, queryFields, bodyModel, groupedParamNames);
   for (const group of op.parameterGroups ?? []) {
     const variant = group.variants[0];
-    const sealedName = sealedGroupName(group.name);
+    const sealedName = sealedGroupName(group);
     const variantName = className(variant.name);
     // Positional construction, so walk the variant's parameters in the same
     // order [generateSealedClass] declares them — optional members trail the
     // required ones. Every member gets a value, including the optional ones.
-    const variantArgs = orderedVariantParameters(variant)
-      .parameters.map((_p) => ktStringLiteral('sample-arg'))
-      .join(', ');
+    //
+    // A member is not always a string: it can be a model, an enum, or a list
+    // (a connection's `saml_options`, a membership's `role_slugs`). Route
+    // through synthValue so the stub matches the declared member type.
+    const variantValues = orderedVariantParameters(variant).parameters.map((p) => synthValue(p.type, ctx, imports));
+    if (variantValues.some((v) => v === null)) return null;
+    const variantArgs = variantValues.join(', ');
     imports.add(`com.workos.${mountPackage}.${sealedName}`);
     argParts.push(`${groupParamNames.get(group.name)!} = ${sealedName}.${variantName}(${variantArgs})`);
   }
@@ -456,15 +461,18 @@ function assignGroupParameterNames(
 
   const names = new Map<string, string>();
   for (const group of op.parameterGroups ?? []) {
-    const natural = propertyName(sealedGroupName(group.name));
+    const natural = propertyName(sealedGroupName(group));
     const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
     names.set(group.name, assigned);
   }
   return names;
 }
 
-function sealedGroupName(name: string): string {
-  const resolved = className(name);
+function sealedGroupName(group: import('@workos/oagen').ParameterGroup): string {
+  // groupTypeBaseName, not group.name: where two operations' declarations of one
+  // group diverge, oagen qualifies the base name so each gets its own sealed
+  // type instead of both collapsing onto one that fits only one of them.
+  const resolved = className(groupTypeBaseName(group));
   if (resolved === 'Password') return 'CreateUserPassword';
   if (resolved === 'Role') return 'CreateUserRole';
   return resolved;

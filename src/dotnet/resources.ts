@@ -42,6 +42,7 @@ import {
   hasHiddenParams,
   collectGroupedParamNames,
   collectBodyFieldTypes,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 
@@ -128,7 +129,7 @@ function generateParameterGroupTypes(
   const bodyFieldTypes = collectBodyFieldTypes(op, models);
 
   for (const group of op.parameterGroups ?? []) {
-    const baseName = groupBaseClassName(mountName, group.name);
+    const baseName = groupBaseClassName(mountName, groupTypeBaseName(group));
     if (emitted?.has(baseName)) continue;
     emitted?.add(baseName);
 
@@ -136,7 +137,7 @@ function generateParameterGroupTypes(
     lines.push(`    public abstract class ${baseName} { }`);
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(mountName, group.name, variant.name);
+      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name);
       lines.push('');
       lines.push(`    public class ${variantName} : ${baseName}`);
       lines.push('    {');
@@ -186,7 +187,7 @@ function emitGroupSerialization(
     let first = true;
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(mountName, group.name, variant.name);
+      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name);
       // Use a short local variable derived from the variant name
       const localVar = localName(variant.name);
       const keyword = first ? 'if' : 'else if';
@@ -639,7 +640,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Parameter group properties (serialized manually in the service method, not by JSON)
     for (const group of op.parameterGroups ?? []) {
-      const baseName = groupBaseClassName(mountName, group.name);
+      const baseName = groupBaseClassName(mountName, groupTypeBaseName(group));
       const csField = fieldName(group.name);
       optionsLines.push('        [JsonIgnore]');
       optionsLines.push('        [STJS.JsonIgnore]');

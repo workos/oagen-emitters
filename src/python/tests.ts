@@ -33,6 +33,7 @@ import {
   isScopedRun,
   isModelInScope,
   fileExistsAfterRun,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import {
@@ -243,6 +244,22 @@ function generateServiceTest(
         }
       }
     }
+    // Collect model- and enum-typed parameter group members. The body-field
+    // loop above deliberately skips grouped params — they are passed inside the
+    // group's wrapper rather than as flat arguments — but the wrapper's
+    // constructor still names their types in the generated test, so a member
+    // typed `CreateConnectionSAMLOptions` needs that class imported.
+    for (const group of op.parameterGroups ?? []) {
+      for (const variant of group.variants) {
+        for (const p of variant.parameters) {
+          const t = p.type.kind === 'nullable' ? p.type.inner : p.type;
+          if (t.kind === 'model') modelImports.add(t.name);
+          else if (t.kind === 'enum') enumImports.add(t.name);
+          else if (t.kind === 'array' && t.items.kind === 'model') modelImports.add(t.items.name);
+          else if (t.kind === 'array' && t.items.kind === 'enum') enumImports.add(t.items.name);
+        }
+      }
+    }
     // Collect enum-typed query params
     for (const param of op.queryParams) {
       if (param.type.kind === 'enum') enumImports.add(param.type.name);
@@ -304,7 +321,7 @@ function generateServiceTest(
   for (const op of service.operations) {
     for (const group of op.parameterGroups ?? []) {
       for (const variant of group.variants) {
-        groupVariantImports.add(className(`${group.name}_${variant.name}`));
+        groupVariantImports.add(className(`${groupTypeBaseName(group)}_${variant.name}`));
       }
     }
   }
@@ -1120,8 +1137,13 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
   const groupedParamNames = collectGroupedParamNames(op);
   for (const group of op.parameterGroups ?? []) {
     const variant = group.variants[0];
-    const variantClass = className(`${group.name}_${variant.name}`);
-    const variantArgs = variant.parameters.map((p) => `${fieldName(p.name)}="test_value"`).join(', ');
+    const variantClass = className(`${groupTypeBaseName(group)}_${variant.name}`);
+    // A group member is not always a string — it can be a model, an enum, or a
+    // list (a connection's `saml_options`, a membership's `role_slugs`). Route
+    // through generateTestValue so the stub matches the declared member type.
+    const variantArgs = variant.parameters
+      .map((p) => `${fieldName(p.name)}=${generateTestValue(p.type, p.name)}`)
+      .join(', ');
     args.push(`${fieldName(group.name)}=${variantClass}(${variantArgs})`);
   }
 
@@ -1177,7 +1199,7 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   // Parameter group args — emit first variant constructor
   for (const group of op.parameterGroups ?? []) {
     const variant = group.variants[0];
-    const variantClass = className(`${group.name}_${variant.name}`);
+    const variantClass = className(`${groupTypeBaseName(group)}_${variant.name}`);
     const variantArgs = variant.parameters
       .map((p) => `${fieldName(p.name)}=${generateQueryEncodingValue(p.type, p.name)}`)
       .join(', ');
