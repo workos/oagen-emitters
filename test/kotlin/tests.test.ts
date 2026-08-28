@@ -134,6 +134,33 @@ describe('kotlin/tests', () => {
     expect(content).toContain('assertEquals(tree1, tree2)');
   });
 
+  it('round-trip fixture spells `number` fields with a decimal point', () => {
+    // `number` maps to Kotlin `Double`, so Jackson reserializes it as `0.0`.
+    // The round-trip test compares parsed JsonNode trees and Jackson's numeric
+    // nodes are type-strict, so an integer literal in the fixture would make
+    // `IntNode(0)` face `DoubleNode(0.0)` and fail. `integer` stays `0`.
+    const numericSpec: ApiSpec = {
+      ...spec,
+      models: [
+        {
+          name: 'SessionSetting',
+          fields: [
+            { name: 'max_age_seconds', type: { kind: 'primitive', type: 'number' }, required: true },
+            { name: 'retry_count', type: { kind: 'primitive', type: 'integer' }, required: true },
+          ],
+        },
+      ],
+    };
+    const numericCtx: EmitterContext = { ...ctx, spec: numericSpec };
+
+    generateEnums([], numericCtx);
+    const files = generateTests(numericSpec, numericCtx);
+    const roundTrip = files.find((f) => f.path.includes('GeneratedModelRoundTripTest.kt'))!;
+
+    expect(roundTrip.content).toContain('\\"max_age_seconds\\": 0.0');
+    expect(roundTrip.content).toContain('\\"retry_count\\": 0');
+  });
+
   it('generates forward-compat test with OffsetDateTime round-trip', () => {
     generateEnums([], ctx);
     const files = generateTests(spec, ctx);
