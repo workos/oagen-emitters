@@ -1,6 +1,7 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
+import { unionWrapperName } from './unions.js';
 
 /**
  * Map an IR TypeRef to a Go type string.
@@ -80,11 +81,19 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
   if (_ref.compositionKind === 'allOf') {
     return variants[0] ?? 'interface{}';
   }
+  // A discriminated union of named variants becomes a sealed wrapper struct
+  // (see unions.ts). Checked before the single-variant collapse below so a
+  // one-member union still gets the wrapper, which makes adding a second
+  // member later a purely additive change to the generated SDK.
+  const wrapper = unionWrapperName(_ref);
+  if (wrapper) return `*${wrapper}`;
+
   const unique = [...new Set(variants)];
   if (unique.length === 1) return unique[0];
-  // Discriminated unions: Go has no sum types, so widen to the discriminator-
-  // resolver type when one is registered downstream (see resolveDiscriminatedUnionType).
-  // Fall back to interface{} for non-discriminated heterogeneous unions.
+  // Discriminated unions no wrapper can represent — an empty mapping, or a
+  // variant that isn't a named model. Widen to the first model variant, which
+  // at least keeps one arm typed. Non-discriminated heterogeneous unions fall
+  // through to interface{}.
   if (_ref.discriminator && _ref.discriminator.mapping) {
     const resolverName = unionResolverName(_ref);
     if (resolverName) return resolverName;
@@ -93,14 +102,11 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
 }
 
 /**
- * Pick a stable type name for a discriminated union's runtime resolver. Today
- * we emit no resolver struct, so we treat the union's first model variant as
- * the public type — matching the pre-discriminator behavior where Go just
- * referenced one variant directly. The Owner field stays typed, callers
- * can still inspect Type to detect the user variant (data loss on
- * non-overlapping fields like organization_id is documented in the SDK
- * compat report rather than fixed in the emitter — Go callers who need the
- * user-only fields can json.Unmarshal the raw payload manually).
+ * Fallback public type for a discriminated union that {@link unionWrapperName}
+ * cannot wrap — the discriminator resolved but carries no mapping, or a variant
+ * isn't a named model. Treat the union's first model variant as the public
+ * type. Fields that exist only on later variants are lost; callers who need
+ * them can json.Unmarshal the raw payload manually.
  */
 function unionResolverName(ref: UnionType): string | null {
   for (const v of ref.variants) {

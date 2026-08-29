@@ -171,4 +171,35 @@ describe('flattenDiscriminatedUnionFields', () => {
     expect(canonicalBefore.fields.length).toBe(fieldCountBefore);
     expect(models.find((m) => m.name === 'ApiKey')!.fields[0].type).toEqual(ownerUnion());
   });
+  describe('skipUnion opt-out', () => {
+    it('leaves an opted-out union as a union TypeRef', () => {
+      const out = flattenDiscriminatedUnionFields(baseModels(ownerUnion()), { skipUnion: () => true });
+      expect(out.find((m) => m.name === 'ApiKey')!.fields[0].type).toEqual(ownerUnion());
+    });
+
+    it('does not merge variant fields into the canonical model when opted out', () => {
+      const out = flattenDiscriminatedUnionFields(baseModels(ownerUnion()), { skipUnion: () => true });
+      const canonical = out.find((m) => m.name === 'ApiKeyOwner')!;
+      expect(canonical.fields.find((f) => f.name === 'organization_id')).toBeUndefined();
+    });
+
+    it('does not throw on conflicting shared field types when opted out', () => {
+      const models = baseModels(ownerUnion());
+      const user = models.find((m) => m.name === 'UserApiKeyOwner')!;
+      user.fields = user.fields.map((f) =>
+        f.name === 'id' ? { ...f, type: { kind: 'primitive', type: 'number' } } : f,
+      );
+      expect(() => flattenDiscriminatedUnionFields(models, { skipUnion: () => true })).not.toThrow();
+    });
+
+    it('still flattens unions the predicate does not opt out', () => {
+      const out = flattenDiscriminatedUnionFields(baseModels(ownerUnion()), { skipUnion: () => false });
+      expect(out.find((m) => m.name === 'ApiKey')!.fields[0].type).toEqual({ kind: 'model', name: 'ApiKeyOwner' });
+    });
+
+    it('flattens everything when no options are passed (default for other emitters)', () => {
+      const out = flattenDiscriminatedUnionFields(baseModels(ownerUnion()));
+      expect(out.find((m) => m.name === 'ApiKey')!.fields[0].type).toEqual({ kind: 'model', name: 'ApiKeyOwner' });
+    });
+  });
 });
