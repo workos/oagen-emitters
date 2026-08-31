@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.7](https://github.com/workos/oagen-emitters/compare/v0.24.6...v0.24.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* give diverging parameter-group wrappers distinct types ([#229](https://github.com/workos/oagen-emitters/issues/229)) ([11c611d](https://github.com/workos/oagen-emitters/commit/11c611d7fbbe0b9b5857b12b210bdac1e07f96e9))
+
 ## [0.24.6](https://github.com/workos/oagen-emitters/compare/v0.24.5...v0.24.6) (2026-08-28)
 
 
