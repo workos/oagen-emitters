@@ -37,6 +37,7 @@ import {
   buildHiddenParams as buildHiddenParamsShared,
   collectGroupedParamNames,
   collectBodyFieldTypes,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import {
   generateSyncWrapperMethods,
@@ -103,7 +104,7 @@ function generateParameterGroupDataclasses(
     const bodyFieldTypes = collectBodyFieldTypes(op, models);
     for (const group of op.parameterGroups ?? []) {
       for (const variant of group.variants) {
-        const variantClass = groupVariantClassName(group.name, variant.name);
+        const variantClass = groupVariantClassName(groupTypeBaseName(group), variant.name);
         if (emitted.has(variantClass)) continue;
         emitted.add(variantClass);
 
@@ -156,7 +157,7 @@ export function collectParameterGroupClassNames(operations: Operation[]): string
   for (const op of operations) {
     for (const group of op.parameterGroups ?? []) {
       for (const variant of group.variants) {
-        const cls = groupVariantClassName(group.name, variant.name);
+        const cls = groupVariantClassName(groupTypeBaseName(group), variant.name);
         if (!seen.has(cls)) {
           seen.add(cls);
           names.push(cls);
@@ -351,7 +352,7 @@ function emitMethodSignature(
 
   // Parameter group union kwargs
   for (const group of op.parameterGroups ?? []) {
-    const variantClasses = group.variants.map((v) => groupVariantClassName(group.name, v.name));
+    const variantClasses = group.variants.map((v) => groupVariantClassName(groupTypeBaseName(group), v.name));
     const unionType = `Union[${variantClasses.join(', ')}]`;
     const paramName = fieldName(group.name);
     if (group.optional) {
@@ -538,7 +539,7 @@ function emitMethodDocstring(
 
   // Add parameter group docs
   for (const group of op.parameterGroups ?? []) {
-    const variantClasses = group.variants.map((v) => groupVariantClassName(group.name, v.name));
+    const variantClasses = group.variants.map((v) => groupVariantClassName(groupTypeBaseName(group), v.name));
     const readableGroup = group.name.replace(/_/g, ' ');
     const desc = `Identifies the ${readableGroup}. One of: ${variantClasses.join(', ')}.`;
     allParams.push({ name: fieldName(group.name), desc });
@@ -1042,7 +1043,7 @@ function emitGroupDispatch(
     const indent = group.optional ? '    ' : '';
     let first = true;
     for (const variant of group.variants) {
-      const variantClass = groupVariantClassName(group.name, variant.name);
+      const variantClass = groupVariantClassName(groupTypeBaseName(group), variant.name);
       const keyword = first ? 'if' : 'elif';
       first = false;
       lines.push(`        ${indent}${keyword} isinstance(${groupParam}, ${variantClass}):`);
@@ -1050,9 +1051,13 @@ function emitGroupDispatch(
       for (const param of variant.parameters) {
         const pyField = fieldName(param.name);
         const resolvedType = bodyFieldTypes?.get(param.name) ?? param.type;
-        const effectiveType = resolvedType.kind === 'nullable' ? resolvedType.inner : resolvedType;
-        const isEnum = effectiveType.kind === 'enum';
-        const value = isEnum ? `enum_value(${groupParam}.${pyField})` : `${groupParam}.${pyField}`;
+        // Members are not always scalars: a member can be a model or a list of
+        // models (a connection's `saml_options`), which must reach the wire as a
+        // dict rather than as the dataclass instance. serializeBodyFieldValue is
+        // the same routine flat body fields use, so the two stay consistent.
+        // Passing isRequired=true keeps the expression free of an inline None
+        // check — the optional-member branch below already guards on None.
+        const value = serializeBodyFieldValue(resolvedType, `${groupParam}.${pyField}`, true);
         if (optionalNames.has(param.name)) {
           // Optional variant members are omitted from the wire format when
           // unset rather than sent as null.

@@ -20,6 +20,7 @@ import {
   getOpInferFromClient,
   collectGroupedParamNames,
   collectBodyFieldTypes,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
@@ -206,7 +207,7 @@ function generateParameterGroupFiles(
 
   for (const group of op.parameterGroups ?? []) {
     for (const variant of group.variants) {
-      const variantClass = groupVariantClassName(group.name, variant.name);
+      const variantClass = groupVariantClassName(groupTypeBaseName(group), variant.name);
       const lines: string[] = [];
 
       lines.push(`namespace ${ctx.namespacePascal}\\Service;`);
@@ -254,7 +255,7 @@ function generateGroupDispatch(op: Operation, indent: string, target: '$query' |
 
     for (let vi = 0; vi < group.variants.length; vi++) {
       const variant = group.variants[vi];
-      const variantClass = groupVariantClassName(group.name, variant.name);
+      const variantClass = groupVariantClassName(groupTypeBaseName(group), variant.name);
       const keyword = vi === 0 ? 'if' : 'elseif';
 
       lines.push(`${indent}${keyword} ($${phpParamName} instanceof ${variantClass}) {`);
@@ -345,7 +346,7 @@ function generateMethod(
     const phpName = fieldName(group.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
-    const variantTypes = group.variants.map((v) => groupVariantClassName(group.name, v.name));
+    const variantTypes = group.variants.map((v) => groupVariantClassName(groupTypeBaseName(group), v.name));
     const unionDocType = variantTypes.join('|');
     const nullPrefix = group.optional ? 'null|' : '';
     docParts.push(`@param ${nullPrefix}${unionDocType} $${phpName}`);
@@ -732,7 +733,7 @@ function buildMethodParams(
     if (usedNames.has(phpName)) continue;
     usedNames.add(phpName);
     // PHP 8.0+ union syntax: VariantA|VariantB $paramName
-    const variantTypes = group.variants.map((v) => groupVariantClassName(group.name, v.name));
+    const variantTypes = group.variants.map((v) => groupVariantClassName(groupTypeBaseName(group), v.name));
     const unionType = variantTypes.join('|');
     if (group.optional) {
       optional.push(`null|${unionType} $${phpName} = null`);

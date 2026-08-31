@@ -19,6 +19,7 @@ import {
   lookupResolved,
   buildHiddenParams,
   collectBodyFieldTypes,
+  groupTypeBaseName,
   isModelInScope,
   isScopedRun,
   fileExistsAfterRun,
@@ -615,7 +616,7 @@ function buildCallArgsStub(
       }
       const variantClass = scopedGroupVariantClassName(
         resolveServiceTarget(owner, exportedClasses),
-        group.name,
+        groupTypeBaseName(group),
         variant.name,
       );
       const fieldStubs = variant.parameters

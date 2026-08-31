@@ -11,7 +11,7 @@ import type {
   TypeRef,
 } from '@workos/oagen';
 import { methodName, moduleName, typeName } from './naming.js';
-import { scopedMountGroups } from '../shared/resolved-ops.js';
+import { scopedMountGroups, groupTypeBaseName } from '../shared/resolved-ops.js';
 import { exampleFor, generateFixtures } from './fixtures.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isInlineEnvelopeList } from './resources.js';
@@ -299,12 +299,12 @@ function buildCallArgs(
         ctorArgs.push(stubExpr(p.type, p.name, modelMap, enumMap));
       }
       for (const g of requiredQueryGroups) {
-        ctorArgs.push(parameterGroupStubExpr(g, crate, accessor));
+        ctorArgs.push(parameterGroupStubExpr(g, crate, accessor, modelMap, enumMap));
       }
       if (hasBody && bodyRequired) {
         const hasBodyGroup = hasBodyParameterGroup(op);
         if (hasBodyGroup) {
-          ctorArgs.push(syntheticBodyStubExpr(op, resolved, crate, accessor, modelMap));
+          ctorArgs.push(syntheticBodyStubExpr(op, resolved, crate, accessor, modelMap, enumMap));
         } else {
           ctorArgs.push(stubExpr(op.requestBody!, 'body', modelMap, enumMap));
         }
@@ -635,6 +635,7 @@ function syntheticBodyStubExpr(
   crate: string,
   accessor: string,
   modelMap: Map<string, Model>,
+  enumMap: Map<string, Enum>,
 ): string {
   const bodyRef = op.requestBody!;
   const bodyName = `${typeName(resolved.methodName)}ParamsBody`;
@@ -655,14 +656,14 @@ function syntheticBodyStubExpr(
       if (bodyGroupNames.has(f.name)) continue;
       const isRequired = !!f.required && f.type.kind !== 'nullable';
       if (!isRequired) continue;
-      args.push(`${JSON.stringify(`stub_${f.name}`)}.to_string()`);
+      args.push(stubExpr(f.type, f.name, modelMap, enumMap));
     }
   }
   for (const g of op.parameterGroups ?? []) {
     const isBodyGroup = g.variants.every((v) => v.parameters.every((p) => !queryNames.has(p.name)));
     if (!isBodyGroup) continue;
     if (g.optional) continue;
-    args.push(parameterGroupStubExpr(g, crate, accessor));
+    args.push(parameterGroupStubExpr(g, crate, accessor, modelMap, enumMap));
   }
   return `${fqn}::new(${args.join(', ')})`;
 }
@@ -672,16 +673,16 @@ function parameterGroupStubExpr(
   group: import('@workos/oagen').ParameterGroup,
   crate: string,
   accessor: string,
+  modelMap: Map<string, Model>,
+  enumMap: Map<string, Enum>,
 ): string {
-  const enumName = group.name
-    .split('_')
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join('');
+  // Both names must be spelled the way the definition site in resources.ts
+  // spells them, which is `typeName`. Hand-rolling PascalCase here diverges on
+  // acronyms — "saml" becomes `Saml` rather than `SAML` — and the fixture stops
+  // compiling against the very enum it is meant to construct.
+  const enumName = typeName(groupTypeBaseName(group));
   const firstVariant = group.variants[0];
-  const variantName = firstVariant.name
-    .split('_')
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join('');
+  const variantName = typeName(firstVariant.name);
   const fqn = `${crate}::${accessor}::${enumName}`;
   if (firstVariant.parameters.length === 0) return `${fqn}::${variantName}`;
   // Members the IR marks optional are `Option<T>` on the generated variant, so
@@ -691,7 +692,10 @@ function parameterGroupStubExpr(
   const optionalNames = new Set(firstVariant.optionalParameters ?? []);
   const fields = firstVariant.parameters
     .map((p) => {
-      const value = `${JSON.stringify(`stub_${p.name}`)}.to_string()`;
+      // A group member is not always a string: it can be a model, an enum, or
+      // an array (a connection's `saml_options`, a membership's `role_slugs`).
+      // Route through stubExpr so the stub matches the declared member type.
+      const value = stubExpr(p.type, p.name, modelMap, enumMap);
       return `${p.name}: ${optionalNames.has(p.name) ? `Some(${value})` : value}`;
     })
     .join(', ');

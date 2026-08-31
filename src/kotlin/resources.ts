@@ -41,6 +41,7 @@ import {
   getOpInferFromClient,
   collectGroupedParamNames,
   collectBodyFieldTypes,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
@@ -192,16 +193,16 @@ function generateApiClass(
   // Emit sealed classes for parameter groups before the API class.
   // Parameter-group IR can lose body field type fidelity; prefer the request
   // body model's field type when available.
-  const bodyFieldTypes = new Map<string, TypeRef>();
-  for (const op of operations) {
-    for (const [name, type] of collectBodyFieldTypes(op, ctx.spec.models)) {
-      bodyFieldTypes.set(name, type);
-    }
-  }
   const sealedLines: string[] = [];
   const emittedSealedClasses = new Set<string>();
   for (const op of operations) {
     if ((op.parameterGroups?.length ?? 0) > 0) {
+      // Resolved per operation, never merged across the file. The map is keyed
+      // by wire field name and two operations can type one field differently —
+      // `saml_options` is a CreateConnectionSAMLOptions on create and a
+      // PatchConnectionSAMLOptions on update — so a file-wide map lets whichever
+      // operation happens to be visited last decide the type for all of them.
+      const bodyFieldTypes = collectBodyFieldTypes(op, ctx.spec.models);
       for (const group of op.parameterGroups ?? []) {
         // Register imports for types used in parameter group sealed classes.
         // The body field type override may introduce enum/model types that
@@ -212,8 +213,12 @@ function generateApiClass(
             registerTypeImports(effectiveType, imports, ctx);
           }
         }
-        if (emittedSealedClasses.has(group.name)) continue;
-        emittedSealedClasses.add(group.name);
+        // Keyed on the type base name: where two operations' declarations of a
+        // group diverge oagen gives them distinct base names, and both sealed
+        // classes have to be emitted rather than the first one winning.
+        const sealedKey = groupTypeBaseName(group);
+        if (emittedSealedClasses.has(sealedKey)) continue;
+        emittedSealedClasses.add(sealedKey);
         for (const line of generateSealedClass(group, bodyFieldTypes)) sealedLines.push(line);
       }
     }
@@ -390,7 +395,7 @@ function renderMethod(
 
   // Parameter group params (sealed class types)
   for (const group of op.parameterGroups ?? []) {
-    const sealedName = sealedGroupName(group.name);
+    const sealedName = sealedGroupName(group);
     const prop = groupParamNames.get(group.name)!;
     if (group.optional) {
       pushParam(`    ${prop}: ${sealedName}? = null`, prop);
@@ -707,7 +712,7 @@ function emitOneJavaOverload(
   variant: import('@workos/oagen').ParameterGroup['variants'][number],
   overloadMethodName: string,
 ): void {
-  const sealedName = sealedGroupName(group.name);
+  const sealedName = sealedGroupName(group);
   const variantClass = className(variant.name);
   const targetGroupProp = ctx.groupParamNames.get(group.name)!;
 
@@ -1229,7 +1234,7 @@ function generateSealedClass(
   bodyFieldTypes?: Map<string, TypeRef>,
 ): string[] {
   const lines: string[] = [];
-  const sealedName = sealedGroupName(group.name);
+  const sealedName = sealedGroupName(group);
 
   // KDoc with Kotlin + Java construction examples. Pick the first variant as
   // a worked example so callers see the variant constructor in both languages
@@ -1302,7 +1307,7 @@ function emitGroupQueryDispatch(
   indent: string,
   receiverMode = false,
 ): string[] {
-  const sealedName = sealedGroupName(group.name);
+  const sealedName = sealedGroupName(group);
   const lines: string[] = [];
 
   if (group.optional) {
@@ -1318,7 +1323,7 @@ function emitGroupQueryDispatch(
 function assignGroupParameterNames(op: Operation, occupiedNames: Set<string>): Map<string, string> {
   const names = new Map<string, string>();
   for (const group of op.parameterGroups ?? []) {
-    const natural = propertyName(sealedGroupName(group.name));
+    const natural = propertyName(sealedGroupName(group));
     const assigned = reserveUniqueGroupParameterName(natural, occupiedNames);
     names.set(group.name, assigned);
   }
@@ -1382,7 +1387,7 @@ function emitWhenBlock(
 
 /** Emit `when` dispatch that serializes a parameter group into the request body map. */
 function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, prop: string, indent: string): string[] {
-  const sealedName = sealedGroupName(group.name);
+  const sealedName = sealedGroupName(group);
   const lines: string[] = [];
 
   if (group.optional) {
@@ -1395,8 +1400,11 @@ function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, pr
   return lines;
 }
 
-function sealedGroupName(name: string): string {
-  const resolved = className(name);
+function sealedGroupName(group: import('@workos/oagen').ParameterGroup): string {
+  // groupTypeBaseName, not group.name: where two operations' declarations of one
+  // group diverge, oagen qualifies the base name so each gets its own sealed
+  // type instead of both collapsing onto one that fits only one of them.
+  const resolved = className(groupTypeBaseName(group));
   if (resolved === 'Password') return 'CreateUserPassword';
   if (resolved === 'Role') return 'CreateUserRole';
   return resolved;

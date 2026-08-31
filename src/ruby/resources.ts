@@ -1,4 +1,13 @@
-import type { Service, EmitterContext, GeneratedFile, Operation, TypeRef, Parameter, Model } from '@workos/oagen';
+import type {
+  Service,
+  EmitterContext,
+  GeneratedFile,
+  Operation,
+  TypeRef,
+  Parameter,
+  ParameterGroup,
+  Model,
+} from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import {
   className,
@@ -21,6 +30,7 @@ import {
   getUrlBuilderClientOverrides,
   buildHiddenParams,
   collectGroupedParamNames,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { isListWrapperModel } from '../shared/model-utils.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
@@ -363,12 +373,13 @@ function emitMethod(args: {
   void enumNames;
 
   /** Fully-qualified Ruby constant for a variant (e.g. WorkOS::UserManagement::PasswordPlaintext). */
-  const variantClassRef = (group: { name: string }, variantName: string): string => {
+  const variantClassRef = (group: ParameterGroup, variantName: string): string => {
     const owner = groupOwners.get(group.name);
     if (!owner) {
       throw new Error(`No owner mount target found for parameter group '${group.name}'`);
     }
-    return scopedGroupVariantClassName(resolveServiceTarget(owner, exportedClasses), group.name, variantName);
+    const base = groupTypeBaseName(group);
+    return scopedGroupVariantClassName(resolveServiceTarget(owner, exportedClasses), base, variantName);
   };
 
   const plan = planOperation(op);
@@ -997,7 +1008,7 @@ function buildYardDoc(
   hiddenParams: Set<string>,
   bodyFieldRenames: Map<string, string> | undefined,
   listWrapperModels: Map<string, Model> | undefined,
-  variantClassRef: (group: { name: string }, variantName: string) => string,
+  variantClassRef: (group: ParameterGroup, variantName: string) => string,
 ): string[] {
   const lines: string[] = [];
   const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
@@ -1100,9 +1111,9 @@ function rubyDefaultLiteral(value: unknown): string {
  * interpolates the actual class of the value the caller passed.
  */
 function dispatchErrorLiteral(
-  group: { name: string; variants: { name: string }[] },
+  group: ParameterGroup,
   prop: string,
-  variantClassRef: (group: { name: string }, variantName: string) => string,
+  variantClassRef: (group: ParameterGroup, variantName: string) => string,
 ): string {
   const expected = group.variants.map((v) => variantClassRef(group, v.name)).join(', ');
   return `"expected ${prop} to be one of: ${expected}, got #{${prop}.class}"`;

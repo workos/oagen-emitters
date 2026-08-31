@@ -5,6 +5,7 @@ import type {
   EmitterContext,
   GeneratedFile,
   ResolvedOperation,
+  Model,
 } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
 import { isListWrapperModel } from './models.js';
@@ -28,6 +29,7 @@ import {
   hasHiddenParams,
   collectGroupedParamNames,
   collectBodyFieldTypes,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
@@ -139,17 +141,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   // type definitions. A group with the same name may appear in both query-param
   // and body-param contexts; the interface then carries both applyToQuery and
   // applyToBody methods.
-  const groupTypes = collectFileGroups(mountName, operations);
+  const groupTypes = collectFileGroups(mountName, operations, ctx.spec.models);
   if (groupTypes.length > 0) {
-    // Collect body field types from all operations so variant structs use the
-    // correct IR types (the parser's group-level types can fall back to string).
-    const mergedBodyFieldTypes = new Map<string, import('@workos/oagen').TypeRef>();
-    for (const op of operations) {
-      for (const [k, v] of collectBodyFieldTypes(op, ctx.spec.models)) {
-        mergedBodyFieldTypes.set(k, v);
-      }
-    }
-    lines.push(emitCollectedGroupTypes(mountName, groupTypes, mergedBodyFieldTypes));
+    lines.push(emitCollectedGroupTypes(mountName, groupTypes));
   }
 
   // Generate params structs and methods for each operation.
@@ -282,33 +276,53 @@ function deriveVariantFieldName(paramName: string, groupName: string): string {
 
 /** Collected group metadata, merged across all operations in a file. */
 interface CollectedGroup {
+  /** Group name from the spec. Strips member field prefixes; not a type name. */
   name: string;
+  /**
+   * Base name for this group's generated interface and variant structs. Equals
+   * `name` unless two operations' declarations of the group diverge, in which
+   * case oagen qualifies it so each gets its own Go types instead of both
+   * collapsing onto one that fits only one of the operations.
+   */
+  typeBaseName: string;
   needsQuery: boolean;
   needsBody: boolean;
   /** Use the first variant set encountered (they should be identical). */
   variants: import('@workos/oagen').ParameterGroupVariant[];
+  /**
+   * Body field types from the operation that contributed this group. Captured
+   * per group rather than merged across the file: the map is keyed by wire
+   * field name, and two operations can type one field differently, so a merged
+   * map would let whichever operation is visited last decide for all of them.
+   */
+  bodyFieldTypes: Map<string, import('@workos/oagen').TypeRef>;
 }
 
 /**
  * Pre-collect all parameter groups across operations in a mount group,
- * deduplicating by group name and merging query/body usage flags.
+ * deduplicating by generated type name and merging query/body usage flags.
  */
-function collectFileGroups(mountName: string, operations: Operation[]): CollectedGroup[] {
+function collectFileGroups(mountName: string, operations: Operation[], models: Model[]): CollectedGroup[] {
   const byName = new Map<string, CollectedGroup>();
 
   for (const op of operations) {
     for (const group of op.parameterGroups ?? []) {
-      const existing = byName.get(group.name);
+      // Key on the type base name, not the group name: two operations whose
+      // declarations diverge must NOT be merged into one set of Go types.
+      const typeBaseName = groupTypeBaseName(group);
+      const existing = byName.get(typeBaseName);
       const isBody = isBodyGroup(group, op);
       if (existing) {
         if (isBody) existing.needsBody = true;
         else existing.needsQuery = true;
       } else {
-        byName.set(group.name, {
+        byName.set(typeBaseName, {
           name: group.name,
+          typeBaseName,
           needsQuery: !isBody,
           needsBody: isBody,
           variants: group.variants,
+          bodyFieldTypes: collectBodyFieldTypes(op, models),
         });
       }
     }
@@ -322,18 +336,14 @@ function collectFileGroups(mountName: string, operations: Operation[]): Collecte
  * collected parameter groups in a file. Groups used in query contexts get
  * applyToQuery; body contexts get applyToBody; groups used in both get both.
  */
-function emitCollectedGroupTypes(
-  mountName: string,
-  groups: CollectedGroup[],
-  bodyFieldTypes: Map<string, import('@workos/oagen').TypeRef>,
-): string {
+function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): string {
   const lines: string[] = [];
 
   for (const group of groups) {
-    const ifaceName = groupInterfaceName(mountName, group.name);
+    const ifaceName = groupInterfaceName(mountName, group.typeBaseName);
     const markerMethod = `is${ifaceName}`;
 
-    const variantNames = group.variants.map((v) => groupVariantTypeName(mountName, group.name, v.name));
+    const variantNames = group.variants.map((v) => groupVariantTypeName(mountName, group.typeBaseName, v.name));
     lines.push(`// ${ifaceName} is one of:`);
     for (const vn of variantNames) {
       lines.push(`//   - ${vn}`);
@@ -350,7 +360,7 @@ function emitCollectedGroupTypes(
     lines.push('');
 
     for (const variant of group.variants) {
-      const typeName = groupVariantTypeName(mountName, group.name, variant.name);
+      const typeName = groupVariantTypeName(mountName, group.typeBaseName, variant.name);
 
       // Members named in optionalParameters may be omitted when this variant is
       // used: they become pointer fields (Go's optional convention) and trail
@@ -362,7 +372,7 @@ function emitCollectedGroupTypes(
       ];
       const members = orderedParams.map((param) => {
         const goField = deriveVariantFieldName(param.name, group.name);
-        const baseType = mapTypeRefValue(bodyFieldTypes.get(param.name) ?? param.type);
+        const baseType = mapTypeRefValue(group.bodyFieldTypes.get(param.name) ?? param.type);
         const isOptional = optionalNames.has(param.name);
         const goType = isOptional ? makeOptional(baseType) : baseType;
         // makeOptional leaves already-nil-able types (slices, maps, model
@@ -543,7 +553,7 @@ function generateParamsStruct(
   // Parameter group fields (sum-type interfaces, serialized via applyToQuery)
   for (const group of op.parameterGroups ?? []) {
     const goField = fieldName(group.name);
-    const goType = groupInterfaceName(mountName, group.name);
+    const goType = groupInterfaceName(mountName, groupTypeBaseName(group));
     if (group.optional) {
       lines.push(`\t// ${goField} optionally identifies the ${group.name.replace(/_/g, ' ')}.`);
     } else {
