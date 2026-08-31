@@ -131,6 +131,26 @@ describe('generateEnums', () => {
     expect(result[0].content).toContain('No longer supported.\n   * @deprecated');
     expect(result[0].content).toContain('/** @deprecated */');
   });
+
+  it('prefixes member names derived from values that start with a digit', () => {
+    const enums: Enum[] = [
+      {
+        name: 'AuditLogsRetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: '10_YEARS', value: '10_YEARS' },
+        ],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+    const content = result[0].content;
+
+    expect(content).toContain("Value1Month: '1_MONTH',");
+    expect(content).toContain("Value10Years: '10_YEARS',");
+    // A bare `1Month:` key is not a valid unquoted identifier.
+    expect(content).not.toMatch(/^\s+\d/m);
+  });
 });
 
 describe('assignEnumsToServices owned-service dependency reassignment', () => {

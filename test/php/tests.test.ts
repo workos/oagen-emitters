@@ -419,4 +419,53 @@ describe('generateTests', () => {
     // The plain-string placeholder must NOT be used for a date-time field.
     expect(content).not.toContain("assertSame('test_value', $body['range_start'])");
   });
+
+  it('references enum cases by their guarded name when the value starts with a digit', () => {
+    const enumSpec: ApiSpec = {
+      ...spec,
+      enums: [
+        {
+          name: 'RetentionPeriod',
+          values: [
+            { name: '1_MONTH', value: '1_MONTH' },
+            { name: '10_YEARS', value: '10_YEARS' },
+          ],
+        },
+      ],
+      models: [
+        ...models,
+        {
+          name: 'SetRetention',
+          fields: [{ name: 'retention_period', type: { kind: 'enum', name: 'RetentionPeriod' }, required: true }],
+        },
+      ],
+      services: [
+        {
+          name: 'AuditLogs',
+          operations: [
+            {
+              name: 'setRetention',
+              httpMethod: 'put',
+              path: '/audit_logs/retention',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              requestBody: { kind: 'model', name: 'SetRetention' },
+              response: { kind: 'model', name: 'Organization' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const content = generateTests(enumSpec, { ...ctx, spec: enumSpec }).find(
+      (f) => f.path === 'tests/Service/AuditLogsTest.php',
+    )!.content;
+
+    // Must match the case name enums.ts declares — `::1Month` is a parse error.
+    expect(content).toContain('RetentionPeriod::Value1Month');
+    expect(content).not.toContain('RetentionPeriod::1Month');
+  });
 });

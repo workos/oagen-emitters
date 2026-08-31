@@ -818,6 +818,77 @@ describe('go/resources', () => {
       );
       expect(content).not.toContain('if p.ExternalID != nil {');
     });
+
+    it('renames group types that would collide with a generated model', () => {
+      // Mount `AuditLogs` + group `retention` derives `AuditLogsRetention`,
+      // which is also the struct generated for the AuditLogsRetention model.
+      // Go puts both in one package, so the group types must step aside.
+      const services: Service[] = [
+        {
+          name: 'AuditLogs',
+          operations: [
+            makeOp({
+              name: 'setRetention',
+              httpMethod: 'put',
+              path: '/organizations/{id}/audit_logs_retention',
+              pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              requestBody: { kind: 'model', name: 'UpdateAuditLogsRetention' },
+              response: { kind: 'model', name: 'AuditLogsRetention' },
+              parameterGroups: [
+                {
+                  name: 'retention',
+                  optional: false,
+                  variants: [
+                    {
+                      name: 'period',
+                      parameters: [
+                        { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: true },
+                      ],
+                    },
+                    {
+                      name: 'period_in_days',
+                      parameters: [
+                        {
+                          name: 'retention_period_in_days',
+                          type: { kind: 'primitive', type: 'integer' },
+                          required: true,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          ],
+        },
+      ];
+      const spec = makeSpec(services, [
+        {
+          name: 'AuditLogsRetention',
+          fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+        },
+        {
+          name: 'UpdateAuditLogsRetention',
+          fields: [
+            { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: false },
+            { name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: false },
+          ],
+        },
+      ]);
+      const content = generateResources(services, makeCtx(spec))[0].content;
+
+      // The interface, its marker method, the variant structs, and the params
+      // field all move to the disambiguated name together.
+      expect(content).toContain('type AuditLogsRetentionGroup interface {');
+      expect(content).toContain('isAuditLogsRetentionGroup()');
+      expect(content).toContain('type AuditLogsRetentionGroupPeriod struct {');
+      expect(content).toContain('type AuditLogsRetentionGroupPeriodInDays struct {');
+      expect(content).toContain('Retention AuditLogsRetentionGroup `url:"-" json:"-"`');
+
+      // Nothing may redeclare the model's name.
+      expect(content).not.toContain('type AuditLogsRetention interface {');
+      expect(content).not.toContain('type AuditLogsRetention struct {');
+    });
   });
 
   it('adds NullFields and MarshalJSON for nullable optional body fields', () => {

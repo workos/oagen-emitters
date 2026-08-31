@@ -7,6 +7,17 @@ import { isNodeOwnedService } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
+/**
+ * PascalCase a wire value into a member name. Wire values may legitimately
+ * start with a digit (e.g. `1_MONTH`), which `toPascalCase` preserves and
+ * TypeScript rejects both as an enum member and as an unquoted object key.
+ * Prefix those; the member's value carries the real wire string.
+ */
+function memberNameFor(value: string): string {
+  const pascal = toPascalCase(value);
+  return !pascal || /^[0-9]/.test(pascal) ? `Value${pascal || value}` : pascal;
+}
+
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   if (enums.length === 0) return [];
 
@@ -59,7 +70,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push(`  ${memberName} = ${valueStr},`);
       }
       for (const val of missingValues) {
-        const memberName = toPascalCase(val);
+        const memberName = memberNameFor(val);
         lines.push(`  ${memberName} = '${val}',`);
       }
       lines.push('}');
@@ -103,7 +114,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         const valueKey = String(v.value);
         if (seenValues.has(valueKey)) continue;
         seenValues.add(valueKey);
-        const memberName = existingMembers?.get(valueKey) ?? toPascalCase(valueKey);
+        const memberName = existingMembers?.get(valueKey) ?? memberNameFor(valueKey);
         if (seenMembers.has(memberName)) continue;
         seenMembers.add(memberName);
         const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
