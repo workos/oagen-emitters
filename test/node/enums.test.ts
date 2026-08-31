@@ -173,6 +173,34 @@ describe('generateEnums', () => {
     // covers both. A duplicate key would also be a TS error.
     expect(content.match(/Value1Month2?:/g)).toHaveLength(2);
   });
+
+  it('does not let a generated member name displace a shipped one', () => {
+    // The shipped value sits AFTER the new one in spec order, so without
+    // pre-reserving shipped names the generated member claims `Value1Month`
+    // first and the shipped value is skipped out of existence.
+    const surface = emptyLiveSurface();
+    surface.constObjectEnums.set('RetentionPeriod', new Map([['1_MONTH_LEGACY', 'Value1Month']]));
+    setActiveLiveSurface(surface);
+    try {
+      const enums: Enum[] = [
+        {
+          name: 'RetentionPeriod',
+          values: [
+            { name: '1_MONTH', value: '1_MONTH' },
+            { name: '1_MONTH_LEGACY', value: '1_MONTH_LEGACY' },
+          ],
+        },
+      ];
+
+      const content = generateEnums(enums, ctx)[0].content;
+
+      // The shipped member keeps its name; the new value steps aside.
+      expect(content).toContain("Value1Month: '1_MONTH_LEGACY',");
+      expect(content).toContain("Value1Month2: '1_MONTH',");
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
 });
 
 describe('assignEnumsToServices owned-service dependency reassignment', () => {

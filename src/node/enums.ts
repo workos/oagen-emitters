@@ -117,27 +117,37 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       //      with a member for this exact value, reuse the existing member
       //      name. This preserves acronym casing (`DSync`, `SAML`, `JWT`)
       //      that the simpler `toPascalCase` would otherwise flatten.
-      //   2. Otherwise PascalCase the value, suffixed to stay unique.
-      //   3. Skip duplicate values. A live-surface name that duplicates is
-      //      still skipped rather than suffixed — renaming a shipped member
-      //      would be the breaking change we're avoiding in (1).
+      //   2. Otherwise PascalCase the value, suffixed to stay unique and never
+      //      claiming a name some other value already ships under.
+      //   3. Skip duplicate values. Two values claiming one shipped name still
+      //      yields one member — a shipped name is never suffixed, since
+      //      renaming it is the breaking change (1) exists to avoid.
       const values = enumDef.values;
       const existingMembers = liveSurfaceConstEnumMembers(enumDef.name);
-      const seenMembers = new Set<string>();
+      // Reserve every shipped member name before deriving any generated one.
+      // Values are visited in spec order, so without this pre-pass a generated
+      // name could claim a shipped name first and displace the value that
+      // already ships under it — dropping that value from the const object and
+      // the union derived from it.
+      const taken = new Set<string>();
+      for (const v of values) {
+        const shipped = existingMembers?.get(String(v.value));
+        if (shipped) taken.add(shipped);
+      }
+      const emitted = new Set<string>();
       const seenValues = new Set<string>();
       lines.push(`export const ${enumDef.name} = {`);
       for (const v of values) {
         const valueKey = String(v.value);
         if (seenValues.has(valueKey)) continue;
         seenValues.add(valueKey);
-        // memberNameFor reserves the name it returns; a live-surface name has
-        // to be reserved (or skipped) here.
+        // memberNameFor reserves the name it returns into `taken`. A shipped
+        // name is already reserved, so it is deduped against what was actually
+        // emitted — two values claiming one shipped name still yields one.
         const shipped = existingMembers?.get(valueKey);
-        const memberName = shipped ?? memberNameFor(valueKey, seenMembers);
-        if (shipped) {
-          if (seenMembers.has(shipped)) continue;
-          seenMembers.add(shipped);
-        }
+        if (shipped && emitted.has(shipped)) continue;
+        const memberName = shipped ?? memberNameFor(valueKey, taken);
+        emitted.add(memberName);
         const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
         if (v.description || v.deprecated) {
           const parts: string[] = [];
