@@ -316,4 +316,20 @@ describe('generateEnums', () => {
     const nextLine = content.slice(activeIdx).split('\n')[1];
     expect(nextLine).not.toContain('"""');
   });
+  it('prefixes members whose wire value starts with a digit', () => {
+    const enums: Enum[] = [
+      {
+        name: 'RetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: '10_YEARS', value: '10_YEARS' },
+        ],
+      },
+    ];
+
+    const files = generateEnums(enums, ctx);
+    expect(files.length).toBe(1);
+    expect(files[0].content).toContain('    VALUE_1_MONTH = "1_MONTH"');
+    expect(files[0].content).toContain('    VALUE_10_YEARS = "10_YEARS"');
+  });
 });
