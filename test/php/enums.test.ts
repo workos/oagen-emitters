@@ -170,4 +170,21 @@ describe('generateEnums', () => {
     expect(result[0].content).toContain('case FooBar =');
     expect(result[0].content).toContain('case FooBar2 =');
   });
+  it('prefixes case names that would start with a digit', () => {
+    const enums: Enum[] = [
+      {
+        name: 'RetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: '10_YEARS', value: '10_YEARS' },
+        ],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain("case Value1Month = '1_MONTH';");
+    expect(result[0].content).toContain("case Value10Years = '10_YEARS';");
+  });
 });

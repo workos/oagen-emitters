@@ -309,3 +309,13 @@ export function buildServiceDirMap(grouping: NamespaceGrouping): Map<string, str
   }
   return map;
 }
+
+/**
+ * PHP enum case names cannot start with a digit (e.g. wire value "1_MONTH"
+ * pascal-cases to "1Month"); prefix those with "Value". Every emitter that
+ * writes a case declaration or an `Enum::Case` reference must route the
+ * pascal-cased name through this guard so the two stay in sync.
+ */
+export function guardEnumCaseName(caseName: string): string {
+  return /^[0-9]/.test(caseName) ? `Value${caseName}` : caseName;
+}

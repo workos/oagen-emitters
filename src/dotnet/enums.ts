@@ -106,6 +106,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (usedWireValues.has(String(v.value))) continue;
       usedWireValues.add(String(v.value));
       let memberName = className(String(v.value));
+      // C# identifiers cannot start with a digit (e.g. wire value "1_MONTH"
+      // pascal-cases to "1Month"); EnumMember keeps the wire value intact.
+      if (/^[0-9]/.test(memberName)) memberName = `Value${memberName}`;
       // Avoid collision with the type itself or previously used names
       if (memberName === typeName || usedNames.has(memberName)) {
         let suffix = 2;

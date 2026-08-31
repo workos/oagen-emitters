@@ -10,7 +10,14 @@ import type {
 } from '@workos/oagen';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
-import { className, fieldName, resolveMethodName, buildExportedClassNameSet, resolveServiceTarget } from './naming.js';
+import {
+  className,
+  fieldName,
+  guardEnumCaseName,
+  resolveMethodName,
+  buildExportedClassNameSet,
+  resolveServiceTarget,
+} from './naming.js';
 import { isListWrapperModel } from './models.js';
 import {
   scopedMountGroups,
@@ -758,7 +765,7 @@ function buildMethodParams(
       // Only enums are safe to default this way — primitives stay nullable so
       // callers can distinguish "unset" from "explicit value".
       const enumType = mapTypeRef(q.type, { qualified: true });
-      const caseName = toPascalCase(String(q.default));
+      const caseName = guardEnumCaseName(toPascalCase(String(q.default)));
       optional.push(`${enumType} $${phpName} = ${enumType}::${caseName}`);
     } else {
       const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;

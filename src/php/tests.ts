@@ -11,6 +11,7 @@ import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import {
   className,
   enumClassName,
+  guardEnumCaseName,
   resolveMethodName,
   snakeName,
   servicePropertyName,
@@ -433,7 +434,7 @@ function generateTestValue(
         if (e && e.values.length > 0) {
           const enumClass = enumClassName(ref.name);
           // Must match the case-name logic in enums.ts
-          const caseName = toPascalCase(String(e.values[0].name).toLowerCase());
+          const caseName = guardEnumCaseName(toPascalCase(String(e.values[0].name).toLowerCase()));
           return `\\WorkOS\\Resource\\${enumClass}::${caseName}`;
         }
       }

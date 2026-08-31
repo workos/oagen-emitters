@@ -336,4 +336,42 @@ describe('dotnet/enums', () => {
     expect(content).toContain('[System.Obsolete');
     expect(content).toContain('OldStatus');
   });
+  it('prefixes members whose wire value starts with a digit', () => {
+    const enums: Enum[] = [
+      {
+        name: 'RetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: '10_YEARS', value: '10_YEARS' },
+        ],
+      },
+    ];
+
+    const service: Service = {
+      name: 'AuditLogs',
+      operations: [
+        {
+          name: 'setRetention',
+          httpMethod: 'put',
+          path: '/organizations/{id}/audit_logs_retention',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [{ name: 'retention_period', type: { kind: 'enum', name: 'RetentionPeriod' }, required: false }],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuditLogsRetention' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+
+    const files = generateEnums(enums, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service] },
+    });
+    expect(files.length).toBe(1);
+    expect(files[0].content).toContain('[EnumMember(Value = "1_MONTH")]');
+    expect(files[0].content).toContain('Value1Month,');
+    expect(files[0].content).toContain('[EnumMember(Value = "10_YEARS")]');
+    expect(files[0].content).toContain('Value10Years,');
+  });
 });

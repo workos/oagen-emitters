@@ -201,6 +201,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const usedNames = new Set<string>();
       for (const v of uniqueValues) {
         let memberName = toUpperSnakeCase(String(v.value));
+        // Python identifiers cannot start with a digit (e.g. wire value
+        // "1_MONTH"); a leading underscore would make the member private to
+        // the Enum machinery, so prefix those too.
+        if (!/^[A-Z]/i.test(memberName)) memberName = `VALUE_${memberName}`;
         if (usedNames.has(memberName)) {
           let suffix = 2;
           while (usedNames.has(`${memberName}_${suffix}`)) suffix++;

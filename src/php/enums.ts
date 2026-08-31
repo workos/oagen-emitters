@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
-import { className, resolveEnumName } from './naming.js';
+import { className, guardEnumCaseName, resolveEnumName } from './naming.js';
 import { phpDocComment } from './utils.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
@@ -43,7 +43,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // Deduplicate case names
     const usedNames = new Map<string, number>();
     for (const val of e.values) {
-      let caseName = toPascalCase(val.name.toLowerCase());
+      let caseName = guardEnumCaseName(toPascalCase(val.name.toLowerCase()));
       const baseName = caseName;
       const count = usedNames.get(baseName) ?? 0;
       if (count > 0) {
