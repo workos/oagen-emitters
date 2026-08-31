@@ -151,6 +151,28 @@ describe('generateEnums', () => {
     // A bare `1Month:` key is not a valid unquoted identifier.
     expect(content).not.toMatch(/^\s+\d/m);
   });
+
+  it('keeps every wire value when the digit prefix collides with a sibling', () => {
+    // `1_MONTH` guards to Value1Month; `VALUE_1_MONTH` pascal-cases to it
+    // directly. Dropping the loser would omit a value from the union type.
+    const enums: Enum[] = [
+      {
+        name: 'RetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: 'VALUE_1_MONTH', value: 'VALUE_1_MONTH' },
+        ],
+      },
+    ];
+
+    const content = generateEnums(enums, ctx)[0].content;
+
+    expect(content).toContain("Value1Month: '1_MONTH',");
+    expect(content).toContain("Value1Month2: 'VALUE_1_MONTH',");
+    // Both wire values survive into the const object, so the derived union
+    // covers both. A duplicate key would also be a TS error.
+    expect(content.match(/Value1Month2?:/g)).toHaveLength(2);
+  });
 });
 
 describe('assignEnumsToServices owned-service dependency reassignment', () => {

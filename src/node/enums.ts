@@ -8,14 +8,26 @@ import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-su
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
- * PascalCase a wire value into a member name. Wire values may legitimately
- * start with a digit (e.g. `1_MONTH`), which `toPascalCase` preserves and
- * TypeScript rejects both as an enum member and as an unquoted object key.
- * Prefix those; the member's value carries the real wire string.
+ * PascalCase a wire value into a member name, unique within `taken`.
+ *
+ * Wire values may legitimately start with a digit (e.g. `1_MONTH`), which
+ * `toPascalCase` preserves and TypeScript rejects both as an enum member and as
+ * an unquoted object key. Prefix those; the member's value carries the real
+ * wire string.
+ *
+ * The prefix can itself collide — `1_MONTH` and a sibling `VALUE_1_MONTH` both
+ * pascal-case to `Value1Month` — so suffix until unique, as the dotnet, kotlin,
+ * and ruby emitters do. Dropping the loser instead would silently omit a wire
+ * value from the const object and the union type derived from it.
  */
-function memberNameFor(value: string): string {
+function memberNameFor(value: string, taken: Set<string>): string {
   const pascal = toPascalCase(value);
-  return !pascal || /^[0-9]/.test(pascal) ? `Value${pascal || value}` : pascal;
+  const base = !pascal || /^[0-9]/.test(pascal) ? `Value${pascal || value}` : pascal;
+  let name = base;
+  let suffix = 2;
+  while (taken.has(name)) name = `${base}${suffix++}`;
+  taken.add(name);
+  return name;
 }
 
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
@@ -65,12 +77,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       hasNewValues = missingValues.length > 0;
 
       lines.push(`export enum ${enumDef.name} {`);
+      // Seed with the baseline's own member names so an appended value cannot
+      // redeclare one of them.
+      const takenMembers = new Set(Object.keys(baselineEnum.members));
       for (const [memberName, memberValue] of Object.entries(baselineEnum.members)) {
         const valueStr = typeof memberValue === 'string' ? `'${memberValue}'` : String(memberValue);
         lines.push(`  ${memberName} = ${valueStr},`);
       }
       for (const val of missingValues) {
-        const memberName = memberNameFor(val);
+        const memberName = memberNameFor(val, takenMembers);
         lines.push(`  ${memberName} = '${val}',`);
       }
       lines.push('}');
@@ -102,9 +117,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       //      with a member for this exact value, reuse the existing member
       //      name. This preserves acronym casing (`DSync`, `SAML`, `JWT`)
       //      that the simpler `toPascalCase` would otherwise flatten.
-      //   2. Otherwise PascalCase the value.
-      //   3. Skip duplicate values and duplicate member names — the union
-      //      type derived from the const captures every kept value.
+      //   2. Otherwise PascalCase the value, suffixed to stay unique.
+      //   3. Skip duplicate values. A live-surface name that duplicates is
+      //      still skipped rather than suffixed — renaming a shipped member
+      //      would be the breaking change we're avoiding in (1).
       const values = enumDef.values;
       const existingMembers = liveSurfaceConstEnumMembers(enumDef.name);
       const seenMembers = new Set<string>();
@@ -114,9 +130,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         const valueKey = String(v.value);
         if (seenValues.has(valueKey)) continue;
         seenValues.add(valueKey);
-        const memberName = existingMembers?.get(valueKey) ?? memberNameFor(valueKey);
-        if (seenMembers.has(memberName)) continue;
-        seenMembers.add(memberName);
+        // memberNameFor reserves the name it returns; a live-surface name has
+        // to be reserved (or skipped) here.
+        const shipped = existingMembers?.get(valueKey);
+        const memberName = shipped ?? memberNameFor(valueKey, seenMembers);
+        if (shipped) {
+          if (seenMembers.has(shipped)) continue;
+          seenMembers.add(shipped);
+        }
         const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
         if (v.description || v.deprecated) {
           const parts: string[] = [];
