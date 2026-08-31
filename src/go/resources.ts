@@ -274,7 +274,12 @@ let reservedTypeNames: ReadonlySet<string> = new Set();
  */
 function groupInterfaceName(mountName: string, groupName: string): string {
   const base = `${className(mountName)}${fieldName(groupName)}`;
-  return reservedTypeNames.has(base) ? `${base}Union` : base;
+  if (!reservedTypeNames.has(base)) return base;
+  let candidate = `${base}Union`;
+  for (let n = 2; reservedTypeNames.has(candidate); n++) {
+    candidate = `${base}Union${n}`;
+  }
+  return candidate;
 }
 
 /** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */

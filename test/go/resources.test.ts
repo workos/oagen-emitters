@@ -617,6 +617,26 @@ describe('go/resources', () => {
       expect(content).toContain('func (p AuthorizationParentResourceUnionByID) isAuthorizationParentResourceUnion()');
     });
 
+    it('escalates the suffix when the Union name is reserved too', () => {
+      const services = makeGroupedServices();
+      const models: Model[] = [
+        {
+          name: 'AuthorizationParentResource',
+          fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+        {
+          name: 'AuthorizationParentResourceUnion',
+          fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ];
+      const spec = makeSpec(services, models);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      expect(content).toContain('type AuthorizationParentResourceUnion2 interface {');
+      expect(content).not.toContain('type AuthorizationParentResourceUnion interface {');
+    });
+
     it('generates applyToQuery methods using original wire names', () => {
       const services = makeGroupedServices();
       const spec = makeSpec(services);
