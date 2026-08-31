@@ -13,9 +13,17 @@ const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
  * merger deep-merges them into the existing hand-written `WorkOS.kt`.
  *
  * Each referenced service class is hoisted into a top-level `import` so the
- * accessor bodies use the short class name. The live `WorkOS.kt` is marked
- * `@oagen-ignore-file` and won't be regenerated, but the emitter still emits
- * the cleaner shape so future regenerations don't reintroduce the FQN noise.
+ * accessor bodies use the short class name.
+ *
+ * The accessor KDoc ("Lazily-constructed [X] accessor…") is load-bearing: it is
+ * how the merger tells a generated accessor from a hand-written one, so an
+ * accessor whose service leaves the spec — a renamed or resplit tag — gets
+ * pruned along with its import instead of dangling as a reference to a class
+ * that is no longer emitted. Don't reword it here without updating
+ * `KOTLIN_MANAGED_ACCESSOR_DOC` in oagen's Kotlin merge adapter.
+ *
+ * Never scope this on `ctx.scopedServices`: pruning assumes the emitted set is
+ * every service, so a partial client would delete the accessors it left out.
  */
 export function generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   const targets = deduplicateByMount(spec.services, ctx);
