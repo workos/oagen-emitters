@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.8](https://github.com/workos/oagen-emitters/compare/v0.24.7...v0.24.8) (2026-08-31)
+
+
+### Bug Fixes
+
+* prefix enum members whose wire value starts with a digit ([#232](https://github.com/workos/oagen-emitters/issues/232)) ([f2f0b0d](https://github.com/workos/oagen-emitters/commit/f2f0b0dc3f3f69f7d5ba00f665e09266025a084e))
+
 ## [0.24.7](https://github.com/workos/oagen-emitters/compare/v0.24.6...v0.24.7) (2026-08-31)
 
 
