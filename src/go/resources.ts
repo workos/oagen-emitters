@@ -61,6 +61,11 @@ export function resolveResourceClassName(service: Service, ctx: EmitterContext):
 export function generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
   if (services.length === 0) return [];
 
+  reservedTypeNames = new Set([
+    ...ctx.spec.models.map((m) => className(m.name)),
+    ...ctx.spec.enums.map((e) => className(e.name)),
+  ]);
+
   const files: GeneratedFile[] = [];
   const mountGroups = scopedMountGroups(ctx);
 
@@ -253,9 +258,23 @@ function isBodyGroup(group: import('@workos/oagen').ParameterGroup, op: Operatio
   return group.variants.every((v) => v.parameters.every((p) => !queryNames.has(p.name)));
 }
 
-/** Interface type name for a parameter group (e.g. AuthorizationParentResource). */
+/**
+ * Type names already claimed by generated models and enums. Go's single flat
+ * package means a group interface named `<Mount><Group>` can collide with a
+ * model struct (e.g. the AuditLogs `retention` body group vs the
+ * `AuditLogsRetention` response model); populated per generateResources run.
+ */
+let reservedTypeNames: ReadonlySet<string> = new Set();
+
+/**
+ * Interface type name for a parameter group (e.g. AuthorizationParentResource).
+ * When the natural name is taken by a model or enum, the union interface —
+ * the artificial construct — yields and takes a `Union` suffix; variant
+ * struct names follow the resolved interface name.
+ */
 function groupInterfaceName(mountName: string, groupName: string): string {
-  return `${className(mountName)}${fieldName(groupName)}`;
+  const base = `${className(mountName)}${fieldName(groupName)}`;
+  return reservedTypeNames.has(base) ? `${base}Union` : base;
 }
 
 /** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */

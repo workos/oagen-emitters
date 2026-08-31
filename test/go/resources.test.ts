@@ -599,6 +599,24 @@ describe('go/resources', () => {
       expect(content).toContain('func (p AuthorizationParentResourceByExternalID) isAuthorizationParentResource()');
     });
 
+    it('suffixes the interface with Union when a model claims the natural name', () => {
+      const services = makeGroupedServices();
+      const collidingModel: Model = {
+        name: 'AuthorizationParentResource',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      };
+      const spec = makeSpec(services, [collidingModel]);
+      const files = generateResources(services, makeCtx(spec));
+      const content = files[0].content;
+
+      expect(content).toContain('type AuthorizationParentResourceUnion interface {');
+      expect(content).toContain('isAuthorizationParentResourceUnion()');
+      expect(content).not.toContain('type AuthorizationParentResource interface {');
+      // Variant structs follow the resolved interface name
+      expect(content).toContain('type AuthorizationParentResourceUnionByID struct {');
+      expect(content).toContain('func (p AuthorizationParentResourceUnionByID) isAuthorizationParentResourceUnion()');
+    });
+
     it('generates applyToQuery methods using original wire names', () => {
       const services = makeGroupedServices();
       const spec = makeSpec(services);
