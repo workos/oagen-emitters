@@ -803,4 +803,183 @@ describe('dotnet/resources', () => {
 
     expect(render([])).toBe(render(undefined));
   });
+
+  it('renames group types that would collide with a generated model', () => {
+    // Mount `AuditLogs` + group `retention` derives `AuditLogsRetention`, which
+    // is also the class generated for the AuditLogsRetention model. Every
+    // generated type shares the one WorkOS namespace, so the group types must
+    // step aside or the SDK fails to compile with CS0101.
+    const models: Model[] = [
+      {
+        name: 'AuditLogsRetention',
+        fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+      },
+      {
+        name: 'UpdateAuditLogsRetention',
+        fields: [
+          { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: false },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'updateAuditLogsRetention',
+            httpMethod: 'put',
+            path: '/organizations/{organizationId}/audit_logs_retention',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateAuditLogsRetention' },
+            response: { kind: 'model', name: 'AuditLogsRetention' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'retention',
+                optional: false,
+                variants: [
+                  {
+                    name: 'period',
+                    parameters: [
+                      { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                  {
+                    name: 'period_in_days',
+                    parameters: [
+                      {
+                        name: 'retention_period_in_days',
+                        type: { kind: 'primitive', type: 'integer' },
+                        required: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+
+    const optContent = files.find((f) => f.path.includes('Options.cs'))!.content;
+    const svcContent = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+
+    // The base class, the variant subclasses, and the options property all move
+    // to the disambiguated name together.
+    expect(optContent).toContain('public abstract class AuditLogsRetentionGroup { }');
+    expect(optContent).toContain('public class AuditLogsRetentionGroupPeriod : AuditLogsRetentionGroup');
+    expect(optContent).toContain('public class AuditLogsRetentionGroupPeriodInDays : AuditLogsRetentionGroup');
+    expect(optContent).toContain('public AuditLogsRetentionGroup Retention { get; set; } = default!;');
+
+    // Nothing may redeclare the model's name, and the service's pattern matches
+    // have to name the same variant classes the options file declares.
+    expect(optContent).not.toContain('public abstract class AuditLogsRetention { }');
+    expect(svcContent).toContain('is AuditLogsRetentionGroupPeriod ');
+    expect(svcContent).toContain('is AuditLogsRetentionGroupPeriodInDays ');
+  });
+
+  it('keeps a disambiguated group name off another group in the same mount', () => {
+    // `retention` collides with the AuditLogsRetention model and moves to
+    // AuditLogsRetentionGroup — which is what `retention_group` on the sibling
+    // operation derives naturally. Both groups must still get their own
+    // declarations: deduping on the class name rather than the group's identity
+    // would drop the second group's classes while its options property and `is`
+    // patterns went on referencing them.
+    const models: Model[] = [
+      {
+        name: 'AuditLogsRetention',
+        fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'setRetention',
+            httpMethod: 'put',
+            path: '/organizations/{organizationId}/audit_logs_retention',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuditLogsRetention' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'retention',
+                optional: false,
+                variants: [
+                  {
+                    name: 'period',
+                    parameters: [
+                      { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            name: 'setRetentionGroup',
+            httpMethod: 'put',
+            path: '/organizations/{organizationId}/audit_logs_retention_group',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'AuditLogsRetention' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'retention_group',
+                optional: false,
+                variants: [
+                  {
+                    name: 'slug',
+                    parameters: [
+                      { name: 'retention_group_slug', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+
+    const optContent = files.find((f) => f.path.includes('Options.cs'))!.content;
+    const svcContent = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+
+    // Two distinct base classes, each declared exactly once.
+    const declarations = [...optContent.matchAll(/public abstract class (\w+) \{ \}/g)].map((m) => m[1]);
+    expect(declarations).toHaveLength(new Set(declarations).size);
+    expect(declarations).toHaveLength(2);
+
+    // Every variant class the service pattern-matches on has to be declared.
+    for (const variantClass of [...svcContent.matchAll(/ is (\w+) \w+\)/g)].map((m) => m[1])) {
+      expect(optContent).toContain(`public class ${variantClass} : `);
+    }
+
+    // Each options property points at its own group's base class.
+    const retentionBase = optContent.match(/public (\w+) Retention \{ get; set; \}/)![1];
+    const groupBase = optContent.match(/public (\w+) RetentionGroup \{ get; set; \}/)![1];
+    expect(retentionBase).not.toBe(groupBase);
+    expect(optContent).toContain(`public abstract class ${retentionBase} { }`);
+    expect(optContent).toContain(`public abstract class ${groupBase} { }`);
+  });
 });

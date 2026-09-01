@@ -245,3 +245,26 @@ export function lowerFirstForDoc(s: string): string {
   }
   return s.charAt(0).toLowerCase() + s.slice(1);
 }
+
+/**
+ * Suffix `base` until it no longer collides with a reserved type name.
+ *
+ * Parameter-group type names are derived from the mount and group names, so in
+ * languages that prefix the mount they can land on a name a model already owns:
+ * mount `AuditLogs` + group `retention` yields `AuditLogsRetention`, which is
+ * also the type generated for the `AuditLogsRetention` schema. Where models and
+ * group types share one namespace that is a redeclaration error rather than a
+ * shadow, so the group types have to step aside.
+ *
+ * `Group` reads naturally for parameter-group types; the numeric fallback only
+ * matters if a schema is literally named `<Mount><Group>Group`. Every emitter
+ * that guards its group names uses this, so a group renamed in one language is
+ * renamed the same way in the others.
+ */
+export function avoidReservedTypeName(base: string, reserved: Set<string>): string {
+  if (!reserved.has(base)) return base;
+  let candidate = `${base}Group`;
+  let suffix = 2;
+  while (reserved.has(candidate)) candidate = `${base}Group${suffix++}`;
+  return candidate;
+}
