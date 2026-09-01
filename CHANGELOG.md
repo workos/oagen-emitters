@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.11](https://github.com/workos/oagen-emitters/compare/v0.24.10...v0.24.11) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ios:** stop requiredness changes from renumbering labeled arguments ([#241](https://github.com/workos/oagen-emitters/issues/241)) ([a637578](https://github.com/workos/oagen-emitters/commit/a637578b6918491d0eb261e974ec5acb44af8473))
+* **rust:** keep a now-optional field in new() instead of dropping it ([#242](https://github.com/workos/oagen-emitters/issues/242)) ([e0aadd8](https://github.com/workos/oagen-emitters/commit/e0aadd8be3f54b307801ae456e2ba0aed57db4cd))
+
 ## [0.24.10](https://github.com/workos/oagen-emitters/compare/v0.24.9...v0.24.10) (2026-09-01)
 
 
