@@ -1054,3 +1054,132 @@ describe('rust/resources', () => {
     expect(f.content).toContain('pub session_id: Option<String>,');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Constructor stability across requiredness changes (issue #239)
+// ---------------------------------------------------------------------------
+
+/**
+ * `SSO.get_profile_and_token` with `code` required, then optional. Taking only
+ * the currently-required fields dropped `code` from `new()` on the flip, so
+ * `GetProfileAndTokenParams::new(code)` stopped compiling and the surviving
+ * arguments renumbered.
+ */
+function ssoService(codeRequired: boolean): Service {
+  return {
+    name: 'SSO',
+    operations: [
+      {
+        name: 'get_profile_and_token',
+        httpMethod: 'get',
+        path: '/sso/token',
+        pathParams: [],
+        queryParams: [
+          { name: 'code', type: { kind: 'primitive', type: 'string' }, required: codeRequired },
+          { name: 'client_id', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+        headerParams: [],
+        response: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+}
+
+/** An extracted baseline in which `new` took `code` then `client_id`. */
+const baselineSurface = {
+  language: 'rust',
+  extractedFrom: '',
+  extractedAt: '',
+  classes: {
+    GetProfileAndTokenParams: {
+      name: 'GetProfileAndTokenParams',
+      methods: {
+        new: [
+          {
+            name: 'new',
+            params: [
+              { name: 'code', type: 'impl Into<String>', optional: false },
+              { name: 'client_id', type: 'impl Into<String>', optional: false },
+            ],
+            returnType: 'Self',
+            async: false,
+          },
+        ],
+      },
+      properties: {},
+      constructorParams: [],
+    },
+  },
+  interfaces: {},
+  typeAliases: {},
+  enums: {},
+  exports: {},
+};
+
+/** The generated `pub fn new(...)` signature line. */
+function ctorSignature(service: Service, apiSurface?: unknown): string {
+  const base = ctxWithResolved([service]);
+  const withSurface = { ...base, apiSurface: apiSurface as EmitterContext['apiSurface'] };
+  const content = generateResources([service], withSurface, new UnionRegistry()).find((f) =>
+    f.path.endsWith('sso.rs'),
+  )!.content;
+  return content
+    .split('\n')
+    .find((l) => l.includes('pub fn new('))!
+    .trim();
+}
+
+describe('rust constructor stability', () => {
+  it('takes only required fields when no baseline surface is available', () => {
+    expect(ctorSignature(ssoService(true))).toBe(
+      'pub fn new(code: impl Into<String>, client_id: impl Into<String>) -> Self {',
+    );
+    // Without a baseline this is the pre-existing (breaking) behaviour: the
+    // flip silently drops `code`. Documented so the baseline case below is
+    // clearly the thing that fixes it.
+    expect(ctorSignature(ssoService(false))).toBe('pub fn new(client_id: impl Into<String>) -> Self {');
+  });
+
+  it('keeps a now-optional field in new() with its baseline type', () => {
+    // Byte-identical to the required-field signature. A retained parameter must
+    // keep `impl Into<String>` rather than widening to `impl Into<Option<String>>`:
+    // std has no `From<&str> for Option<String>`, so widening would reject the
+    // `new("code", "client_id")` that compiled against the baseline.
+    expect(ctorSignature(ssoService(false), baselineSurface)).toBe(
+      'pub fn new(code: impl Into<String>, client_id: impl Into<String>) -> Self {',
+    );
+    expect(ctorSignature(ssoService(false), baselineSurface)).toBe(ctorSignature(ssoService(true), baselineSurface));
+  });
+
+  it('wraps a retained field in Some(), since the struct field is now Option<T>', () => {
+    const base = ctxWithResolved([ssoService(false)]);
+    const content = generateResources(
+      [ssoService(false)],
+      { ...base, apiSurface: baselineSurface as EmitterContext['apiSurface'] },
+      new UnionRegistry(),
+    ).find((f) => f.path.endsWith('sso.rs'))!.content;
+    expect(content).toContain('code: Some(code.into()),');
+  });
+
+  it('leaves a still-required field exactly as before', () => {
+    expect(ctorSignature(ssoService(true), baselineSurface)).toBe(
+      'pub fn new(code: impl Into<String>, client_id: impl Into<String>) -> Self {',
+    );
+  });
+
+  it('appends a newly-required field after the baseline ones rather than interleaving', () => {
+    const withExtra = ssoService(true);
+    withExtra.operations[0].queryParams!.unshift({
+      name: 'audience',
+      type: { kind: 'primitive', type: 'string' },
+      required: true,
+    });
+    // `audience` sorts first in the struct but must come last in `new()`:
+    // inserting it at position 0 would renumber every baseline call site.
+    expect(ctorSignature(withExtra, baselineSurface)).toBe(
+      'pub fn new(code: impl Into<String>, client_id: impl Into<String>, audience: impl Into<String>) -> Self {',
+    );
+  });
+});
