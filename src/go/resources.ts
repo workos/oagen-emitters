@@ -31,7 +31,7 @@ import {
   collectBodyFieldTypes,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
-import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
+import { lowerFirstForDoc, fieldDocComment, avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
 
 /**
@@ -270,22 +270,9 @@ function reservedTypeNames(ctx: EmitterContext): Set<string> {
   return reserved;
 }
 
-/**
- * Suffix `base` until it no longer collides with a reserved type name. `Group`
- * reads naturally for parameter-group types; the numeric fallback only matters
- * if a schema is literally named `<Mount><Group>Group`.
- */
-function avoidReserved(base: string, reserved: Set<string>): string {
-  if (!reserved.has(base)) return base;
-  let candidate = `${base}Group`;
-  let suffix = 2;
-  while (reserved.has(candidate)) candidate = `${base}Group${suffix++}`;
-  return candidate;
-}
-
 /** Interface type name for a parameter group (e.g. AuthorizationParentResource). */
 function groupInterfaceName(mountName: string, groupName: string, reserved: Set<string>): string {
-  return avoidReserved(`${className(mountName)}${fieldName(groupName)}`, reserved);
+  return avoidReservedTypeName(`${className(mountName)}${fieldName(groupName)}`, reserved);
 }
 
 /** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */
@@ -295,7 +282,10 @@ function groupVariantTypeName(
   variantName: string,
   reserved: Set<string>,
 ): string {
-  return avoidReserved(`${groupInterfaceName(mountName, groupName, reserved)}${fieldName(variantName)}`, reserved);
+  return avoidReservedTypeName(
+    `${groupInterfaceName(mountName, groupName, reserved)}${fieldName(variantName)}`,
+    reserved,
+  );
 }
 
 /**

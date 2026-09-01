@@ -803,4 +803,87 @@ describe('dotnet/resources', () => {
 
     expect(render([])).toBe(render(undefined));
   });
+
+  it('renames group types that would collide with a generated model', () => {
+    // Mount `AuditLogs` + group `retention` derives `AuditLogsRetention`, which
+    // is also the class generated for the AuditLogsRetention model. Every
+    // generated type shares the one WorkOS namespace, so the group types must
+    // step aside or the SDK fails to compile with CS0101.
+    const models: Model[] = [
+      {
+        name: 'AuditLogsRetention',
+        fields: [{ name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: true }],
+      },
+      {
+        name: 'UpdateAuditLogsRetention',
+        fields: [
+          { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'retention_period_in_days', type: { kind: 'primitive', type: 'integer' }, required: false },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'AuditLogs',
+        operations: [
+          {
+            name: 'updateAuditLogsRetention',
+            httpMethod: 'put',
+            path: '/organizations/{organizationId}/audit_logs_retention',
+            pathParams: [{ name: 'organizationId', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'UpdateAuditLogsRetention' },
+            response: { kind: 'model', name: 'AuditLogsRetention' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'retention',
+                optional: false,
+                variants: [
+                  {
+                    name: 'period',
+                    parameters: [
+                      { name: 'retention_period', type: { kind: 'primitive', type: 'string' }, required: true },
+                    ],
+                  },
+                  {
+                    name: 'period_in_days',
+                    parameters: [
+                      {
+                        name: 'retention_period_in_days',
+                        type: { kind: 'primitive', type: 'integer' },
+                        required: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+
+    const optContent = files.find((f) => f.path.includes('Options.cs'))!.content;
+    const svcContent = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+
+    // The base class, the variant subclasses, and the options property all move
+    // to the disambiguated name together.
+    expect(optContent).toContain('public abstract class AuditLogsRetentionGroup { }');
+    expect(optContent).toContain('public class AuditLogsRetentionGroupPeriod : AuditLogsRetentionGroup');
+    expect(optContent).toContain('public class AuditLogsRetentionGroupPeriodInDays : AuditLogsRetentionGroup');
+    expect(optContent).toContain('public AuditLogsRetentionGroup Retention { get; set; } = default!;');
+
+    // Nothing may redeclare the model's name, and the service's pattern matches
+    // have to name the same variant classes the options file declares.
+    expect(optContent).not.toContain('public abstract class AuditLogsRetention { }');
+    expect(svcContent).toContain('is AuditLogsRetentionGroupPeriod ');
+    expect(svcContent).toContain('is AuditLogsRetentionGroupPeriodInDays ');
+  });
 });

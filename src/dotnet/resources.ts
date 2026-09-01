@@ -44,6 +44,7 @@ import {
   collectBodyFieldTypes,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
+import { avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
 
 /**
@@ -94,14 +95,39 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 // Mutually-exclusive parameter group support
 // ---------------------------------------------------------------------------
 
+/**
+ * C# type names already claimed by generated models and enums.
+ *
+ * Parameter-group class names are derived from the mount and group names, so
+ * they can land on a name a model already owns: mount `AuditLogs` + group
+ * `retention` yields `AuditLogsRetention`, which is also the class generated for
+ * the `AuditLogsRetention` schema. Every generated type shares the one `WorkOS`
+ * namespace, so that is CS0101 rather than a shadow — the group types have to
+ * step aside.
+ */
+function reservedTypeNames(ctx: EmitterContext): Set<string> {
+  const reserved = new Set<string>();
+  for (const model of ctx.spec.models) reserved.add(modelClassName(model.name));
+  for (const enumDef of ctx.spec.enums) reserved.add(className(enumDef.name));
+  return reserved;
+}
+
 /** Abstract base class name for a parameter group (e.g. UserManagementRole). */
-function groupBaseClassName(mountName: string, groupName: string): string {
-  return `${className(mountName)}${className(groupName)}`;
+function groupBaseClassName(mountName: string, groupName: string, reserved: Set<string>): string {
+  return avoidReservedTypeName(`${className(mountName)}${className(groupName)}`, reserved);
 }
 
 /** Concrete variant class name (e.g. UserManagementRoleSingle). */
-function groupVariantClassName(mountName: string, groupName: string, variantName: string): string {
-  return `${className(mountName)}${className(groupName)}${className(variantName)}`;
+function groupVariantClassName(
+  mountName: string,
+  groupName: string,
+  variantName: string,
+  reserved: Set<string>,
+): string {
+  return avoidReservedTypeName(
+    `${groupBaseClassName(mountName, groupName, reserved)}${className(variantName)}`,
+    reserved,
+  );
 }
 
 /**
@@ -123,13 +149,14 @@ function generateParameterGroupTypes(
   mountName: string,
   op: Operation,
   models: Model[],
+  reserved: Set<string>,
   emitted?: Set<string>,
 ): string[] {
   const lines: string[] = [];
   const bodyFieldTypes = collectBodyFieldTypes(op, models);
 
   for (const group of op.parameterGroups ?? []) {
-    const baseName = groupBaseClassName(mountName, groupTypeBaseName(group));
+    const baseName = groupBaseClassName(mountName, groupTypeBaseName(group), reserved);
     if (emitted?.has(baseName)) continue;
     emitted?.add(baseName);
 
@@ -137,7 +164,7 @@ function generateParameterGroupTypes(
     lines.push(`    public abstract class ${baseName} { }`);
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name);
+      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name, reserved);
       lines.push('');
       lines.push(`    public class ${variantName} : ${baseName}`);
       lines.push('    {');
@@ -178,6 +205,7 @@ function emitGroupSerialization(
   indent: string,
   models: Model[],
   target: 'query' | 'body',
+  reserved: Set<string>,
 ): string[] {
   const lines: string[] = [];
   const bodyFieldTypes = collectBodyFieldTypes(op, models);
@@ -187,7 +215,7 @@ function emitGroupSerialization(
     let first = true;
 
     for (const variant of group.variants) {
-      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name);
+      const variantName = groupVariantClassName(mountName, groupTypeBaseName(group), variant.name, reserved);
       // Use a short local variable derived from the variant name
       const localVar = localName(variant.name);
       const keyword = first ? 'if' : 'else if';
@@ -486,6 +514,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
   const emittedOptions = new Set<string>();
   const emittedGroupTypes = new Set<string>();
+  const reservedNames = reservedTypeNames(ctx);
   for (const op of operations) {
     const plan = planOperation(op);
     const method = resolveCsMethodName(op, mountName, ctx);
@@ -640,7 +669,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Parameter group properties (serialized manually in the service method, not by JSON)
     for (const group of op.parameterGroups ?? []) {
-      const baseName = groupBaseClassName(mountName, groupTypeBaseName(group));
+      const baseName = groupBaseClassName(mountName, groupTypeBaseName(group), reservedNames);
       const csField = fieldName(group.name);
       optionsLines.push('        [JsonIgnore]');
       optionsLines.push('        [STJS.JsonIgnore]');
@@ -654,7 +683,9 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Emit parameter group abstract base + concrete variant classes
     if (hasGroups) {
-      optionsLines.push(...generateParameterGroupTypes(mountName, op, ctx.spec.models, emittedGroupTypes));
+      optionsLines.push(
+        ...generateParameterGroupTypes(mountName, op, ctx.spec.models, reservedNames, emittedGroupTypes),
+      );
     }
   }
 
@@ -838,7 +869,9 @@ function generateMethod(
     if (hasGroups) {
       const groupTarget = hasBody && !isDelete ? 'body' : 'query';
       lines.push('');
-      lines.push(...emitGroupSerialization(mountName, op, '            ', ctx.spec.models, groupTarget));
+      lines.push(
+        ...emitGroupSerialization(mountName, op, '            ', ctx.spec.models, groupTarget, reservedTypeNames(ctx)),
+      );
       lines.push('');
     }
 
