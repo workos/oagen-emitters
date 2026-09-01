@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.9](https://github.com/workos/oagen-emitters/compare/v0.24.8...v0.24.9) (2026-09-01)
+
+
+### Bug Fixes
+
+* stop generated group types from colliding with model names ([#233](https://github.com/workos/oagen-emitters/issues/233)) ([f69c08a](https://github.com/workos/oagen-emitters/commit/f69c08a9561e2620cbc3e70ff7ccaeea0043e260))
+
 ## [0.24.8](https://github.com/workos/oagen-emitters/compare/v0.24.7...v0.24.8) (2026-08-31)
 
 
