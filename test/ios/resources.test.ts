@@ -212,3 +212,54 @@ describe('ios/resources', () => {
     expect(content).not.toContain('public func listAutoPaging(\n        after:');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Signature stability across requiredness changes (issue #240)
+// ---------------------------------------------------------------------------
+
+/**
+ * `beta` is declared before `alpha` but `alpha` is required, so the old
+ * optionality sort hoisted `alpha` ahead of it. Flipping `alpha` to optional
+ * then dropped it back behind `beta` — a reorder of Swift's order-sensitive
+ * labeled arguments, i.e. a source break, from a purely additive API change.
+ */
+function orderingSpec(alphaRequired: boolean): ApiSpec {
+  const service: Service = {
+    name: 'Widgets',
+    operations: [
+      {
+        name: 'list_widgets',
+        httpMethod: 'get',
+        path: '/widgets/{id}',
+        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        queryParams: [
+          { name: 'beta', type: { kind: 'primitive', type: 'string' }, required: false },
+          { name: 'alpha', type: { kind: 'primitive', type: 'string' }, required: alphaRequired },
+        ],
+        headerParams: [],
+        response: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+  return { ...spec, services: [service] };
+}
+
+/** Parameter labels of the emitted `get` signature, in order. */
+function signatureLabels(apiSpec: ApiSpec): string[] {
+  const content = generateResources(apiSpec.services, { ...ctx, spec: apiSpec })[0].content;
+  const start = content.indexOf('public func get(');
+  const body = content.slice(start, content.indexOf(') async throws', start));
+  return [...body.matchAll(/^\s{8}(\w+):/gm)].map((m) => m[1]);
+}
+
+describe('iOS signature order', () => {
+  it('keeps spec order rather than hoisting required params', () => {
+    expect(signatureLabels(orderingSpec(true))).toEqual(['id', 'beta', 'alpha', 'requestOptions']);
+  });
+
+  it('does not move a parameter when it flips required -> optional', () => {
+    expect(signatureLabels(orderingSpec(false))).toEqual(signatureLabels(orderingSpec(true)));
+  });
+});

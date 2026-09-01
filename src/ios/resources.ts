@@ -204,9 +204,31 @@ export function collectMethodParams(resolved: ResolvedOperation, ctx: EmitterCon
   return params;
 }
 
-/** Signature order: required params first, optionals after. */
+/**
+ * Signature order: exactly the collection order from `collectMethodParams`
+ * (path params in template order, then body fields, then query params).
+ *
+ * Deliberately does NOT sort by optionality. Swift permits a defaulted
+ * parameter in any position, so required-first was only cosmetic — but it made
+ * a parameter's *position* a function of its requiredness, and the backend
+ * flips required ↔ optional routinely. Every flip then moved the parameter
+ * across the bucket boundary and renumbered everything after it, which for
+ * Swift's order-sensitive labeled arguments is a source break: making `code`
+ * optional on `SSO.getProfileAndToken` moved it from position 1 to 4 and
+ * dragged `requestOptions` from 2 to 5, turning a purely additive API change
+ * into a major version bump.
+ *
+ * Collection order is derived from spec structure instead, so requiredness
+ * changes are invisible here. Adding a parameter mid-spec still shifts the
+ * ones after it — that is inherent without a record of the previously emitted
+ * signature — but it is now the only thing that can.
+ *
+ * Kept as a named function (rather than inlining the identity) because it is
+ * the single definition of signature order, shared with the smoke runner and
+ * test emitter, which must reconstruct call sites exactly.
+ */
 export function orderMethodParams(params: RenderedParam[]): RenderedParam[] {
-  return [...params].sort((a, b) => Number(a.optional) - Number(b.optional));
+  return [...params];
 }
 
 function renderMethod(resolved: ResolvedOperation, mountName: string, method: string, ctx: EmitterContext): string {
