@@ -131,6 +131,76 @@ describe('generateEnums', () => {
     expect(result[0].content).toContain('No longer supported.\n   * @deprecated');
     expect(result[0].content).toContain('/** @deprecated */');
   });
+
+  it('prefixes member names derived from values that start with a digit', () => {
+    const enums: Enum[] = [
+      {
+        name: 'AuditLogsRetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: '10_YEARS', value: '10_YEARS' },
+        ],
+      },
+    ];
+
+    const result = generateEnums(enums, ctx);
+    const content = result[0].content;
+
+    expect(content).toContain("Value1Month: '1_MONTH',");
+    expect(content).toContain("Value10Years: '10_YEARS',");
+    // A bare `1Month:` key is not a valid unquoted identifier.
+    expect(content).not.toMatch(/^\s+\d/m);
+  });
+
+  it('keeps every wire value when the digit prefix collides with a sibling', () => {
+    // `1_MONTH` guards to Value1Month; `VALUE_1_MONTH` pascal-cases to it
+    // directly. Dropping the loser would omit a value from the union type.
+    const enums: Enum[] = [
+      {
+        name: 'RetentionPeriod',
+        values: [
+          { name: '1_MONTH', value: '1_MONTH' },
+          { name: 'VALUE_1_MONTH', value: 'VALUE_1_MONTH' },
+        ],
+      },
+    ];
+
+    const content = generateEnums(enums, ctx)[0].content;
+
+    expect(content).toContain("Value1Month: '1_MONTH',");
+    expect(content).toContain("Value1Month2: 'VALUE_1_MONTH',");
+    // Both wire values survive into the const object, so the derived union
+    // covers both. A duplicate key would also be a TS error.
+    expect(content.match(/Value1Month2?:/g)).toHaveLength(2);
+  });
+
+  it('does not let a generated member name displace a shipped one', () => {
+    // The shipped value sits AFTER the new one in spec order, so without
+    // pre-reserving shipped names the generated member claims `Value1Month`
+    // first and the shipped value is skipped out of existence.
+    const surface = emptyLiveSurface();
+    surface.constObjectEnums.set('RetentionPeriod', new Map([['1_MONTH_LEGACY', 'Value1Month']]));
+    setActiveLiveSurface(surface);
+    try {
+      const enums: Enum[] = [
+        {
+          name: 'RetentionPeriod',
+          values: [
+            { name: '1_MONTH', value: '1_MONTH' },
+            { name: '1_MONTH_LEGACY', value: '1_MONTH_LEGACY' },
+          ],
+        },
+      ];
+
+      const content = generateEnums(enums, ctx)[0].content;
+
+      // The shipped member keeps its name; the new value steps aside.
+      expect(content).toContain("Value1Month: '1_MONTH_LEGACY',");
+      expect(content).toContain("Value1Month2: '1_MONTH',");
+    } finally {
+      setActiveLiveSurface(emptyLiveSurface());
+    }
+  });
 });
 
 describe('assignEnumsToServices owned-service dependency reassignment', () => {

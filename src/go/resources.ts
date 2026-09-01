@@ -143,7 +143,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   // applyToBody methods.
   const groupTypes = collectFileGroups(mountName, operations, ctx.spec.models);
   if (groupTypes.length > 0) {
-    lines.push(emitCollectedGroupTypes(mountName, groupTypes));
+    lines.push(emitCollectedGroupTypes(mountName, groupTypes, reservedTypeNames(ctx)));
   }
 
   // Generate params structs and methods for each operation.
@@ -253,14 +253,49 @@ function isBodyGroup(group: import('@workos/oagen').ParameterGroup, op: Operatio
   return group.variants.every((v) => v.parameters.every((p) => !queryNames.has(p.name)));
 }
 
+/**
+ * Go type names already claimed by generated models and enums.
+ *
+ * Parameter-group type names are derived from the mount and group names, so
+ * they can land on a name a model already owns: mount `AuditLogs` + group
+ * `retention` yields `AuditLogsRetention`, which is also the struct generated
+ * for the `AuditLogsRetention` schema. Everything lands in one Go package, so
+ * that is a redeclaration error rather than a shadow — the group types have to
+ * step aside.
+ */
+function reservedTypeNames(ctx: EmitterContext): Set<string> {
+  const reserved = new Set<string>();
+  for (const model of ctx.spec.models) reserved.add(className(model.name));
+  for (const enumDef of ctx.spec.enums) reserved.add(className(enumDef.name));
+  return reserved;
+}
+
+/**
+ * Suffix `base` until it no longer collides with a reserved type name. `Group`
+ * reads naturally for parameter-group types; the numeric fallback only matters
+ * if a schema is literally named `<Mount><Group>Group`.
+ */
+function avoidReserved(base: string, reserved: Set<string>): string {
+  if (!reserved.has(base)) return base;
+  let candidate = `${base}Group`;
+  let suffix = 2;
+  while (reserved.has(candidate)) candidate = `${base}Group${suffix++}`;
+  return candidate;
+}
+
 /** Interface type name for a parameter group (e.g. AuthorizationParentResource). */
-function groupInterfaceName(mountName: string, groupName: string): string {
-  return `${className(mountName)}${fieldName(groupName)}`;
+function groupInterfaceName(mountName: string, groupName: string, reserved: Set<string>): string {
+  return avoidReserved(`${className(mountName)}${fieldName(groupName)}`, reserved);
 }
 
 /** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */
-function groupVariantTypeName(mountName: string, groupName: string, variantName: string): string {
-  return `${groupInterfaceName(mountName, groupName)}${fieldName(variantName)}`;
+function groupVariantTypeName(
+  mountName: string,
+  groupName: string,
+  variantName: string,
+  reserved: Set<string>,
+): string {
+  return avoidReserved(`${groupInterfaceName(mountName, groupName, reserved)}${fieldName(variantName)}`, reserved);
 }
 
 /**
@@ -336,14 +371,16 @@ function collectFileGroups(mountName: string, operations: Operation[], models: M
  * collected parameter groups in a file. Groups used in query contexts get
  * applyToQuery; body contexts get applyToBody; groups used in both get both.
  */
-function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): string {
+function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[], reserved: Set<string>): string {
   const lines: string[] = [];
 
   for (const group of groups) {
-    const ifaceName = groupInterfaceName(mountName, group.typeBaseName);
+    const ifaceName = groupInterfaceName(mountName, group.typeBaseName, reserved);
     const markerMethod = `is${ifaceName}`;
 
-    const variantNames = group.variants.map((v) => groupVariantTypeName(mountName, group.typeBaseName, v.name));
+    const variantNames = group.variants.map((v) =>
+      groupVariantTypeName(mountName, group.typeBaseName, v.name, reserved),
+    );
     lines.push(`// ${ifaceName} is one of:`);
     for (const vn of variantNames) {
       lines.push(`//   - ${vn}`);
@@ -360,7 +397,7 @@ function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[]): s
     lines.push('');
 
     for (const variant of group.variants) {
-      const typeName = groupVariantTypeName(mountName, group.typeBaseName, variant.name);
+      const typeName = groupVariantTypeName(mountName, group.typeBaseName, variant.name, reserved);
 
       // Members named in optionalParameters may be omitted when this variant is
       // used: they become pointer fields (Go's optional convention) and trail
@@ -553,7 +590,7 @@ function generateParamsStruct(
   // Parameter group fields (sum-type interfaces, serialized via applyToQuery)
   for (const group of op.parameterGroups ?? []) {
     const goField = fieldName(group.name);
-    const goType = groupInterfaceName(mountName, groupTypeBaseName(group));
+    const goType = groupInterfaceName(mountName, groupTypeBaseName(group), reservedTypeNames(ctx));
     if (group.optional) {
       lines.push(`\t// ${goField} optionally identifies the ${group.name.replace(/_/g, ' ')}.`);
     } else {
