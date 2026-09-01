@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.10](https://github.com/workos/oagen-emitters/compare/v0.24.9...v0.24.10) (2026-09-01)
+
+
+### Bug Fixes
+
+* **dotnet:** stop group types from colliding with model names ([#237](https://github.com/workos/oagen-emitters/issues/237)) ([be21e9d](https://github.com/workos/oagen-emitters/commit/be21e9db4dd84d74471d427927b8da6c37cf7f2e))
+
 ## [0.24.9](https://github.com/workos/oagen-emitters/compare/v0.24.8...v0.24.9) (2026-09-01)
 
 
