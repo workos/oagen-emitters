@@ -1142,12 +1142,25 @@ describe('rust constructor stability', () => {
     expect(ctorSignature(ssoService(false))).toBe('pub fn new(client_id: impl Into<String>) -> Self {');
   });
 
-  it('keeps a now-optional field in new() at its baseline position', () => {
-    // `Option<String>` accepts a bare `String` via std's `From<T> for Option<T>`,
-    // so the baseline call `new(code, client_id)` still compiles.
+  it('keeps a now-optional field in new() with its baseline type', () => {
+    // Byte-identical to the required-field signature. A retained parameter must
+    // keep `impl Into<String>` rather than widening to `impl Into<Option<String>>`:
+    // std has no `From<&str> for Option<String>`, so widening would reject the
+    // `new("code", "client_id")` that compiled against the baseline.
     expect(ctorSignature(ssoService(false), baselineSurface)).toBe(
-      'pub fn new(code: impl Into<Option<String>>, client_id: impl Into<String>) -> Self {',
+      'pub fn new(code: impl Into<String>, client_id: impl Into<String>) -> Self {',
     );
+    expect(ctorSignature(ssoService(false), baselineSurface)).toBe(ctorSignature(ssoService(true), baselineSurface));
+  });
+
+  it('wraps a retained field in Some(), since the struct field is now Option<T>', () => {
+    const base = ctxWithResolved([ssoService(false)]);
+    const content = generateResources(
+      [ssoService(false)],
+      { ...base, apiSurface: baselineSurface as EmitterContext['apiSurface'] },
+      new UnionRegistry(),
+    ).find((f) => f.path.endsWith('sso.rs'))!.content;
+    expect(content).toContain('code: Some(code.into()),');
   });
 
   it('leaves a still-required field exactly as before', () => {

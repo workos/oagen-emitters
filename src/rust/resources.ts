@@ -767,17 +767,37 @@ export function ctorParams(typeName: string, fields: CtorField[], ctx: EmitterCo
   return params;
 }
 
-/** Signature fragment for one `new()` parameter. */
+/** `Option<T>` -> `T`; anything else unchanged. */
+function unwrapOption(rust: string): string {
+  return rust.startsWith('Option<') && rust.endsWith('>') ? rust.slice('Option<'.length, -1) : rust;
+}
+
+/**
+ * Signature fragment for one `new()` parameter.
+ *
+ * A retained parameter keeps the type it had while the field was required —
+ * `Option<String>` declares `impl Into<String>`, not `impl Into<Option<String>>`.
+ * The latter looks more permissive but is strictly narrower in practice: std
+ * has `From<T> for Option<T>` but no `From<&str> for Option<String>`, so
+ * `new("code")` — which compiled against the baseline — would stop compiling,
+ * defeating the point of retaining the parameter at all.
+ *
+ * The cost is that `new()` cannot pass `None` for a retained field. That is
+ * exactly the baseline behaviour (the field was required then), and callers who
+ * want to omit it can construct via the struct literal and `Default`.
+ */
 function ctorParamDecl(p: CtorParam): string {
-  // A retained field's current type is already `Option<T>`; `impl Into<…>` of
-  // that accepts both a bare `T` (std's blanket `From<T> for Option<T>`) and an
-  // explicit `Option<T>`, so baseline call sites keep compiling untouched.
-  return p.retained ? `${p.name}: impl Into<${p.rust}>` : `${p.name}: ${ctorParamType(p.rust)}`;
+  return `${p.name}: ${ctorParamType(p.retained ? unwrapOption(p.rust) : p.rust)}`;
 }
 
 /** Field-initializer fragment for one `new()` parameter. */
 function ctorParamInit(p: CtorParam): string {
-  const value = p.retained ? `${p.name}.into()` : ctorParamConvert(p.rust, p.name);
+  if (p.retained) {
+    // The field is `Option<T>` now, so wrap what the caller passed.
+    const inner = unwrapOption(p.rust);
+    return `            ${p.name}: Some(${ctorParamConvert(inner, p.name)}),`;
+  }
+  const value = ctorParamConvert(p.rust, p.name);
   return value === p.name ? `            ${p.name},` : `            ${p.name}: ${value},`;
 }
 
