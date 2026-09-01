@@ -156,7 +156,7 @@ function renderMountGroup(
 
   // Group-related type definitions go between the file header and the params
   // structs so a single file's params can reference them by short name.
-  const groupBlock = groupEmitter.render();
+  const groupBlock = groupEmitter.render(ctx);
   if (groupBlock.length > 0) {
     lines.push(groupBlock);
     lines.push('');
@@ -266,7 +266,7 @@ class GroupEmitter {
     return spec.name;
   }
 
-  render(): string {
+  render(ctx: EmitterContext): string {
     const blocks: string[] = [];
     for (const e of this.enums) {
       const lines: string[] = [];
@@ -337,22 +337,21 @@ class GroupEmitter {
       // Constructor for the synthetic body type. Mirrors the params struct's
       // ergonomic: required fields land as positional args, optional ones
       // default via `Default::default`.
-      const required = [...b.flatFields.filter((f) => f.required), ...b.flattenEnums.filter((f) => f.required)];
-      if (required.length > 0 || b.flatFields.length + b.flattenEnums.length > 0) {
-        const ctorArgs = required.map((f) => `${f.rustName}: ${ctorParamType(f.rustType)}`).join(', ');
+      const allBodyFields = [...b.flatFields, ...b.flattenEnums];
+      const required = allBodyFields.filter((f) => f.required);
+      if (required.length > 0 || allBodyFields.length > 0) {
+        const params = ctorParams(
+          b.name,
+          allBodyFields.map((f) => ({ name: f.rustName, rust: f.rustType, required: f.required })),
+          ctx,
+        );
+        const paramByName = new Map(params.map((p) => [p.name, p]));
+        const ctorArgs = params.map(ctorParamDecl).join(', ');
         const init: string[] = [];
-        for (const f of b.flatFields) {
-          if (f.required) {
-            const value = ctorParamConvert(f.rustType, f.rustName);
-            init.push(value === f.rustName ? `            ${f.rustName},` : `            ${f.rustName}: ${value},`);
-          } else {
-            init.push(`            ${f.rustName}: Default::default(),`);
-          }
-        }
-        for (const f of b.flattenEnums) {
-          if (f.required) {
-            const value = ctorParamConvert(f.rustType, f.rustName);
-            init.push(value === f.rustName ? `            ${f.rustName},` : `            ${f.rustName}: ${value},`);
+        for (const f of allBodyFields) {
+          const p = paramByName.get(f.rustName);
+          if (p) {
+            init.push(ctorParamInit(p));
           } else {
             init.push(`            ${f.rustName}: Default::default(),`);
           }
@@ -593,14 +592,20 @@ function renderParamsStruct(
   // Generate `new(...)` constructor when there is at least one required field
   // but at least one optional field — gives callers a clear ergonomic entry
   // point without forcing them to spell out optional fields.
-  if (requiredFields.length > 0) {
-    const ctorArgs = requiredFields.map((f) => `${f.fname}: ${ctorParamType(f.rust)}`).join(', ');
+  const ctorFields = ctorParams(
+    name,
+    fields.map((f) => ({ name: f.fname, rust: f.rust, required: f.required })),
+    ctx,
+  );
+  if (ctorFields.length > 0) {
+    const ctorByName = new Map(ctorFields.map((p) => [p.name, p]));
+    const ctorArgs = ctorFields.map(ctorParamDecl).join(', ');
     const initLines: string[] = [];
     for (const f of fields) {
-      if (f.required) {
-        const value = ctorParamConvert(f.rust, f.fname);
+      const p = ctorByName.get(f.fname);
+      if (p) {
         // Use field-init shorthand when the parameter and field names match.
-        initLines.push(value === f.fname ? `            ${f.fname},` : `            ${f.fname}: ${value},`);
+        initLines.push(ctorParamInit(p));
       } else {
         initLines.push(`            ${f.fname}: ${f.defaultExpr ?? 'Default::default()'},`);
       }
@@ -698,6 +703,82 @@ function ctorParamConvert(rust: string, name: string): string {
   if (rust === 'String') return `${name}.into()`;
   if (rust === 'crate::SecretString') return `${name}.into()`;
   return name;
+}
+
+/** A field as the three `new()` call sites describe it, normalized. */
+export interface CtorField {
+  name: string;
+  rust: string;
+  required: boolean;
+}
+
+/** One `new()` parameter: a currently-required field, or one retained from the baseline. */
+export interface CtorParam {
+  name: string;
+  rust: string;
+  /** True when the field is optional now but was a `new()` parameter before. */
+  retained: boolean;
+}
+
+/**
+ * Decide `new()`'s parameter list for `typeName`.
+ *
+ * Taking only the currently-required fields makes arity a function of
+ * requiredness, and the backend flips required -> optional routinely. Each flip
+ * silently deleted the argument and renumbered the rest, so `Params::new(code)`
+ * stopped compiling and — worse — a call that still compiled could rebind its
+ * remaining arguments to the wrong parameters. When the last required field
+ * flipped, `new()` disappeared entirely.
+ *
+ * When a baseline surface is available, any field that was a `new()` parameter
+ * before is kept, in its original position, typed `impl Into<Option<T>>` so
+ * both the old `new(x)` and a new `new(None)` compile. Newly-required fields
+ * append after the baseline ones — never interleaved, which would renumber.
+ *
+ * Without a baseline (`--api-surface` not passed, or a type the baseline has
+ * never seen) this degrades to the previous required-only behaviour.
+ */
+export function ctorParams(typeName: string, fields: CtorField[], ctx: EmitterContext): CtorParam[] {
+  const byName = new Map(fields.map((f) => [f.name, f]));
+  const required = fields.filter((f) => f.required);
+
+  const baselineParams = ctx.apiSurface?.classes?.[typeName]?.methods?.['new']?.[0]?.params;
+  if (!baselineParams || baselineParams.length === 0) {
+    return required.map((f) => ({ name: f.name, rust: f.rust, retained: false }));
+  }
+
+  const params: CtorParam[] = [];
+  const taken = new Set<string>();
+
+  // Baseline order first, so nothing that already existed can move.
+  for (const prior of baselineParams) {
+    const field = byName.get(prior.name);
+    // Genuinely gone from the spec — a real removal, and still breaking.
+    if (!field) continue;
+    params.push({ name: field.name, rust: field.rust, retained: !field.required });
+    taken.add(field.name);
+  }
+
+  // Fields that became required since the baseline, appended in field order.
+  for (const f of required) {
+    if (!taken.has(f.name)) params.push({ name: f.name, rust: f.rust, retained: false });
+  }
+
+  return params;
+}
+
+/** Signature fragment for one `new()` parameter. */
+function ctorParamDecl(p: CtorParam): string {
+  // A retained field's current type is already `Option<T>`; `impl Into<…>` of
+  // that accepts both a bare `T` (std's blanket `From<T> for Option<T>`) and an
+  // explicit `Option<T>`, so baseline call sites keep compiling untouched.
+  return p.retained ? `${p.name}: impl Into<${p.rust}>` : `${p.name}: ${ctorParamType(p.rust)}`;
+}
+
+/** Field-initializer fragment for one `new()` parameter. */
+function ctorParamInit(p: CtorParam): string {
+  const value = p.retained ? `${p.name}.into()` : ctorParamConvert(p.rust, p.name);
+  return value === p.name ? `            ${p.name},` : `            ${p.name}: ${value},`;
 }
 
 /**
@@ -1113,13 +1194,19 @@ function renderWrapperParamsStruct(
     out.push('}');
   }
 
-  if (requiredFields.length > 0) {
-    const ctorArgs = requiredFields.map((f) => `${f.fname}: ${ctorParamType(f.rust)}`).join(', ');
+  const wrapperCtorFields = ctorParams(
+    name,
+    fields.map((f) => ({ name: f.fname, rust: f.rust, required: f.required })),
+    ctx,
+  );
+  if (wrapperCtorFields.length > 0) {
+    const ctorByName = new Map(wrapperCtorFields.map((p) => [p.name, p]));
+    const ctorArgs = wrapperCtorFields.map(ctorParamDecl).join(', ');
     const initLines: string[] = [];
     for (const f of fields) {
-      if (f.required) {
-        const value = ctorParamConvert(f.rust, f.fname);
-        initLines.push(value === f.fname ? `            ${f.fname},` : `            ${f.fname}: ${value},`);
+      const p = ctorByName.get(f.fname);
+      if (p) {
+        initLines.push(ctorParamInit(p));
       } else {
         initLines.push(`            ${f.fname}: ${f.defaultExpr ?? 'Default::default()'},`);
       }
