@@ -30,14 +30,14 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Restore public package registry
+        uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
+
       - name: Build Project
         run: npm run build
 
       - name: Run Tests
         run: npm run test
-
-      - name: Restore public package registry
-        uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d # v1
 
       - name: Publish
         run: npm publish --tag latest --access public --provenance
