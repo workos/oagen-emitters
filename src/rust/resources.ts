@@ -461,7 +461,7 @@ function renderParamsStruct(
       registry,
     });
     if (!p.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
-    rust = applySecretRedaction(rust, p.name);
+    rust = applySecretRedaction(rust, p.name, p);
     // Spec-level defaults on HTTP params are materialized so
     // `Default::default()` and `new(…)` produce the documented value. URL
     // builders keep optional query params omitted unless the caller supplies
@@ -670,7 +670,7 @@ function registerSyntheticBody(
         registry,
       });
       if (!f.required && !rust.startsWith('Option<')) rust = makeOptional(rust);
-      rust = applySecretRedaction(rust, f.name);
+      rust = applySecretRedaction(rust, f.name, f, model.fields);
       return {
         // Domain identifier honors a `fieldHints` override (e.g. wire
         // `connection_type` → domain `type`); `wireName` keeps `f.name`, and
@@ -1157,7 +1157,7 @@ function renderWrapperParamsStruct(
       rust = 'String';
     }
     if (rp.isOptional && !rust.startsWith('Option<')) rust = makeOptional(rust);
-    rust = applySecretRedaction(rust, rp.paramName);
+    rust = applySecretRedaction(rust, rp.paramName, rp.field ?? undefined);
     const desc = rp.field?.description?.trim();
     if (desc) {
       for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);

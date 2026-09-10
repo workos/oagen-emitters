@@ -148,7 +148,9 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
   lines.push('#[derive(Debug, Clone, Serialize, Deserialize)]');
 
   const resolvedNames = resolveFieldNames(model.fields);
-  const fieldLines = model.fields.map((f, i) => renderField(f, resolvedNames[i]!, model.name, registry, tagField));
+  const fieldLines = model.fields.map((f, i) =>
+    renderField(f, resolvedNames[i]!, model.name, registry, model.fields, tagField),
+  );
 
   // rustfmt collapses zero-field structs to `pub struct Foo {}` on a single
   // line. Match that shape so `cargo fmt --check` passes.
@@ -194,6 +196,7 @@ function renderField(
   rustField: string,
   modelName: string,
   registry: UnionRegistry,
+  siblings: Field[],
   tagField?: string,
 ): string {
   const lines: string[] = [];
@@ -216,9 +219,8 @@ function renderField(
   if (isOptional && !baseType.startsWith('Option<')) {
     baseType = makeOptional(baseType);
   }
-  // Wrap String / Option<String> in SecretString when the field name implies
-  // the value is a credential or token. Wire format is unchanged.
-  baseType = applySecretRedaction(baseType, field.name);
+  // Spec markers and semantic fallbacks redact secrets without changing the wire format.
+  baseType = applySecretRedaction(baseType, field.name, field, siblings);
 
   if (tagField === field.name) {
     // This field is the discriminator of an internally-tagged union it belongs
