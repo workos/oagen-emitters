@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.12](https://github.com/workos/oagen-emitters/compare/v0.24.11...v0.24.12) (2026-09-10)
+
+
+### Bug Fixes
+
+* walk body-owned query declarations when placing and reaching types ([#247](https://github.com/workos/oagen-emitters/issues/247)) ([f095677](https://github.com/workos/oagen-emitters/commit/f095677b033768e8fb4340ae3d9a5b1b4a39c375))
+
 ## [0.24.11](https://github.com/workos/oagen-emitters/compare/v0.24.10...v0.24.11) (2026-09-01)
 
 
