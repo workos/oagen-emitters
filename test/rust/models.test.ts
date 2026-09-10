@@ -22,6 +22,49 @@ const ctx: EmitterContext = {
 };
 
 describe('rust/models', () => {
+  it('passes sensitivity markers and sibling descriptions through model rendering', () => {
+    const model: Model = {
+      name: 'SensitivePayload',
+      fields: [
+        { name: 'value', type: { kind: 'primitive', type: 'string', format: 'password' }, required: false },
+        {
+          name: 'uri',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+          description: 'A URI containing the value.',
+        },
+        {
+          name: 'token_url',
+          type: { kind: 'primitive', type: 'string' },
+          required: true,
+          description: 'The provider token endpoint.',
+        },
+        { name: 'user_code', type: { kind: 'primitive', type: 'string', format: 'password' }, required: true },
+        {
+          name: 'verification_uri_complete',
+          type: { kind: 'primitive', type: 'string', format: 'uri' },
+          required: true,
+          description: 'Verification URI that includes the user code.',
+        },
+        {
+          name: 'verification_uri',
+          type: { kind: 'primitive', type: 'string', format: 'uri' },
+          required: true,
+          description: 'The end-user verification URI.',
+        },
+      ],
+    };
+    const file = generateModels([model], ctx, new UnionRegistry()).find(
+      (f) => f.path === 'src/models/sensitive_payload.rs',
+    )!;
+    expect(file.content).toContain('pub value: Option<crate::SecretString>');
+    expect(file.content).toContain('pub uri: crate::SecretString');
+    expect(file.content).toContain('pub token_url: String');
+    expect(file.content).toContain('pub user_code: crate::SecretString');
+    expect(file.content).toContain('pub verification_uri_complete: crate::SecretString');
+    expect(file.content).toContain('pub verification_uri: String');
+  });
+
   it('emits only an empty barrel when no models', () => {
     const files = generateModels([], ctx, new UnionRegistry());
     expect(files).toHaveLength(1);

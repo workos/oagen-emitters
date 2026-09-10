@@ -432,7 +432,10 @@ describe('dotnet/resources', () => {
     expect(content).toContain('ListAsync(');
 
     // Auto-pagination method
-    expect(content).toContain('ListAutoPagingAsync');
+    expect(content).toContain(
+      'return this.ListAutoPagingAsync<Organization>("/organizations", options, requestOptions, cancellationToken);',
+    );
+    expect(content).not.toContain('this.Client.ListAutoPagingAsync');
     expect(content).toContain('IAsyncEnumerable<Organization>');
   });
 
@@ -605,6 +608,178 @@ describe('dotnet/resources', () => {
     expect(svcContent).toContain('AddQueryParam("parent_resource_id"');
     expect(svcContent).toContain('AddQueryParam("parent_resource_type_slug"');
     expect(svcContent).toContain('AddQueryParam("parent_resource_external_id"');
+  });
+
+  it.each([
+    ['listResources', 'parent', 'parent_external_id', '/authorization/resources', false],
+    [
+      'listResourcesForMembership',
+      'parent_resource',
+      'parent_resource_external_id',
+      '/authorization/organization_memberships/{id}/resources',
+      true,
+    ],
+  ] as const)('preserves grouped query dispatch in %s auto-paging', (name, group, externalId, path, membership) => {
+    const param = (name: string) => ({
+      name,
+      type: { kind: 'primitive', type: 'string' } as const,
+      required: true,
+    });
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name,
+            httpMethod: 'get',
+            path,
+            pathParams: membership ? [param('id')] : [],
+            queryParams: [param('parent_resource_id'), param('parent_resource_type_slug'), param(externalId)],
+            headerParams: [],
+            response: { kind: 'model', name: 'ResourceList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Resource' },
+            },
+            parameterGroups: [
+              {
+                name: group,
+                optional: !membership,
+                variants: [
+                  { name: 'by_id', parameters: [param('parent_resource_id')] },
+                  { name: 'by_external_id', parameters: [param('parent_resource_type_slug'), param(externalId)] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const models: Model[] = [
+      { name: 'Resource', fields: [param('id')] },
+      {
+        name: 'ResourceList',
+        fields: [{ name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Resource' } }, required: true }],
+      },
+    ];
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+    const service = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+    const options = files.find((f) => f.path.endsWith('Options.cs'))!.content;
+    const pager = service.slice(service.indexOf('        public virtual IAsyncEnumerable<'));
+    const singlePage = service.slice(0, service.indexOf('        public virtual IAsyncEnumerable<'));
+    const dispatch = (body: string) =>
+      body.slice(
+        body.indexOf('            if (options?.'),
+        body.indexOf('\n            return', body.indexOf('            if (options?.')),
+      );
+    expect(dispatch(pager)).not.toBe('');
+    expect(dispatch(pager)).toBe(dispatch(singlePage));
+    for (const key of ['parent_resource_id', 'parent_resource_type_slug', externalId]) {
+      expect(pager).toContain(`request.AddQueryParam("${key}",`);
+    }
+    expect(pager).toContain('ById byId');
+    expect(pager).toContain('ByExternalId byExternalId');
+    expect(pager).toContain(
+      `options ??= new Authorization${membership ? 'ListResourcesForMembership' : 'ListResources'}Options();`,
+    );
+    expect(pager).toContain('var request = new WorkOSRequest');
+    expect(pager).toContain('Method = HttpMethod.Get,');
+    expect(pager).toContain(
+      membership
+        ? 'Path = $"/authorization/organization_memberships/{Uri.EscapeDataString(id)}/resources",'
+        : 'Path = "/authorization/resources",',
+    );
+    expect(pager).toContain('Options = options,');
+    expect(pager).toContain('RequestOptions = requestOptions,');
+    expect(pager).toContain('return this.Client.ListAutoPagingAsync<Resource>(request, cancellationToken);');
+    expect(pager).not.toContain('return this.ListAutoPagingAsync');
+    // The generic serializer must ignore the union to avoid nested/duplicate query keys.
+    expect(options).toContain('[JsonIgnore]\n        [STJS.JsonIgnore]\n        public AuthorizationParent');
+  });
+
+  it('places grouped params in the body for paginated body operations, matching the single-page method', () => {
+    const str = { kind: 'primitive', type: 'string' } as const;
+    const models: Model[] = [
+      { name: 'Resource', fields: [{ name: 'id', type: str, required: true }] },
+      {
+        name: 'ResourceList',
+        fields: [{ name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Resource' } }, required: true }],
+      },
+      {
+        name: 'SearchResourcesRequest',
+        fields: [
+          { name: 'parent_resource_id', type: str, required: false },
+          { name: 'parent_resource_type_slug', type: str, required: false },
+          { name: 'parent_external_id', type: str, required: false },
+        ],
+      },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'searchResources',
+            httpMethod: 'post',
+            path: '/authorization/resources/search',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'SearchResourcesRequest' },
+            response: { kind: 'model', name: 'ResourceList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Resource' },
+            },
+            parameterGroups: [
+              {
+                name: 'parent',
+                optional: true,
+                variants: [
+                  { name: 'by_id', parameters: [{ name: 'parent_resource_id', type: str, required: true }] },
+                  {
+                    name: 'by_external_id',
+                    parameters: [
+                      { name: 'parent_resource_type_slug', type: str, required: true },
+                      { name: 'parent_external_id', type: str, required: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+    const service = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+    const pagerStart = service.indexOf('        public virtual IAsyncEnumerable<');
+    expect(pagerStart).toBeGreaterThan(0);
+    const pager = service.slice(pagerStart);
+    const singlePage = service.slice(0, pagerStart);
+    const dispatch = (body: string) =>
+      body.slice(
+        body.indexOf('            if (options?.'),
+        body.indexOf('\n            return', body.indexOf('            if (options?.')),
+      );
+    expect(dispatch(pager)).not.toBe('');
+    expect(dispatch(pager)).toBe(dispatch(singlePage));
+    for (const key of ['parent_resource_id', 'parent_resource_type_slug', 'parent_external_id']) {
+      expect(pager).toContain(`request.AddBodyParam("${key}",`);
+    }
+    expect(pager).not.toContain('AddQueryParam(');
+    expect(pager).toContain('Method = HttpMethod.Post,');
+    expect(pager).toContain('return this.Client.ListAutoPagingAsync<Resource>(request, cancellationToken);');
   });
 
   it('emits optional variant members as trailing nullable properties omitted from the body when unset', () => {

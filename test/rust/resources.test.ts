@@ -44,6 +44,32 @@ function ctxWithResolved(services: Service[]): EmitterContext {
 }
 
 describe('rust/resources', () => {
+  it('redacts spec-marked HTTP parameters and constructor inputs', () => {
+    const service: Service = {
+      name: 'Secrets',
+      operations: [
+        {
+          name: 'validate',
+          httpMethod: 'get',
+          path: '/validate',
+          pathParams: [],
+          headerParams: [],
+          queryParams: [
+            { name: 'value', required: true, type: { kind: 'primitive', type: 'string', format: 'password' } },
+          ],
+          response: { kind: 'primitive', type: 'boolean' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const file = generateResources([service], ctxWithResolved([service]), new UnionRegistry()).find(
+      (f) => f.path === 'src/resources/secrets.rs',
+    )!;
+    expect(file.content).toContain('pub value: crate::SecretString');
+    expect(file.content).toContain('value: impl Into<crate::SecretString>');
+  });
+
   it('skips services with no operations', () => {
     const services: Service[] = [{ name: 'Empty', operations: [] }];
     const files = generateResources(services, ctxWithResolved(services), new UnionRegistry());

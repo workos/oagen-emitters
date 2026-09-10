@@ -516,7 +516,16 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
       // Generate auto-pagination method for paginated list operations
       if (plan.isPaginated && op.pagination) {
         lines.push('');
-        const autoPagingCode = generateAutoPagingMethod(mountName, method, methodStem, op, plan, ctx, resolvedOp);
+        const autoPagingCode = generateAutoPagingMethod(
+          mountName,
+          method,
+          methodStem,
+          op,
+          plan,
+          ctx,
+          groupNames,
+          resolvedOp,
+        );
         lines.push(autoPagingCode);
       }
     }
@@ -957,6 +966,7 @@ function generateAutoPagingMethod(
   op: Operation,
   plan: OperationPlan,
   ctx: EmitterContext,
+  groupNames: Map<string, GroupClassNames>,
   resolvedOp?: ResolvedOperation,
 ): string {
   const lines: string[] = [];
@@ -1008,9 +1018,29 @@ function generateAutoPagingMethod(
 
   const pathExpr = buildPathExpr(op);
   const optionsArg = optionsClass ? 'options' : 'null';
-  lines.push(
-    `            return this.ListAutoPagingAsync<${itemType}>(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
-  );
+  if (hasGroups) {
+    // Group properties are JsonIgnore'd; serialize them onto the request
+    // explicitly, with the same body-vs-query placement as the single-page
+    // method, so the client carries them forward across pages.
+    const groupTarget = plan.hasBody && op.requestBody && !plan.isDelete ? 'body' : 'query';
+    lines.push(`            options ??= new ${optionsClass}();`);
+    lines.push('');
+    lines.push('            var request = new WorkOSRequest');
+    lines.push('            {');
+    lines.push(`                Method = HttpMethod.${httpMethodCs(op.httpMethod)},`);
+    lines.push(`                Path = ${pathExpr},`);
+    lines.push('                Options = options,');
+    lines.push('                RequestOptions = requestOptions,');
+    lines.push('            };');
+    lines.push('');
+    lines.push(...emitGroupSerialization(op, '            ', ctx.spec.models, groupTarget, groupNames));
+    lines.push('');
+    lines.push(`            return this.Client.ListAutoPagingAsync<${itemType}>(request, cancellationToken);`);
+  } else {
+    lines.push(
+      `            return this.ListAutoPagingAsync<${itemType}>(${pathExpr}, ${optionsArg}, requestOptions, cancellationToken);`,
+    );
+  }
   lines.push('        }');
 
   return lines.join('\n');

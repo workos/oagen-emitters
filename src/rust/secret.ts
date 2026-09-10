@@ -1,13 +1,6 @@
-/**
- * Heuristics for spotting fields that hold secrets. The Rust emitter wraps
- * such fields in `crate::SecretString` so their `Debug` representation does
- * not accidentally leak the value.
- *
- * The list is intentionally conservative — only fields whose names strongly
- * imply a credential or token are redacted. Generic names like `value` are
- * skipped; the cost of a leaked secret is high enough that we'd rather miss
- * the occasional secret than redact non-secret data and surprise users.
- */
+import type { Field, TypeRef } from '@workos/oagen';
+
+/** Spec sensitivity markers take precedence over conservative fallback heuristics. */
 const EXACT_NAMES = new Set<string>([
   'password',
   'new_password',
@@ -46,13 +39,72 @@ export function isSensitiveFieldName(name: string): boolean {
   return false;
 }
 
+type SecretField = Pick<Field, 'name' | 'type' | 'description'>;
+
+function hasPasswordFormat(type?: TypeRef): boolean {
+  if (type?.kind === 'nullable') return hasPasswordFormat(type.inner);
+  return type?.kind === 'primitive' && type.type === 'string' && type.format === 'password';
+}
+
 /**
- * If `rustType` is `String` or `Option<String>` and `fieldName` looks
- * sensitive, return the redacted equivalent (`crate::SecretString` or
- * `Option<crate::SecretString>`). Otherwise return `rustType` unchanged.
+ * Leading-clause wording that says the field is a partial, masked, or locating
+ * form of a secret (identifier, hint, provider endpoint) rather than the
+ * secret itself.
  */
-export function applySecretRedaction(rustType: string, fieldName: string): string {
-  if (!isSensitiveFieldName(fieldName)) return rustType;
+const PARTIAL_SECRET_SUBJECT = /error code|endpoint|obfuscat|mask|last (?:four|few|\d)|hint|suffix/i;
+
+function describesPartialSecret(description: string): boolean {
+  // Only the leading clause names what the field is. A later caveat such as
+  // "...; its suffix is displayed separately" must not disarm redaction of a
+  // documented full secret.
+  const subject = description.split(/[.;:,(]/, 1)[0] ?? '';
+  return PARTIAL_SECRET_SUBJECT.test(subject);
+}
+
+function holdsSecret(field: SecretField): boolean {
+  if (hasPasswordFormat(field.type)) return true;
+  if (isSensitiveFieldName(field.name)) return true;
+  const description = field.description ?? '';
+  // A mention of a secret is not enough: identifiers, hints, and provider
+  // endpoints describe credentials without containing them.
+  if (describesPartialSecret(description)) return false;
+  if (/^(?:value|credential)$/.test(field.name)) {
+    return /plaintext|\b(?:access token|API key|secret)\b/i.test(description);
+  }
+  return (
+    /(?:^|_)code$/.test(field.name) &&
+    /one-time|authorization code|verification code|TOTP code|code used to verify/i.test(description)
+  );
+}
+
+/** Redact string fields, including documented encoded forms of secret siblings. */
+export function applySecretRedaction(
+  rustType: string,
+  fieldName: string,
+  field?: SecretField,
+  siblings: readonly SecretField[] = [],
+): string {
+  let sensitive = field ? holdsSecret(field) : isSensitiveFieldName(fieldName);
+  if (!sensitive && field && /(?:^|_)(?:(?:uri|url)(?:_complete)?|qr_code)$/.test(field.name)) {
+    const description = field.description ?? '';
+    // Match documented sibling references such as "user code" to user_code.
+    // This normalization is only for classification, never for emitted names.
+    const words = (text: string) =>
+      ` ${text
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()} `;
+    sensitive =
+      !/endpoint/i.test(description) &&
+      /contain|encod|includ|deriv/i.test(description) &&
+      siblings.some(
+        (sibling) =>
+          sibling.name !== field.name &&
+          holdsSecret(sibling) &&
+          (words(description).includes(words(sibling.name)) || /\b(?:secret|token|seed)\b/i.test(description)),
+      );
+  }
+  if (!sensitive) return rustType;
   if (rustType === 'String') return 'crate::SecretString';
   if (rustType === 'Option<String>') return 'Option<crate::SecretString>';
   return rustType;
