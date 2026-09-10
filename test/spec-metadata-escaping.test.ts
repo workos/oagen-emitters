@@ -23,6 +23,7 @@ import { generateEnums as phpEnums } from '../src/php/enums.js';
 import { generateModels as phpModels } from '../src/php/models.js';
 import { phpDocComment } from '../src/php/utils.js';
 import { generateModels as goModels } from '../src/go/models.js';
+import { generateWrapperMethods as goWrappers } from '../src/go/wrappers.js';
 import { generateResources as goResources } from '../src/go/resources.js';
 import { goStructTag } from '../src/go/strings.js';
 import { generateEnums as dotnetEnums } from '../src/dotnet/enums.js';
@@ -326,6 +327,40 @@ describe('VULN-2366: spec metadata remains data', () => {
     expect(parsed.status).toBe(0);
   });
 
+  it('Go wrapper defaults, exposed params, and inferred fields cannot break out of tags', () => {
+    const keys = ['default', 'required', 'optional', 'inferred'].map(
+      (prefix) => `${prefix}\`"\\\n}\nfunc init() { panic("injected") }\n//`,
+    );
+    const svc = service();
+    const resolved = {
+      operation: svc.operations[0],
+      service: svc,
+      wrappers: [
+        {
+          name: 'create_thing',
+          targetVariant: 'Thing',
+          defaults: { [keys[0]]: 'value' },
+          exposedParams: [keys[1], keys[2]],
+          optionalParams: [keys[2]],
+          inferFromClient: [keys[3]],
+        },
+      ],
+    } as unknown as Parameters<typeof goWrappers>[2];
+    const source = 'package workos\n' + goWrappers('ThingsService', 'Things', resolved, context()).join('\n');
+    expect(source).toContain(goStructTag({ json: keys[0] }));
+    expect(source.split(goStructTag({ json: keys[1] }))).toHaveLength(3);
+    expect(source.split(goStructTag({ json: keys[2] + ',omitempty' }))).toHaveLength(3);
+    expect(source).toContain(goStructTag({ json: keys[3] + ',omitempty' }));
+    if (spawnSync('gofmt', ['-h'], { timeout: 5000 }).error) return;
+    const parsed = spawnSync('gofmt', [], {
+      input: source,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH },
+      timeout: 10000,
+    });
+    expect(parsed.stderr).toBe('');
+    expect(parsed.status).toBe(0);
+  });
   it('Go tag values round-trip through reflect, including literal backticks', () => {
     if (spawnSync('go', ['version'], { timeout: 5000 }).status !== 0) return;
     const key = 'wire`"\\\n\t';
