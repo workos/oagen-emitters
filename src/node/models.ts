@@ -46,7 +46,13 @@ import {
 } from './field-plan.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasManagedFile, liveSurfaceInterfacePath } from './live-surface.js';
 import { isNodeOwnedService, isHandOwnedType } from './options.js';
-import { groupByMount, buildResolvedLookup, lookupResolved, isModelInScope } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  buildResolvedLookup,
+  lookupResolved,
+  isModelInScope,
+  declaredParams,
+} from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { collectWrapperResponseModels } from './wrappers.js';
 import { resolveResourceClassName } from './resources.js';
@@ -1166,7 +1172,7 @@ function buildGeneratedResourceModelUsage(
         requestRoots.add(name);
       }
 
-      for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams]) {
+      for (const param of declaredParams(op)) {
         collectTypeRefModels(param.type, interfaceRoots);
       }
 

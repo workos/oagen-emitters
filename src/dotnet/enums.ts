@@ -3,7 +3,7 @@ import { walkTypeRef } from '@workos/oagen';
 import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
@@ -317,7 +317,7 @@ function collectReferencedEnumNames(ctx: EmitterContext): Set<string> {
     for (const op of service.operations) {
       if (op.requestBody) collect(op.requestBody);
       if (op.response) collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
     }
@@ -343,7 +343,7 @@ export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<s
       };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
       for (const name of refs) {

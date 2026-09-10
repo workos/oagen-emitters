@@ -27,7 +27,7 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+import { isModelInScope, declaredParams } from '../shared/resolved-ops.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -544,7 +544,7 @@ function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]):
       }
       collect(op.response, otherReferences);
       if (op.pagination) collect(op.pagination.itemType, otherReferences);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type, otherReferences);
       }
       if (op.successResponses) {

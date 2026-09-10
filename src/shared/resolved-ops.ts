@@ -1,5 +1,6 @@
 import type {
   Operation,
+  Parameter,
   EmitterContext,
   Service,
   ResolvedOperation,
@@ -329,4 +330,22 @@ export function collectBodyFieldTypes(op: Operation, models: Model[]): Map<strin
   }
 
   return fieldTypes;
+}
+
+/**
+ * Every parameter an operation declares, in every location, including the
+ * query declarations oagen keeps off the wire because the request body owns
+ * them (`bodyOwnedQueryParams`). Use this for reachability, placement, and
+ * import walks — anything deciding which types exist and where they live —
+ * so a type declared only by a body-owned parameter keeps its home.
+ * Serialization code keeps reading the location-specific arrays.
+ */
+export function declaredParams(op: Operation): Parameter[] {
+  return [
+    ...op.pathParams,
+    ...op.queryParams,
+    ...(op.bodyOwnedQueryParams ?? []),
+    ...op.headerParams,
+    ...(op.cookieParams ?? []),
+  ];
 }

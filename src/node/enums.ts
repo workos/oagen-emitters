@@ -5,7 +5,7 @@ import { docComment, assignModelsToEmittableServices } from './utils.js';
 import { isInlineEnum } from './type-map.js';
 import { isNodeOwnedService } from './options.js';
 import { liveSurfaceConstEnumMembers, liveSurfaceInterfacePath } from './live-surface.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
 
 /**
  * PascalCase a wire value into a member name, unique within `taken`.
@@ -202,7 +202,7 @@ export function assignEnumsToServices(
       };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
       for (const name of refs) {

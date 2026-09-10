@@ -4,6 +4,7 @@ import {
   assertUniqueResolvedMethods,
   buildResolvedLookup,
   collectBodyFieldTypes,
+  declaredParams,
 } from '../../src/shared/resolved-ops.js';
 
 function makeResolvedOperation(
@@ -118,5 +119,56 @@ describe('shared/resolved-ops', () => {
       kind: 'array',
       items: { kind: 'primitive', type: 'string' },
     });
+  });
+});
+
+describe('declaredParams', () => {
+  const param = (name: string): Operation['pathParams'][number] => ({
+    name,
+    type: { kind: 'primitive', type: 'string' },
+    required: false,
+  });
+
+  it('includes body-owned query declarations alongside every wire location', () => {
+    const op = {
+      name: 'getProfileAndToken',
+      httpMethod: 'post',
+      path: '/sso/token',
+      pathParams: [param('id')],
+      queryParams: [param('trace')],
+      bodyOwnedQueryParams: [param('code'), param('grant_type')],
+      headerParams: [param('x-request-id')],
+      cookieParams: [param('session')],
+      response: { kind: 'primitive', type: 'string' },
+      errors: [],
+      injectIdempotencyKey: false,
+    } as unknown as Operation;
+
+    // Placement and reachability walks must see the declaration oagen kept
+    // off the wire, or a type declared only there loses its home package.
+    expect(declaredParams(op).map((p) => p.name)).toEqual([
+      'id',
+      'trace',
+      'code',
+      'grant_type',
+      'x-request-id',
+      'session',
+    ]);
+  });
+
+  it('tolerates operations without the optional arrays', () => {
+    const op = {
+      name: 'list',
+      httpMethod: 'get',
+      path: '/users',
+      pathParams: [],
+      queryParams: [param('limit')],
+      headerParams: [],
+      response: { kind: 'primitive', type: 'string' },
+      errors: [],
+      injectIdempotencyKey: false,
+    } as unknown as Operation;
+
+    expect(declaredParams(op).map((p) => p.name)).toEqual(['limit']);
   });
 });

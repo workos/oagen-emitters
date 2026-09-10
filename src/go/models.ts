@@ -4,7 +4,7 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName } from './naming.js';
 import { humanize } from './humanize.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
-import { isModelInScope, isScopedRun } from '../shared/resolved-ops.js';
+import { isModelInScope, isScopedRun, declaredParams } from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, parseFlatGoBlocks, type NamedBlock } from './flat-merge.js';
 
 // Import and re-export shared model detection utilities
@@ -50,7 +50,7 @@ function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]):
       }
       collect(op.response, otherReferences);
       if (op.pagination) collect(op.pagination.itemType, otherReferences);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type, otherReferences);
       }
       if (op.successResponses) {
