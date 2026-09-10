@@ -318,11 +318,11 @@ function emitParamValue(
       return [
         `${indent}if (${accessor} != null)`,
         `${indent}{`,
-        `${indent}    request.${method}("${wireName}", ${valueExpr});`,
+        `${indent}    request.${method}(${csLiteral(wireName)}, ${valueExpr});`,
         `${indent}}`,
       ];
     }
-    return [`${indent}request.${method}("${wireName}", ${valueExpr});`];
+    return [`${indent}request.${method}(${csLiteral(wireName)}, ${valueExpr});`];
   }
 
   if (inner.kind === 'enum') {
@@ -331,23 +331,23 @@ function emitParamValue(
       return [
         `${indent}if (${accessor} != null)`,
         `${indent}{`,
-        `${indent}    request.${method}("${wireName}", ${serExpr});`,
+        `${indent}    request.${method}(${csLiteral(wireName)}, ${serExpr});`,
         `${indent}}`,
       ];
     }
-    return [`${indent}request.${method}("${wireName}", ${serExpr});`];
+    return [`${indent}request.${method}(${csLiteral(wireName)}, ${serExpr});`];
   }
 
   if (needsNullGuard) {
     return [
       `${indent}if (${accessor} != null)`,
       `${indent}{`,
-      `${indent}    request.${method}("${wireName}", ${accessor});`,
+      `${indent}    request.${method}(${csLiteral(wireName)}, ${accessor});`,
       `${indent}}`,
     ];
   }
 
-  return [`${indent}request.${method}("${wireName}", ${accessor});`];
+  return [`${indent}request.${method}(${csLiteral(wireName)}, ${accessor});`];
 }
 
 /** Check whether any parameter group variant contains an enum-typed parameter. */

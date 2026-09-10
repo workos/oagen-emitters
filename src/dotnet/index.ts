@@ -1,3 +1,4 @@
+import { csLiteral, escapeXml } from './naming.js';
 import type {
   Emitter,
   EmitterContext,
@@ -150,7 +151,7 @@ export const dotnetEmitter: Emitter = {
         lines.push('');
         lines.push(`    /// <summary>`);
         lines.push(`    /// JSON converter that deserializes discriminated union variants`);
-        lines.push(`    /// based on the "${disc.property}" property.`);
+        lines.push(`    /// based on the "${escapeXml(disc.property)}" property.`);
         lines.push(`    /// </summary>`);
         lines.push(`    public class ${converterName} : Newtonsoft.Json.JsonConverter`);
         lines.push('    {');
@@ -164,7 +165,7 @@ export const dotnetEmitter: Emitter = {
         );
         lines.push('        {');
         lines.push('            var jObject = JObject.Load(reader);');
-        lines.push(`            var discriminatorValue = jObject["${disc.property}"]?.ToString();`);
+        lines.push(`            var discriminatorValue = jObject[${csLiteral(disc.property)}]?.ToString();`);
         lines.push('            switch (discriminatorValue)');
         lines.push('            {');
         for (const [value, modelName] of Object.entries(disc.mapping)) {
@@ -174,7 +175,7 @@ export const dotnetEmitter: Emitter = {
           // values fall through to the `default` arm below.
           if (!variantFileExistsAfterRun(modelName, c)) continue;
           const csName = modelClassName(resolveModelName(modelName));
-          lines.push(`                case "${value}": return jObject.ToObject<${csName}>(serializer);`);
+          lines.push(`                case ${csLiteral(value)}: return jObject.ToObject<${csName}>(serializer);`);
         }
         lines.push('                default: return jObject.ToObject<object>(serializer);');
         lines.push('            }');
@@ -221,7 +222,7 @@ export const dotnetEmitter: Emitter = {
       lines.push('');
       lines.push(`    /// <summary>`);
       lines.push(`    /// JSON converter that deserializes <see cref="${baseClass}"/> into the`);
-      lines.push(`    /// correct variant subclass based on the "${disc.property}" property.`);
+      lines.push(`    /// correct variant subclass based on the "${escapeXml(disc.property)}" property.`);
       lines.push(`    /// </summary>`);
       lines.push(`    public class ${converterName} : Newtonsoft.Json.JsonConverter`);
       lines.push('    {');
@@ -237,7 +238,7 @@ export const dotnetEmitter: Emitter = {
       );
       lines.push('        {');
       lines.push('            var jObject = JObject.Load(reader);');
-      lines.push(`            var discriminatorValue = jObject["${disc.property}"]?.ToString();`);
+      lines.push(`            var discriminatorValue = jObject[${csLiteral(disc.property)}]?.ToString();`);
       lines.push('');
       lines.push('            object target;');
       lines.push('            switch (discriminatorValue)');
@@ -252,7 +253,7 @@ export const dotnetEmitter: Emitter = {
         // which deserializes into the base class.
         if (!variantFileExistsAfterRun(variantModelName, c)) continue;
         const csName = modelClassName(variantModelName);
-        lines.push(`                case "${value}": target = new ${csName}(); break;`);
+        lines.push(`                case ${csLiteral(value)}: target = new ${csName}(); break;`);
       }
       lines.push(`                default: target = new ${baseClass}(); break;`);
       lines.push('            }');

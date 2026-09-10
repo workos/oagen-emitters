@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
-import { className, deprecationMessage, escapeCsAttributeString, humanize } from './naming.js';
+import { className, csLiteral, deprecationMessage, escapeCsAttributeString, escapeXml, humanize } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
@@ -124,7 +124,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         const msg = escapeCsAttributeString(deprecationMessage(v.description, 'value'));
         lines.push(`        [System.Obsolete("${msg}")]`);
       }
-      lines.push(`        [EnumMember(Value = "${v.value}")]`);
+      lines.push(`        [EnumMember(Value = ${csLiteral(String(v.value))})]`);
       // Explicit ordinals only when we promoted a default to position 0.
       const ordinal = defaultMatch ? ` = ${i}` : '';
       lines.push(`        ${memberName}${ordinal},`);
@@ -152,10 +152,6 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   }
 
   return files;
-}
-
-function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**

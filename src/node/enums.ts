@@ -1,3 +1,4 @@
+import { tsStringLiteral } from './strings.js';
 import type { Enum, EmitterContext, GeneratedFile, Model, Service } from '@workos/oagen';
 import { collectFieldDependencies, toPascalCase, walkTypeRef } from '@workos/oagen';
 import { fileName, resolveServiceDir, buildServiceNameMap } from './naming.js';
@@ -22,7 +23,7 @@ import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
  */
 function memberNameFor(value: string, taken: Set<string>): string {
   const pascal = toPascalCase(value);
-  const base = !pascal || /^[0-9]/.test(pascal) ? `Value${pascal || value}` : pascal;
+  const base = !pascal || /^[0-9]/.test(pascal) ? `Value${pascal}` : pascal;
   let name = base;
   let suffix = 2;
   while (taken.has(name)) name = `${base}${suffix++}`;
@@ -81,22 +82,25 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // redeclare one of them.
       const takenMembers = new Set(Object.keys(baselineEnum.members));
       for (const [memberName, memberValue] of Object.entries(baselineEnum.members)) {
-        const valueStr = typeof memberValue === 'string' ? `'${memberValue}'` : String(memberValue);
+        const valueStr = typeof memberValue === 'string' ? tsStringLiteral(memberValue) : String(memberValue);
         lines.push(`  ${memberName} = ${valueStr},`);
       }
       for (const val of missingValues) {
         const memberName = memberNameFor(val, takenMembers);
-        lines.push(`  ${memberName} = '${val}',`);
+        lines.push(`  ${memberName} = ${tsStringLiteral(val)},`);
       }
       lines.push('}');
     } else if (baselineAlias?.value) {
-      const baselineValues = extractLiteralUnionValues(baselineAlias.value);
+      const baselineValues = extractLiteralUnionTokens(baselineAlias.value);
       const irValues = enumDef.values.map((v) => String(v.value));
-      const missing = irValues.filter((v) => !baselineValues.has(v));
+      const missing = irValues.filter(
+        (v) => !baselineValues.has(tsStringLiteral(v)) && !baselineValues.has(JSON.stringify(v)),
+      );
       hasNewValues = missing.length > 0;
       if (missing.length > 0) {
-        const allValues = [...baselineValues, ...missing];
-        const parts = allValues.map((v) => `'${v}'`);
+        // Keep baseline source intact: decoding and re-encoding escaped tokens
+        // would change wire values or lose non-literal union members.
+        const parts = [baselineAlias.value, ...missing.map(tsStringLiteral)];
         lines.push(`export type ${enumDef.name} = ${parts.join(' | ')};`);
       } else {
         lines.push(`export type ${enumDef.name} = ${baselineAlias.value};`);
@@ -148,7 +152,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         if (shipped && emitted.has(shipped)) continue;
         const memberName = shipped ?? memberNameFor(valueKey, taken);
         emitted.add(memberName);
-        const valueStr = typeof v.value === 'string' ? `'${v.value}'` : String(v.value);
+        const valueStr = typeof v.value === 'string' ? tsStringLiteral(v.value) : String(v.value);
         if (v.description || v.deprecated) {
           const parts: string[] = [];
           if (v.description) parts.push(v.description);
@@ -175,14 +179,8 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   return files;
 }
 
-function extractLiteralUnionValues(aliasValue: string): Set<string> {
-  const values = new Set<string>();
-  const regex = /'([^']+)'/g;
-  let match;
-  while ((match = regex.exec(aliasValue)) !== null) {
-    values.add(match[1]);
-  }
-  return values;
+function extractLiteralUnionTokens(aliasValue: string): Set<string> {
+  return new Set(aliasValue.match(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g) ?? []);
 }
 
 export function assignEnumsToServices(

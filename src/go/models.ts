@@ -1,3 +1,4 @@
+import { goStructTag } from './strings.js';
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -245,7 +246,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const isOptional = !field.required;
       const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
 
-      const jsonTag = field.required ? `json:"${field.name}"` : `json:"${field.name},omitempty"`;
+      const jsonTag = goStructTag({ json: field.name + (field.required ? '' : ',omitempty') });
 
       if (field.description) {
         const fdLines = field.description.split('\n').filter((l) => l.trim());
@@ -259,7 +260,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         const deprecationReason = extractDeprecationReason(field.description);
         blockLines.push(`\t// Deprecated: ${deprecationReason}`);
       }
-      blockLines.push(`\t${goFieldName} ${goType} \`${jsonTag}\``);
+      blockLines.push(`\t${goFieldName} ${goType} ${jsonTag}`);
     }
 
     blockLines.push('}');

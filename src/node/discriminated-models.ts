@@ -1,3 +1,5 @@
+import { tsStringLiteral, tsPropertyName, tsPropertyAccess } from './strings.js';
+import { docComment } from './utils.js';
 import type { EmitterContext, GeneratedFile, Model } from '@workos/oagen';
 import { toPascalCase, toCamelCase } from '@workos/oagen';
 import { loadRawSpec } from '../shared/model-utils.js';
@@ -446,7 +448,7 @@ function rawSchemaToTS(
     return isWire ? wireInterfaceName(domain) : domain;
   }
   if (typeof schema.const === 'string') {
-    return `'${schema.const}'`;
+    return tsStringLiteral(schema.const);
   }
   if (typeof schema.const === 'boolean') {
     return String(schema.const);
@@ -661,11 +663,11 @@ function buildInlineUnionAlias(name: string, shape: DiscriminatedShape, isWire: 
   shape.variants.forEach((variant, idx) => {
     const isLast = idx === shape.variants.length - 1;
     const discKey = isWire ? shape.discriminatorProperty : shape.discriminatorPropertyDomain;
-    const members = [`${discKey}: ${discLiteral(variant)}`];
+    const members = [`${tsPropertyName(discKey)}: ${discLiteral(variant)}`];
     for (const field of variant.fields) {
       const key = isWire ? field.name : toCamelCase(field.name);
       const opt = field.required ? '' : '?';
-      members.push(`${key}${opt}: ${inlineFieldType(field, isWire)}`);
+      members.push(`${tsPropertyName(key)}${opt}: ${inlineFieldType(field, isWire)}`);
     }
     lines.push(`  | { ${members.join('; ')} }${isLast ? ';' : ''}`);
   });
@@ -687,9 +689,9 @@ function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: Va
   // Discriminator (typed as the variant's const value)
   const discKey = isWire ? shape.discriminatorProperty : shape.discriminatorPropertyDomain;
   if (shape.discriminatorDescription) {
-    lines.push(`  /** ${shape.discriminatorDescription} */`);
+    lines.push(...docComment(shape.discriminatorDescription, 2));
   }
-  lines.push(`  ${discKey}: ${discLiteral(variant)};`);
+  lines.push(`  ${tsPropertyName(discKey)}: ${discLiteral(variant)};`);
   // Variant-specific fields
   for (const field of variant.fields) {
     pushFieldLine(lines, field, isWire);
@@ -703,7 +705,7 @@ function buildInterfaceBody(name: string, shape: DiscriminatedShape, variant: Va
  * bare for booleans (`true`).
  */
 function discLiteral(variant: VariantSpec): string {
-  return variant.discriminatorIsBoolean ? variant.discriminatorValue : `'${variant.discriminatorValue}'`;
+  return variant.discriminatorIsBoolean ? variant.discriminatorValue : tsStringLiteral(variant.discriminatorValue);
 }
 
 /**
@@ -718,7 +720,7 @@ function discLiteral(variant: VariantSpec): string {
  */
 function inlineFieldType(field: FieldSpec, isWire: boolean): string {
   if (field.enumValues) {
-    return field.enumValues.map((v) => `'${v}'`).join(' | ');
+    return field.enumValues.map((v) => tsStringLiteral(v)).join(' | ');
   }
   return isWire ? field.wireType : field.domainType;
 }
@@ -728,9 +730,9 @@ function pushFieldLine(lines: string[], field: FieldSpec, isWire: boolean): void
   const opt = field.required ? '' : '?';
   const type = isWire ? field.wireType : field.domainType;
   if (field.description) {
-    lines.push(`  /** ${field.description} */`);
+    lines.push(...docComment(field.description, 2));
   }
-  lines.push(`  ${key}${opt}: ${type};`);
+  lines.push(`  ${tsPropertyName(key)}${opt}: ${type};`);
 }
 
 interface ImportSpec {
@@ -814,7 +816,7 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
 
   // Deserializer
   lines.push(`export const deserialize${domain} = (response: ${wire}): ${domain} => {`);
-  lines.push(`  switch (response.${shape.discriminatorProperty}) {`);
+  lines.push(`  switch (response${tsPropertyAccess(shape.discriminatorProperty)}) {`);
   for (const variant of shape.variants) {
     lines.push(`    case ${discLiteral(variant)}:`);
     lines.push(`      return {`);
@@ -829,7 +831,7 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
   }
   lines.push(`    default:`);
   lines.push(
-    `      throw new Error(\`Unknown ${shape.discriminatorProperty}: \${String((response as Record<string, unknown>).${shape.discriminatorProperty})}\`);`,
+    `      throw new Error(${tsStringLiteral(`Unknown ${shape.discriminatorProperty}: `)} + String((response as Record<string, unknown>)${tsPropertyAccess(shape.discriminatorProperty)}));`,
   );
   lines.push(`  }`);
   lines.push(`};`);
@@ -845,7 +847,7 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
       for (const field of shape.baseFields) {
         lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
       }
-      lines.push(`        ${shape.discriminatorProperty}: ${discLiteral(variant)},`);
+      lines.push(`        ${tsPropertyName(shape.discriminatorProperty)}: ${discLiteral(variant)},`);
       for (const field of variant.fields) {
         lines.push(`        ${assignmentLine(field, /*serialize*/ true, allDeps)},`);
       }
@@ -865,9 +867,9 @@ function buildSerializerFile(plan: DiscriminatedPlan, _ctx: EmitterContext): Gen
 function assignmentLine(field: FieldSpec, serialize: boolean, _allDeps: Set<string>): string {
   const camel = toCamelCase(field.name);
   const snake = field.name;
-  const lhs = serialize ? snake : camel;
+  const lhs = tsPropertyName(serialize ? snake : camel);
   const rhsKey = serialize ? camel : snake;
-  const source = serialize ? `model.${rhsKey}` : `response.${rhsKey}`;
+  const source = `${serialize ? 'model' : 'response'}${tsPropertyAccess(rhsKey)}`;
 
   if (field.hasDateTime) {
     if (serialize) {

@@ -1,3 +1,4 @@
+import { goStringLiteral, goStructTag } from './strings.js';
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import {
   className as goClassName,
@@ -61,7 +62,7 @@ function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrappe
   for (const [key, value] of Object.entries(wrapper.defaults)) {
     const goField = goFieldName(key);
     const goType = typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'int' : 'string';
-    lines.push(`\t${goField} ${goType} \`json:"${key}"\``);
+    lines.push(`\t${goField} ${goType} ${goStructTag({ json: key })}`);
   }
 
   // Required exposed params
@@ -69,13 +70,13 @@ function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrappe
     if (isOptional) continue;
     const goField = goFieldName(paramName);
     const goType = field ? resolveSimpleGoType(field.type) : 'string';
-    lines.push(`\t${goField} ${goType} \`json:"${paramName}"\``);
+    lines.push(`\t${goField} ${goType} ${goStructTag({ json: paramName })}`);
   }
 
   // Inferred fields (from client config) — omit when empty
   for (const inferred of wrapper.inferFromClient) {
     const goField = goFieldName(inferred);
-    lines.push(`\t${goField} string \`json:"${inferred},omitempty"\``);
+    lines.push(`\t${goField} string ${goStructTag({ json: inferred + ',omitempty' })}`);
   }
 
   // Optional exposed params
@@ -84,7 +85,7 @@ function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrappe
     const goField = goFieldName(paramName);
     const baseType = field ? resolveSimpleGoType(field.type) : 'string';
     const optType = baseType.startsWith('*') || baseType.startsWith('[]') ? baseType : `*${baseType}`;
-    lines.push(`\t${goField} ${optType} \`json:"${paramName},omitempty"\``);
+    lines.push(`\t${goField} ${optType} ${goStructTag({ json: paramName + ',omitempty' })}`);
   }
 
   lines.push('}');
@@ -114,9 +115,9 @@ function emitWrapperParamsStruct(
     }
     if (isOptional) {
       const optType = goType.startsWith('*') || goType.startsWith('[]') ? goType : `*${goType}`;
-      lines.push(`\t${goField} ${optType} \`json:"${paramName},omitempty"\``);
+      lines.push(`\t${goField} ${optType} ${goStructTag({ json: paramName + ',omitempty' })}`);
     } else {
-      lines.push(`\t${goField} ${goType} \`json:"${paramName}"\``);
+      lines.push(`\t${goField} ${goType} ${goStructTag({ json: paramName })}`);
     }
   }
 
@@ -227,7 +228,7 @@ function emitWrapperMethod(
 
 /** Convert a value to a Go literal. */
 function goLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return goStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }

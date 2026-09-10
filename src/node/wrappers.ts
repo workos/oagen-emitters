@@ -1,3 +1,4 @@
+import { tsStringLiteral } from './strings.js';
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
 import { fieldName, resolveInterfaceName, wireInterfaceName } from './naming.js';
@@ -90,11 +91,11 @@ function emitWrapperMethod(
   }
 
   if (docParts.length === 1) {
-    lines.push(`  /** ${docParts[0]} */`);
+    lines.push(`  /** ${docParts[0].replace(/\*\//g, '*\u200b/')} */`);
   } else {
     lines.push('  /**');
     for (const part of docParts) {
-      for (const line of part.split('\n')) {
+      for (const line of part.replace(/\*\//g, '*\u200b/').split('\n')) {
         lines.push(line === '' ? '   *' : `   * ${line}`);
       }
     }
@@ -144,7 +145,7 @@ function buildPathStr(op: { path: string; pathParams: Array<{ name: string }> })
 }
 
 function tsLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `'${value.replace(/'/g, "\\'")}'`;
+  if (typeof value === 'string') return tsStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }

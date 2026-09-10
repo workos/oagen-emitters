@@ -1,3 +1,4 @@
+import { phpStringLiteral } from './strings.js';
 import type {
   Service,
   Operation,
@@ -274,10 +275,10 @@ function generateGroupDispatch(op: Operation, indent: string, target: '$query' |
         if (optionalNames.has(param.name)) {
           // Optional members stay off the wire when unset rather than being sent as null.
           lines.push(`${indent}    if (${accessor} !== null) {`);
-          lines.push(`${indent}        ${target}['${param.name}'] = ${accessor};`);
+          lines.push(`${indent}        ${target}[${phpStringLiteral(param.name)}] = ${accessor};`);
           lines.push(`${indent}    }`);
         } else {
-          lines.push(`${indent}    ${target}['${param.name}'] = ${accessor};`);
+          lines.push(`${indent}    ${target}[${phpStringLiteral(param.name)}] = ${accessor};`);
         }
       }
 
@@ -447,7 +448,7 @@ function generateMethod(
       }
       // Inject constant defaults
       for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-        lines.push(`            '${key}' => ${phpLiteral(value)},`);
+        lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
       }
       if (hasOptionalQuery) {
         lines.push('        ], fn ($v) => $v !== null);');
@@ -456,7 +457,7 @@ function generateMethod(
       }
       // Inject fields from client config
       for (const clientField of getOpInferFromClient(resolvedOp)) {
-        lines.push(`        $query['${clientField}'] = ${clientFieldExpression(clientField)};`);
+        lines.push(`        $query[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
       }
       // Inject parameter group dispatch (instanceof checks)
       lines.push(...generateGroupDispatch(op, '        '));
@@ -525,11 +526,11 @@ function generateMethod(
           : isDateTimeType(field.type)
             ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
             : `$${phpName}`;
-        lines.push(`            '${field.name}' => ${valueExpr},`);
+        lines.push(`            ${phpStringLiteral(field.name)} => ${valueExpr},`);
       }
       // Inject constant defaults
       for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-        lines.push(`            '${key}' => ${phpLiteral(value)},`);
+        lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
       }
       if (hasOptionalFields) {
         lines.push('        ], fn ($v) => $v !== null);');
@@ -538,7 +539,7 @@ function generateMethod(
       }
       // Inject fields from client config
       for (const clientField of getOpInferFromClient(resolvedOp)) {
-        lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
+        lines.push(`        $body[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
       }
       // Inject parameter group dispatch into body
       if ((op.parameterGroups?.length ?? 0) > 0) {
@@ -586,11 +587,11 @@ function generateMethod(
         : isDateTimeType(field.type)
           ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
           : `$${phpName}`;
-      lines.push(`            '${field.name}' => ${valueExpr},`);
+      lines.push(`            ${phpStringLiteral(field.name)} => ${valueExpr},`);
     }
     // Inject constant defaults
     for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-      lines.push(`            '${key}' => ${phpLiteral(value)},`);
+      lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
     }
     if (hasOptionalFields) {
       lines.push('        ], fn ($v) => $v !== null);');
@@ -599,7 +600,7 @@ function generateMethod(
     }
     // Inject fields from client config
     for (const clientField of getOpInferFromClient(resolvedOp)) {
-      lines.push(`        $body['${clientField}'] = ${clientFieldExpression(clientField)};`);
+      lines.push(`        $body[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
     }
     // Inject parameter group dispatch into body so sensitive fields
     // (passwords, role slugs) never leak into the URL query string.
@@ -647,7 +648,7 @@ function generateMethod(
       }
       // Inject constant defaults
       for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-        lines.push(`            '${key}' => ${phpLiteral(value)},`);
+        lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
       }
       if (hasOptionalQuery) {
         lines.push('        ], fn ($v) => $v !== null);');
@@ -656,7 +657,7 @@ function generateMethod(
       }
       // Inject fields from client config
       for (const clientField of getOpInferFromClient(resolvedOp)) {
-        lines.push(`        $query['${clientField}'] = ${clientFieldExpression(clientField)};`);
+        lines.push(`        $query[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
       }
       // Inject parameter group dispatch (instanceof checks)
       lines.push(...generateGroupDispatch(op, '        '));
@@ -845,13 +846,13 @@ function buildQueryArray(
         // non-nullable, so other optional enum params use the nullsafe op.
         const hasEnumDefault = shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true);
         const nullsafe = q.required || hasEnumDefault ? '' : '?';
-        return `'${q.name}' => $${phpName}${nullsafe}->value,`;
+        return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->value,`;
       }
       if (isDateTimeType(q.type)) {
         const nullsafe = q.required ? '' : '?';
-        return `'${q.name}' => $${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED),`;
+        return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED),`;
       }
-      return `'${q.name}' => $${phpName},`;
+      return `${phpStringLiteral(q.name)} => $${phpName},`;
     });
 }
 
@@ -860,7 +861,7 @@ function shouldMaterializeQueryDefault(param: Parameter, enabled: boolean): bool
 }
 
 function phpLiteral(value: unknown): string {
-  if (typeof value === 'string') return `'${value}'`;
+  if (typeof value === 'string') return phpStringLiteral(value);
   if (typeof value === 'number') return String(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return 'null';

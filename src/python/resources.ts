@@ -1,3 +1,4 @@
+import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type {
   Service,
   Operation,
@@ -181,7 +182,7 @@ interface SignatureMetadata {
 
 function emitDocArg(lines: string[], name: string, desc?: string): void {
   const fallback = `The ${name.replace(/_/g, ' ')}.`;
-  const description = desc ?? fallback;
+  const description = pythonDocstring(desc ?? fallback);
   const descLines = description
     .split('\n')
     .map((line) => line.trim())
@@ -436,7 +437,7 @@ function emitMethodDocstring(
 
   // Description — indent continuation lines to align with the opening `"""`
   if (op.description) {
-    const descLines = op.description.split('\n');
+    const descLines = pythonDocstring(op.description).split('\n');
     const indentedDesc = descLines
       .map((line, i) => (i === 0 ? line : line.trim() === '' ? '' : `        ${line}`))
       .join('\n');
@@ -570,7 +571,7 @@ function emitMethodDocstring(
   if (returnType !== 'None') {
     lines.push('');
     lines.push('        Returns:');
-    lines.push(`            ${returnType}`);
+    lines.push(`            ${pythonDocstring(returnType)}`);
   }
 
   // Per-operation error documentation from spec error responses
@@ -578,7 +579,7 @@ function emitMethodDocstring(
   lines.push('');
   lines.push('        Raises:');
   for (const line of errorRaises) {
-    lines.push(`            ${line}`);
+    lines.push(`            ${pythonDocstring(line)}`);
   }
   if (op.deprecated) {
     lines.push('');
@@ -659,13 +660,13 @@ function emitMethodBody(
         const value = param
           ? serializeParameterValue(param.type, entry.varName, false, (param as ParameterExt).explode)
           : entry.varName;
-        lines.push(`            "${entry.key}": ${value},`);
+        lines.push(`            ${pythonStringLiteral(entry.key)}: ${value},`);
       }
       lines.push('        }.items() if v is not None}');
       // Inject constant defaults
       if (Object.keys(opDefaults).length > 0) {
         for (const [key, value] of Object.entries(opDefaults)) {
-          lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+          lines.push(`        params[${pythonStringLiteral(key)}] = ${pythonLiteral(value)}`);
         }
       }
       // Inject fields from client config. Fields surfaced as optional
@@ -675,11 +676,11 @@ function emitMethodBody(
         for (const field of opInferFromClient) {
           const expr = clientFieldExpression(field);
           if (clientOverrides.has(field)) {
-            lines.push(`        if "${field}" not in params and ${expr} is not None:`);
+            lines.push(`        if ${pythonStringLiteral(field)} not in params and ${expr} is not None:`);
           } else {
             lines.push(`        if ${expr} is not None:`);
           }
-          lines.push(`            params["${field}"] = ${expr}`);
+          lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
         }
       }
       if (usesClientCredentialDefaults) {
@@ -719,13 +720,13 @@ function emitMethodBody(
       if (paginatedGroupedParams.has(param.name)) continue;
       const pn = fieldName(param.name);
       const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
-      lines.push(`            "${param.name}": ${value},`);
+      lines.push(`            ${pythonStringLiteral(param.name)}: ${value},`);
     }
     lines.push('        }.items() if v is not None}');
     // Inject constant defaults
     if (Object.keys(opDefaults).length > 0) {
       for (const [key, value] of Object.entries(opDefaults)) {
-        lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+        lines.push(`        params[${pythonStringLiteral(key)}] = ${pythonLiteral(value)}`);
       }
     }
     // Inject fields from client config
@@ -733,7 +734,7 @@ function emitMethodBody(
       for (const field of opInferFromClient) {
         const expr = clientFieldExpression(field);
         lines.push(`        if ${expr} is not None:`);
-        lines.push(`            params["${field}"] = ${expr}`);
+        lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
       }
     }
     // isinstance dispatch for parameter groups
@@ -777,7 +778,7 @@ function emitMethodBody(
         // Inject constant defaults into body
         if (Object.keys(opDefaults).length > 0) {
           for (const [key, value] of Object.entries(opDefaults)) {
-            lines.push(`        body["${key}"] = ${pythonLiteral(value)}`);
+            lines.push(`        body[${pythonStringLiteral(key)}] = ${pythonLiteral(value)}`);
           }
         }
         // Inject fields from client config into body
@@ -785,7 +786,7 @@ function emitMethodBody(
           for (const field of opInferFromClient) {
             const expr = clientFieldExpression(field);
             lines.push(`        if ${expr} is not None:`);
-            lines.push(`            body["${field}"] = ${expr}`);
+            lines.push(`            body[${pythonStringLiteral(field)}] = ${expr}`);
           }
         }
         // isinstance dispatch for parameter groups into body
@@ -823,7 +824,7 @@ function emitMethodBody(
       // Inject constant defaults into body
       if (Object.keys(opDefaults).length > 0) {
         for (const [key, value] of Object.entries(opDefaults)) {
-          lines.push(`        body["${key}"] = ${pythonLiteral(value)}`);
+          lines.push(`        body[${pythonStringLiteral(key)}] = ${pythonLiteral(value)}`);
         }
       }
       // Inject fields from client config into body
@@ -831,7 +832,7 @@ function emitMethodBody(
         for (const field of opInferFromClient) {
           const expr = clientFieldExpression(field);
           lines.push(`        if ${expr} is not None:`);
-          lines.push(`            body["${field}"] = ${expr}`);
+          lines.push(`            body[${pythonStringLiteral(field)}] = ${expr}`);
         }
       }
       // isinstance dispatch for parameter groups into body
@@ -927,7 +928,7 @@ function emitMethodBody(
         for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
           const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
-          lines.push(`            "${param.name}": ${value},`);
+          lines.push(`            ${pythonStringLiteral(param.name)}: ${value},`);
         }
         lines.push('        }.items() if v is not None}');
       } else if (visibleQueryParams.length > 0) {
@@ -935,7 +936,7 @@ function emitMethodBody(
         for (const param of visibleQueryParams) {
           const pn = fieldName(param.name);
           const value = serializeParameterValue(param.type, pn, param.required, (param as ParameterExt).explode);
-          lines.push(`            "${param.name}": ${value},`);
+          lines.push(`            ${pythonStringLiteral(param.name)}: ${value},`);
         }
         lines.push('        }');
       } else {
@@ -945,7 +946,7 @@ function emitMethodBody(
       // Inject constant defaults
       if (Object.keys(opDefaults).length > 0) {
         for (const [key, value] of Object.entries(opDefaults)) {
-          lines.push(`        params["${key}"] = ${pythonLiteral(value)}`);
+          lines.push(`        params[${pythonStringLiteral(key)}] = ${pythonLiteral(value)}`);
         }
       }
       // Inject fields from client config. Fields surfaced as optional
@@ -955,11 +956,11 @@ function emitMethodBody(
         for (const field of opInferFromClient) {
           const expr = clientFieldExpression(field);
           if (clientOverrides.has(field)) {
-            lines.push(`        if "${field}" not in params and ${expr} is not None:`);
+            lines.push(`        if ${pythonStringLiteral(field)} not in params and ${expr} is not None:`);
           } else {
             lines.push(`        if ${expr} is not None:`);
           }
-          lines.push(`            params["${field}"] = ${expr}`);
+          lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
         }
       }
       if (usesClientCredentialDefaults) {
@@ -1062,9 +1063,9 @@ function emitGroupDispatch(
           // Optional variant members are omitted from the wire format when
           // unset rather than sent as null.
           lines.push(`            ${indent}if ${groupParam}.${pyField} is not None:`);
-          lines.push(`                ${indent}${target}["${param.name}"] = ${value}`);
+          lines.push(`                ${indent}${target}[${pythonStringLiteral(param.name)}] = ${value}`);
         } else {
-          lines.push(`            ${indent}${target}["${param.name}"] = ${value}`);
+          lines.push(`            ${indent}${target}[${pythonStringLiteral(param.name)}] = ${value}`);
         }
       }
     }
@@ -1462,7 +1463,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {k: v for k, v in {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
+        `            ${pythonStringLiteral(param.name)}: ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }.items() if v is not None}');
@@ -1470,7 +1471,7 @@ function emitQueryParamsDict(
     lines.push('        params: Dict[str, Any] = {');
     for (const param of queryParams) {
       lines.push(
-        `            "${param.name}": ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
+        `            ${pythonStringLiteral(param.name)}: ${serializeParameterValue(param.type, fieldName(param.name), param.required, (param as ParameterExt).explode)},`,
       );
     }
     lines.push('        }');
@@ -1504,7 +1505,7 @@ function emitBodyDict(
     lines.push('        body: Dict[str, Any] = {k: v for k, v in {');
     for (const f of literalFields) {
       lines.push(
-        `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
+        `            ${pythonStringLiteral(f.name)}: ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
       );
     }
     lines.push('        }.items() if v is not None}');
@@ -1512,7 +1513,7 @@ function emitBodyDict(
     lines.push('        body: Dict[str, Any] = {');
     for (const f of literalFields) {
       lines.push(
-        `            "${f.name}": ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
+        `            ${pythonStringLiteral(f.name)}: ${serializeBodyFieldValue(f.type, bodyParamName(f, pathParamNames), f.required ?? false)},`,
       );
     }
     lines.push('        }');
@@ -1526,7 +1527,9 @@ function emitBodyDict(
     // type checker narrows `NotGiven` out of the union — required when the
     // value is transformed (e.g. `.to_dict()` on a nullable model/array field).
     lines.push(`        if not isinstance(${varName}, NotGiven):`);
-    lines.push(`            body["${f.name}"] = ${serializeBodyFieldValue(f.type, varName, f.required ?? false)}`);
+    lines.push(
+      `            body[${pythonStringLiteral(f.name)}] = ${serializeBodyFieldValue(f.type, varName, f.required ?? false)}`,
+    );
   }
 }
 

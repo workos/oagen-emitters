@@ -1,3 +1,4 @@
+import { tsStringLiteral, tsPropertyAccess } from './strings.js';
 import type { Model, Field, EmitterContext, TypeRef, UnionType, PrimitiveType } from '@workos/oagen';
 import { mapTypeRef as tsMapTypeRef } from './type-map.js';
 import { fieldName, wireFieldName, fileName, resolveInterfaceName, wireInterfaceName } from './naming.js';
@@ -218,13 +219,14 @@ function renderDiscriminatorSwitch(
   for (const [value, modelName] of Object.entries(disc.mapping)) {
     const resolved = resolveInterfaceName(modelName, ctx);
     const fn = `${direction}${resolved}`;
-    cases.push(`case '${value}': return ${fn}(${expr} as any)`);
+    cases.push(`case ${tsStringLiteral(value)}: return ${fn}(${expr} as any)`);
   }
   // No mapping → passthrough. Without this guard, an empty `disc.mapping`
   // emits `switch { ; default: ... }` which is invalid TypeScript syntax
   // (the leading `;` looks like a stray statement before the first case).
   if (cases.length === 0) return expr;
-  return `(() => { switch ((${expr} as any).${disc.property}) { ${cases.join('; ')}; default: return ${expr} } })()`;
+
+  return `(() => { switch ((${expr} as any)${tsPropertyAccess(disc.property)}) { ${cases.join('; ')}; default: return ${expr} } })()`;
 }
 
 function renderAllOfMerge(
@@ -314,7 +316,7 @@ export function collectSerializedModelRefs(ref: TypeRef): string[] {
 export function defaultForType(ref: TypeRef): string | null {
   switch (ref.kind) {
     case 'literal':
-      return typeof ref.value === 'string' ? `'${ref.value}'` : String(ref.value);
+      return typeof ref.value === 'string' ? tsStringLiteral(ref.value) : String(ref.value);
     case 'enum':
       return null;
     case 'map':

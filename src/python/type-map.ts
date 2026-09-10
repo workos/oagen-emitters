@@ -1,3 +1,4 @@
+import { pythonStringLiteral } from './strings.js';
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
@@ -22,7 +23,7 @@ export function mapTypeRef(ref: TypeRef): string {
     },
     literal: (r) =>
       typeof r.value === 'string'
-        ? `Literal["${r.value}"]`
+        ? `Literal[${pythonStringLiteral(r.value)}]`
         : r.value === null
           ? 'None'
           : `Literal[${toPythonLiteral(r.value)}]`,
@@ -57,7 +58,7 @@ export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allow
     },
     literal: (r) =>
       typeof r.value === 'string'
-        ? `Literal["${r.value}"]`
+        ? `Literal[${pythonStringLiteral(r.value)}]`
         : r.value === null
           ? 'None'
           : `Literal[${toPythonLiteral(r.value)}]`,

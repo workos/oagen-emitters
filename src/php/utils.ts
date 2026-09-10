@@ -5,7 +5,7 @@
  */
 export function phpDocComment(description: string, indent = 0): string[] {
   const pad = ' '.repeat(indent);
-  const descLines = description.split('\n');
+  const descLines = description.replace(/\*\//g, '*\u200b/').split('\n');
   if (descLines.length === 1) {
     return [`${pad}/** ${descLines[0]} */`];
   }

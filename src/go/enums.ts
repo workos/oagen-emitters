@@ -1,3 +1,4 @@
+import { goStringLiteral } from './strings.js';
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
@@ -112,9 +113,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       }
       const constName = `${typeName}${constSuffix}`;
       usedNames.add(constName);
-      const valueStr = typeof v.value === 'string' ? `"${v.value}"` : String(v.value);
+      const valueStr = typeof v.value === 'string' ? goStringLiteral(v.value) : String(v.value);
       if (v.description) {
-        blockLines.push(`\t// ${constName} is ${v.description}.`);
+        blockLines.push(
+          ...`\t// ${constName} is ${v.description}.`
+            .split('\n')
+            .map((line, index) => (index === 0 ? line : `\t// ${line}`)),
+        );
       }
       if (v.deprecated) {
         if (v.description) blockLines.push(`\t//`);
@@ -218,7 +223,11 @@ function generateEventConstantsFile(enums: Enum[], ctx: EmitterContext): Generat
     usedNames.add(constName);
 
     if (value.description) {
-      lines.push(`\t// ${constName} is ${value.description}.`);
+      lines.push(
+        ...`\t// ${constName} is ${value.description}.`
+          .split('\n')
+          .map((line, index) => (index === 0 ? line : `\t// ${line}`)),
+      );
     }
     if (value.deprecated) {
       if (value.description) lines.push('\t//');
@@ -226,7 +235,7 @@ function generateEventConstantsFile(enums: Enum[], ctx: EmitterContext): Generat
     }
     // Keep constants untyped so callers can use them as plain strings,
     // events.Event values, or typed root-package enum values.
-    lines.push(`\t${constName} = "${escapeGoString(valueStr)}"`);
+    lines.push(`\t${constName} = ${goStringLiteral(valueStr)}`);
   }
 
   lines.push(')');
@@ -279,10 +288,6 @@ function uniqueEventConstantName(value: string, usedNames: Set<string>): string 
   let suffix = 2;
   while (usedNames.has(`${base}${suffix}`)) suffix++;
   return `${base}${suffix}`;
-}
-
-function escapeGoString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

@@ -1,3 +1,4 @@
+import { phpStringLiteral } from './strings.js';
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper, TypeRef } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
@@ -81,7 +82,7 @@ function emitWrapperMethod(
   // Defaults (always included)
   if (wrapper.defaults) {
     for (const [key, value] of Object.entries(wrapper.defaults)) {
-      bodyEntries.push(`'${key}' => ${phpLiteral(value)}`);
+      bodyEntries.push(`${phpStringLiteral(key)} => ${phpLiteral(value)}`);
     }
   }
 
@@ -89,9 +90,9 @@ function emitWrapperMethod(
   for (const { paramName, field } of wrapperParams) {
     const phpName = fieldName(paramName);
     if (field && isEnumType(field.type)) {
-      bodyEntries.push(`'${paramName}' => $${phpName}?->value`);
+      bodyEntries.push(`${phpStringLiteral(paramName)} => $${phpName}?->value`);
     } else {
-      bodyEntries.push(`'${paramName}' => $${phpName}`);
+      bodyEntries.push(`${phpStringLiteral(paramName)} => $${phpName}`);
     }
   }
 
@@ -135,7 +136,7 @@ function isEnumType(ref: TypeRef): boolean {
 }
 
 function phpLiteral(value: unknown): string {
-  if (typeof value === 'string') return `'${value}'`;
+  if (typeof value === 'string') return phpStringLiteral(value);
   if (typeof value === 'number') return String(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return 'null';

@@ -1,3 +1,4 @@
+import { goStructTag, goStringLiteral } from './strings.js';
 import type {
   Service,
   Operation,
@@ -420,7 +421,7 @@ function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[], re
       if (group.needsQuery) {
         lines.push(`func (p ${typeName}) applyToQuery(v url.Values) {`);
         for (const { param, goField, isOptional, valueExpr } of members) {
-          const setLine = `v.Set("${param.name}", ${formatQueryValue(valueExpr, param.type)})`;
+          const setLine = `v.Set(${goStringLiteral(param.name)}, ${formatQueryValue(valueExpr, param.type)})`;
           if (isOptional) {
             lines.push(`\tif p.${goField} != nil {`);
             lines.push(`\t\t${setLine}`);
@@ -437,10 +438,10 @@ function emitCollectedGroupTypes(mountName: string, groups: CollectedGroup[], re
         for (const { param, goField, isOptional, valueExpr } of members) {
           if (isOptional) {
             lines.push(`\tif p.${goField} != nil {`);
-            lines.push(`\t\tm["${param.name}"] = ${valueExpr}`);
+            lines.push(`\t\tm[${goStringLiteral(param.name)}] = ${valueExpr}`);
             lines.push('\t}');
           } else {
-            lines.push(`\tm["${param.name}"] = ${valueExpr}`);
+            lines.push(`\tm[${goStringLiteral(param.name)}] = ${valueExpr}`);
           }
         }
         lines.push('}');
@@ -509,12 +510,11 @@ function generateParamsStruct(
         if (!field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
         const isOptional = !field.required;
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
-        const jsonTag = field.required ? `json:"${field.name}"` : `json:"${field.name},omitempty"`;
+        const jsonTag = field.name + (field.required ? '' : ',omitempty');
         // Body fields are JSON-marshaled into the request body. Emit `url:"-"`
         // so go-querystring's default field-name fallback doesn't also place
         // them in the URL — important when the spec duplicates a field as both
         // body and query param (e.g. /sso/token's `code`).
-        const urlTag = ' url:"-"';
         if (field.description) {
           const fdLines = field.description.split('\n').filter((l) => l.trim());
           lines.push(`\t// ${fieldDocComment(goField, fdLines[0])}`);
@@ -526,7 +526,7 @@ function generateParamsStruct(
           if (field.description) lines.push(`\t//`);
           lines.push(`\t// Deprecated: this field is deprecated.`);
         }
-        lines.push(`\t${goField} ${goType} \`${jsonTag}${urlTag}\``);
+        lines.push(`\t${goField} ${goType} ${goStructTag({ json: jsonTag, url: '-' })}`);
       }
     }
   } else if (hasBody) {
@@ -556,8 +556,7 @@ function generateParamsStruct(
     const isOptional = !param.required;
     const paramType = mapQueryParamType(param.name, param.type);
     const goType = isOptional ? makeOptional(paramType) : paramType;
-    const urlTag = param.required ? `url:"${param.name}"` : `url:"${param.name},omitempty"`;
-    const jsonTag = 'json:"-"';
+    const urlTag = param.name + (param.required ? '' : ',omitempty');
     if (param.description) {
       const pdLines = param.description.split('\n').filter((l) => l.trim());
       lines.push(`\t// ${fieldDocComment(goField, pdLines[0])}`);
@@ -574,7 +573,7 @@ function generateParamsStruct(
       if (param.description || param.default != null) lines.push(`\t//`);
       lines.push(`\t// Deprecated: this parameter is deprecated.`);
     }
-    lines.push(`\t${goField} ${goType} \`${urlTag} ${jsonTag}\``);
+    lines.push(`\t${goField} ${goType} ${goStructTag({ url: urlTag, json: '-' })}`);
   }
 
   // Parameter group fields (sum-type interfaces, serialized via applyToQuery)
@@ -632,7 +631,7 @@ function generateParamsStruct(
     }
     if (hasNullFields) {
       lines.push('\tnullable := map[string]bool{');
-      for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+      for (const name of clearableBodyFieldNames) lines.push(`\t\t${goStringLiteral(name)}: true,`);
       lines.push('\t}');
       lines.push('\tfor _, f := range p.NullFields {');
       lines.push('\t\tif !nullable[f] {');
@@ -726,7 +725,9 @@ function generateMethod(
   for (const p of op.pathParams) {
     if (p.deprecated) {
       lines.push(`//`);
-      lines.push(`// Deprecated parameter ${fieldName(p.name)}${p.description ? ': ' + p.description : '.'}`);
+      lines.push(
+        `// Deprecated parameter ${fieldName(p.name)}${p.description ? ': ' + p.description.replace(/\n/g, '\n// ') : '.'}`,
+      );
     }
   }
   if (op.deprecated) {
@@ -791,7 +792,7 @@ function generateMethod(
     );
   } else if (isPaginated && op.pagination) {
     const itemType = resolveIteratorItemType(op.pagination.itemType, _ctx);
-    const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
+    const dataPath = op.pagination.dataPath ? `${goStringLiteral(op.pagination.dataPath)}` : `"data"`;
     const cursorParam = '"after"';
     lines.push(
       `\treturn newIterator[${itemType}](ctx, s.client, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${hasVisibleQueryParams ? 'params' : 'nil'}, ${cursorParam}, ${dataPath}, opts, ${paginationDefaultsLiteral(op)})`,
@@ -837,7 +838,7 @@ function generateMethod(
 
 /** Convert a JS value to a Go literal. */
 function goLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return goStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }
@@ -877,14 +878,14 @@ function emitGetWithHiddenParams(
 
   // Inject constant defaults
   for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-    lines.push(`\tquery.Set("${key}", ${goLiteralForQuery(value as string | number | boolean)})`);
+    lines.push(`\tquery.Set(${goStringLiteral(key)}, ${goLiteralForQuery(value as string | number | boolean)})`);
   }
 
   // Inject inferred fields from client config
   for (const field of getOpInferFromClient(resolvedOp)) {
     const expr = clientFieldExpression(field);
     lines.push(`\tif ${expr} != "" {`);
-    lines.push(`\t\tquery.Set("${field}", ${expr})`);
+    lines.push(`\t\tquery.Set(${goStringLiteral(field)}, ${expr})`);
     lines.push('\t}');
   }
 
@@ -900,23 +901,27 @@ function emitGetWithHiddenParams(
         // Maps use bracket encoding: param[key]=value
         if (param.required) {
           lines.push(`\tfor k, v := range params.${goField} {`);
-          lines.push(`\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push(
+            `\t\tquery.Set(fmt.Sprintf(${goStringLiteral(`${param.name.replace(/%/g, '%%')}[%s]`)}, k), fmt.Sprintf("%v", v))`,
+          );
           lines.push('\t}');
         } else {
           lines.push(`\tif params.${goField} != nil {`);
           lines.push(`\t\tfor k, v := range params.${goField} {`);
-          lines.push(`\t\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push(
+            `\t\t\tquery.Set(fmt.Sprintf(${goStringLiteral(`${param.name.replace(/%/g, '%%')}[%s]`)}, k), fmt.Sprintf("%v", v))`,
+          );
           lines.push('\t\t}');
           lines.push('\t}');
         }
       } else if (param.required) {
-        lines.push(`\tquery.Set("${param.name}", ${formatQueryValue(`params.${goField}`, param.type)})`);
+        lines.push(`\tquery.Set(${goStringLiteral(param.name)}, ${formatQueryValue(`params.${goField}`, param.type)})`);
       } else {
         // Slices are reference types in Go -- nil-able without pointer wrapping
         const isRefType = param.type.kind === 'array';
         const valueExpr = isRefType ? `params.${goField}` : `*params.${goField}`;
         lines.push(`\tif params.${goField} != nil {`);
-        lines.push(`\t\tquery.Set("${param.name}", ${formatQueryValue(valueExpr, param.type)})`);
+        lines.push(`\t\tquery.Set(${goStringLiteral(param.name)}, ${formatQueryValue(valueExpr, param.type)})`);
         lines.push('\t}');
       }
     }
@@ -933,7 +938,7 @@ function emitGetWithHiddenParams(
   // Make the request with query as the 4th arg
   if (isPaginated && op.pagination) {
     const itemType = resolveIteratorItemType(op.pagination.itemType, ctx);
-    const dataPath = op.pagination.dataPath ? `"${op.pagination.dataPath}"` : `"data"`;
+    const dataPath = op.pagination.dataPath ? `${goStringLiteral(op.pagination.dataPath)}` : `"data"`;
     const cursorParam = '"after"';
     lines.push(
       `\treturn newIterator[${itemType}](ctx, s.client, "GET", ${pathExpr}, query, ${cursorParam}, ${dataPath}, opts, ${paginationDefaultsLiteral(op)})`,
@@ -982,14 +987,14 @@ function emitUrlBuilderMethod(
 
   // Inject constant defaults (e.g., response_type=code)
   for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
-    lines.push(`\tquery.Set("${key}", ${goLiteralForQuery(value as string | number | boolean)})`);
+    lines.push(`\tquery.Set(${goStringLiteral(key)}, ${goLiteralForQuery(value as string | number | boolean)})`);
   }
 
   // Inject inferred fields from client config (e.g., client_id)
   for (const field of getOpInferFromClient(resolvedOp)) {
     const expr = clientFieldExpression(field);
     lines.push(`\tif ${expr} != "" {`);
-    lines.push(`\t\tquery.Set("${field}", ${expr})`);
+    lines.push(`\t\tquery.Set(${goStringLiteral(field)}, ${expr})`);
     lines.push('\t}');
   }
 
@@ -1002,22 +1007,26 @@ function emitUrlBuilderMethod(
       if (isMap) {
         if (param.required) {
           lines.push(`\tfor k, v := range params.${goField} {`);
-          lines.push(`\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push(
+            `\t\tquery.Set(fmt.Sprintf(${goStringLiteral(`${param.name.replace(/%/g, '%%')}[%s]`)}, k), fmt.Sprintf("%v", v))`,
+          );
           lines.push('\t}');
         } else {
           lines.push(`\tif params.${goField} != nil {`);
           lines.push(`\t\tfor k, v := range params.${goField} {`);
-          lines.push(`\t\t\tquery.Set(fmt.Sprintf("${param.name}[%s]", k), fmt.Sprintf("%v", v))`);
+          lines.push(
+            `\t\t\tquery.Set(fmt.Sprintf(${goStringLiteral(`${param.name.replace(/%/g, '%%')}[%s]`)}, k), fmt.Sprintf("%v", v))`,
+          );
           lines.push('\t\t}');
           lines.push('\t}');
         }
       } else if (param.required) {
-        lines.push(`\tquery.Set("${param.name}", ${formatQueryValue(`params.${goField}`, param.type)})`);
+        lines.push(`\tquery.Set(${goStringLiteral(param.name)}, ${formatQueryValue(`params.${goField}`, param.type)})`);
       } else {
         const isRefType = param.type.kind === 'array';
         const valueExpr = isRefType ? `params.${goField}` : `*params.${goField}`;
         lines.push(`\tif params.${goField} != nil {`);
-        lines.push(`\t\tquery.Set("${param.name}", ${formatQueryValue(valueExpr, param.type)})`);
+        lines.push(`\t\tquery.Set(${goStringLiteral(param.name)}, ${formatQueryValue(valueExpr, param.type)})`);
         lines.push('\t}');
       }
     }
@@ -1054,7 +1063,7 @@ function emitHiddenParamsBodyStruct(
   for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
     const goField = fieldName(key);
     const goType = typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'int' : 'string';
-    lines.push(`\t${goField} ${goType} \`json:"${key}"\``);
+    lines.push(`\t${goField} ${goType} ${goStructTag({ json: key })}`);
   }
 
   // Required exposed body fields
@@ -1067,14 +1076,14 @@ function emitHiddenParamsBodyStruct(
       // Domain struct field; the json tag below keeps deriving from field.name.
       const goField = domainFieldName(field);
       const goType = mapTypeRef(field.type);
-      lines.push(`\t${goField} ${goType} \`json:"${field.name}"\``);
+      lines.push(`\t${goField} ${goType} ${goStructTag({ json: field.name })}`);
     }
   }
 
   // Inferred fields from client config (omitempty drops empty strings)
   for (const inferred of getOpInferFromClient(resolvedOp)) {
     const goField = fieldName(inferred);
-    lines.push(`\t${goField} string \`json:"${inferred},omitempty"\``);
+    lines.push(`\t${goField} string ${goStructTag({ json: inferred + ',omitempty' })}`);
   }
 
   // Optional exposed body fields (pointer/slice/map + omitempty)
@@ -1087,7 +1096,7 @@ function emitHiddenParamsBodyStruct(
       // Domain struct field; the json tag below keeps deriving from field.name.
       const goField = domainFieldName(field);
       const goType = makeOptional(mapTypeRef(field.type));
-      lines.push(`\t${goField} ${goType} \`json:"${field.name},omitempty"\``);
+      lines.push(`\t${goField} ${goType} ${goStructTag({ json: field.name + ',omitempty' })}`);
       if (field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
     }
   }
@@ -1117,7 +1126,7 @@ function emitHiddenParamsBodyStruct(
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
     lines.push('\tnullable := map[string]bool{');
-    for (const name of clearableBodyFieldNames) lines.push(`\t\t"${name}": true,`);
+    for (const name of clearableBodyFieldNames) lines.push(`\t\t${goStringLiteral(name)}: true,`);
     lines.push('\t}');
     lines.push('\tfor _, f := range b.NullFields {');
     lines.push('\t\tif !nullable[f] {');
@@ -1244,7 +1253,7 @@ function emitBodyWithHiddenParams(
 
 /** Format a Go value as a string for url.Values.Set(). */
 function goLiteralForQuery(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return goStringLiteral(value);
   if (typeof value === 'boolean') return value ? `"true"` : `"false"`;
   return `fmt.Sprintf("%v", ${String(value)})`;
 }
@@ -1407,7 +1416,7 @@ function paginationDefaultsLiteral(op: Operation): string {
   for (const name of PAGINATION_DEFAULTS) {
     const param = op.queryParams.find((qp) => qp.name === name);
     if (param?.default != null) {
-      entries.push(`"${name}": "${param.default}"`);
+      entries.push(`${goStringLiteral(name)}: ${goStringLiteral(String(param.default))}`);
     }
   }
   if (entries.length === 0) return 'nil';

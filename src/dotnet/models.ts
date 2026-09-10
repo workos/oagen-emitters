@@ -11,6 +11,7 @@ import {
 } from './type-map.js';
 import {
   articleFor,
+  csLiteral,
   fieldName,
   domainFieldName,
   humanize,
@@ -423,7 +424,7 @@ function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, 
     if (ref.value === null) return null;
     if (typeof ref.value === 'boolean') return ref.value ? 'true' : 'false';
     if (typeof ref.value === 'number') return String(ref.value);
-    if (typeof ref.value === 'string') return JSON.stringify(ref.value);
+    if (typeof ref.value === 'string') return csLiteral(ref.value);
     return null;
   }
   if (ref.kind !== 'enum') return null;
@@ -437,7 +438,7 @@ function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, 
   if (wire === null) return null;
   // Enum wire values serialize as strings in JSON, and mapTypeRef returns
   // `string` for single-value enums — so always quote.
-  return JSON.stringify(wire);
+  return csLiteral(wire);
 }
 
 /**

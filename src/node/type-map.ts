@@ -1,3 +1,4 @@
+import { tsStringLiteral } from './strings.js';
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { wireInterfaceName } from './naming.js';
@@ -55,7 +56,7 @@ export function mapTypeRef(ref: TypeRef, opts?: MapTypeRefOpts): string {
     enum: (r) => inlineEnumUnions.get(r.name) ?? r.name,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `${inner} | null`,
-    literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),
+    literal: (r) => (typeof r.value === 'string' ? tsStringLiteral(r.value) : String(r.value)),
     map: (_r, value) => `Record<string, ${value}>`,
   });
 }
@@ -73,7 +74,7 @@ export function mapWireTypeRef(ref: TypeRef, opts?: { genericDefaults?: Map<stri
     enum: (r) => inlineEnumUnions.get(r.name) ?? r.name,
     union: (r, variants) => joinUnionVariants(r, variants),
     nullable: (_r, inner) => `${inner} | null`,
-    literal: (r) => (typeof r.value === 'string' ? `'${r.value}'` : String(r.value)),
+    literal: (r) => (typeof r.value === 'string' ? tsStringLiteral(r.value) : String(r.value)),
     map: (_r, value) => `Record<string, ${value}>`,
   });
 }
