@@ -2,6 +2,7 @@ import type { Model, Field, EmitterContext, GeneratedFile } from '@workos/oagen'
 import { toCamelCase } from '@workos/oagen';
 import { typeName, fileName, propertyName, escapeReserved, moduleName } from './naming.js';
 import { fieldSwiftType } from './type-map.js';
+import { isModelInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate one Swift `Codable` struct file per IR model.
@@ -9,13 +10,20 @@ import { fieldSwiftType } from './type-map.js';
  * Each struct gets: a doc comment, `public let` properties (camelCase), a
  * `public init` (required params first, optionals defaulted to `nil`), and a
  * `CodingKeys` enum mapping Swift properties to wire keys.
+ *
+ * Scoped (`--services`) runs leave out-of-scope model files untouched on disk.
+ * Resources and tests are already scoped, so refreshing every model here would
+ * hand a non-selected service's untouched test fixtures a model shape they
+ * were never regenerated against.
  */
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
   const module = moduleName(ctx);
-  return models.map((model) => ({
-    path: `Sources/${module}/Models/${fileName(model.name)}.swift`,
-    content: renderModel(model),
-  }));
+  return models
+    .filter((model) => isModelInScope(model.name, ctx))
+    .map((model) => ({
+      path: `Sources/${module}/Models/${fileName(model.name)}.swift`,
+      content: renderModel(model),
+    }));
 }
 
 /** Render a doc comment block from a description (each line prefixed `/// `). */
