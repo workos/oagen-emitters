@@ -16,7 +16,7 @@ import {
   resolveMethodName,
   buildServiceNameMap,
 } from './naming.js';
-import { getMountTarget, groupByMount } from '../shared/resolved-ops.js';
+import { getMountTarget, groupByMount, declaredParams } from '../shared/resolved-ops.js';
 import { assignModelsToServices, collectModelRefs, collectFieldDependencies } from '@workos/oagen';
 import { isNodeOwnedService } from './options.js';
 import { liveSurfaceHasExistingSdk, liveSurfaceHasFile } from './live-surface.js';
@@ -352,7 +352,7 @@ function collectServiceModelClosure(service: Service, modelsByName: Map<string, 
   for (const op of service.operations) {
     add(op.requestBody);
     add(op.response);
-    for (const param of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+    for (const param of declaredParams(op)) {
       add(param.type);
     }
     if (op.pagination) add(op.pagination.itemType);

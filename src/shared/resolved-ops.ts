@@ -1,5 +1,6 @@
 import type {
   Operation,
+  Parameter,
   EmitterContext,
   Service,
   ResolvedOperation,
@@ -8,6 +9,7 @@ import type {
   TypeRef,
 } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
+import { getSyntheticParent } from './model-utils.js';
 
 /**
  * Fail fast when two distinct paths in the same mount resolve to the same SDK
@@ -140,13 +142,36 @@ export function isMountInScope(mountName: string, ctx: EmitterContext): boolean 
  */
 export function isModelInScope(modelName: string, ctx: EmitterContext): boolean {
   const scope = ctx.scopedModelNames;
-  return !scope || scope.has(modelName);
+  return !scope || scope.has(modelName) || syntheticRootInScope(modelName, scope);
 }
 
-/** Like {@link isModelInScope} but for an ENUM's per-enum file (`ctx.scopedEnumNames`). */
+/**
+ * Like {@link isModelInScope} but for an ENUM's per-enum file (`ctx.scopedEnumNames`).
+ * A synthetic enum's parent is a MODEL, so its scope is decided by the model
+ * allow-list.
+ */
 export function isEnumInScope(enumName: string, ctx: EmitterContext): boolean {
   const scope = ctx.scopedEnumNames;
-  return !scope || scope.has(enumName);
+  if (!scope || scope.has(enumName)) return true;
+  return !!ctx.scopedModelNames && syntheticRootInScope(enumName, ctx.scopedModelNames);
+}
+
+/**
+ * A synthetic model or enum (minted by `enrichModelsFromSpec` from an inline
+ * schema) never appears in the engine's IR-derived allow-lists, yet the file
+ * that references it — its parent model — may be in scope and freshly
+ * rewritten. Follow the parent chain (synthetics nest) to the declared model
+ * and let that decide, so a scoped run emits every dependent the model needs.
+ */
+function syntheticRootInScope(name: string, modelScope: ReadonlySet<string>): boolean {
+  const seen = new Set<string>();
+  let parent = getSyntheticParent(name);
+  while (parent && !seen.has(parent)) {
+    if (modelScope.has(parent)) return true;
+    seen.add(parent);
+    parent = getSyntheticParent(parent);
+  }
+  return false;
 }
 
 /** True when a scoped (`--services`) run is active. */
@@ -329,4 +354,22 @@ export function collectBodyFieldTypes(op: Operation, models: Model[]): Map<strin
   }
 
   return fieldTypes;
+}
+
+/**
+ * Every parameter an operation declares, in every location, including the
+ * query declarations oagen keeps off the wire because the request body owns
+ * them (`bodyOwnedQueryParams`). Use this for reachability, placement, and
+ * import walks — anything deciding which types exist and where they live —
+ * so a type declared only by a body-owned parameter keeps its home.
+ * Serialization code keeps reading the location-specific arrays.
+ */
+export function declaredParams(op: Operation): Parameter[] {
+  return [
+    ...op.pathParams,
+    ...op.queryParams,
+    ...(op.bodyOwnedQueryParams ?? []),
+    ...op.headerParams,
+    ...(op.cookieParams ?? []),
+  ];
 }

@@ -119,3 +119,28 @@ describe('ios/enums', () => {
     `);
   });
 });
+
+describe('ios/enums scoped runs', () => {
+  const enumDef = (name: string): Enum => ({
+    name,
+    values: [{ name: 'a', value: 'a' }],
+  });
+
+  it('writes only in-scope enum files under --services', () => {
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      scopedServices: new Set(['SSO']),
+      scopedEnumNames: new Set(['SSOGrantType']),
+    };
+    const files = generateEnums([enumDef('SSOGrantType'), enumDef('DataIntegrationOwnership')], scopedCtx);
+    expect(files.map((f) => f.path)).toEqual(['Sources/WorkOS/Enums/SSOGrantType.swift']);
+  });
+
+  it('writes every enum file in a full run', () => {
+    const files = generateEnums([enumDef('SSOGrantType'), enumDef('DataIntegrationOwnership')], ctx);
+    expect(files.map((f) => f.path)).toEqual([
+      'Sources/WorkOS/Enums/SSOGrantType.swift',
+      'Sources/WorkOS/Enums/DataIntegrationOwnership.swift',
+    ]);
+  });
+});

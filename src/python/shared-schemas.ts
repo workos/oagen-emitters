@@ -2,6 +2,7 @@ import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oage
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
 import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
+import { declaredParams } from '../shared/resolved-ops.js';
 
 /**
  * Walk every operation across all services and tally, per schema, the set of
@@ -39,7 +40,7 @@ export function findSharedSchemas(spec: ApiSpec): { models: Set<string>; enums: 
     for (const op of service.operations) {
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
       if (op.pagination) collect(op.pagination.itemType);
@@ -476,7 +477,7 @@ function assignEnumsToServicesNatural(enums: Enum[], services: Service[]): Map<s
     for (const op of service.operations) {
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
     }
