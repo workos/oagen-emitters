@@ -1,3 +1,4 @@
+import { tsStringLiteral } from './strings.js';
 // @oagen-ignore: Operation.async — all TypeScript SDK methods are async by nature
 
 import fs from 'node:fs';
@@ -1695,7 +1696,7 @@ function renderMethod(
       // Flatten all parts, splitting multiline descriptions into individual lines
       const allLines: string[] = [];
       for (const part of docParts) {
-        for (const line of part.split('\n')) {
+        for (const line of part.replace(/\*\//g, '*\u200b/').split('\n')) {
           allLines.push(line);
         }
       }
@@ -2355,7 +2356,7 @@ function renderGetMethod(
 
 /** Convert a JS value to a TypeScript literal. */
 function tsLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `'${value.replace(/'/g, "\\'")}'`;
+  if (typeof value === 'string') return tsStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }
@@ -2697,7 +2698,7 @@ function renderUnionBodySerializer(
     const resolved = resolveInterfaceName(modelName, ctx);
     // Switch on a typed discriminator narrows `payload` to the variant, so the
     // serializer call type-checks without any casts.
-    cases.push(`case '${value}': return serialize${resolved}(payload)`);
+    cases.push(`case ${tsStringLiteral(value)}: return serialize${resolved}(payload)`);
   }
   // Assign `payload` to `never` in the default branch to get a compile-time
   // exhaustiveness check — if a new variant is added to the union but not to
@@ -2867,7 +2868,9 @@ function mapParamType(type: TypeRef, specEnumNames: Set<string>): string {
   if (type.kind === 'enum' && !specEnumNames.has(type.name)) {
     // Inline enum with no generated file — render values as string literal union
     if (type.values && type.values.length > 0) {
-      return type.values.map((v: string | number) => (typeof v === 'string' ? `'${v}'` : String(v))).join(' | ');
+      return type.values
+        .map((v: string | number) => (typeof v === 'string' ? tsStringLiteral(v) : String(v)))
+        .join(' | ');
     }
     return 'string';
   }

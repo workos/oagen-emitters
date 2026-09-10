@@ -1,3 +1,4 @@
+import { pythonStringLiteral } from './strings.js';
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper, Model } from '@workos/oagen';
 import { toSnakeCase } from '@workos/oagen';
 import { className, fieldName } from './naming.js';
@@ -95,7 +96,7 @@ function emitWrapperMethod(
 
   // Constant defaults
   for (const [key, value] of Object.entries(wrapper.defaults)) {
-    lines.push(`            "${key}": ${pythonLiteral(value)},`);
+    lines.push(`            ${pythonStringLiteral(key)}: ${pythonLiteral(value)},`);
   }
 
   // Exposed params (required ones go directly)
@@ -163,7 +164,7 @@ function emitWrapperMethod(
 
 /** Convert a value to a Python literal. */
 export function pythonLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return pythonStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'True' : 'False';
   return String(value);
 }

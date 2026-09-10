@@ -164,7 +164,7 @@ export function localName(name: string): string {
 
 /** Escape a value as a C# literal. */
 export function csLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return `"${escapeCsAttributeString(value)}"`;
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }
@@ -229,7 +229,11 @@ export function httpMethodHelperName(method: string): string {
 
 /** Escape XML special characters for use in XML doc comments. */
 export function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[\r\n\u0085\u2028\u2029]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
 /**
@@ -269,7 +273,9 @@ export function deprecationMessage(
  * Doubles embedded quotes and escapes backslashes.
  */
 export function escapeCsAttributeString(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return JSON.stringify(s)
+    .slice(1, -1)
+    .replace(/[\u0085\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /**

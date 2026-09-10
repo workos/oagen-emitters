@@ -1,3 +1,4 @@
+import { goStringLiteral } from './strings.js';
 import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import {
   className as goClassName,
@@ -61,7 +62,7 @@ function emitWrapperBodyStruct(lines: string[], wrapper: ResolvedWrapper, wrappe
   for (const [key, value] of Object.entries(wrapper.defaults)) {
     const goField = goFieldName(key);
     const goType = typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'int' : 'string';
-    lines.push(`\t${goField} ${goType} \`json:"${key}"\``);
+    lines.push(`\t${goField} ${goType} \`json:${goStringLiteral(key)}\``);
   }
 
   // Required exposed params
@@ -227,7 +228,7 @@ function emitWrapperMethod(
 
 /** Convert a value to a Go literal. */
 function goLiteral(value: string | number | boolean): string {
-  if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof value === 'string') return goStringLiteral(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
 }

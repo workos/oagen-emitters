@@ -1,3 +1,4 @@
+import { phpStringLiteral } from './strings.js';
 import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, enumClassName, domainFieldName } from './naming.js';
@@ -134,7 +135,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
       const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required);
-      lines.push(`            '${wireName}' => ${serialized},`);
+      lines.push(`            ${phpStringLiteral(wireName)} => ${serialized},`);
     }
     lines.push('        ];');
     lines.push('    }');
@@ -189,22 +190,22 @@ function generateFromArrayAccessor(ref: TypeRef, wireName: string, required: boo
   const isNullable = ref.kind === 'nullable';
   if (!required || isNullable) {
     const innerRef = isNullable ? ref.inner : ref;
-    const inner = generateFromArrayValue(innerRef, `$data['${wireName}']`);
+    const inner = generateFromArrayValue(innerRef, `$data[${phpStringLiteral(wireName)}]`);
     if (isComplexType(innerRef)) {
-      return `isset($data['${wireName}']) ? ${inner} : null`;
+      return `isset($data[${phpStringLiteral(wireName)}]) ? ${inner} : null`;
     }
     if (isNullable) {
-      return `$data['${wireName}'] ?? null`;
+      return `$data[${phpStringLiteral(wireName)}] ?? null`;
     }
-    return `$data['${wireName}'] ?? null`;
+    return `$data[${phpStringLiteral(wireName)}] ?? null`;
   }
   // Literal fields have a statically known value; use ?? with a default
   // so deserialization is resilient when the API omits the key.
   if (ref.kind === 'literal') {
-    return `$data['${wireName}'] ?? ${phpLiteralDefault(ref.value)}`;
+    return `$data[${phpStringLiteral(wireName)}] ?? ${phpLiteralDefault(ref.value)}`;
   }
   // Required field: access directly
-  return generateFromArrayValue(ref, `$data['${wireName}']`);
+  return generateFromArrayValue(ref, `$data[${phpStringLiteral(wireName)}]`);
 }
 
 /**
@@ -252,11 +253,13 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
         const entries = Object.entries(ref.discriminator.mapping);
         if (entries.length > 0) {
           const arms = entries
-            .map(([value, modelName]) => `'${value}' => ${className(modelName)}::fromArray(${accessor})`)
+            .map(
+              ([value, modelName]) => `${phpStringLiteral(value)} => ${className(modelName)}::fromArray(${accessor})`,
+            )
             .join(', ');
           const discProp = ref.discriminator.property;
-          const throwArm = `default => throw new \\UnexpectedValueException(sprintf('Unknown ${discProp}: %s', json_encode(${accessor}['${discProp}'] ?? null)))`;
-          return `match (${accessor}['${discProp}'] ?? null) { ${arms}, ${throwArm} }`;
+          const throwArm = `default => throw new \\UnexpectedValueException(sprintf(${phpStringLiteral(`Unknown ${discProp}: %s`)}, json_encode(${accessor}[${phpStringLiteral(discProp)}] ?? null)))`;
+          return `match (${accessor}[${phpStringLiteral(discProp)}] ?? null) { ${arms}, ${throwArm} }`;
         }
       }
       const resolved = resolveDegenerateUnion(ref);
@@ -274,7 +277,7 @@ function generateFromArrayValue(ref: TypeRef, accessor: string): string {
 function phpLiteralDefault(value: string | number | boolean | null): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'string') return `'${value}'`;
+  if (typeof value === 'string') return phpStringLiteral(value);
   return String(value);
 }
 

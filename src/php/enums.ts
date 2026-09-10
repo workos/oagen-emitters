@@ -1,3 +1,4 @@
+import { phpStringLiteral } from './strings.js';
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 import { className, guardEnumCaseName, resolveEnumName } from './naming.js';
@@ -59,7 +60,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       }
 
       if (typeof val.value === 'string') {
-        lines.push(`    case ${caseName} = '${val.value}';`);
+        lines.push(`    case ${caseName} = ${phpStringLiteral(val.value)};`);
       } else {
         lines.push(`    case ${caseName} = ${val.value};`);
       }

@@ -1,3 +1,4 @@
+import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
@@ -181,7 +182,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push('');
         const literals = uniqueValues.map((v) =>
           typeof v.value === 'string'
-            ? `"${v.value}"`
+            ? pythonStringLiteral(v.value)
             : typeof v.value === 'boolean'
               ? v.value
                 ? 'True'
@@ -213,7 +214,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         usedNames.add(memberName);
         const valueStr =
           typeof v.value === 'string'
-            ? `"${v.value}"`
+            ? pythonStringLiteral(v.value)
             : typeof v.value === 'boolean'
               ? v.value
                 ? 'True'
@@ -224,7 +225,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
           const parts: string[] = [];
           if (v.description) parts.push(v.description);
           if (v.deprecated) parts.push('.. deprecated::');
-          lines.push(`    """${parts.join('\n\n    ')}"""`);
+          lines.push(`    """${pythonDocstring(parts.join('\n\n    '))}"""`);
         }
       }
       if (allStrings) {
@@ -243,7 +244,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         `${cls}Literal: TypeAlias = Literal[${uniqueValues
           .map((v) =>
             typeof v.value === 'string'
-              ? `"${v.value}"`
+              ? pythonStringLiteral(v.value)
               : typeof v.value === 'boolean'
                 ? v.value
                   ? 'True'

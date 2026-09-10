@@ -1,3 +1,4 @@
+import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -149,29 +150,31 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // Dispatcher class
       if (model.description) {
         dispLines.push(`class ${modelClassName}:`);
-        dispLines.push(`    """${model.description}"""`);
+        dispLines.push(`    """${pythonDocstring(model.description)}"""`);
       } else {
         dispLines.push(`class ${modelClassName}:`);
-        dispLines.push(`    """Discriminated union dispatcher (discriminated by '${disc.property}')."""`);
+        dispLines.push(
+          `    """Discriminated union dispatcher (discriminated by '${pythonDocstring(disc.property)}')."""`,
+        );
       }
       dispLines.push('');
       dispLines.push(`    _DISPATCH: ClassVar[Dict[str, type]] = {`);
       for (const [value, variantModelName] of Object.entries(disc.mapping).sort(([a], [b]) => a.localeCompare(b))) {
-        dispLines.push(`        "${value}": ${className(variantModelName)},`);
+        dispLines.push(`        ${pythonStringLiteral(value)}: ${className(variantModelName)},`);
       }
       dispLines.push('    }');
       dispLines.push('');
       dispLines.push('    @classmethod');
       dispLines.push(`    def from_dict(cls, data: Dict[str, Any]) -> "${variantTypeName}":`);
       dispLines.push('        """Deserialize from a dictionary, dispatching to the correct variant."""');
-      dispLines.push(`        if "${disc.property}" not in data:`);
+      dispLines.push(`        if ${pythonStringLiteral(disc.property)} not in data:`);
       dispLines.push(
-        `            _raise_deserialize_error("${modelClassName}", ValueError("Missing required field '${disc.property}'"))`,
+        `            _raise_deserialize_error("${modelClassName}", ValueError(${pythonStringLiteral(`Missing required field '${disc.property}'`)}))`,
       );
-      dispLines.push(`        disc_value = data["${disc.property}"]`);
+      dispLines.push(`        disc_value = data[${pythonStringLiteral(disc.property)}]`);
       dispLines.push('        if disc_value is None:');
       dispLines.push(
-        `            _raise_deserialize_error("${modelClassName}", ValueError("${disc.property} must not be None"))`,
+        `            _raise_deserialize_error("${modelClassName}", ValueError(${pythonStringLiteral(`${disc.property} must not be None`)}))`,
       );
       dispLines.push('        dispatch_cls = cls._DISPATCH.get(disc_value)');
       dispLines.push('        if dispatch_cls is not None:');
@@ -346,7 +349,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('@dataclass(slots=True)');
     lines.push(`class ${modelClassName}:`);
     if (model.description) {
-      lines.push(`    """${model.description}"""`);
+      lines.push(`    """${pythonDocstring(model.description)}"""`);
     } else {
       // Generate a default docstring from the class name when the spec
       // doesn't provide a description.
@@ -382,7 +385,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (field.description) parts.push(field.description);
         if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
         lines.push(`    ${pyFieldName}: ${pyType}`);
-        lines.push(`    """${parts.join('\n\n    ')}"""`);
+        lines.push(`    """${pythonDocstring(parts.join('\n\n    '))}"""`);
       } else {
         lines.push(`    ${pyFieldName}: ${pyType}`);
       }
@@ -399,7 +402,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         if (field.description) parts.push(field.description);
         if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
-        lines.push(`    """${parts.join('\n\n    ')}"""`);
+        lines.push(`    """${pythonDocstring(parts.join('\n\n    '))}"""`);
       } else {
         lines.push(`    ${pyFieldName}: ${pyType} = None`);
       }
@@ -432,9 +435,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (field.type.kind === 'literal' && isRequired) {
         // Required literal fields have a statically known value; use .get() with a default
         // so deserialization is resilient when the API omits the key.
-        accessor = `data.get("${wireKey}", ${pythonLiteralDefault(field.type.value)})`;
+        accessor = `data.get(${pythonStringLiteral(wireKey)}, ${pythonLiteralDefault(field.type.value)})`;
       } else {
-        accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+        accessor = isRequired ? `data[${pythonStringLiteral(wireKey)}]` : `data.get(${pythonStringLiteral(wireKey)})`;
       }
       // For deserialization expressions, nullable types must always handle None
       // even when the field itself is required (the key must be present, but value can be null).
@@ -467,20 +470,20 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (isRequired && !isNullable) {
         // Required non-nullable: always serialize directly
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
-        lines.push(`        result["${wireKey}"] = ${serExpr}`);
+        lines.push(`        result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
       } else if (isNullable) {
         // Nullable fields should round-trip explicit None as null, even when optional
         const innerType = (field.type as any).inner;
         const serExpr = serializeField(innerType, `self.${pyFieldName}`);
         lines.push(`        if self.${pyFieldName} is not None:`);
-        lines.push(`            result["${wireKey}"] = ${serExpr}`);
+        lines.push(`            result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
         lines.push(`        else:`);
-        lines.push(`            result["${wireKey}"] = None`);
+        lines.push(`            result[${pythonStringLiteral(wireKey)}] = None`);
       } else {
         // Optional non-nullable fields should be omitted when unset
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
         lines.push(`        if self.${pyFieldName} is not None:`);
-        lines.push(`            result["${wireKey}"] = ${serExpr}`);
+        lines.push(`            result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
       }
     }
 
@@ -814,7 +817,7 @@ function isOptionalField(modelName: string, field: Model['fields'][number], ctx:
 function pythonLiteralDefault(value: string | number | boolean | null): string {
   if (value === null) return 'None';
   if (typeof value === 'boolean') return value ? 'True' : 'False';
-  if (typeof value === 'string') return `"${value}"`;
+  if (typeof value === 'string') return pythonStringLiteral(value);
   return String(value);
 }
 
@@ -882,17 +885,17 @@ function renderDiscriminatedUnionPrelude(
   const dispatchBlock = (innerIndent: string): string[] => {
     const lines: string[] = [];
     lines.push(`${innerIndent}${dataVar} = cast(Dict[str, Any], ${rawVar})`);
-    lines.push(`${innerIndent}${typeVar} = cast(str, ${dataVar}.get("${discProp}"))`);
+    lines.push(`${innerIndent}${typeVar} = cast(str, ${dataVar}.get(${pythonStringLiteral(discProp)}))`);
     lines.push(`${innerIndent}${mapVar}: Dict[str, Any] = {`);
     for (const [value, variantModelName] of entries) {
-      lines.push(`${innerIndent}    "${value}": ${className(variantModelName)},`);
+      lines.push(`${innerIndent}    ${pythonStringLiteral(value)}: ${className(variantModelName)},`);
     }
     lines.push(`${innerIndent}}`);
     lines.push(`${innerIndent}${clsVar} = ${mapVar}.get(${typeVar})`);
     lines.push(`${innerIndent}if ${clsVar} is None:`);
     lines.push(`${innerIndent}    raise ValueError(`);
     lines.push(
-      `${innerIndent}        f"Unknown discriminator '${discProp}' for ${parentClassName}.${pyFieldName}: {${typeVar}!r}. "`,
+      `${innerIndent}        ${pythonStringLiteral(`Unknown discriminator '${discProp}' for ${parentClassName}.${pyFieldName}: `)} f"{${typeVar}!r}. "`,
     );
     lines.push(`${innerIndent}        f"Expected one of {sorted(${mapVar})}."`);
     lines.push(`${innerIndent}    )`);
@@ -901,13 +904,13 @@ function renderDiscriminatedUnionPrelude(
 
   const prelude: string[] = [];
   if (isRequired && !nullable) {
-    prelude.push(`${indent}${rawVar} = data["${wireKey}"]`);
+    prelude.push(`${indent}${rawVar} = data[${pythonStringLiteral(wireKey)}]`);
     prelude.push(...dispatchBlock(indent));
     return { prelude, expr: `${clsVar}.from_dict(${dataVar})` };
   }
 
   // Optional or nullable: handle missing/None explicitly.
-  const accessor = isRequired ? `data["${wireKey}"]` : `data.get("${wireKey}")`;
+  const accessor = isRequired ? `data[${pythonStringLiteral(wireKey)}]` : `data.get(${pythonStringLiteral(wireKey)})`;
   prelude.push(`${indent}${rawVar} = ${accessor}`);
   prelude.push(`${indent}if ${rawVar} is None:`);
   prelude.push(`${indent}    ${valueVar} = None`);

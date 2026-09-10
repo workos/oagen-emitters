@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className, modelClassName } from './naming.js';
+import { className, modelClassName, csLiteral } from './naming.js';
 
 /** Known C# value types that need `?` for nullable. */
 const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal', 'byte', 'short', 'DateTimeOffset']);
@@ -167,12 +167,15 @@ export function emitJsonPropertyAttributes(
   if (options.explicitWireName) {
     if (options.isRequiredEnum) {
       return [
-        `        [JsonProperty("${wireName}", DefaultValueHandling = DefaultValueHandling.Ignore)]`,
+        `        [JsonProperty(${csLiteral(wireName)}, DefaultValueHandling = DefaultValueHandling.Ignore)]`,
         `        [STJS.JsonIgnore(Condition = STJS.JsonIgnoreCondition.WhenWritingDefault)]`,
-        `        [STJS.JsonPropertyName("${wireName}")]`,
+        `        [STJS.JsonPropertyName(${csLiteral(wireName)})]`,
       ];
     }
-    return [`        [JsonProperty("${wireName}")]`, `        [STJS.JsonPropertyName("${wireName}")]`];
+    return [
+      `        [JsonProperty(${csLiteral(wireName)})]`,
+      `        [STJS.JsonPropertyName(${csLiteral(wireName)})]`,
+    ];
   }
   if (options.isRequiredEnum) {
     return [
