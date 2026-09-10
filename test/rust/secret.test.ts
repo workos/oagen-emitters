@@ -29,6 +29,10 @@ describe('rust secret classification', () => {
     ['credential', 'The credential value to validate: the API key value.'],
     ['code', 'The one-time code for the challenge.'],
     ['authkit_authorization_code', 'An authorization code that can be exchanged for tokens.'],
+    // A caveat about a separately displayed partial must not disarm the full secret.
+    ['value', 'The full API key value; its suffix is displayed separately.'],
+    ['value', 'The API key value (only the last four characters are shown in the dashboard).'],
+    ['code', 'The one-time code, delivered with a hint about the channel used.'],
   ])('redacts semantic secret %s: %s', (name, description) => {
     expect(redact(field(name, description))).toBe('crate::SecretString');
   });
@@ -39,6 +43,8 @@ describe('rust secret classification', () => {
     ['refresh_token_url', 'The endpoint used to refresh tokens.'],
     ['value', 'An obfuscated representation of the API Key value.'],
     ['value', 'A hint showing the last few characters of the secret value.'],
+    ['value', 'The last four characters of the API key, for display.'],
+    ['value', 'Masked API key value.'],
     ['id', 'The unique ID of the client secret.'],
     ['value', 'The PEM-encoded public X.509 certificate.'],
     ['code', 'A public classification code.'],

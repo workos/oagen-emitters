@@ -46,13 +46,28 @@ function hasPasswordFormat(type?: TypeRef): boolean {
   return type?.kind === 'primitive' && type.type === 'string' && type.format === 'password';
 }
 
+/**
+ * Leading-clause wording that says the field is a partial, masked, or locating
+ * form of a secret (identifier, hint, provider endpoint) rather than the
+ * secret itself.
+ */
+const PARTIAL_SECRET_SUBJECT = /error code|endpoint|obfuscat|mask|last (?:four|few|\d)|hint|suffix/i;
+
+function describesPartialSecret(description: string): boolean {
+  // Only the leading clause names what the field is. A later caveat such as
+  // "...; its suffix is displayed separately" must not disarm redaction of a
+  // documented full secret.
+  const subject = description.split(/[.;:,(]/, 1)[0] ?? '';
+  return PARTIAL_SECRET_SUBJECT.test(subject);
+}
+
 function holdsSecret(field: SecretField): boolean {
   if (hasPasswordFormat(field.type)) return true;
   if (isSensitiveFieldName(field.name)) return true;
   const description = field.description ?? '';
   // A mention of a secret is not enough: identifiers, hints, and provider
   // endpoints describe credentials without containing them.
-  if (/error code|endpoint|obfuscat|last (?:four|few|\d)|hint|suffix/i.test(description)) return false;
+  if (describesPartialSecret(description)) return false;
   if (/^(?:value|credential)$/.test(field.name)) {
     return /plaintext|\b(?:access token|API key|secret)\b/i.test(description);
   }
