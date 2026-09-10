@@ -300,10 +300,16 @@ interface SyntheticCollector {
   }>;
   /** Track names already used to avoid duplicates. */
   usedNames: Set<string>;
+  /**
+   * Synthetic name → the model whose inline schema minted it. A synthetic type
+   * is never in the engine's IR-derived scope allow-lists, so scoped runs place
+   * it wherever its parent lives (see `isModelInScope` / `isEnumInScope`).
+   */
+  parents: Map<string, string>;
 }
 
 function createCollector(): SyntheticCollector {
-  return { models: [], enums: [], usedNames: new Set() };
+  return { models: [], enums: [], usedNames: new Set(), parents: new Map() };
 }
 
 /**
@@ -345,6 +351,7 @@ function rawSchemaToTypeRef(
     const syntheticName = `${parentModelName}_${fName}`;
     if (!collector.usedNames.has(syntheticName) && !collector.usedNames.has(toSnakeCase(syntheticName))) {
       collector.usedNames.add(syntheticName);
+      collector.parents.set(syntheticName, parentModelName);
       collector.enums.push({
         name: syntheticName,
         values: (schema.enum as string[]).map((v: string) => ({
@@ -383,6 +390,7 @@ function rawSchemaToTypeRef(
     const syntheticName = `${parentModelName}_${fName}`;
     if (!collector.usedNames.has(syntheticName) && !collector.usedNames.has(toSnakeCase(syntheticName))) {
       collector.usedNames.add(syntheticName);
+      collector.parents.set(syntheticName, parentModelName);
       const fields: Field[] = [];
       const requiredSet = new Set<string>(schema.required ?? []);
       for (const [propName, propSchema] of Object.entries(schema.properties) as [string, Record<string, any>][]) {
@@ -562,6 +570,7 @@ function upgradeArrayItemType(
 // Consumed by `getSyntheticEnums()` after `enrichModelsFromSpec` runs.
 // ---------------------------------------------------------------------------
 let _lastSyntheticEnums: Enum[] = [];
+let _lastSyntheticParents: ReadonlyMap<string, string> = new Map();
 
 /**
  * Return the synthetic enums generated during the last call to
@@ -570,6 +579,16 @@ let _lastSyntheticEnums: Enum[] = [];
  */
 export function getSyntheticEnums(): Enum[] {
   return _lastSyntheticEnums;
+}
+
+/**
+ * The model whose inline schema minted the synthetic model or enum `name`
+ * during the last `enrichModelsFromSpec` call, or `undefined` for a declared
+ * (non-synthetic) type. A synthetic nested inside another synthetic reports
+ * that synthetic as its parent; walk up to reach the declared root.
+ */
+export function getSyntheticParent(name: string): string | undefined {
+  return _lastSyntheticParents.get(name);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +706,7 @@ export function enrichModelsFromSpec(models: Model[], enums: Enum[] = []): Model
   const spec = loadRawSpec();
   if (!spec) {
     _lastSyntheticEnums = [];
+    _lastSyntheticParents = new Map();
     return models;
   }
 
@@ -788,6 +808,7 @@ export function enrichModelsFromSpec(models: Model[], enums: Enum[] = []): Model
       description: v.description,
     })),
   })) as Enum[];
+  _lastSyntheticParents = collector.parents;
 
   // Append synthetic models, skipping those whose snake_case name collides
   // with an existing model (prevents broken TypeAlias self-imports).

@@ -107,3 +107,31 @@ describe('ios/models', () => {
     `);
   });
 });
+
+describe('ios/models scoped runs', () => {
+  const model = (name: string): Model => ({
+    name,
+    fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+  });
+
+  it('writes only in-scope model files under --services', () => {
+    // Regression: an SSO-scoped batch rewrote every model (DataIntegration
+    // gained a required field) while Pipes' untouched test fixtures still
+    // lacked it, so decoding failed in the tests the run never regenerated.
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      scopedServices: new Set(['SSO']),
+      scopedModelNames: new Set(['Profile']),
+    };
+    const files = generateModels([model('Profile'), model('DataIntegration')], scopedCtx);
+    expect(files.map((f) => f.path)).toEqual(['Sources/WorkOS/Models/Profile.swift']);
+  });
+
+  it('writes every model file in a full run', () => {
+    const files = generateModels([model('Profile'), model('DataIntegration')], ctx);
+    expect(files.map((f) => f.path)).toEqual([
+      'Sources/WorkOS/Models/Profile.swift',
+      'Sources/WorkOS/Models/DataIntegration.swift',
+    ]);
+  });
+});

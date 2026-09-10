@@ -1,6 +1,7 @@
 import type { Enum, EnumValue, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
 import { typeName, fileName, escapeReserved, swiftStringLiteral, moduleName } from './naming.js';
+import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
  * Generate one forward-compatible Swift enum file per IR enum.
@@ -10,13 +11,17 @@ import { typeName, fileName, escapeReserved, swiftStringLiteral, moduleName } fr
  * so a server-added value never crashes decoding. Explicit `init(from:)` /
  * `encode(to:)` are emitted rather than relying on stdlib conditional
  * conformance.
+ *
+ * Scoped (`--services`) runs leave out-of-scope enum files untouched on disk.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
   const module = moduleName(ctx);
-  return enums.map((e) => ({
-    path: `Sources/${module}/Enums/${fileName(e.name)}.swift`,
-    content: renderEnum(e),
-  }));
+  return enums
+    .filter((e) => isEnumInScope(e.name, ctx))
+    .map((e) => ({
+      path: `Sources/${module}/Enums/${fileName(e.name)}.swift`,
+      content: renderEnum(e),
+    }));
 }
 
 function docComment(description: string | undefined, indent: string): string {
