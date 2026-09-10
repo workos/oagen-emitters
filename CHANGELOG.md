@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.13](https://github.com/workos/oagen-emitters/compare/v0.24.12...v0.24.13) (2026-09-10)
+
+
+### Bug Fixes
+
+* **ios:** leave out-of-scope model and enum files untouched in scoped runs ([#249](https://github.com/workos/oagen-emitters/issues/249)) ([52fbe3e](https://github.com/workos/oagen-emitters/commit/52fbe3ea4d05d467b3a4d4691acf2b53a5b3400c))
+
 ## [0.24.12](https://github.com/workos/oagen-emitters/compare/v0.24.11...v0.24.12) (2026-09-10)
 
 
