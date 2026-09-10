@@ -11,6 +11,7 @@ import {
   priorManifestBasenames,
   isMountInScope,
   getMountTarget,
+  declaredParams,
 } from '../shared/resolved-ops.js';
 
 /**
@@ -761,7 +762,7 @@ function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
 
   for (const service of ctx.spec.services) {
     for (const op of service.operations) {
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collectFromTypeRef(p.type);
       }
       if (op.requestBody) collectFromTypeRef(op.requestBody);

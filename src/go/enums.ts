@@ -2,7 +2,7 @@ import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen
 import { walkTypeRef } from '@workos/oagen';
 import { className } from './naming.js';
 import { humanize } from './humanize.js';
-import { isEnumInScope, isScopedRun } from '../shared/resolved-ops.js';
+import { isEnumInScope, isScopedRun, declaredParams } from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, type NamedBlock } from './flat-merge.js';
 
 /**
@@ -297,7 +297,7 @@ export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<s
       };
       if (op.requestBody) collect(op.requestBody);
       collect(op.response);
-      for (const p of [...op.pathParams, ...op.queryParams, ...op.headerParams, ...(op.cookieParams ?? [])]) {
+      for (const p of declaredParams(op)) {
         collect(p.type);
       }
       for (const name of refs) {
