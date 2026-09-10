@@ -1019,8 +1019,10 @@ function generateAutoPagingMethod(
   const pathExpr = buildPathExpr(op);
   const optionsArg = optionsClass ? 'options' : 'null';
   if (hasGroups) {
-    // Group properties are JsonIgnore'd; preserve their flat query parameters
-    // in the request that the client carries forward across pages.
+    // Group properties are JsonIgnore'd; serialize them onto the request
+    // explicitly, with the same body-vs-query placement as the single-page
+    // method, so the client carries them forward across pages.
+    const groupTarget = plan.hasBody && op.requestBody && !plan.isDelete ? 'body' : 'query';
     lines.push(`            options ??= new ${optionsClass}();`);
     lines.push('');
     lines.push('            var request = new WorkOSRequest');
@@ -1031,7 +1033,7 @@ function generateAutoPagingMethod(
     lines.push('                RequestOptions = requestOptions,');
     lines.push('            };');
     lines.push('');
-    lines.push(...emitGroupSerialization(op, '            ', ctx.spec.models, 'query', groupNames));
+    lines.push(...emitGroupSerialization(op, '            ', ctx.spec.models, groupTarget, groupNames));
     lines.push('');
     lines.push(`            return this.Client.ListAutoPagingAsync<${itemType}>(request, cancellationToken);`);
   } else {

@@ -702,6 +702,86 @@ describe('dotnet/resources', () => {
     expect(options).toContain('[JsonIgnore]\n        [STJS.JsonIgnore]\n        public AuthorizationParent');
   });
 
+  it('places grouped params in the body for paginated body operations, matching the single-page method', () => {
+    const str = { kind: 'primitive', type: 'string' } as const;
+    const models: Model[] = [
+      { name: 'Resource', fields: [{ name: 'id', type: str, required: true }] },
+      {
+        name: 'ResourceList',
+        fields: [{ name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Resource' } }, required: true }],
+      },
+      {
+        name: 'SearchResourcesRequest',
+        fields: [
+          { name: 'parent_resource_id', type: str, required: false },
+          { name: 'parent_resource_type_slug', type: str, required: false },
+          { name: 'parent_external_id', type: str, required: false },
+        ],
+      },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: 'searchResources',
+            httpMethod: 'post',
+            path: '/authorization/resources/search',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'SearchResourcesRequest' },
+            response: { kind: 'model', name: 'ResourceList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Resource' },
+            },
+            parameterGroups: [
+              {
+                name: 'parent',
+                optional: true,
+                variants: [
+                  { name: 'by_id', parameters: [{ name: 'parent_resource_id', type: str, required: true }] },
+                  {
+                    name: 'by_external_id',
+                    parameters: [
+                      { name: 'parent_resource_type_slug', type: str, required: true },
+                      { name: 'parent_external_id', type: str, required: true },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+    const service = files.find((f) => f.path.endsWith('Service.cs'))!.content;
+    const pagerStart = service.indexOf('        public virtual IAsyncEnumerable<');
+    expect(pagerStart).toBeGreaterThan(0);
+    const pager = service.slice(pagerStart);
+    const singlePage = service.slice(0, pagerStart);
+    const dispatch = (body: string) =>
+      body.slice(
+        body.indexOf('            if (options?.'),
+        body.indexOf('\n            return', body.indexOf('            if (options?.')),
+      );
+    expect(dispatch(pager)).not.toBe('');
+    expect(dispatch(pager)).toBe(dispatch(singlePage));
+    for (const key of ['parent_resource_id', 'parent_resource_type_slug', 'parent_external_id']) {
+      expect(pager).toContain(`request.AddBodyParam("${key}",`);
+    }
+    expect(pager).not.toContain('AddQueryParam(');
+    expect(pager).toContain('Method = HttpMethod.Post,');
+    expect(pager).toContain('return this.Client.ListAutoPagingAsync<Resource>(request, cancellationToken);');
+  });
+
   it('emits optional variant members as trailing nullable properties omitted from the body when unset', () => {
     const models: Model[] = [
       {
