@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.14](https://github.com/workos/oagen-emitters/compare/v0.24.13...v0.24.14) (2026-09-11)
+
+
+### Bug Fixes
+
+* escape spec metadata in generated SDKs ([#253](https://github.com/workos/oagen-emitters/issues/253)) ([e44b7cf](https://github.com/workos/oagen-emitters/commit/e44b7cfd35034552b3a4c4fb7a5c7152f9e2e707))
+* harden Rust secret redaction and .NET auto-paging filters ([#251](https://github.com/workos/oagen-emitters/issues/251)) ([9ddc69e](https://github.com/workos/oagen-emitters/commit/9ddc69e00f6af2cbb83d14207afdb4e00f2ae0a6))
+
 ## [0.24.13](https://github.com/workos/oagen-emitters/compare/v0.24.12...v0.24.13) (2026-09-10)
 
 
