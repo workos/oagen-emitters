@@ -42,10 +42,10 @@
     "@commitlint/config-conventional": "^21.2.2",
     "@types/node": "^26.4.0",
     "husky": "^9.1.7",
-    "oxfmt": "^0.65.0",
+    "oxfmt": "^0.67.0",
     "oxlint": "^1.80.0",
     "prettier": "^3.9.6",
-    "tsdown": "^0.22.14",
+    "tsdown": "^0.23.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
