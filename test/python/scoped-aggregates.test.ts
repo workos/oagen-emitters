@@ -504,6 +504,53 @@ describe('python scoped aggregates', () => {
       }
     });
 
+    it.each([false, true])(
+      'preserves service-local coverage across normalized-name collisions (active dir: %s)',
+      (activeDir) => {
+        const method = [
+          '    def test_widget_legacy_round_trip(self):',
+          '        assert WidgetLegacy.from_dict({"id": "legacy"})',
+        ];
+        const outputDir = seedPrior(method, '(\n    WidgetLegacy,\n)');
+        try {
+          const collisionSpec: ApiSpec = {
+            ...localSpec,
+            services: [
+              ...localSpec.services,
+              { name: 'Gadgets', operations: [mkOp('getGadget', '/gadgets/{id}', 'widget_legacy')] },
+            ],
+            models: [
+              ...localModels,
+              {
+                name: 'widget_legacy',
+                fields: [{ name: 'other_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+              },
+            ],
+          };
+          const ctx = {
+            ...mkCtx(outputDir),
+            spec: collisionSpec,
+            scopedServices: new Set(activeDir ? ['Widgets', 'Gadgets'] : ['Gadgets']),
+            scopedModelNames: new Set(activeDir ? ['WidgetA', 'widget_legacy'] : ['widget_legacy']),
+          };
+          const modelFiles = generateModels(collisionSpec.models, ctx).map((file) => file.path);
+          expect(modelFiles).toContain('src/workos/gadgets/models/widget_legacy.py');
+          expect(modelFiles).not.toContain('src/workos/widgets/models/widget_legacy.py');
+          const files = generateTests(collisionSpec, ctx);
+          const oldFile = files.find((f) => f.path === RT_PATH);
+          if (activeDir) {
+            expect(oldFile!.content).toContain(method.join('\n'));
+            expect(oldFile!.content).toContain('from workos.widgets.models import WidgetA, WidgetLegacy');
+            expect(oldFile!.content).not.toContain('other_id');
+          } else {
+            expect(oldFile).toBeUndefined();
+          }
+        } finally {
+          rmSync(outputDir, { recursive: true, force: true });
+        }
+      },
+    );
+
     it('freezes an out-of-scope group instead of re-synthesizing payloads from the current spec', () => {
       // The bug: the payload assertions below are synthesized from the CURRENT
       // spec, but an out-of-scope model's `.py` was NOT regenerated this run —

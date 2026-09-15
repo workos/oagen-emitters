@@ -1608,14 +1608,19 @@ function buildDirRoundTripFile(
   // out-of-scope models to their prior on-disk text (see reconciliation below).
   const roundTripBlocks: AggregateBlock[] = [];
   const discriminatorBlocks: AggregateBlock[] = [];
-  // Scope keys across the whole spec, not just this dir: a regenerated model
-  // may have moved to another service's test file or become ineligible for a
-  // test. Its prior block must be dropped, not frozen against the new shape.
-  // Normalized names can collide; any in-scope owner regenerates that artifact.
+  // Local owners take precedence over same-named artifacts in other services.
+  // Only keys with no current local owner can belong to a model that moved away.
   // Share the keys between both classes so discriminator changes retire the
   // model's old block too.
+  const testDir = dirName.replace(/\//g, '_');
+  const localModels = new Set(
+    spec.models.filter((m) => resolveDir(modelToService.get(m.name)).replace(/\//g, '_') === testDir),
+  );
+  const localKeys = new Set([...localModels].map((m) => fileName(m.name)));
   const inScopeKeys = keysWithInScopeOwner(
-    spec.models.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
+    spec.models
+      .filter((m) => localModels.has(m) || !localKeys.has(fileName(m.name)))
+      .map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
   );
 
   {
@@ -1766,7 +1771,7 @@ function buildDirRoundTripFile(
   // `load_fixture`-driven test would survive, and only because the fixture is
   // stale in lockstep. Freezing also keeps an unrelated same-delta change to an
   // out-of-scope model out of a scoped batch.
-  const path = `tests/test_${dirName.replace(/\//g, '_')}_models_round_trip.py`;
+  const path = `tests/test_${testDir}_models_round_trip.py`;
   const scoped = isScopedRun(ctx);
   let prior: PriorRoundTripFile = {
     roundTrip: [],
