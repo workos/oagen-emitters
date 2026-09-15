@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.15](https://github.com/workos/oagen-emitters/compare/v0.24.14...v0.24.15) (2026-09-15)
+
+
+### Bug Fixes
+
+* **python:** reconcile moved model round-trip tests ([#255](https://github.com/workos/oagen-emitters/issues/255)) ([d95d044](https://github.com/workos/oagen-emitters/commit/d95d0441e78def1107a7a4bea5b386db95b2d958))
+
 ## [0.24.14](https://github.com/workos/oagen-emitters/compare/v0.24.13...v0.24.14) (2026-09-15)
 
 
