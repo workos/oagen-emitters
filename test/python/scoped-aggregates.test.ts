@@ -377,6 +377,7 @@ describe('python scoped aggregates', () => {
         scopedModelNames: new Set(['WidgetA']),
         scopedEnumNames: new Set<string>(),
         priorTargetManifestPaths: new Set([
+          RT_PATH,
           'src/workos/widgets/models/widget_a.py',
           'src/workos/widgets/models/widget_legacy.py',
           'tests/fixtures/widget_a.json',
@@ -384,8 +385,8 @@ describe('python scoped aggregates', () => {
         ]),
       }) as EmitterContext;
 
-    /** Seed a prior round-trip file carrying WidgetLegacy's method group. */
-    const seedPrior = (methodBody: string[]): string => {
+    /** Seed a prior round-trip file carrying a model's method group. */
+    const seedPrior = (methodBody: string[], imports = 'WidgetLegacy'): string => {
       const outputDir = mkdtempSync(join(tmpdir(), 'oagen-py-rt-'));
       const abs = join(outputDir, RT_PATH);
       mkdirSync(dirname(abs), { recursive: true });
@@ -398,7 +399,7 @@ describe('python scoped aggregates', () => {
           '',
           'from tests.generated_helpers import load_fixture',
           '',
-          'from workos.widgets.models import WidgetLegacy',
+          `from workos.widgets.models import ${imports}`,
           '',
           '',
           'class TestModelRoundTrip:',
@@ -437,6 +438,70 @@ describe('python scoped aggregates', () => {
       expect(rt!.content).not.toContain('WidgetBrandNew');
 
       rmSync(outputDir, { recursive: true, force: true });
+    });
+
+    it.each(['WidgetRenamed', '(WidgetRenamed,)', '(\n    WidgetRenamed,\n    WidgetUnused,\n)'])(
+      'retains imports for a removed model from %s',
+      (imports) => {
+        const method = [
+          '    def test_widget_renamed_round_trip(self):',
+          '        assert WidgetRenamed.from_dict({"id": "legacy"}).to_dict() == {"id": "legacy"}',
+        ];
+        const outputDir = seedPrior(method, imports);
+        try {
+          const ctx = mkCtx(outputDir);
+          ctx.priorTargetManifestPaths!.add('src/workos/widgets/models/widget_renamed.py');
+          const rt = generateTests(localSpec, ctx).find((f) => f.path === RT_PATH);
+          expect(rt!.content).toContain(method.join('\n'));
+          expect(rt!.content).toContain('from workos.widgets.models import WidgetA, WidgetRenamed');
+          expect(rt!.content).not.toContain('WidgetUnused');
+        } finally {
+          rmSync(outputDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.each([
+      { scope: ['WidgetA', 'WidgetLegacy'], moved: true },
+      { scope: ['WidgetLegacy'], moved: true },
+      { scope: ['WidgetA'], moved: false },
+      { scope: [], moved: false },
+    ])('reconciles a model moving to another service with scope $scope', ({ scope, moved }) => {
+      const outputDir = seedPrior(
+        ['    def test_widget_legacy_round_trip(self):', '        assert WidgetLegacy.from_dict({"id": "legacy"})'],
+        '(\n    WidgetLegacy,\n)',
+      );
+      try {
+        const movedSpec: ApiSpec = {
+          ...localSpec,
+          services: [
+            { name: 'Gadgets', operations: [mkOp('getSharedWidget', '/gadgets/{id}', 'WidgetLegacy')] },
+            ...localSpec.services,
+          ],
+        };
+        const ctx = { ...mkCtx(outputDir), spec: movedSpec, scopedModelNames: new Set(scope) };
+        const files = generateTests(movedSpec, ctx);
+        const oldFile = files.find((f) => f.path === RT_PATH);
+        const newFile = files.find((f) => f.path === 'tests/test_gadgets_models_round_trip.py');
+        if (scope.length === 0) {
+          expect(oldFile).toBeUndefined();
+          expect(newFile).toBeUndefined();
+          return;
+        }
+        expect(oldFile).toBeDefined();
+        if (moved) {
+          expect(oldFile!.content).not.toContain('WidgetLegacy');
+          expect(oldFile!.content).not.toContain('test_widget_legacy_');
+          expect(newFile!.content).toContain('def test_widget_legacy_round_trip(self):');
+          expect(newFile!.content).toContain('from workos.gadgets.models import WidgetLegacy');
+        } else {
+          expect(oldFile!.content).toContain('from workos.widgets.models import WidgetA, WidgetLegacy');
+          expect(oldFile!.content).toContain('assert WidgetLegacy.from_dict({"id": "legacy"})');
+          expect(newFile).toBeUndefined();
+        }
+      } finally {
+        rmSync(outputDir, { recursive: true, force: true });
+      }
     });
 
     it('freezes an out-of-scope group instead of re-synthesizing payloads from the current spec', () => {

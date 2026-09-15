@@ -1492,8 +1492,8 @@ const LEGACY_ROUNDTRIP_PATH = 'tests/test_models_round_trip.py';
  * with that dir's regenerated models — replacing the former single wholesale
  * file, which a scoped run skipped entirely and thus left asserting the OLD
  * shape of a model the same run had just regenerated (the failure this fixes).
- * Dirs with no in-scope models are skipped, so untouched services' files are
- * left byte-for-byte alone (scoped runs never prune).
+ * Dirs with no in-scope models are left untouched unless their prior tests
+ * reference a model regenerated elsewhere (scoped runs never prune).
  */
 function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
   // Collect models used as request bodies only (not returned in responses)
@@ -1533,7 +1533,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
 
   // A dir's round-trip file is regenerated only when at least one of its models
   // is in scope (freshly emitted this run); on a full run that is every dir.
-  // Dirs with no in-scope model are left untouched on disk, byte-for-byte.
+  // Other dirs are revisited below only to retire stale in-scope blocks.
   const activeDirs = new Set<string>();
   for (const m of eligible) {
     if (isModelInScope(m.name, ctx)) activeDirs.add(resolveDir(modelToService.get(m.name)));
@@ -1567,10 +1567,20 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
     const file = buildDirRoundTripFile(dirName, dirModels, spec, ctx, modelToService, resolveDir);
     if (file) files.push(file);
   }
+  // A model can move out of a dir with no remaining in-scope models. Reconcile
+  // its prior file too; scoped runs never prune stale generated test files.
+  if (isScopedRun(ctx)) {
+    for (const path of ctx.priorTargetManifestPaths ?? []) {
+      const match = path.match(/^tests\/test_(.+)_models_round_trip\.py$/);
+      if (!match || files.some((file) => file.path === path)) continue;
+      const file = buildDirRoundTripFile(match[1], [], spec, ctx, modelToService, resolveDir);
+      if (file) files.push(file);
+    }
+  }
   return files;
 }
 
-/** Build one service dir's round-trip test file, or null when it has no testable models. */
+/** Build or reconcile one service dir's round-trip test file. */
 function buildDirRoundTripFile(
   dirName: string,
   dirModels: Model[],
@@ -1581,7 +1591,6 @@ function buildDirRoundTripFile(
 ): GeneratedFile | null {
   const roundTripModels = dirModels.filter((m) => m.fields.length > 0 && !(m as any).discriminator);
   const discriminatorModels = dirModels.filter((m) => (m as any).discriminator);
-  if (roundTripModels.length === 0 && discriminatorModels.length === 0) return null;
 
   // Imported classes grouped by their OWN dir: a discriminator's first variant
   // may live in another service's dir, so a single file can import across dirs.
@@ -1599,19 +1608,14 @@ function buildDirRoundTripFile(
   // out-of-scope models to their prior on-disk text (see reconciliation below).
   const roundTripBlocks: AggregateBlock[] = [];
   const discriminatorBlocks: AggregateBlock[] = [];
-  // Scope of every key this dir CONSIDERED, whether or not it goes on to produce
-  // a block below. A scoped run drops the prior block of an in-scope model that
-  // produced none — its per-model `.py` WAS regenerated, so the frozen block
-  // asserts a shape the fresh model can't produce (see reconcileScopedBlocks) —
-  // instead of carrying the stale text over. `fileName` is normalized, so two IR
-  // names can share a key; it is also the `.py` and fixture path, so colliding
-  // models share ONE artifact and any in-scope owner regenerates it —
-  // keysWithInScopeOwner claims the key on that basis. Shared by both
-  // aggregates so a model that gains or loses a
-  // discriminator (moving between the two) doesn't strand its block in the class
-  // it left.
+  // Scope keys across the whole spec, not just this dir: a regenerated model
+  // may have moved to another service's test file or become ineligible for a
+  // test. Its prior block must be dropped, not frozen against the new shape.
+  // Normalized names can collide; any in-scope owner regenerates that artifact.
+  // Share the keys between both classes so discriminator changes retire the
+  // model's old block too.
   const inScopeKeys = keysWithInScopeOwner(
-    dirModels.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
+    spec.models.map((m) => ({ key: fileName(m.name), inScope: isModelInScope(m.name, ctx) })),
   );
 
   {
@@ -1784,9 +1788,12 @@ function buildDirRoundTripFile(
       return null;
     }
   }
+  const hasInScopePrior = [...prior.roundTrip, ...prior.discriminator].some((block) => inScopeKeys.has(block.key));
+  if (dirModels.length === 0 && !hasInScopePrior) return null;
   const roundTripMethods = reconcileScopedBlocks(roundTripBlocks, prior.roundTrip, scoped, inScopeKeys);
   const discriminatorMethods = reconcileScopedBlocks(discriminatorBlocks, prior.discriminator, scoped, inScopeKeys);
-  if (roundTripMethods.length === 0 && discriminatorMethods.length === 0) return null;
+  // Overwrite a vacated file even when no tests remain; scoped runs won't delete it.
+  if (roundTripMethods.length === 0 && discriminatorMethods.length === 0 && !hasInScopePrior) return null;
 
   const body: string[] = [];
   if (roundTripMethods.length > 0) {
@@ -1864,10 +1871,11 @@ function parsePriorRoundTripFile(content: string | null): PriorRoundTripFile {
   if (!content) return result;
   const lines = content.split('\n');
 
-  for (const line of lines) {
-    const imp = line.match(/^from (\S+) import (.+)$/);
-    if (!imp || imp[1] === 'tests.generated_helpers') continue;
+  // Ruff wraps long import lists in parentheses across multiple lines.
+  for (const imp of content.matchAll(/^from (\S+) import (\([^)]*\)|[^\n]+)/gm)) {
+    if (imp[1] === 'tests.generated_helpers') continue;
     const names = imp[2]
+      .replace(/[()]/g, '')
       .split(',')
       .map((n) => n.trim())
       .filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
