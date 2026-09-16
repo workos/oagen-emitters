@@ -12,7 +12,13 @@ import {
   serviceTypeName,
 } from './naming.js';
 import { resolveModelName } from './type-map.js';
-import { resolveResourceClassName, sortPathParamsByTemplateOrder, optionsClassName } from './resources.js';
+import {
+  resolveResourceClassName,
+  sortPathParamsByTemplateOrder,
+  optionsClassName,
+  resolveGroupClassNames,
+} from './resources.js';
+import type { GroupClassNames } from './resources.js';
 import { generateFixtures, generateModelFixture } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
 import {
@@ -21,6 +27,7 @@ import {
   lookupResolved,
   buildHiddenParams,
   collectGroupedParamNames,
+  groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 
 /**
@@ -272,6 +279,7 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
 
   // Auto-paging tests (P0-5)
   const resolvedLookupForPaging = buildResolvedLookup(ctx);
+  const groupNames = resolveGroupClassNames(resolvedName, service.operations, ctx);
   for (const op of service.operations) {
     const plan = planOperation(op);
     if (!plan.isPaginated || !op.pagination) continue;
@@ -354,6 +362,51 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push('            }');
       lines.push('');
       lines.push('            Assert.Empty(items);');
+      lines.push('        }');
+    }
+
+    // Grouped (mutually exclusive) query params are JsonIgnore'd on the
+    // options class and only reach the wire through the per-variant dispatch
+    // the service emits. Pin that the pager runs that dispatch and that the
+    // client carries the params to every page it fetches (VULN-1274).
+    const groupedTestName = `Test${autoPagingMethod}PreservesGroupedQueryParams`;
+    const groupedSeed = buildGroupedQuerySeed(op, ctx, resolvedName, groupNames);
+    if (groupedSeed && !emittedTestMethods.has(groupedTestName)) {
+      emittedTestMethods.add(groupedTestName);
+      lines.push('');
+      lines.push('        [Fact]');
+      lines.push(`        public async Task ${groupedTestName}()`);
+      lines.push('        {');
+      lines.push(`            var fixture = System.IO.File.ReadAllText("testdata/${fixtureName}.json");`);
+      lines.push(
+        `            var page1 = "{\\"data\\":[" + fixture + "],\\"list_metadata\\":{\\"before\\":null,\\"after\\":\\"cursor_123\\"}}";`,
+      );
+      lines.push(
+        `            var page2 = "{\\"data\\":[" + fixture + "],\\"list_metadata\\":{\\"before\\":null,\\"after\\":null}}";`,
+      );
+      lines.push(
+        `            this.httpMock.MockSequentialResponses(HttpMethod.Get, "${expectedPath}", HttpStatusCode.OK, new[] { page1, page2 });`,
+      );
+      lines.push('');
+      for (const setup of groupedSeed.setupLines) {
+        lines.push(`            ${setup}`);
+      }
+      lines.push('');
+      lines.push(`            var items = new List<${itemTypeName}>();`);
+      lines.push(`            await foreach (var item in this.service.${autoPagingMethod}(${groupedSeed.callArgs}))`);
+      lines.push('            {');
+      lines.push('                items.Add(item);');
+      lines.push('            }');
+      lines.push('');
+      lines.push('            Assert.Equal(2, items.Count);');
+      lines.push('            Assert.Equal(2, this.httpMock.CapturedRequests.Count);');
+      lines.push('            foreach (var request in this.httpMock.CapturedRequests)');
+      lines.push('            {');
+      lines.push('                var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);');
+      for (const expected of groupedSeed.expectedQuery) {
+        lines.push(`                Assert.Equal("${expected.value}", query["${expected.wire}"]);`);
+      }
+      lines.push('            }');
       lines.push('        }');
     }
   }
@@ -505,19 +558,7 @@ function resolveCsMethodStem(op: Operation, mountName: string, ctx: EmitterConte
 }
 
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
-  const args: string[] = [];
-
-  // Path params
-  for (const p of sortPathParamsByTemplateOrder(op)) {
-    args.push(`"test_${p.name}"`);
-  }
-
-  // Bearer auth override param (e.g., SSO GetProfile uses access_token)
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
-    args.push(`"test_${bearerParamName}"`);
-  }
+  const args = leadingCallArgs(op);
 
   // Options struct if needed
   const resolvedLookup = buildResolvedLookup(ctx);
@@ -615,15 +656,7 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   const optName = optionsClassName(mountName, methodStem);
 
   // Rebuild call args with a seeded options variable named `options`.
-  const args: string[] = [];
-  for (const p of sortPathParamsByTemplateOrder(op)) {
-    args.push(`"test_${p.name}"`);
-  }
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
-    args.push(`"test_${bearerParamName}"`);
-  }
+  const args = leadingCallArgs(op);
   args.push('options');
 
   const setupLines: string[] = [`var options = new ${optName}();`];
@@ -640,6 +673,82 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   }
 
   return { setupLines, seededCallArgs: args.join(', '), assertLines };
+}
+
+/**
+ * Positional arguments every call to the generated method needs ahead of the
+ * options argument: path params in template order, then the bearer-override
+ * token param (e.g. SSO GetProfile takes `access_token`).
+ */
+function leadingCallArgs(op: Operation): string[] {
+  const args: string[] = [];
+  for (const p of sortPathParamsByTemplateOrder(op)) {
+    args.push(`"test_${p.name}"`);
+  }
+  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  if (hasBearerOverride) {
+    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+    args.push(`"test_${bearerParamName}"`);
+  }
+  return args;
+}
+
+/**
+ * Seed one variant of every mutually exclusive parameter group on an
+ * operation and describe the query params that variant's dispatch must put on
+ * the wire. Group members are JsonIgnore'd on the options class, so this is
+ * the only path that exercises them in a generated test.
+ */
+interface GroupedQuerySeed {
+  setupLines: string[];
+  callArgs: string;
+  expectedQuery: Array<{ wire: string; value: string }>;
+}
+
+/**
+ * Returns null when the operation has no parameter groups, or when some group
+ * has no variant whose required members are all plain strings (enum, numeric
+ * and array members need typed values this seeder does not produce).
+ */
+function buildGroupedQuerySeed(
+  op: Operation,
+  ctx: EmitterContext,
+  mountName: string,
+  groupNames: Map<string, GroupClassNames>,
+): GroupedQuerySeed | null {
+  const groups = op.parameterGroups ?? [];
+  if (groups.length === 0) return null;
+
+  const methodStem = resolveCsMethodStem(op, mountName, ctx);
+  const setupLines: string[] = [`var options = new ${optionsClassName(mountName, methodStem)}();`];
+  const expectedQuery: Array<{ wire: string; value: string }> = [];
+
+  for (const group of groups) {
+    const names = groupNames.get(groupTypeBaseName(group));
+    if (!names) return null;
+
+    // Optional members stay unset, so only the required ones must be seedable.
+    const variant = group.variants.find((v) => {
+      const optional = new Set(v.optionalParameters ?? []);
+      return v.parameters.every((p) => optional.has(p.name) || isSeedableStringRef(p.type));
+    });
+    if (!variant) return null;
+
+    const optional = new Set(variant.optionalParameters ?? []);
+    const seeded = variant.parameters.filter((p) => !optional.has(p.name));
+    if (seeded.length === 0) return null;
+
+    const variantClass = names.variants.get(variant.name)!;
+    const inits = seeded.map((p) => `${csFieldName(p.name)} = "test_${p.name}"`);
+    setupLines.push(`options.${csFieldName(group.name)} = new ${variantClass} { ${inits.join(', ')} };`);
+    for (const p of seeded) {
+      expectedQuery.push({ wire: p.name, value: `test_${p.name}` });
+    }
+  }
+
+  const args = leadingCallArgs(op);
+  args.push('options');
+  return { setupLines, callArgs: args.join(', '), expectedQuery };
 }
 
 /**

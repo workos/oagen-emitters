@@ -201,6 +201,8 @@ describe('dotnet/tests', () => {
     expect(content).toContain('AutoPagingAsync');
     expect(content).toContain('MockSequentialResponses');
     expect(content).toContain('await foreach');
+    // No parameter groups, so no grouped-query pager test.
+    expect(content).not.toContain('PreservesGroupedQueryParams');
   });
 
   it('does not seed a string literal into a date-time (DateTimeOffset) property', () => {
@@ -242,5 +244,136 @@ describe('dotnet/tests', () => {
     expect(content).not.toContain('RangeStart = "');
     // The plain string field is still seeded.
     expect(content).toContain('OrganizationId = "test_organization_id"');
+  });
+  /**
+   * Build a paginated Authorization list op whose parent scope is a mutually
+   * exclusive parameter group, mirroring GET /authorization/resources.
+   */
+  function groupedListSpec(opts: {
+    name: string;
+    path: string;
+    group: string;
+    externalId: string;
+    withPathParam: boolean;
+    memberType?: { kind: 'primitive'; type: 'string' | 'integer' };
+  }): ApiSpec {
+    const memberType = opts.memberType ?? { kind: 'primitive', type: 'string' };
+    const param = (name: string) => ({ name, type: memberType, required: true });
+    const groupedServices: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          {
+            name: opts.name,
+            httpMethod: 'get',
+            path: opts.path,
+            pathParams: opts.withPathParam
+              ? [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }]
+              : [],
+            queryParams: [param('parent_resource_id'), param('parent_resource_type_slug'), param(opts.externalId)],
+            headerParams: [],
+            response: { kind: 'model', name: 'ResourceList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'Resource' },
+            },
+            parameterGroups: [
+              {
+                name: opts.group,
+                optional: !opts.withPathParam,
+                variants: [
+                  { name: 'by_id', parameters: [param('parent_resource_id')] },
+                  { name: 'by_external_id', parameters: [param('parent_resource_type_slug'), param(opts.externalId)] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const groupedModels: Model[] = [
+      { name: 'Resource', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'ResourceList',
+        fields: [{ name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Resource' } }, required: true }],
+      },
+    ];
+    return { ...spec, services: groupedServices, models: groupedModels };
+  }
+
+  it.each([
+    {
+      name: 'listResources',
+      path: '/authorization/resources',
+      group: 'parent',
+      externalId: 'parent_external_id',
+      withPathParam: false,
+      method: 'ListResourcesAutoPagingAsync',
+      options: 'AuthorizationListResourcesOptions',
+      setup: 'options.Parent = new AuthorizationParentById { ParentResourceId = "test_parent_resource_id" };',
+      call: 'this.service.ListResourcesAutoPagingAsync(options)',
+    },
+    {
+      name: 'listResourcesForMembership',
+      path: '/authorization/organization_memberships/{id}/resources',
+      group: 'parent_resource',
+      externalId: 'parent_resource_external_id',
+      withPathParam: true,
+      method: 'ListResourcesForMembershipAutoPagingAsync',
+      options: 'AuthorizationListResourcesForMembershipOptions',
+      setup:
+        'options.ParentResource = new AuthorizationParentResourceById { ParentResourceId = "test_parent_resource_id" };',
+      call: 'this.service.ListResourcesForMembershipAutoPagingAsync("test_id", options)',
+    },
+  ])('pins grouped query params on every auto-paged request for $name', (tc) => {
+    const groupedSpec = groupedListSpec(tc);
+    primeEnumAliases([]);
+    const files = generateTests(groupedSpec, { ...ctx, spec: groupedSpec });
+    const content = files.find((f) => f.path === 'Tests/AuthorizationServiceTest.cs')!.content;
+
+    const testName = `Test${tc.method}PreservesGroupedQueryParams`;
+    expect(content).toContain(`public async Task ${testName}()`);
+    const body = content.slice(content.indexOf(testName));
+
+    // Two pages on the plain path matcher; the query string is asserted, not matched.
+    expect(body).toContain(
+      `this.httpMock.MockSequentialResponses(HttpMethod.Get, "${tc.path.replace('{id}', 'test_id')}", HttpStatusCode.OK, new[] { page1, page2 });`,
+    );
+    // The first variant is seeded through the JsonIgnore'd group property.
+    expect(body).toContain(`var options = new ${tc.options}();`);
+    expect(body).toContain(tc.setup);
+    expect(body).toContain(`await foreach (var item in ${tc.call})`);
+    // Every page the pager fetched must carry the dispatched param.
+    expect(body).toContain('Assert.Equal(2, items.Count);');
+    expect(body).toContain('Assert.Equal(2, this.httpMock.CapturedRequests.Count);');
+    expect(body).toContain('foreach (var request in this.httpMock.CapturedRequests)');
+    expect(body).toContain('var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);');
+    expect(body).toContain('Assert.Equal("test_parent_resource_id", query["parent_resource_id"]);');
+    // Only the seeded variant's members are asserted.
+    expect(body).not.toContain('parent_resource_type_slug');
+    expect(body).not.toContain(tc.externalId);
+  });
+
+  it('skips the grouped-query pager test when no variant can be seeded as strings', () => {
+    const groupedSpec = groupedListSpec({
+      name: 'listResources',
+      path: '/authorization/resources',
+      group: 'parent',
+      externalId: 'parent_external_id',
+      withPathParam: false,
+      memberType: { kind: 'primitive', type: 'integer' },
+    });
+    primeEnumAliases([]);
+    const files = generateTests(groupedSpec, { ...ctx, spec: groupedSpec });
+    const content = files.find((f) => f.path === 'Tests/AuthorizationServiceTest.cs')!.content;
+
+    // The plain two-page and empty pager tests still emit; only the seeded one is dropped.
+    expect(content).toContain('public async Task TestListResourcesAutoPagingAsync()');
+    expect(content).toContain('public async Task TestListResourcesAutoPagingAsyncEmpty()');
+    expect(content).not.toContain('PreservesGroupedQueryParams');
   });
 });
