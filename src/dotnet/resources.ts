@@ -113,7 +113,7 @@ function reservedTypeNames(ctx: EmitterContext): Set<string> {
 }
 
 /** Resolved class names for one parameter group: the base plus one per variant. */
-interface GroupClassNames {
+export interface GroupClassNames {
   /** Abstract base class name (e.g. UserManagementRole). */
   base: string;
   /** Variant name from the spec to concrete class name (e.g. UserManagementRoleSingle). */
@@ -134,7 +134,7 @@ interface GroupClassNames {
  * The service file and the options file resolve from the same operation list, so
  * both see the same names for the same groups.
  */
-function resolveGroupClassNames(
+export function resolveGroupClassNames(
   mountName: string,
   operations: Operation[],
   ctx: EmitterContext,
