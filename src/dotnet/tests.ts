@@ -404,7 +404,9 @@ function generateServiceTest(service: Service, spec: ApiSpec, ctx: EmitterContex
       lines.push('            {');
       lines.push('                var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);');
       for (const expected of groupedSeed.expectedQuery) {
-        lines.push(`                Assert.Equal("${expected.value}", query["${expected.wire}"]);`);
+        lines.push(
+          `                Assert.Equal(${csStringLiteral(expected.value)}, query[${csStringLiteral(expected.wire)}]);`,
+        );
       }
       lines.push('            }');
       lines.push('        }');
@@ -739,7 +741,7 @@ function buildGroupedQuerySeed(
     if (seeded.length === 0) return null;
 
     const variantClass = names.variants.get(variant.name)!;
-    const inits = seeded.map((p) => `${csFieldName(p.name)} = "test_${p.name}"`);
+    const inits = seeded.map((p) => `${csFieldName(p.name)} = ${csStringLiteral(`test_${p.name}`)}`);
     setupLines.push(`options.${csFieldName(group.name)} = new ${variantClass} { ${inits.join(', ')} };`);
     for (const p of seeded) {
       expectedQuery.push({ wire: p.name, value: `test_${p.name}` });
