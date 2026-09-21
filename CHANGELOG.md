@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.16](https://github.com/workos/oagen-emitters/compare/v0.24.15...v0.24.16) (2026-09-21)
+
+
+### Bug Fixes
+
+* **kotlin:** declare required params before defaulted ones ([#258](https://github.com/workos/oagen-emitters/issues/258)) ([f56ed3d](https://github.com/workos/oagen-emitters/commit/f56ed3d9f3e81b0b12e4c37be637657745f4501a))
+
 ## [0.24.15](https://github.com/workos/oagen-emitters/compare/v0.24.14...v0.24.15) (2026-09-15)
 
 
