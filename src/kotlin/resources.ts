@@ -386,40 +386,45 @@ function renderMethod(
   for (const pp of pathParams) pushParam(`    ${propertyName(pp.name)}: String`, propertyName(pp.name));
 
   const sortedQuery = [...uniqueQuery].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
-  for (const qp of sortedQuery) {
-    pushParam(
-      renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'),
-      propertyName(qp.name),
-    );
-  }
-
-  // Parameter group params (sealed class types)
-  for (const group of op.parameterGroups ?? []) {
-    const sealedName = sealedGroupName(group);
-    const prop = groupParamNames.get(group.name)!;
-    if (group.optional) {
-      pushParam(`    ${prop}: ${sealedName}? = null`, prop);
-    } else {
-      pushParam(`    ${prop}: ${sealedName}`, prop);
-    }
-  }
+  const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
 
   // PATCH operations use PatchField<T> for optional body fields so callers
   // can distinguish "omit" (Absent) from "clear" (Present(null)).
   const isPatch = httpMethod === 'PATCH';
 
-  const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
-  for (const bf of sortedBodyFields) {
-    if (sharedQueryBodyParams.has(bf.name)) continue;
-    if (isPatch && !bf.required) {
-      const baseType = mapTypeRef(bf.type);
-      imports.add('com.workos.common.http.PatchField');
+  // Every required parameter precedes every defaulted one: a required param
+  // after a `= null` default can't be bound positionally (generated tests call
+  // methods positionally) and defeats the `@JvmOverloads` overloads for Java
+  // callers. Within each pass the order is query → parameter groups → body.
+  for (const required of [true, false]) {
+    for (const qp of sortedQuery) {
+      if (qp.required !== required) continue;
       pushParam(
-        `    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`,
-        bodyParamNames.get(bf.name)!,
+        renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'),
+        propertyName(qp.name),
       );
-    } else {
-      pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!);
+    }
+
+    // Parameter group params (sealed class types)
+    for (const group of op.parameterGroups ?? []) {
+      if (group.optional === required) continue;
+      const sealedName = sealedGroupName(group);
+      const prop = groupParamNames.get(group.name)!;
+      pushParam(required ? `    ${prop}: ${sealedName}` : `    ${prop}: ${sealedName}? = null`, prop);
+    }
+
+    for (const bf of sortedBodyFields) {
+      if (bf.required !== required || sharedQueryBodyParams.has(bf.name)) continue;
+      if (isPatch && !bf.required) {
+        const baseType = mapTypeRef(bf.type);
+        imports.add('com.workos.common.http.PatchField');
+        pushParam(
+          `    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`,
+          bodyParamNames.get(bf.name)!,
+        );
+      } else {
+        pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!);
+      }
     }
   }
 
@@ -772,6 +777,10 @@ function emitOneJavaOverload(
       decls.push({ decl: cp.decl, name: cp.name });
     }
   }
+  // Same required-first rule as the canonical method: the variant's required
+  // fields must not trail defaulted params even when they replace an optional
+  // group whose slot sits among the defaults. Stable, so relative order holds.
+  decls.sort((a, b) => Number(a.decl.includes(' = ')) - Number(b.decl.includes(' = ')));
 
   const returnClause = ctx.returnType === 'Unit' ? '' : `: ${ctx.returnType}`;
   const variantArgs = variantArgPairs.map((p) => `${p.sealedField} = ${p.localName}`).join(', ');

@@ -312,7 +312,7 @@ function buildOperationTest(
   const hidden = buildHiddenParams(resolved);
 
   // Build call args in the order expected by the generated method signature:
-  //   pathParams ++ requiredQuery ++ requiredBodyFields
+  //   pathParams ++ requiredQuery ++ requiredGroups ++ requiredBodyFields ++ optionalGroups
   const imports = new Set<string>();
   const argParts: string[] = [];
   const requiredBodyPaths: string[] = [];
@@ -344,9 +344,12 @@ function buildOperationTest(
     if (regex !== null) requiredQueryAssertions.push({ name: qp.name, valueRegex: regex });
   }
 
-  // Parameter group args — emit as named args (they appear after optionals in the signature)
+  // Parameter group args — emit as named args. Required groups sit right after
+  // the required query params, so their named args land in position and the
+  // positional body args that follow still compile. Optional groups sit among
+  // the defaulted params, so they must trail every positional arg.
   const groupParamNames = assignGroupParameterNames(op, hidden, queryFields, bodyModel, groupedParamNames);
-  for (const group of op.parameterGroups ?? []) {
+  const pushGroupArg = (group: import('@workos/oagen').ParameterGroup): boolean => {
     const variant = group.variants[0];
     const sealedName = sealedGroupName(group);
     const variantName = className(variant.name);
@@ -358,10 +361,14 @@ function buildOperationTest(
     // (a connection's `saml_options`, a membership's `role_slugs`). Route
     // through synthValue so the stub matches the declared member type.
     const variantValues = orderedVariantParameters(variant).parameters.map((p) => synthValue(p.type, ctx, imports));
-    if (variantValues.some((v) => v === null)) return null;
+    if (variantValues.some((v) => v === null)) return false;
     const variantArgs = variantValues.join(', ');
     imports.add(`com.workos.${mountPackage}.${sealedName}`);
     argParts.push(`${groupParamNames.get(group.name)!} = ${sealedName}.${variantName}(${variantArgs})`);
+    return true;
+  };
+  for (const group of op.parameterGroups ?? []) {
+    if (!group.optional && !pushGroupArg(group)) return null;
   }
 
   if (bodyModel) {
@@ -383,6 +390,10 @@ function buildOperationTest(
       // we only assert those paths.
       if (isScalarBodyField(promotedType)) requiredBodyPaths.push(bf.name);
     }
+  }
+
+  for (const group of op.parameterGroups ?? []) {
+    if (group.optional && !pushGroupArg(group)) return null;
   }
 
   const plan2 = plan;
