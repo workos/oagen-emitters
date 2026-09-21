@@ -123,6 +123,61 @@ describe('kotlin/tests', () => {
     expect(content).toContain('GenericServerException');
   });
 
+  it('passes required body args positionally before an optional parameter group named arg', () => {
+    // Mirrors UserManagement.create: the optional group is declared after the
+    // required body field, so its named arg must trail every positional arg.
+    const groupServices: Service[] = [
+      {
+        name: 'UserManagement',
+        operations: [
+          {
+            name: 'createUser',
+            httpMethod: 'post',
+            path: '/user_management/users',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateUserRequest' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+            parameterGroups: [
+              {
+                name: 'create_user_password',
+                optional: true,
+                variants: [
+                  {
+                    name: 'Plaintext',
+                    parameters: [{ name: 'password', type: { kind: 'primitive', type: 'string' }, required: true }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const groupSpec: ApiSpec = {
+      ...spec,
+      services: groupServices,
+      models: [
+        ...models,
+        {
+          name: 'CreateUserRequest',
+          fields: [
+            { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'password', type: { kind: 'primitive', type: 'string' }, required: false },
+          ],
+        },
+      ],
+    };
+    const groupCtx: EmitterContext = { ...ctx, spec: groupSpec, resolvedOperations: buildResolvedOps(groupServices) };
+    generateEnums([], groupCtx);
+    const content = generateTests(groupSpec, groupCtx).find((f) => f.path.includes('UserManagementTest.kt'))!.content;
+
+    expect(content).toContain('.create("sample-arg", createUserPassword = CreateUserPassword.Plaintext("sample-arg"))');
+  });
+
   it('generates round-trip test using synthJson for broader coverage', () => {
     generateEnums([], ctx);
     const files = generateTests(spec, ctx);

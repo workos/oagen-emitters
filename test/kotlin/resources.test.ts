@@ -112,6 +112,57 @@ describe('kotlin/resources', () => {
     expect(ssoFile!.content).toContain('"code" to code');
   });
 
+  it('declares required body params before defaulted query params', () => {
+    const services: Service[] = [
+      {
+        name: 'Pipes',
+        operations: [
+          {
+            name: 'updateOrganizationConnectedAccount',
+            httpMethod: 'put',
+            path: '/organizations/{organization_id}/connected_accounts/{slug}',
+            pathParams: [
+              { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            queryParams: [
+              { name: 'supports_multiple_connections', type: { kind: 'primitive', type: 'boolean' }, required: false },
+              { name: 'connected_account_id', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'OrganizationConnectedAccountDto' },
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const spec = {
+      ...baseSpec,
+      services,
+      models: [
+        ...baseSpec.models,
+        {
+          name: 'OrganizationConnectedAccountDto',
+          fields: [
+            { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+            { name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: false },
+          ],
+        },
+      ],
+    };
+    const files = generateResources(services, { ...ctxFor(services), spec: spec as ApiSpec });
+    const content = files.find((file) => file.path.endsWith('/Pipes.kt'))!.content;
+    // A required param after a defaulted one cannot be passed positionally.
+    expect(content).toMatch(
+      /fun updateOrganizationConnectedAccount\(\s+organizationId: String,\s+slug: String,\s+userId: String,\s+supportsMultipleConnections: Boolean\? = null,\s+connectedAccountId: String\? = null,\s+accessToken: String\? = null,\s+requestOptions: RequestOptions\? = null\s+\)/,
+    );
+    expect(content).toContain(
+      'updateOrganizationConnectedAccount(organizationId, slug, userId, supportsMultipleConnections, connectedAccountId, accessToken, requestOptions)',
+    );
+  });
+
   it('emits a shared authenticate helper for user management authenticate variants', () => {
     const services: Service[] = [
       {
