@@ -112,6 +112,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   lines.push(`package ${ctx.namespace}`);
   lines.push('');
   lines.push('import (');
+  if (needsJson) {
+    lines.push('\t"bytes"');
+  }
   if (needsContext) {
     lines.push('\t"context"');
   }
@@ -625,7 +628,9 @@ function generateParamsStruct(
       lines.push('\t}');
     }
     lines.push('\tvar m map[string]any');
-    lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
+    lines.push('\tdecoder := json.NewDecoder(bytes.NewReader(data))');
+    lines.push('\tdecoder.UseNumber()');
+    lines.push('\tif err := decoder.Decode(&m); err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
     for (const field of constants) {
@@ -1136,7 +1141,9 @@ function emitHiddenParamsBodyStruct(
     lines.push('\t\treturn data, nil');
     lines.push('\t}');
     lines.push('\tvar m map[string]any');
-    lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
+    lines.push('\tdecoder := json.NewDecoder(bytes.NewReader(data))');
+    lines.push('\tdecoder.UseNumber()');
+    lines.push('\tif err := decoder.Decode(&m); err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
     lines.push('\tnullable := map[string]bool{');

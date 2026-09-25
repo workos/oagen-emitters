@@ -281,7 +281,7 @@ it.skipIf(!available('go', 'version'))(
       'go',
       'request_test.go',
       `package workos
-import ("encoding/json"; "fmt"; "testing")
+import ("bytes"; "encoding/json"; "fmt"; "testing")
 ${enums}
 ${blocks}
 func TestRequest(t *testing.T) {
