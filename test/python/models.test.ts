@@ -102,7 +102,8 @@ describe('generateModels', () => {
     expect(modelFile.content).toContain('    created_at: datetime');
 
     // Optional/nullable field
-    expect(modelFile.content).toContain('    external_id: Optional[str] = None');
+    expect(modelFile.content).toContain('    external_id: Union[str, None, NotGiven] = NOT_GIVEN');
+    expect(modelFile.content).toContain('if not isinstance(self.external_id, NotGiven):');
 
     // from_dict method
     expect(modelFile.content).toContain('def from_dict(cls, data: Dict[str, Any])');

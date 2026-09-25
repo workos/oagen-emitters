@@ -10,7 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
-import { detectDiscriminators } from '../shared/model-utils.js';
+import { detectDiscriminators, restoreUnionFieldsFromSpec } from '../shared/model-utils.js';
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
@@ -32,7 +32,7 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
  * field flattening which can break existing model structures/fixtures).
  */
 function withDiscriminators(ctx: EmitterContext): EmitterContext {
-  const annotated = detectDiscriminators(ctx.spec.models);
+  const annotated = detectDiscriminators(restoreUnionFieldsFromSpec(ctx.spec.models));
   if (annotated === ctx.spec.models) return ctx;
   const spec: ApiSpec = { ...ctx.spec, models: annotated };
   return { ...ctx, spec };
@@ -42,7 +42,7 @@ export const pythonEmitter: Emitter = {
   language: 'python',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-    const annotated = detectDiscriminators(models);
+    const annotated = detectDiscriminators(restoreUnionFieldsFromSpec(models));
     return ensureTrailingNewlines(generateModels(annotated, ctx));
   },
 
@@ -71,14 +71,9 @@ export const pythonEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-    // Use original spec for model filtering (requestOnlyModelNames etc.) but
-    // annotate discriminator models so dispatch tests are generated.
-    const annotated = detectDiscriminators(spec.models);
-    // Only replace discriminator-annotated models, keep the rest unchanged
-    // so request-only filtering and field-based logic work correctly.
-    const annotatedByName = new Map(annotated.filter((m: any) => m.discriminator).map((m) => [m.name, m]));
-    const testModels = spec.models.map((m) => annotatedByName.get(m.name) ?? m);
-    const testSpec: ApiSpec = { ...spec, models: testModels };
+    // Match model emission so fixtures include common required union fields.
+    const annotated = detectDiscriminators(restoreUnionFieldsFromSpec(spec.models));
+    const testSpec: ApiSpec = { ...spec, models: annotated };
     return ensureTrailingNewlines(generateTests(testSpec, { ...ctx, spec: testSpec }));
   },
 

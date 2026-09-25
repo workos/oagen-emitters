@@ -1425,13 +1425,10 @@ function buildMinimalModelPayload(model: Model, fixture: Record<string, unknown>
   return payload;
 }
 
-function buildPayloadWithoutOptionalNonNullableFields(
-  model: Model,
-  fixture: Record<string, unknown>,
-): Record<string, unknown> {
+function buildPayloadWithoutOptionalFields(model: Model, fixture: Record<string, unknown>): Record<string, unknown> {
   const payload: Record<string, unknown> = { ...fixture };
   for (const field of model.fields) {
-    if (!field.required && field.type.kind !== 'nullable') {
+    if (!field.required) {
       delete payload[field.name];
     }
   }
@@ -1639,7 +1636,7 @@ function buildDirRoundTripFile(
       const fixtureName = `${fileName(model.name)}.json`;
       const fullFixture = generateModelFixture(dedupModel, modelMap, enumMap);
       const minimalPayload = buildMinimalModelPayload(dedupModel, fullFixture);
-      const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(dedupModel, fullFixture);
+      const absentOptionalPayload = buildPayloadWithoutOptionalFields(dedupModel, fullFixture);
       const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
       const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
 
@@ -1669,11 +1666,11 @@ function buildDirRoundTripFile(
 
       if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
         body.push('');
-        body.push(`    def test_${fileName(model.name)}_omits_absent_optional_non_nullable_fields(self):`);
+        body.push(`    def test_${fileName(model.name)}_omits_absent_optional_fields(self):`);
         body.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
         body.push(`        instance = ${modelClass}.from_dict(data)`);
         body.push('        serialized = instance.to_dict()');
-        for (const field of dedupFields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
+        for (const field of dedupFields.filter((field) => !field.required)) {
           body.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
         }
       }
