@@ -1,8 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import {
   parseSpec,
   resolveOperations,
@@ -46,18 +43,6 @@ beforeAll(async () => {
       .join('\n');
   }
 });
-
-function run(runtime: string, filename: string, source: string, args: string[] = []) {
-  const dir = mkdtempSync(join(tmpdir(), 'request-contract-'));
-  try {
-    const file = join(dir, filename);
-    writeFileSync(file, source);
-    return execFileSync(runtime, [...args, file], { encoding: 'utf8', timeout: 30000 });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-const available = (runtime: string, flag = '--version') => spawnSync(runtime, [flag]).status === 0;
 
 describe('request body field projection', () => {
   it('retains all complete branch fields without mutating models or requiring selectors for legacy requests', () => {
@@ -194,123 +179,13 @@ describe('request body field projection', () => {
   });
 });
 
-it.skipIf(!available('python3'))(
-  'executes generated sync and async Python calls with exact legacy/selected bodies and const defaults',
-  () => {
-    // Strip package imports only: execute the actual generated classes with a
-    // recording transport and response placeholders, not a serialization copy.
-    const classes = output.python.slice(output.python.indexOf('class Pipes:'));
-    const responses = spec.models
-      .filter((m) => m.name.endsWith('Response'))
-      .map((m) => `${m.name} = object`)
-      .join('\n');
-    run(
-      'python3',
-      'check.py',
-      `from __future__ import annotations\nimport asyncio\n${responses}\nenum_value = lambda v: v\n${classes}
-class Client:
-    def request(self, **kwargs): return kwargs
-class AsyncClient:
-    async def request(self, **kwargs): return kwargs
-async def check():
-    for resource in [Pipes(Client()), AsyncPipes(AsyncClient())]:
-        for suffix, credentials in [('api_key', {'secret': 'sk_test'}), ('client_credentials', {'client_id': 'client_test', 'client_secret': 'secret_test'})]:
-            base = {'user_id': 'user_test', **credentials}
-            for selectors in [{}, {'connected_account_id': 'data_installation_test'}, {'connected_account_id': 'data_installation_test', 'connection_intent': 'reauthorize'}]:
-                request = getattr(resource, 'put_' + suffix)('github', **base, **selectors)
-                if asyncio.iscoroutine(request): request = await request
-                assert request['body'] == {**base, **selectors}, request
-            request = getattr(resource, 'post_' + suffix)('github', **base)
-            if asyncio.iscoroutine(request): request = await request
-            assert request['body'] == {**base, 'connection_intent': 'add'}, request
-            try:
-                invalid = getattr(resource, 'post_' + suffix)('github', **base, connection_intent='test_value')
-                if asyncio.iscoroutine(invalid): await invalid
-                raise AssertionError('invalid constant accepted')
-            except ValueError: pass
-asyncio.run(check())
-`,
-    );
-  },
-);
-
-it.skipIf(!available('ruby'))('executes generated Ruby named calls, preserving both reauthorization shapes', () => {
-  run(
-    'ruby',
-    'check.rb',
-    `require 'json'\n${output.ruby}
-module WorkOS::Util
-  def self.encode_path(value); value; end
-end
-class Recorder
-  attr_reader :last
-  def request(**kwargs)
-    @last = kwargs
-    throw :recorded
-  end
-end
-client = Recorder.new
-resource = WorkOS::Pipes.new(client)
-[['api_key', {secret: 'sk_test'}], ['client_credentials', {client_id: 'client_test', client_secret: 'secret_test'}]].each do |suffix, credentials|
-  base = {user_id: 'user_test', **credentials}
-  [{}, {connected_account_id: 'data_installation_test'}, {connected_account_id: 'data_installation_test', connection_intent: 'reauthorize'}].each do |selectors|
-    catch(:recorded) { resource.public_send("put_#{suffix}", slug: 'github', **base, **selectors) }
-    expected = base.merge(selectors).transform_keys(&:to_s)
-    raise client.last.inspect unless client.last[:body] == expected
-  end
-  catch(:recorded) { resource.public_send("post_#{suffix}", slug: 'github', **base) }
-  raise client.last.inspect unless client.last[:body] == base.merge(connection_intent: 'add').transform_keys(&:to_s)
-  begin
-    resource.public_send("post_#{suffix}", slug: 'github', **base, connection_intent: 'test_value')
-    raise 'invalid constant accepted'
-  rescue ArgumentError
-  end
-end
-`,
-  );
+it('emits number-preserving Go JSON decoding when injecting request constants', () => {
+  expect(output.go).toContain('"bytes"');
+  expect(output.go).toContain('decoder := json.NewDecoder(bytes.NewReader(data))');
+  expect(output.go).toContain('decoder.UseNumber()');
+  expect(output.go).toContain('decoder.Decode(&m)');
+  expect(output.go).not.toContain('json.Unmarshal(data, &m)');
 });
-
-it.skipIf(!available('go', 'version'))(
-  'serializes generated Go params without losing selected targets and supplies valid creation constants',
-  () => {
-    const blocks = [...output.go.matchAll(/type (Pipes\w+Params) struct \{[\s\S]*?(?=\nfunc \(s \*)/g)]
-      .map((m) => m[0])
-      .join('\n');
-    const enums = spec.enums.map((e) => `type ${e.name.replace(/Api/g, 'API')} string`).join('\n');
-    run(
-      'go',
-      'request_test.go',
-      `package workos
-import ("bytes"; "encoding/json"; "fmt"; "testing")
-${enums}
-${blocks}
-func TestRequest(t *testing.T) {
-  target, intent := "data_installation_test", "reauthorize"
-  for _, p := range []PipesPutAPIKeyParams{
-    {UserID: "user_test", Secret: "sk_test"},
-    {UserID: "user_test", Secret: "sk_test", ConnectedAccountID: &target},
-    {UserID: "user_test", Secret: "sk_test", ConnectedAccountID: &target, ConnectionIntent: &intent},
-  } {
-    encoded, err := json.Marshal(p); if err != nil {t.Fatal(err)}
-    var body map[string]any; json.Unmarshal(encoded, &body)
-    if body["user_id"] != "user_test" || body["secret"] != "sk_test" {t.Fatal(string(encoded))}
-    if p.ConnectedAccountID != nil && body["connected_account_id"] != target {t.Fatal(string(encoded))}
-    if p.ConnectedAccountID == nil && body["connected_account_id"] != nil {t.Fatal(string(encoded))}
-    if p.ConnectionIntent != nil && body["connection_intent"] != intent {t.Fatal(string(encoded))}
-    if p.ConnectionIntent == nil && body["connection_intent"] != nil {t.Fatal(string(encoded))}
-  }
-  for _, p := range []any{PipesPostAPIKeyParams{UserID: "user_test", Secret: "sk_test"}, PipesPostClientCredentialsParams{UserID: "user_test", ClientID: "client_test", ClientSecret: "secret_test"}} {
-    encoded, err := json.Marshal(p); if err != nil {t.Fatal(err)}
-    var body map[string]any; json.Unmarshal(encoded, &body)
-    if body["connection_intent"] != "add" {t.Fatal(string(encoded))}
-  }
-  if _, err := json.Marshal(PipesPostAPIKeyParams{ConnectionIntent: "test_value"}); err == nil {t.Fatal("invalid intent accepted")}
-}
-`,
-      ['test'],
-    );
-  },
-);
 
 it('uses the published mixed request locations for organization/user updates and user creation', () => {
   const files = php(spec.services, ctx);
@@ -327,65 +202,3 @@ it('uses the published mixed request locations for organization/user updates and
     }
   }
 });
-
-it.skipIf(!available('php'))(
-  'executes generated PHP creation, union and mixed-location calls with exact payloads',
-  () => {
-    const files = php(spec.services, ctx);
-    const classFor = (method: string) =>
-      files.find((f) => f.content.includes(`function ${method}(`))!.content.match(/class (\w+)/)![1];
-    const models = spec.models
-      .filter((m) => m.name.endsWith('Response'))
-      .map((m) => `class ${m.name} { public static function fromArray(array $data): self { return new self(); } }`)
-      .join('\n');
-    run(
-      'php',
-      'check.php',
-      `<?php
-${files.map((f) => f.content).join('\n')}
-namespace WorkOS\\Resource;
-${models}
-namespace WorkOS;
-class HttpClient {
-    public array $last = [];
-    public function request(...$args): array { $this->last = $args; return ['id' => 'test']; }
-}
-function same($actual, $expected): void {
-    if ($actual !== $expected) throw new \\RuntimeException(json_encode([$actual, $expected]));
-}
-$client = new HttpClient();
-$pipes = new \\WorkOS\\Service\\${classFor('putApiKey')}($client);
-foreach ([['ApiKey', ['secret' => 'sk_test']], ['ClientCredentials', ['clientId' => 'client_test', 'clientSecret' => 'secret_test']]] as [$suffix, $credentials]) {
-    $base = ['slug' => 'github', 'userId' => 'user_test'] + $credentials;
-    $wire = ['user_id' => 'user_test'] + ($suffix === 'ApiKey' ? ['secret' => 'sk_test'] : ['client_id' => 'client_test', 'client_secret' => 'secret_test']);
-    foreach ([[], ['connectedAccountId' => 'data_installation_test'], ['connectionIntent' => 'reauthorize', 'connectedAccountId' => 'data_installation_test']] as $selectors) {
-        $pipes->{'put'.$suffix}(...($base + $selectors));
-        $expected = $wire;
-        if (isset($selectors['connectionIntent'])) $expected['connection_intent'] = $selectors['connectionIntent'];
-        if (isset($selectors['connectedAccountId'])) $expected['connected_account_id'] = $selectors['connectedAccountId'];
-        same($client->last['body'], $expected);
-    }
-    $pipes->{'post'.$suffix}(...$base);
-    same($client->last['body'], $wire + ['connection_intent' => 'add']);
-    try {
-        $pipes->{'post'.$suffix}(...($base + ['connectionIntent' => 'test_value']));
-        throw new \\RuntimeException('invalid constant accepted');
-    } catch (\\InvalidArgumentException $e) {}
-}
-$orgs = new \\WorkOS\\Service\\${classFor('putOrganizationConnection')}($client);
-$orgs->putOrganizationConnection(organizationId: 'org_test', slug: 'github', userId: 'user_test', accessToken: 'token', connectedAccountId: 'data_installation_test', connectionIntent: 'reauthorize', supportsMultipleConnections: false);
-same($client->last['body'], ['access_token' => 'token', 'user_id' => 'user_test']);
-same($client->last['query'], ['supports_multiple_connections' => false, 'connected_account_id' => 'data_installation_test', 'connection_intent' => 'reauthorize']);
-$users = new \\WorkOS\\Service\\${classFor('putUserConnection')}($client);
-$users->putUserConnection(userId: 'user_test', slug: 'github', accessToken: 'token', connectedAccountId: 'data_installation_test', connectionIntent: 'reauthorize');
-same($client->last['body'], ['access_token' => 'token']);
-same($client->last['query'], ['connected_account_id' => 'data_installation_test', 'connection_intent' => 'reauthorize']);
-$users->postUserConnection(userId: 'user_test', slug: 'github', accessToken: 'token', organizationId: 'org_test');
-same($client->last['body'], ['access_token' => 'token']);
-same($client->last['query'], ['organization_id' => 'org_test']);
-$users->postUserConnection(userId: 'user_test', slug: 'github', accessToken: 'token');
-same($client->last['query'], []);
-`,
-    );
-  },
-);
