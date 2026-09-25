@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import { goStructTag, goStringLiteral } from './strings.js';
 import type {
   Service,
@@ -89,9 +90,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const resolvedLookup = buildResolvedLookup(ctx);
 
   // Determine which imports are needed
-  const needsFmt = operations.some(
-    (op) => op.pathParams.length > 0 || opHasClearableBodyField(op, ctx, resolvedLookup),
-  );
+  const needsFmt = operations.some((op) => op.pathParams.length > 0 || opNeedsBodyMarshaler(op, ctx, resolvedLookup));
   const needsNetUrl = operations.some((op) => {
     if (op.pathParams.length > 0) return true;
     const resolved = lookupResolved(op, resolvedLookup);
@@ -101,7 +100,7 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     return false;
   });
   const needsStrings = needsStringsImport(operations, resolvedLookup);
-  const needsJson = operations.some((op) => hasBodyGroups(op) || opHasClearableBodyField(op, ctx, resolvedLookup));
+  const needsJson = operations.some((op) => hasBodyGroups(op) || opNeedsBodyMarshaler(op, ctx, resolvedLookup));
   // context is needed only for methods that make HTTP calls. URL-builder ops
   // don't take ctx, so a file that contains *only* URL builders would have
   // an unused import.
@@ -224,22 +223,23 @@ function hasBodyGroups(op: Operation): boolean {
 }
 
 /**
- * Check whether an operation exposes a nullable optional body field that can be
- * cleared via NullFields. Such fields cause a generated `MarshalJSON` (needs
- * `encoding/json`) with a validation error (needs `fmt`).
+ * Constants and clearable nullable body fields need a JSON marshaler and
+ * validation errors (`encoding/json` and `fmt`).
  */
-function opHasClearableBodyField(
+function opNeedsBodyMarshaler(
   op: Operation,
   ctx: EmitterContext,
   resolvedLookup: Map<string, ResolvedOperation>,
 ): boolean {
-  if (op.requestBody?.kind !== 'model') return false;
-  const model = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  const model = resolveRequestBodyModel(op, ctx.spec.models);
   if (!model) return false;
   const hidden = buildHiddenParams(lookupResolved(op, resolvedLookup));
   const grouped = collectGroupedParamNames(op);
   return model.fields.some(
-    (f) => !hidden.has(f.name) && !grouped.has(f.name) && !f.required && f.type.kind === 'nullable',
+    (f) =>
+      !hidden.has(f.name) &&
+      !grouped.has(f.name) &&
+      (isRequiredConstant(f) || (!f.required && f.type.kind === 'nullable')),
   );
 }
 
@@ -472,8 +472,8 @@ function generateParamsStruct(
 
   // Check if body has any visible fields after filtering (excluding grouped fields)
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name) && !groupedParams.has(f.name));
     }
@@ -497,8 +497,8 @@ function generateParamsStruct(
   const clearableBodyFieldNames: string[] = [];
 
   // Body fields (if body is a model)
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
@@ -604,7 +604,10 @@ function generateParamsStruct(
   // explicitly cleared via NullFields.
   const bodyGroupList = (op.parameterGroups ?? []).filter((g) => isBodyGroup(g, op));
   const hasNullFields = clearableBodyFieldNames.length > 0;
-  if (bodyGroupList.length > 0 || hasNullFields) {
+  const constants = (resolveRequestBodyModel(op, ctx.spec.models)?.fields ?? []).filter(
+    (f) => isRequiredConstant(f) && !hidden.has(f.name) && !groupedParams.has(f.name),
+  );
+  if (bodyGroupList.length > 0 || hasNullFields || constants.length > 0) {
     lines.push('');
     lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
     lines.push(`func (p ${structName}) MarshalJSON() ([]byte, error) {`);
@@ -616,13 +619,27 @@ function generateParamsStruct(
     // Fast path: nothing to rewrite when no group is set and NullFields is empty.
     const earlyReturnChecks = bodyGroupList.map((g) => `p.${fieldName(g.name)} == nil`);
     if (hasNullFields) earlyReturnChecks.push('len(p.NullFields) == 0');
-    lines.push(`\tif ${earlyReturnChecks.join(' && ')} {`);
-    lines.push('\t\treturn data, nil');
-    lines.push('\t}');
+    if (constants.length === 0) {
+      lines.push(`\tif ${earlyReturnChecks.join(' && ')} {`);
+      lines.push('\t\treturn data, nil');
+      lines.push('\t}');
+    }
     lines.push('\tvar m map[string]any');
     lines.push('\tif err := json.Unmarshal(data, &m); err != nil {');
     lines.push('\t\treturn nil, err');
     lines.push('\t}');
+    for (const field of constants) {
+      if (!isRequiredConstant(field)) continue;
+      const value = goLiteral(field.type.value);
+      const zero = typeof field.type.value === 'string' ? '""' : typeof field.type.value === 'boolean' ? 'false' : '0';
+      const name = domainFieldName(field);
+      lines.push(`\tif p.${name} != ${zero} && p.${name} != ${value} {`);
+      lines.push(
+        `\t\treturn nil, fmt.Errorf("%s", ${goStringLiteral(`${field.name} must equal ${JSON.stringify(field.type.value)}`)})`,
+      );
+      lines.push('\t}');
+      lines.push(`\tm[${goStringLiteral(field.name)}] = ${value}`);
+    }
     for (const group of bodyGroupList) {
       const goField = fieldName(group.name);
       lines.push(`\tif p.${goField} != nil {`);
@@ -667,8 +684,8 @@ function generateMethod(
   // Check if body has visible fields after filtering hidden params and grouped params
   const groupedParams = collectGroupedParamNames(op);
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = _ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, _ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, _ctx.spec.models);
     if (bodyModel) {
       hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name) && !groupedParams.has(f.name));
     }
@@ -678,7 +695,7 @@ function generateMethod(
 
   const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
   const paramsType = hasParams ? `*${paramsStructName(mountName, method)}` : null;
-  const bodyArg = hasBody && hasParams ? bodyArgument(op) : 'nil';
+  const bodyArg = hasBody && hasParams ? bodyArgument(op, _ctx) : 'nil';
   const hasHidden = hasHiddenParams(resolvedOp);
   const isGet = op.httpMethod.toLowerCase() === 'get';
   const isUrlBuilder = resolvedOp?.urlBuilder ?? false;
@@ -1051,10 +1068,7 @@ function emitHiddenParamsBodyStruct(
   const hidden = buildHiddenParams(resolvedOp);
   const structName = hiddenParamsBodyStructName(method);
 
-  const bodyModel =
-    op.requestBody?.kind === 'model'
-      ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
-      : undefined;
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
 
   lines.push(`// ${structName} is the JSON request body for ${method}.`);
   lines.push(`type ${structName} struct {`);
@@ -1161,10 +1175,7 @@ function emitBodyWithHiddenParams(
   const hidden = buildHiddenParams(resolvedOp);
   const bodyType = hiddenParamsBodyStructName(method);
 
-  const bodyModel =
-    op.requestBody?.kind === 'model'
-      ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
-      : undefined;
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
 
   // Build typed body struct literal — defaults + required user fields first
   lines.push(`\tbody := ${bodyType}{`);
@@ -1322,8 +1333,8 @@ function buildPathExpr(op: Operation): string {
   return `fmt.Sprintf("${fmtStr}", ${args.join(', ')})`;
 }
 
-function bodyArgument(op: Operation): string {
-  if (op.requestBody?.kind === 'model') {
+function bodyArgument(op: Operation, ctx: EmitterContext): string {
+  if (resolveRequestBodyModel(op, ctx.spec.models) !== null) {
     return 'params';
   }
   return 'params.Body';

@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type {
   ApiSpec,
   Service,
@@ -230,8 +231,8 @@ function generateServiceTest(
       }
     }
     // Collect model-typed and enum-typed body fields (used as method arguments)
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as any).name);
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel) {
         const testGroupedParams = collectGroupedParamNames(op);
         for (const f of bodyModel.fields) {
@@ -508,7 +509,7 @@ function generateServiceTest(
       lines.push(`        assert request.url.path.endswith("/${expectedPath}")`);
       // For POST/PUT/PATCH with required body fields, verify specific field values
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
-        const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+        const bodyModel = resolveRequestBodyModel(op, spec.models);
         const reqFields = bodyModel?.fields.filter((f) => f.required && !hiddenParams?.has(f.name)) ?? [];
         if (reqFields.length > 0) {
           lines.push('        body = json.loads(request.content)');
@@ -1105,9 +1106,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
 
   // Required body fields as keyword args (matching the expanded-field signature)
   const plan = planOperation(op);
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const requestBodyName = op.requestBody.name;
-    const bodyModel = spec.models.find((m) => m.name === requestBodyName);
+  if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, spec.models);
     if (bodyModel) {
       const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams?.has(f.name));
       for (const f of reqFields) {
@@ -1157,9 +1157,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
       // Skip pagination params (they're optional)
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
-        const rbName = op.requestBody.name;
-        const bodyModel = spec.models.find((m) => m.name === rbName);
+      if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+        const bodyModel = resolveRequestBodyModel(op, spec.models);
         // Compare the body field's DOMAIN identifier (honors `domainName`)
         // against the param kwarg name; the param has no domainName override.
         if (bodyModel?.fields.some((f) => domainFieldName(f) === fieldName(param.name))) continue;
@@ -1184,8 +1183,8 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
   const plan = planOperation(op);
 
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+  if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, spec.models);
     const bodyArgGrouped = collectGroupedParamNames(op);
     for (const field of bodyModel?.fields.filter((f) => f.required && !bodyArgGrouped.has(f.name)) ?? []) {
       args.push(`${bodyParamName(field, pathParamNames)}=${generateTestValue(field.type, field.name)}`);
@@ -1223,8 +1222,8 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
     if ((param as any).explode === false && param.type.kind === 'array') {
@@ -1291,10 +1290,8 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find(
-        (model) => model.name === (op.requestBody as { kind: string; name: string }).name,
-      );
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
     if ((param as any).explode === false && param.type.kind === 'array') {

@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type {
   Service,
   EmitterContext,
@@ -269,11 +270,24 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
   }
   if (op.deprecated) lines.push('    @available(*, deprecated)');
 
-  const sigParams = ordered.map((p) => `        ${p.name}: ${p.type}${p.optional ? ' = nil' : ''}`);
+  const sigParams = ordered.map(
+    (p) =>
+      `        ${p.name}: ${p.type}${p.optional ? ' = nil' : p.kind === 'body' && p.ref.kind === 'literal' && p.ref.value !== null ? ` = ${literalExpr(p.ref.value)}` : ''}`,
+  );
   sigParams.push('        requestOptions: RequestOptions? = nil');
   lines.push(`    public func ${method}(`);
   lines.push(sigParams.join(',\n'));
   lines.push(`    ) async throws${ret ? ` -> ${ret}` : ''} {`);
+
+  for (const p of ordered) {
+    if (p.kind === 'body' && !p.optional && p.ref.kind === 'literal' && p.ref.value !== null) {
+      lines.push(`        guard ${p.name} == ${literalExpr(p.ref.value)} else {`);
+      lines.push(
+        `            throw NSError(domain: "WorkOS", code: 0, userInfo: [NSLocalizedDescriptionKey: ${swiftStringLiteral(`${p.wire} must equal ${JSON.stringify(p.ref.value)}`)}])`,
+      );
+      lines.push('        }');
+    }
+  }
 
   // path
   lines.push(`        let path = ${renderPathExpr(op, params)}`);
@@ -463,13 +477,9 @@ function renderAutoPagingMethod(
 
 /** Determine whether the body is a model (return its fields), raw, or absent. */
 function resolveBodyFields(op: Operation, ctx: EmitterContext): Field[] | 'raw' | null {
-  const rb = op.requestBody;
-  if (!rb) return null;
-  if (rb.kind === 'model') {
-    const model = ctx.spec.models.find((m) => m.name === rb.name);
-    if (model && model.fields.length > 0) return model.fields;
-  }
-  return 'raw';
+  if (!op.requestBody) return null;
+  const model = resolveRequestBodyModel(op, ctx.spec.models);
+  return model && model.fields.length > 0 ? model.fields : 'raw';
 }
 
 function returnType(plan: ReturnType<typeof planOperation>, ctx: EmitterContext): string | null {

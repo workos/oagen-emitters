@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import {
@@ -572,8 +573,8 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
     (op.parameterGroups?.length ?? 0) > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   } else if (hasBody) {
     hasVisibleBodyFields = true;
@@ -606,23 +607,25 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   const hidden = buildHiddenParams(resolvedOp);
 
   // Collect required simple fields that we can seed with a string literal.
+  const groupedParamNames = collectGroupedParamNames(op);
   const bodySeeds: Array<{ wire: string; prop: string; value: string }> = [];
   const querySeeds: Array<{ wire: string; prop: string; value: string }> = [];
 
   const hasBody = plan.hasBody && op.requestBody;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
-        if (hidden.has(field.name)) continue;
+        if (hidden.has(field.name) || groupedParamNames.has(field.name)) continue;
         if (!field.required) continue;
-        if (!isSeedableStringRef(field.type)) continue;
+        const constant =
+          field.type.kind === 'literal' && typeof field.type.value === 'string' ? field.type.value : null;
+        if (!isSeedableStringRef(field.type) && constant === null) continue;
         bodySeeds.push({
           wire: field.name,
           prop: csFieldName(field.name),
-          value: `test_${field.name}`,
+          value: constant ?? `test_${field.name}`,
         });
-        if (bodySeeds.length >= 2) break;
       }
     }
   }
@@ -633,7 +636,6 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
   // call sends it via the body — so skip the query assertion to avoid a
   // false-failing `AssertQueryParam`.
   const bodyWireNames = new Set(bodySeeds.map((s) => s.wire));
-  const groupedParamNames = collectGroupedParamNames(op);
   for (const param of op.queryParams) {
     if (hidden.has(param.name)) continue;
     if (groupedParamNames.has(param.name)) continue;
@@ -663,12 +665,14 @@ function buildRequestShapeSeed(op: Operation, plan: any, ctx: EmitterContext, mo
 
   const setupLines: string[] = [`var options = new ${optName}();`];
   for (const s of [...bodySeeds, ...querySeeds]) {
-    setupLines.push(`options.${s.prop} = "${s.value}";`);
+    setupLines.push(`options.${s.prop} = ${csStringLiteral(s.value)};`);
   }
 
   const assertLines: string[] = [];
   for (const s of bodySeeds) {
-    assertLines.push(`await this.httpMock.AssertRequestBodyContainsAsync("${s.wire}", "${s.value}");`);
+    assertLines.push(
+      `await this.httpMock.AssertRequestBodyContainsAsync(${csStringLiteral(s.wire)}, ${csStringLiteral(s.value)});`,
+    );
   }
   for (const s of querySeeds) {
     assertLines.push(`this.httpMock.AssertQueryParam("${s.wire}", "${s.value}");`);

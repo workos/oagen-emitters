@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import type {
   Service,
   Operation,
@@ -414,7 +415,7 @@ function renderMethod(
     }
 
     for (const bf of sortedBodyFields) {
-      if (bf.required !== required || sharedQueryBodyParams.has(bf.name)) continue;
+      if ((bf.required && !isRequiredConstant(bf)) !== required || sharedQueryBodyParams.has(bf.name)) continue;
       if (isPatch && !bf.required) {
         const baseType = mapTypeRef(bf.type);
         imports.add('com.workos.common.http.PatchField');
@@ -423,7 +424,11 @@ function renderMethod(
           bodyParamNames.get(bf.name)!,
         );
       } else {
-        pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!);
+        pushParam(
+          renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required) +
+            (isRequiredConstant(bf) && bf.type.kind === 'literal' ? ` = ${ktLiteral(bf.type.value)}` : ''),
+          bodyParamNames.get(bf.name)!,
+        );
       }
     }
   }
@@ -452,6 +457,14 @@ function renderMethod(
       lines.push(`${params[i]}${suffix}`);
     }
     lines.push(`  )${returnClause} {`);
+  }
+
+  for (const bf of bodyFields) {
+    if (isRequiredConstant(bf) && bf.type.kind === 'literal') {
+      lines.push(
+        `    require(${bodyParamNames.get(bf.name)!} == ${ktLiteral(bf.type.value)}) { ${ktLiteral(`${bf.name} must equal ${JSON.stringify(bf.type.value)}`)} }`,
+      );
+    }
   }
 
   // Build body / query config
@@ -1136,10 +1149,7 @@ function generateAuthenticateHelper(): string[] {
 }
 
 function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
-  const body = op.requestBody;
-  if (!body) return null;
-  if (body.kind !== 'model') return null;
-  return ctx.spec.models.find((m) => m.name === body.name) ?? null;
+  return resolveRequestBodyModel(op, ctx.spec.models);
 }
 
 function registerTypeImports(ref: TypeRef, imports: Set<string>, ctx: EmitterContext): void {
