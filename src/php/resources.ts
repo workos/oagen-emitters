@@ -1,4 +1,5 @@
 import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/parameter-order.js';
 import { phpStringLiteral } from './strings.js';
 import type {
   Service,
@@ -310,7 +311,14 @@ function generateMethod(
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const materializeQueryDefaults = !isRedirect;
-  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults });
+  const resourceName = className(resolveServiceTarget(service.name, buildExportedClassNameSet(ctx)));
+  const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
+  const params = preserveParameterOrder(
+    buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults }),
+    baseline,
+    (declaration) => declaration.match(/\$(\w+)/)?.[1] ?? declaration,
+    (declaration) => declaration.includes(' = '),
+  );
   const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block

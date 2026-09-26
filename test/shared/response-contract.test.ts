@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseSpec, resolveOperations, type ApiSpec, type EmitterContext, type GeneratedFile } from '@workos/oagen';
+import type { ApiSurface } from '@workos/oagen/compat';
 import { enrichModelsFromSpec } from '../../src/shared/model-utils.js';
 import { pythonEmitter } from '../../src/python/index.js';
 import { goEmitter } from '../../src/go/index.js';
@@ -152,6 +153,77 @@ describe('credential response union contracts', () => {
     const go = credentialSource('go');
     expect(go).toMatch(/Value string `json:"value"`/);
     expect(go).toMatch(/AuthMethod string `json:"auth_method"`/);
+  });
+
+  it('preserves the Go nested credential name as an alias only when its old field types remain compatible', async () => {
+    const legacyName = 'DataIntegrationCredentialsResponseCredential';
+    const apiSurface: ApiSurface = {
+      language: 'go',
+      extractedFrom: 'published baseline',
+      extractedAt: '',
+      classes: {},
+      typeAliases: {},
+      enums: {},
+      exports: {},
+      interfaces: {
+        DataIntegrationCredentialsResponse: {
+          name: 'DataIntegrationCredentialsResponse',
+          extends: [],
+          fields: {
+            credential: { name: 'credential', type: `*${legacyName}`, optional: true },
+          },
+        },
+        [legacyName]: {
+          name: legacyName,
+          extends: [],
+          fields: {
+            value: { name: 'value', type: 'string', optional: false },
+            auth_method: { name: 'auth_method', type: 'string', optional: false },
+            scopes: { name: 'scopes', type: '[]string', optional: false },
+          },
+        },
+      },
+    };
+    const source = (await goEmitter.generateModels(spec.models, { ...ctx, apiSurface }))
+      .map((f) => f.content)
+      .join('\n');
+    expect(source).toContain(`type ${legacyName} = DataIntegrationVendedCredential`);
+    apiSurface.interfaces[legacyName].fields.value.type = '*string';
+    const incompatible = (await goEmitter.generateModels(spec.models, { ...ctx, apiSurface }))
+      .map((f) => f.content)
+      .join('\n');
+    expect(incompatible).not.toContain(`type ${legacyName} =`);
+
+    // A subsequent extraction records the canonical field plus a type alias,
+    // not the original struct. The public name must survive that regeneration.
+    delete apiSurface.interfaces[legacyName];
+    apiSurface.interfaces.DataIntegrationCredentialsResponse.fields.credential.type =
+      '*DataIntegrationVendedCredential';
+    apiSurface.typeAliases[legacyName] = {
+      name: legacyName,
+      sourceFile: 'models.go',
+      value: 'DataIntegrationVendedCredential',
+    };
+    const repeated = (await goEmitter.generateModels(spec.models, { ...ctx, apiSurface }))
+      .map((f) => f.content)
+      .join('\n');
+    expect(repeated).toContain(`type ${legacyName} = DataIntegrationVendedCredential`);
+    const outOfScope = (
+      await goEmitter.generateModels(spec.models, {
+        ...ctx,
+        apiSurface,
+        scopedServices: new Set(['Unrelated']),
+        scopedModelNames: new Set(['Unrelated']),
+      })
+    )
+      .map((f) => f.content)
+      .join('\n');
+    expect(outOfScope).not.toContain(`type ${legacyName} =`);
+    apiSurface.typeAliases[legacyName].sourceFile = 'compatibility.go';
+    const handOwned = (await goEmitter.generateModels(spec.models, { ...ctx, apiSurface }))
+      .map((f) => f.content)
+      .join('\n');
+    expect(handOwned).not.toContain(`type ${legacyName} =`);
   });
 
   it.each(['dotnet', 'kotlin', 'ios', 'php', 'ruby', 'rust'])(

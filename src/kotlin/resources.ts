@@ -1,4 +1,5 @@
 import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/parameter-order.js';
 import type {
   Service,
   Operation,
@@ -376,10 +377,10 @@ function renderMethod(
 
   const groupParamNames = assignGroupParameterNames(op, paramNames);
 
-  const params: string[] = [];
+  let params: string[] = [];
   // Mirrors `params` but tracks the bare Kotlin parameter name so the suspend
   // overload (emitted alongside the blocking version) can forward arguments.
-  const suspendParams: SuspendParam[] = [];
+  let suspendParams: SuspendParam[] = [];
   const pushParam = (decl: string, name: string) => {
     params.push(decl);
     suspendParams.push({ decl, name });
@@ -435,6 +436,16 @@ function renderMethod(
 
   // Per-request options trailer (always optional)
   pushParam('    requestOptions: RequestOptions? = null', 'requestOptions');
+
+  const apiClass = resolveApiClassName(_mountName, buildExportedClassNameSet(ctx));
+  const baseline = ctx.apiSurface?.classes[apiClass]?.methods[method]?.[0]?.params;
+  suspendParams = preserveParameterOrder(
+    suspendParams,
+    baseline,
+    (p) => p.name,
+    (p) => p.decl.includes(' = '),
+  );
+  params = suspendParams.map((p) => p.decl);
 
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;

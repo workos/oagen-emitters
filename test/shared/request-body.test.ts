@@ -8,6 +8,7 @@ import {
   type EmitterContext,
   type Model,
 } from '@workos/oagen';
+import type { ApiSurface } from '@workos/oagen/compat';
 import { resolveRequestBodyModel } from '../../src/shared/request-body.js';
 import { generateResources as dotnet } from '../../src/dotnet/resources.js';
 import { generateResources as go } from '../../src/go/resources.js';
@@ -21,6 +22,10 @@ import { generateTests as phpTests } from '../../src/php/tests.js';
 import { generateTests as goTests } from '../../src/go/tests.js';
 import { generateTests as dotnetTests } from '../../src/dotnet/tests.js';
 import { generateTests as kotlinTests } from '../../src/kotlin/tests.js';
+import { generateTests as iosTests } from '../../src/ios/tests.js';
+import { generateTests as rubyTests } from '../../src/ruby/tests.js';
+import { generateTests as rustTests } from '../../src/rust/tests.js';
+import { generateTests as pythonTests } from '../../src/python/tests.js';
 
 // Reduced from workos/openapi-spec@0b0182d195a272be7528ca26c0ca7f936c8f789f:
 // request schemas/constraints retained; prose and response schemas omitted.
@@ -177,6 +182,120 @@ describe('request body field projection', () => {
     expect(tests).toContain("$this->assertSame('add', $body['connection_intent'])");
     expect(tests).not.toContain("connectionIntent: 'test_value'");
   });
+});
+
+it('preserves the reported Kotlin and PHP positional slots from the baseline surface', () => {
+  const kotlinOrder = [
+    'userId',
+    'slug',
+    'organizationId',
+    'supportsMultipleConnections',
+    'connectedAccountId',
+    'accessToken',
+    'refreshToken',
+    'expiresAt',
+    'scopes',
+    'state',
+    'requestOptions',
+  ];
+  const phpOrder = [
+    'userId',
+    'slug',
+    'accessToken',
+    'refreshToken',
+    'expiresAt',
+    'scopes',
+    'state',
+    'organizationId',
+    'options',
+  ];
+  for (const [language, generate, method, order] of [
+    ['kotlin', kotlin, 'putUserConnection', kotlinOrder],
+    ['php', php, 'postUserConnection', phpOrder],
+  ] as const) {
+    const apiSurface: ApiSurface = {
+      language,
+      extractedFrom: 'published baseline',
+      extractedAt: '',
+      interfaces: {},
+      typeAliases: {},
+      enums: {},
+      exports: {},
+      classes: {
+        Pipes: {
+          name: 'Pipes',
+          properties: {},
+          constructorParams: [],
+          methods: {
+            [method]: [
+              {
+                name: method,
+                async: false,
+                returnType: 'ConnectedAccount',
+                params: order.map((name, index) => ({ name, type: 'string', optional: index > 1 })),
+              },
+            ],
+          },
+        },
+      },
+    };
+    const source = generate(spec.services, {
+      ...ctx,
+      apiSurface,
+      resolvedOperations: ctx.resolvedOperations?.map((r) => ({ ...r, mountOn: 'Pipes' })),
+    })
+      .map((f) => f.content)
+      .join('\n');
+    const signature = source.split(`${method}(`)[1].split(language === 'php' ? '):' : '  ):')[0];
+    const names =
+      language === 'php'
+        ? [...signature.matchAll(/\$(\w+)/g)].map((m) => m[1])
+        : [...signature.matchAll(/(\w+):/g)].map((m) => m[1]);
+    expect(names.filter((name) => name !== 'connectionIntent')).toEqual(order);
+    expect(names.at(-1)).toBe('connectionIntent');
+    if (language === 'kotlin') {
+      const suspendSignature = source.split(`${method}Suspend(`)[1].split('  ):')[0];
+      expect([...suspendSignature.matchAll(/(\w+):/g)].map((m) => m[1])).toEqual(names);
+    }
+  }
+});
+
+it('emits Swift and Ruby request assertions for every required credential and intent', () => {
+  const swift = iosTests(spec, ctx)
+    .map((f) => f.content)
+    .join('\n');
+  for (const field of ['user_id', 'secret', 'client_id', 'client_secret']) {
+    expect(swift).toContain(`#expect(json?["${field}"] as? String == "test_${field}")`);
+  }
+  expect(swift).toContain('#expect(json?["connection_intent"] as? String == "add")');
+  expect(swift).toContain('putApiKeyWithBodyVariant1SendsExpectedRequest');
+  expect(swift).toContain('putApiKeyWithBodyVariant2SendsExpectedRequest');
+  expect(swift).toContain('#expect(json?["connected_account_id"] as? String == "test_connected_account_id")');
+  const ruby = rubyTests(spec, ctx)
+    .map((f) => f.content)
+    .join('\n');
+  expect(ruby).toContain(
+    '.with(body: hash_including("user_id" => "stub", "secret" => "stub", "connection_intent" => "add"))',
+  );
+  expect(ruby).toContain('"client_secret" => "stub", "connection_intent" => "add"');
+});
+
+it('emits Rust raw-body matchers and Python selector assertions for request variants', () => {
+  const rust = rustTests(spec, ctx)
+    .map((f) => f.content)
+    .join('\n');
+  expect(rust).toContain('wiremock::matchers::body_json(');
+  expect(rust).toContain('put_api_key_body_variant_1_round_trip');
+  expect(rust).toContain('put_api_key_body_variant_2_round_trip');
+  expect(rust).toContain('fixtures/reauthorize_put_api_key_request.json');
+  const python = pythonTests(spec, ctx)
+    .map((f) => f.content)
+    .join('\n');
+  expect(python).toContain('def test_put_api_key_body_variant_1(');
+  expect(python).toContain('async def test_put_api_key_body_variant_2(');
+  expect(python).toContain('connected_account_id="test_connected_account_id"');
+  expect(python).toContain('assert body["connected_account_id"] == "test_connected_account_id"');
+  expect(python).toContain('assert body["connection_intent"] == "reauthorize"');
 });
 
 it('emits number-preserving Go JSON decoding when injecting request constants', () => {

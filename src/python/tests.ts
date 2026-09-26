@@ -553,6 +553,7 @@ function generateServiceTest(
         }
       }
     }
+    if (!isRedirectEndpoint(op)) lines.push(...renderUnionBodyTests(op, method, propName, spec, hiddenParams, false));
   }
 
   // Generate tests for wrapper (union-split) methods (sync)
@@ -841,6 +842,8 @@ function generateServiceTest(
         }
       }
     }
+    if (!isRedirectEndpoint(op))
+      lines.push(...renderUnionBodyTests(op, method, propName, spec, asyncHiddenParams, true));
   }
 
   // Generate tests for wrapper (union-split) methods (async)
@@ -1094,6 +1097,40 @@ function buildExpectedPath(op: Operation): string {
 /**
  * Build test arguments string for an operation call.
  */
+function renderUnionBodyTests(
+  op: Operation,
+  method: string,
+  propName: string,
+  spec: ApiSpec,
+  hiddenParams: Set<string>,
+  isAsync: boolean,
+): string[] {
+  if (op.requestBody?.kind !== 'union' || !resolveRequestBodyModel(op, spec.models)) return [];
+  const lines: string[] = [];
+  for (const [index, variant] of op.requestBody.variants.entries()) {
+    if (index === 0) continue; // The ordinary operation test covers the first branch.
+    const variantOp = { ...op, requestBody: variant };
+    const fields =
+      resolveRequestBodyModel(variantOp, spec.models)?.fields.filter((f) => f.required && !hiddenParams.has(f.name)) ??
+      [];
+    if (!fields.length || fields.some((f) => f.type.kind !== 'primitive' && f.type.kind !== 'literal')) continue;
+    const client = isAsync ? 'async_workos' : 'workos';
+    const definition = `    ${isAsync ? 'async ' : ''}def test_${method}_body_variant_${index}(self, ${client}, httpx_mock):`;
+    lines.push('');
+    if (isAsync) pushAsyncTestDef(lines, definition);
+    else lines.push(definition);
+    for (const setup of buildQueryEncodingResponseSetup(op, planOperation(op))) lines.push(`        ${setup}`);
+    lines.push(
+      `        ${isAsync ? 'await ' : ''}${client}.${propName}.${method}(${buildTestArgs(variantOp, spec, hiddenParams)})`,
+    );
+    lines.push('        body = json.loads(httpx_mock.get_request().content)');
+    for (const field of fields) {
+      lines.push(`        assert body[${JSON.stringify(field.name)}] == ${generateTestValue(field.type, field.name)}`);
+    }
+  }
+  return lines;
+}
+
 function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): string {
   const args: string[] = [];
 
