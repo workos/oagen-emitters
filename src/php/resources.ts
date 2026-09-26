@@ -1,3 +1,5 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/parameter-order.js';
 import { phpStringLiteral } from './strings.js';
 import type {
   Service,
@@ -309,7 +311,14 @@ function generateMethod(
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const materializeQueryDefaults = !isRedirect;
-  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults });
+  const resourceName = className(resolveServiceTarget(service.name, buildExportedClassNameSet(ctx)));
+  const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
+  const params = preserveParameterOrder(
+    buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults }),
+    baseline,
+    (declaration) => declaration.match(/\$(\w+)/)?.[1] ?? declaration,
+    (declaration) => declaration.includes(' = '),
+  );
   const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block
@@ -330,8 +339,8 @@ function generateMethod(
 
   // @param for body fields
   const groupedParamNames = collectGroupedParamNames(op);
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
+  if (plan.hasBody && resolveRequestBodyModel(op, [...modelMap.values()]) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, [...modelMap.values()]);
     if (bodyModel) {
       const bodyParamMap = buildBodyParamMap(op, bodyModel);
       for (const field of bodyModel.fields) {
@@ -418,6 +427,16 @@ function generateMethod(
     lines.push(`        ${params[i]}${comma}`);
   }
   lines.push(`    ): ${returnType} {`);
+
+  for (const field of resolveRequestBodyModel(op, [...modelMap.values()])?.fields ?? []) {
+    if (!isRequiredConstant(field) || field.type.kind !== 'literal' || hiddenParams.has(field.name)) continue;
+    const name = buildBodyParamMap(op, { name: '', fields: [field] }).get(field.name)!;
+    lines.push(`        if ($${name} !== ${phpLiteral(field.type.value)}) {`);
+    lines.push(
+      `            throw new \\InvalidArgumentException(${phpStringLiteral(`${field.name} must equal ${JSON.stringify(field.type.value)}`)});`,
+    );
+    lines.push('        }');
+  }
 
   // Method body
   const httpMethod = op.httpMethod.toUpperCase();
@@ -507,7 +526,7 @@ function generateMethod(
   } else if (plan.isDelete) {
     // Build body if the operation has a request body (e.g., DELETE with criteria)
     if (plan.hasBody) {
-      const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
+      const bodyModel = resolveRequestBodyModel(op, [...modelMap.values()]);
       const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
       const deleteGroupedParams = collectGroupedParamNames(op);
       const visibleFields =
@@ -568,7 +587,7 @@ function generateMethod(
     lines.push('            options: $options,');
     lines.push('        );');
   } else if (plan.hasBody) {
-    const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
+    const bodyModel = resolveRequestBodyModel(op, [...modelMap.values()]);
     const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
     const bodyGroupedParams = collectGroupedParamNames(op);
     const visibleFields =
@@ -607,10 +626,17 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
+    const queryLines = buildQueryArray(op, hiddenParams);
+    if (queryLines.length > 0) {
+      lines.push('        $query = array_filter([');
+      for (const q of queryLines) lines.push(`            ${q}`);
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
     lines.push('            body: $body,');
+    if (queryLines.length > 0) lines.push('            query: $query,');
     lines.push('            options: $options,');
     lines.push('        );');
 
@@ -711,8 +737,8 @@ function buildMethodParams(
   }
 
   // Body fields
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
+  if (plan.hasBody && resolveRequestBodyModel(op, [...modelMap.values()]) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, [...modelMap.values()]);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
@@ -725,7 +751,9 @@ function buildMethodParams(
           if (usedNames.has(phpName)) continue; // truly duplicate, skip
         }
         usedNames.add(phpName);
-        if (field.required) {
+        if (isRequiredConstant(field) && field.type.kind === 'literal') {
+          optional.push(`${phpType} $${phpName} = ${phpLiteral(field.type.value)}`);
+        } else if (field.required) {
           required.push(`${phpType} $${phpName}`);
         } else {
           const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;

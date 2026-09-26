@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type {
   ApiSpec,
   Service,
@@ -230,8 +231,8 @@ function generateServiceTest(
       }
     }
     // Collect model-typed and enum-typed body fields (used as method arguments)
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as any).name);
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel) {
         const testGroupedParams = collectGroupedParamNames(op);
         for (const f of bodyModel.fields) {
@@ -508,7 +509,7 @@ function generateServiceTest(
       lines.push(`        assert request.url.path.endswith("/${expectedPath}")`);
       // For POST/PUT/PATCH with required body fields, verify specific field values
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
-        const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+        const bodyModel = resolveRequestBodyModel(op, spec.models);
         const reqFields = bodyModel?.fields.filter((f) => f.required && !hiddenParams?.has(f.name)) ?? [];
         if (reqFields.length > 0) {
           lines.push('        body = json.loads(request.content)');
@@ -552,6 +553,7 @@ function generateServiceTest(
         }
       }
     }
+    if (!isRedirectEndpoint(op)) lines.push(...renderUnionBodyTests(op, method, propName, spec, hiddenParams, false));
   }
 
   // Generate tests for wrapper (union-split) methods (sync)
@@ -840,6 +842,8 @@ function generateServiceTest(
         }
       }
     }
+    if (!isRedirectEndpoint(op))
+      lines.push(...renderUnionBodyTests(op, method, propName, spec, asyncHiddenParams, true));
   }
 
   // Generate tests for wrapper (union-split) methods (async)
@@ -1093,6 +1097,40 @@ function buildExpectedPath(op: Operation): string {
 /**
  * Build test arguments string for an operation call.
  */
+function renderUnionBodyTests(
+  op: Operation,
+  method: string,
+  propName: string,
+  spec: ApiSpec,
+  hiddenParams: Set<string>,
+  isAsync: boolean,
+): string[] {
+  if (op.requestBody?.kind !== 'union' || !resolveRequestBodyModel(op, spec.models)) return [];
+  const lines: string[] = [];
+  for (const [index, variant] of op.requestBody.variants.entries()) {
+    if (index === 0) continue; // The ordinary operation test covers the first branch.
+    const variantOp = { ...op, requestBody: variant };
+    const fields =
+      resolveRequestBodyModel(variantOp, spec.models)?.fields.filter((f) => f.required && !hiddenParams.has(f.name)) ??
+      [];
+    if (!fields.length || fields.some((f) => f.type.kind !== 'primitive' && f.type.kind !== 'literal')) continue;
+    const client = isAsync ? 'async_workos' : 'workos';
+    const definition = `    ${isAsync ? 'async ' : ''}def test_${method}_body_variant_${index}(self, ${client}, httpx_mock):`;
+    lines.push('');
+    if (isAsync) pushAsyncTestDef(lines, definition);
+    else lines.push(definition);
+    for (const setup of buildQueryEncodingResponseSetup(op, planOperation(op))) lines.push(`        ${setup}`);
+    lines.push(
+      `        ${isAsync ? 'await ' : ''}${client}.${propName}.${method}(${buildTestArgs(variantOp, spec, hiddenParams)})`,
+    );
+    lines.push('        body = json.loads(httpx_mock.get_request().content)');
+    for (const field of fields) {
+      lines.push(`        assert body[${JSON.stringify(field.name)}] == ${generateTestValue(field.type, field.name)}`);
+    }
+  }
+  return lines;
+}
+
 function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): string {
   const args: string[] = [];
 
@@ -1105,9 +1143,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
 
   // Required body fields as keyword args (matching the expanded-field signature)
   const plan = planOperation(op);
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const requestBodyName = op.requestBody.name;
-    const bodyModel = spec.models.find((m) => m.name === requestBodyName);
+  if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, spec.models);
     if (bodyModel) {
       const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams?.has(f.name));
       for (const f of reqFields) {
@@ -1157,9 +1194,8 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
       // Skip pagination params (they're optional)
       if (plan.isPaginated && ['limit', 'before', 'after', 'order'].includes(param.name)) continue;
       // Skip params already covered by body fields
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
-        const rbName = op.requestBody.name;
-        const bodyModel = spec.models.find((m) => m.name === rbName);
+      if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+        const bodyModel = resolveRequestBodyModel(op, spec.models);
         // Compare the body field's DOMAIN identifier (honors `domainName`)
         // against the param kwarg name; the param has no domainName override.
         if (bodyModel?.fields.some((f) => domainFieldName(f) === fieldName(param.name))) continue;
@@ -1184,8 +1220,8 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
   const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
   const plan = planOperation(op);
 
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+  if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, spec.models);
     const bodyArgGrouped = collectGroupedParamNames(op);
     for (const field of bodyModel?.fields.filter((f) => f.required && !bodyArgGrouped.has(f.name)) ?? []) {
       args.push(`${bodyParamName(field, pathParamNames)}=${generateTestValue(field.type, field.name)}`);
@@ -1223,8 +1259,8 @@ function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
     if ((param as any).explode === false && param.type.kind === 'array') {
@@ -1291,10 +1327,8 @@ function buildQueryEncodingAssertions(op: Operation, spec: ApiSpec): string[] {
     if (param.type.kind === 'array' && (param as any).explode !== false) continue;
     const paramName = fieldName(param.name);
     if (pathParamNames.has(paramName)) continue;
-    if (plan.hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = spec.models.find(
-        (model) => model.name === (op.requestBody as { kind: string; name: string }).name,
-      );
+    if (plan.hasBody && resolveRequestBodyModel(op, spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, spec.models);
       if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === paramName)) continue;
     }
     if ((param as any).explode === false && param.type.kind === 'array') {
@@ -1428,13 +1462,10 @@ function buildMinimalModelPayload(model: Model, fixture: Record<string, unknown>
   return payload;
 }
 
-function buildPayloadWithoutOptionalNonNullableFields(
-  model: Model,
-  fixture: Record<string, unknown>,
-): Record<string, unknown> {
+function buildPayloadWithoutOptionalFields(model: Model, fixture: Record<string, unknown>): Record<string, unknown> {
   const payload: Record<string, unknown> = { ...fixture };
   for (const field of model.fields) {
-    if (!field.required && field.type.kind !== 'nullable') {
+    if (!field.required) {
       delete payload[field.name];
     }
   }
@@ -1642,7 +1673,7 @@ function buildDirRoundTripFile(
       const fixtureName = `${fileName(model.name)}.json`;
       const fullFixture = generateModelFixture(dedupModel, modelMap, enumMap);
       const minimalPayload = buildMinimalModelPayload(dedupModel, fullFixture);
-      const absentOptionalPayload = buildPayloadWithoutOptionalNonNullableFields(dedupModel, fullFixture);
+      const absentOptionalPayload = buildPayloadWithoutOptionalFields(dedupModel, fullFixture);
       const nullablePayload = buildPayloadWithNullableFieldsSetToNull(dedupModel, fullFixture);
       const unknownEnumPayload = buildPayloadWithUnknownEnumValue(dedupModel, fullFixture);
 
@@ -1672,11 +1703,11 @@ function buildDirRoundTripFile(
 
       if (Object.keys(absentOptionalPayload).length !== Object.keys(fullFixture).length) {
         body.push('');
-        body.push(`    def test_${fileName(model.name)}_omits_absent_optional_non_nullable_fields(self):`);
+        body.push(`    def test_${fileName(model.name)}_omits_absent_optional_fields(self):`);
         body.push(`        data = ${toPythonLiteral(absentOptionalPayload)}`);
         body.push(`        instance = ${modelClass}.from_dict(data)`);
         body.push('        serialized = instance.to_dict()');
-        for (const field of dedupFields.filter((field) => !field.required && field.type.kind !== 'nullable')) {
+        for (const field of dedupFields.filter((field) => !field.required)) {
           body.push(`        assert ${toPythonLiteral(field.name)} not in serialized`);
         }
       }

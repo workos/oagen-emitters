@@ -285,6 +285,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     const hasOptional = deduplicatedFields.some((f) => isOptionalField(model.name, f, ctx));
     if (hasOptional) typingImports.add('Optional');
+    const hasOptionalNullable = deduplicatedFields.some(
+      (f) => isOptionalField(model.name, f, ctx) && f.type.kind === 'nullable',
+    );
+    if (hasOptionalNullable) typingImports.add('Union');
     const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
     const usesEnum = deps.enums.size > 0;
 
@@ -300,6 +304,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
     lines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
+    if (hasOptionalNullable) {
+      lines.push(`from ${ctx.namespace}._types import NOT_GIVEN, NotGiven`);
+    }
     if (usesDateTime) {
       lines.push(`from ${ctx.namespace}._types import _format_datetime, _parse_datetime`);
     }
@@ -396,15 +403,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const pyFieldName = domainFieldName(field);
       const innerType =
         field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
-      const pyType = `Optional[${rewriteDiscriminatorType(innerType)}]`;
+      const nullable = field.type.kind === 'nullable';
+      const pyType = nullable
+        ? `Union[${rewriteDiscriminatorType(innerType)}, None, NotGiven]`
+        : `Optional[${rewriteDiscriminatorType(innerType)}]`;
+      const defaultValue = nullable ? 'NOT_GIVEN' : 'None';
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
         if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
-        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+        lines.push(`    ${pyFieldName}: ${pyType} = ${defaultValue}`);
         lines.push(`    """${pythonDocstring(parts.join('\n\n    '))}"""`);
       } else {
-        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+        lines.push(`    ${pyFieldName}: ${pyType} = ${defaultValue}`);
       }
     }
 
@@ -427,7 +438,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const discPrelude = renderDiscriminatedUnionPrelude(field, pyFieldName, wireKey, modelClassName, isRequired);
       if (discPrelude) {
         preludeLines.push(...discPrelude.prelude);
-        fieldAssignmentLines.push(`                ${pyFieldName}=${discPrelude.expr},`);
+        const expr =
+          !isRequired && field.type.kind === 'nullable'
+            ? `${discPrelude.expr} if ${pythonStringLiteral(wireKey)} in data else NOT_GIVEN`
+            : discPrelude.expr;
+        fieldAssignmentLines.push(`                ${pyFieldName}=${expr},`);
         continue;
       }
 
@@ -443,7 +458,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // even when the field itself is required (the key must be present, but value can be null).
       const deserRequired = isRequired && field.type.kind !== 'nullable';
       const walrusVar = `_v_${pyFieldName}`;
-      const deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
+      let deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
+      if (!isRequired && field.type.kind === 'nullable') {
+        deserExpr = `(${deserExpr}) if ${pythonStringLiteral(wireKey)} in data else NOT_GIVEN`;
+      }
       fieldAssignmentLines.push(`                ${pyFieldName}=${deserExpr},`);
     }
 
@@ -475,10 +493,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         // Nullable fields should round-trip explicit None as null, even when optional
         const innerType = (field.type as any).inner;
         const serExpr = serializeField(innerType, `self.${pyFieldName}`);
-        lines.push(`        if self.${pyFieldName} is not None:`);
-        lines.push(`            result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
-        lines.push(`        else:`);
-        lines.push(`            result[${pythonStringLiteral(wireKey)}] = None`);
+        const indent = isRequired ? '        ' : '            ';
+        if (!isRequired) lines.push(`        if not isinstance(self.${pyFieldName}, NotGiven):`);
+        lines.push(`${indent}if self.${pyFieldName} is not None:`);
+        lines.push(`${indent}    result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
+        lines.push(`${indent}else:`);
+        lines.push(`${indent}    result[${pythonStringLiteral(wireKey)}] = None`);
       } else {
         // Optional non-nullable fields should be omitted when unset
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
@@ -805,7 +825,7 @@ function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
   void modelName;
   void ctx;
-  // A field is optional (gets = None default) only if it's not required or deprecated.
+  // A field gets a default only if it's not required or deprecated.
   // Nullable-required fields (required: true, type: nullable) are NOT optional —
   // they must appear in the API response (value can be null, but key must be present).
   // The spec's required status always takes precedence over the old SDK's API surface.

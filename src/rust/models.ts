@@ -1,3 +1,6 @@
+import { buildDirectionIndex, directionOf } from '@workos/oagen';
+import { closedRequestVariants } from './request-contract.js';
+import { isRequiredConstant } from '../shared/request-body.js';
 import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@workos/oagen';
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
@@ -25,6 +28,8 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
   // variant body during deserialization, so a *required* field of the same
   // name can never be satisfied ("missing field `type`"). See renderField.
   const taggedVariantFields = collectTaggedVariantFields(models);
+  const closed = closedRequestVariants(ctx.spec);
+  const direction = buildDirectionIndex(ctx.spec);
 
   for (const model of models) {
     // Empty-field, non-discriminator models still need to be emitted as an
@@ -51,7 +56,13 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     const path = hintPath ?? `src/models/${mod}.rs`;
     if (!fileExistsAfterRun(path, inScope, ctx)) continue;
 
-    const content = renderModel(model, registry, taggedVariantFields.get(model.name));
+    const content = renderModel(
+      model,
+      registry,
+      taggedVariantFields.get(model.name),
+      closed.has(model.name),
+      directionOf(direction, model.name) === 'request',
+    );
     if (inScope) {
       files.push({
         path,
@@ -130,7 +141,13 @@ function variantModelName(ref: TypeRef): string | null {
   return null;
 }
 
-function renderModel(model: Model, registry: UnionRegistry, tagField?: string): string {
+function renderModel(
+  model: Model,
+  registry: UnionRegistry,
+  tagField?: string,
+  closed = false,
+  requestOnly = false,
+): string {
   const lines: string[] = [];
   lines.push(HEADER_PLACEHOLDER);
   // Match rustfmt's canonical grouping: keyword-rooted paths (`super`,
@@ -146,10 +163,11 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
   if (model.description) lines.push(...docComment(model.description));
 
   lines.push('#[derive(Debug, Clone, Serialize, Deserialize)]');
+  if (closed) lines.push('#[serde(deny_unknown_fields)]');
 
   const resolvedNames = resolveFieldNames(model.fields);
   const fieldLines = model.fields.map((f, i) =>
-    renderField(f, resolvedNames[i]!, model.name, registry, model.fields, tagField),
+    renderField(f, resolvedNames[i]!, model.name, registry, model.fields, tagField, requestOnly),
   );
 
   // rustfmt collapses zero-field structs to `pub struct Foo {}` on a single
@@ -160,6 +178,37 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
     lines.push(`pub struct ${typeName(model.name)} {`);
     lines.push(...fieldLines);
     lines.push('}');
+  }
+  if (requestOnly) {
+    for (const field of model.fields) {
+      if (!isRequiredConstant(field) || field.name === tagField) continue;
+      const name = domainFieldName(field).replace(/^r#/, '');
+      const type = mapTypeRef(field.type);
+      const value = JSON.stringify(field.type.value);
+      lines.push('');
+      lines.push(
+        `fn serialize_${name}<S: serde::Serializer>(value: &${type}, serializer: S) -> Result<S::Ok, S::Error> {`,
+      );
+      lines.push(`    if *value != ${value} {`);
+      lines.push(
+        `        return Err(serde::ser::Error::custom(${JSON.stringify(`${field.name} must equal ${value}`)}));`,
+      );
+      lines.push('    }');
+      lines.push('    value.serialize(serializer)');
+      lines.push('}');
+      lines.push('');
+      lines.push(
+        `fn deserialize_${name}<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<${type}, D::Error> {`,
+      );
+      lines.push(`    let value = ${type}::deserialize(deserializer)?;`);
+      lines.push(`    if value != ${value} {`);
+      lines.push(
+        `        return Err(serde::de::Error::custom(${JSON.stringify(`${field.name} must equal ${value}`)}));`,
+      );
+      lines.push('    }');
+      lines.push('    Ok(value)');
+      lines.push('}');
+    }
   }
   return lines.filter((l) => l !== HEADER_PLACEHOLDER).join('\n') + '\n';
 }
@@ -198,6 +247,7 @@ function renderField(
   registry: UnionRegistry,
   siblings: Field[],
   tagField?: string,
+  requestOnly = false,
 ): string {
   const lines: string[] = [];
   const hasDescription = !!field.description;
@@ -236,6 +286,10 @@ function renderField(
     if (baseType.startsWith('Option<')) {
       lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
     }
+  }
+  if (requestOnly && isRequiredConstant(field) && field.name !== tagField) {
+    const name = rustField.replace(/^r#/, '');
+    lines.push(`    #[serde(serialize_with = "serialize_${name}", deserialize_with = "deserialize_${name}")]`);
   }
   if (field.deprecated) lines.push('    #[deprecated]');
   lines.push(`    pub ${rustField}: ${baseType},`);

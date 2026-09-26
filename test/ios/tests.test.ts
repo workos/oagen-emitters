@@ -45,6 +45,53 @@ function fileByPath(files: { path: string; content: string }[], path: string): s
 }
 
 describe('ios/tests', () => {
+  it('calls union variants in the projected method order, not each schema branch order', () => {
+    const variantSpec: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'Organizations',
+          operations: [
+            {
+              ...spec.services[0].operations[0],
+              name: 'createItem',
+              httpMethod: 'post',
+              requestBody: {
+                kind: 'union',
+                variants: [
+                  { kind: 'model', name: 'First' },
+                  { kind: 'model', name: 'Second' },
+                ],
+              },
+              response: { kind: 'model', name: 'Organization' },
+            },
+          ],
+        },
+      ],
+      models: [
+        ...spec.models,
+        {
+          name: 'First',
+          fields: ['a', 'b'].map((name) => ({ name, required: true, type: { kind: 'primitive', type: 'string' } })),
+        },
+        {
+          name: 'Second',
+          fields: ['b', 'a', 'c'].map((name) => ({
+            name,
+            required: true,
+            type: { kind: 'primitive', type: 'string' },
+          })),
+        },
+      ],
+    };
+    const source = generateTests(variantSpec, { ...ctx, spec: variantSpec })
+      .map((f) => f.content)
+      .join('\n');
+    expect(source).toContain('createWithBodyVariant1SendsExpectedRequest');
+    expect(source).toContain('client.organizations.create(a: "test_a", b: "test_b", c: "test_c")');
+    expect(source).not.toContain('client.organizations.create(b:');
+  });
+
   it('does not emit the hand-maintained test support or transport suite', () => {
     const paths = generateTests(spec, ctx).map((f) => f.path);
     expect(paths).not.toContain('Tests/WorkOSTests/Support/MockURLProtocol.swift');

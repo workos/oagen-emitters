@@ -1,11 +1,25 @@
+import { goStringLiteral } from './strings.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type { ApiSpec, Service, Operation, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { planOperation, toSnakeCase } from '@workos/oagen';
-import { fileName, fieldName as goFieldName, resolveMethodName, methodName as goMethodName } from './naming.js';
+import {
+  fileName,
+  fieldName as goFieldName,
+  domainFieldName,
+  resolveMethodName,
+  methodName as goMethodName,
+} from './naming.js';
 import { resolveResourceClassName, paramsStructName, sortPathParamsByTemplateOrder } from './resources.js';
 import { buildServiceAccessPaths } from './client.js';
 import { generateFixtures } from './fixtures.js';
 import { isListWrapperModel } from './models.js';
-import { scopedMountGroups, buildResolvedLookup, lookupResolved, buildHiddenParams } from '../shared/resolved-ops.js';
+import {
+  scopedMountGroups,
+  buildResolvedLookup,
+  lookupResolved,
+  buildHiddenParams,
+  collectGroupedParamNames,
+} from '../shared/resolved-ops.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -127,15 +141,15 @@ function generateServiceTest(
   lines.push(`package ${ctx.namespace}_test`);
   lines.push('');
   // Check if any operation uses POST/PUT/PATCH with visible model body fields (for import needs).
-  // Union-type bodies don't trigger body validation so don't need io/json imports.
+  // Compatible object unions use the same named params and body assertions.
   const resolvedLookupForImports = buildResolvedLookup(ctx);
   const hasBodyOps = service.operations.some((op) => {
     const httpMethod = op.httpMethod.toUpperCase();
     if (httpMethod !== 'POST' && httpMethod !== 'PUT' && httpMethod !== 'PATCH') return false;
-    if (op.requestBody?.kind !== 'model') return false;
+    if (!resolveRequestBodyModel(op, spec.models)) return false;
     const resolved = lookupResolved(op, resolvedLookupForImports);
     const hidden = buildHiddenParams(resolved);
-    const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    const bodyModel = resolveRequestBodyModel(op, spec.models);
     if (bodyModel) return bodyModel.fields.some((f) => !hidden.has(f.name));
     return false;
   });
@@ -328,23 +342,24 @@ function generateServiceTest(
       lines.push(`\t\trequire.Equal(t, "${expectedPath}", r.URL.Path)`);
 
       // Validate request body for POST/PUT/PATCH when body fields are actually sent.
-      // Skip for union-type bodies (test sends empty Body interface{}) and operations
-      // where all body fields are hidden.
+      // Complex native unions and fully hidden bodies retain their existing tests.
       const resolvedLookup = buildResolvedLookup(ctx);
       const resolvedOp = lookupResolved(op, resolvedLookup);
       const hiddenSet = buildHiddenParams(resolvedOp);
       let hasVisibleBody = false;
-      if (isBodyMethod && op.requestBody?.kind === 'model') {
-        const bodyModel = spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+      if (isBodyMethod && resolveRequestBodyModel(op, spec.models)) {
+        const bodyModel = resolveRequestBodyModel(op, spec.models);
         if (bodyModel) {
           hasVisibleBody = bodyModel.fields.some((f) => !hiddenSet.has(f.name));
         }
       }
-      // Don't validate body for union types -- test sends nil Body
       if (hasVisibleBody) {
         lines.push('\t\tbody, _ := io.ReadAll(r.Body)');
         lines.push('\t\tvar bodyMap map[string]interface{}');
         lines.push('\t\trequire.NoError(t, json.Unmarshal(body, &bodyMap))');
+        for (const seed of requestStringSeeds(op, ctx, hiddenSet)) {
+          lines.push(`\t\trequire.Equal(t, ${goStringLiteral(seed.value)}, bodyMap[${goStringLiteral(seed.wire)}])`);
+        }
       }
 
       lines.push('\t\tw.Header().Set("Content-Type", "application/json")');
@@ -544,6 +559,26 @@ function resolveGoMethodName(op: Operation, mountName: string, ctx: EmitterConte
   return resolveMethodName(op, { name: mountName, operations: [op] }, ctx);
 }
 
+/** Seed required wire strings and constants instead of accepting empty credentials. */
+function requestStringSeeds(
+  op: Operation,
+  ctx: EmitterContext,
+  hidden: Set<string>,
+): Array<{ wire: string; field: string; value: string }> {
+  const grouped = collectGroupedParamNames(op);
+  return (resolveRequestBodyModel(op, ctx.spec.models)?.fields ?? []).flatMap((field) => {
+    if (!field.required || hidden.has(field.name) || grouped.has(field.name)) return [];
+    const type = field.type;
+    const value =
+      type.kind === 'literal' && typeof type.value === 'string'
+        ? type.value
+        : type.kind === 'primitive' && type.type === 'string' && !['date-time', 'binary'].includes(type.format ?? '')
+          ? `test_${field.name}`
+          : null;
+    return value === null ? [] : [{ wire: field.name, field: domainFieldName(field), value }];
+  });
+}
+
 function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, mountName: string): string {
   const args: string[] = ['context.Background()'];
 
@@ -559,8 +594,8 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
     }
@@ -571,7 +606,8 @@ function buildMethodCallArgs(op: Operation, plan: any, ctx: EmitterContext, moun
   if (hasVisibleBodyFields || hasVisibleQueryParams) {
     const method = resolveGoMethodName(op, mountName, ctx);
     const pName = paramsStructName(mountName, method);
-    args.push(`&${ctx.namespace}.${pName}{}`);
+    const seeds = requestStringSeeds(op, ctx, hidden).map((s) => `${s.field}: ${goStringLiteral(s.value)}`);
+    args.push(`&${ctx.namespace}.${pName}{${seeds.join(', ')}}`);
   }
 
   return args.join(', ');
@@ -600,8 +636,8 @@ function buildMethodCallArgsWithFilter(
   const hasVisibleQueryParams = op.queryParams.filter((qp) => !hidden.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
     }
