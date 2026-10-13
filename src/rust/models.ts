@@ -2,6 +2,7 @@ import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@work
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
+import { docCommentLines } from './doc-comments.js';
 import { isModelInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 const HEADER_PLACEHOLDER = ''; // engine prepends fileHeader()
@@ -143,7 +144,7 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
   lines.push('use serde::{Deserialize, Serialize};');
   lines.push('');
 
-  if (model.description) lines.push(...docComment(model.description));
+  if (model.description) lines.push(...docCommentLines(model.description));
 
   lines.push('#[derive(Debug, Clone, Serialize, Deserialize)]');
 
@@ -202,7 +203,7 @@ function renderField(
   const lines: string[] = [];
   const hasDescription = !!field.description;
   if (hasDescription) {
-    for (const c of docComment(field.description!)) lines.push(`    ${c}`);
+    for (const c of docCommentLines(field.description!)) lines.push(`    ${c}`);
   }
   if (field.default != null) {
     if (hasDescription) lines.push('    ///');
@@ -253,14 +254,6 @@ function renderModelsBarrel(modules: string[]): string {
   lines.push('');
   for (const m of sorted) lines.push(`pub use ${m}::*;`);
   return lines.join('\n') + '\n';
-}
-
-function docComment(text: string): string[] {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map((l) => `/// ${l}`);
 }
 
 /**

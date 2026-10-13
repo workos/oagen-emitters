@@ -103,6 +103,24 @@ describe('rust/enums', () => {
     expect(f.content).toContain('Unrecognized(String),');
   });
 
+  it('preserves paragraph breaks in variant docs', () => {
+    const enums: Enum[] = [
+      {
+        name: 'StateReason',
+        values: [
+          {
+            name: 'membership_ended',
+            value: 'membership_ended',
+            description: 'The member left.\n\nCredentials were cleared.',
+          },
+        ],
+      },
+    ];
+    const files = generateEnums(enums, ctx);
+    const f = files.find((x) => x.path === 'src/enums/state_reason.rs')!;
+    expect(f.content).toContain('    /// The member left.\n    ///\n    /// Credentials were cleared.\n');
+  });
+
   it('skips empty enums', () => {
     const enums: Enum[] = [{ name: 'Empty', values: [] }];
     const files = generateEnums(enums, ctx);

@@ -249,6 +249,30 @@ describe('rust/models', () => {
     expect(f.content).toContain('/// Defaults to `true`.');
   });
 
+  it('preserves paragraph breaks in field docs so clippy does not see a lazy list continuation', () => {
+    const models: Model[] = [
+      {
+        name: 'ConnectedAccount',
+        description: 'A connected account.\n\nSee the guide.',
+        fields: [
+          {
+            name: 'state_reason',
+            type: { kind: 'primitive', type: 'string' },
+            required: false,
+            description:
+              'Why the connection is in its current state:\n- `membership_ended`: The member left.\n\nAdditional values may be added.',
+          },
+        ],
+      },
+    ];
+    const files = generateModels(models, ctx, new UnionRegistry());
+    const f = files.find((x) => x.path === 'src/models/connected_account.rs')!;
+    expect(f.content).toContain('/// A connected account.\n///\n/// See the guide.\n');
+    expect(f.content).toContain(
+      '    /// - `membership_ended`: The member left.\n    ///\n    /// Additional values may be added.\n',
+    );
+  });
+
   it('emits a barrel re-exporting each module', () => {
     const models: Model[] = [
       {
