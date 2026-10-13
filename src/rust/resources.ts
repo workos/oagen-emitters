@@ -13,6 +13,7 @@ import { planOperation } from '@workos/oagen';
 import { fieldName, domainFieldName, methodName, typeName, moduleName, variantName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
+import { docCommentLines } from './doc-comments.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import {
   groupByMount,
@@ -1436,14 +1437,7 @@ function rustDefaultExpr(value: unknown, ref: TypeRef, isOptional: boolean, ctx:
 function methodDocLines(op: Operation): string[] {
   const lines: string[] = [];
   if (op.description && op.description.trim().length > 0) {
-    for (const raw of op.description.split('\n')) {
-      const trimmed = raw.trim();
-      if (trimmed.length === 0) {
-        lines.push('///');
-      } else {
-        lines.push(`/// ${trimmed}`);
-      }
-    }
+    lines.push(...docCommentLines(op.description));
   } else {
     lines.push(`/// ${op.httpMethod.toUpperCase()} ${op.path}`);
   }

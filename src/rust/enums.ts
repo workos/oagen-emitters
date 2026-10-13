@@ -1,5 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { typeName, moduleName, variantName } from './naming.js';
+import { docCommentLines } from './doc-comments.js';
 import { isEnumInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 /**
@@ -106,7 +107,7 @@ function renderEnum(e: Enum): string {
   for (const variant of order) {
     const desc = descByVariant.get(variant);
     if (desc) {
-      for (const c of docComment(desc)) lines.push(`    ${c}`);
+      for (const c of docCommentLines(desc)) lines.push(`    ${c}`);
     }
     if (deprecatedByVariant.get(variant)) lines.push('    #[allow(deprecated)]');
     lines.push(`    ${variant},`);
@@ -212,12 +213,4 @@ function renderEnumsBarrel(modules: string[]): string {
   lines.push('');
   for (const m of sorted) lines.push(`pub use ${m}::*;`);
   return lines.join('\n') + '\n';
-}
-
-function docComment(text: string): string[] {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map((l) => `/// ${l}`);
 }
