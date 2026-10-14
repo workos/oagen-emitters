@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.17](https://github.com/workos/oagen-emitters/compare/v0.24.16...v0.24.17) (2026-10-13)
+
+
+### Bug Fixes
+
+* **rust:** preserve paragraph breaks in doc comments ([#262](https://github.com/workos/oagen-emitters/issues/262)) ([03315e1](https://github.com/workos/oagen-emitters/commit/03315e1808368c61aab1aa07472f019a3803482a))
+
 ## [0.24.16](https://github.com/workos/oagen-emitters/compare/v0.24.15...v0.24.16) (2026-09-21)
 
 
