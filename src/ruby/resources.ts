@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import type {
   Service,
   EmitterContext,
@@ -440,7 +441,9 @@ function emitMethod(args: {
     const n = bodyKwargName(f.name);
     if (seenParamNames.has(n)) continue;
     seenParamNames.add(n);
-    sigParts.push(`${n}:`);
+    sigParts.push(
+      `${n}:${isRequiredConstant(f) && f.type.kind === 'literal' ? ` ${rubyDefaultLiteral(f.type.value)}` : ''}`,
+    );
   }
   for (const q of queryParams) {
     if (hiddenParams.has(q.name)) continue;
@@ -616,6 +619,13 @@ function emitMethod(args: {
     // Nullable optional fields are emitted separately below so an explicit
     // `nil` survives as JSON `null` (clearing the field) rather than being
     // dropped by `.compact`.
+    for (const f of bodyFields) {
+      if (isRequiredConstant(f) && f.type.kind === 'literal' && !hiddenParams.has(f.name)) {
+        lines.push(
+          `      raise ArgumentError, ${rubyStringLit(`${f.name} must equal ${JSON.stringify(f.type.value)}`)} unless ${bodyKwargName(f.name)} == ${rubyDefaultLiteral(f.type.value)}`,
+        );
+      }
+    }
     let bodyHasNilable = false;
     const clearableFields: typeof bodyFields = [];
     for (const f of bodyFields) {
@@ -901,11 +911,13 @@ function findPrimaryResponseModel(ref: TypeRef): string | null {
 }
 
 /** Get the body fields, expanded from model refs. Handles nested/model refs and unions. */
-function getRequestBodyFields(
+export function getRequestBodyFields(
   op: Operation,
   hiddenParams: Set<string>,
   modelByName: Map<string, Model>,
 ): { name: string; required: boolean; type: TypeRef; description?: string; deprecated?: boolean }[] {
+  const projected = resolveRequestBodyModel(op, [...modelByName.values()]);
+  if (projected) return projected.fields;
   void hiddenParams;
   const ref = op.requestBody;
   if (!ref) return [];

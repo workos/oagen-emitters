@@ -185,32 +185,51 @@ function renderRegularTest(
 
   const lines: string[] = [];
 
-  // Round-trip (happy path).
-  lines.push('#[tokio::test]');
-  lines.push(`async fn ${accessor}_${m}_round_trip() {`);
-  if (isUrlBuilder) {
-    // URL-builder ops don't issue HTTP requests; there's nothing to mock.
+  // Match the raw fixture rather than reserializing the SDK model: otherwise
+  // a lossy union decoder could drop a selector from both actual and expected.
+  const objectBody =
+    op.requestBody?.kind === 'model' ||
+    (op.requestBody?.kind === 'union' && op.requestBody.variants.every((v) => v.kind === 'model'));
+  const checkBody =
+    objectBody &&
+    !shape.hasBodyGroup &&
+    Object.keys(resolved.defaults ?? {}).length === 0 &&
+    (resolved.inferFromClient?.length ?? 0) === 0;
+  const bodies =
+    checkBody && op.requestBody?.kind === 'union'
+      ? [op.requestBody, ...op.requestBody.variants.slice(1)]
+      : [op.requestBody];
+  for (const [index, body] of bodies.entries()) {
+    const args =
+      index === 0 ? callArgs : buildCallArgs(op, resolved, crate, accessor, modelMap, enumMap, body).join(', ');
+    const suffix = index === 0 ? '' : `_body_variant_${index}`;
+    lines.push('#[tokio::test]');
+    lines.push(`async fn ${accessor}_${m}${suffix}_round_trip() {`);
     lines.push('    let server = MockServer::start().await;');
-    lines.push('    let client = common::test_client(&server).await;');
-    lines.push(`    let _ = client.${accessor}().${m}(${callArgs});`);
-  } else {
-    lines.push('    let server = MockServer::start().await;');
-    lines.push(`    Mock::given(method(${JSON.stringify(httpMethod)}))`);
-    lines.push(`        .and(path_matcher(${JSON.stringify(literalPath)}))`);
-    lines.push(`        .respond_with(ResponseTemplate::new(200).set_body_string(${responseExpr}))`);
-    lines.push('        .expect(1)');
-    lines.push('        .mount(&server)');
-    lines.push('        .await;');
-    lines.push('    let client = common::test_client(&server).await;');
-    lines.push(`    let _ = client.${accessor}().${m}(${callArgs}).await;`);
+    if (isUrlBuilder) {
+      lines.push('    let client = common::test_client(&server).await;');
+      lines.push(`    let _ = client.${accessor}().${m}(${args});`);
+    } else {
+      lines.push(`    Mock::given(method(${JSON.stringify(httpMethod)}))`);
+      lines.push(`        .and(path_matcher(${JSON.stringify(literalPath)}))`);
+      if (checkBody) {
+        const expected = responseBodyExpr(body, modelMap, enumMap);
+        lines.push(
+          `        .and(wiremock::matchers::body_json(serde_json::from_str::<serde_json::Value>(${expected}).expect("parse request fixture")))`,
+        );
+      }
+      lines.push(`        .respond_with(ResponseTemplate::new(200).set_body_string(${responseExpr}))`);
+      lines.push('        .expect(1)');
+      lines.push('        .mount(&server)');
+      lines.push('        .await;');
+      lines.push('    let client = common::test_client(&server).await;');
+      lines.push(`    let _ = client.${accessor}().${m}(${args}).await;`);
+    }
+    // wiremock verifies the request on drop. Response fixtures for unrelated
+    // discriminated models may be incomplete, so don't assert response success.
+    lines.push('}');
+    lines.push('');
   }
-  // wiremock asserts on drop that the `.expect(1)` mock was matched once;
-  // mismatched method/path produces a panic at end-of-test. We deliberately
-  // ignore the deserialised response: stub fixtures cover the common path
-  // (typed model deserialisation), but discriminated-union responses can't
-  // always be reproduced from a generated fixture without bespoke schema
-  // awareness, so a strict `is_ok()` would over-trigger.
-  lines.push('}');
 
   if (isUrlBuilder) {
     // No HTTP call to mock — the round-trip is all we can sensibly emit.
@@ -264,6 +283,7 @@ function buildCallArgs(
   accessor: string,
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
+  bodyVariant = op.requestBody,
 ): string[] {
   const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
   // Names of query/header params that fold into a parameter-group enum and
@@ -306,7 +326,7 @@ function buildCallArgs(
         if (hasBodyGroup) {
           ctorArgs.push(syntheticBodyStubExpr(op, resolved, crate, accessor, modelMap, enumMap));
         } else {
-          ctorArgs.push(stubExpr(op.requestBody!, 'body', modelMap, enumMap));
+          ctorArgs.push(stubExpr(bodyVariant!, 'body', modelMap, enumMap));
         }
       }
       callArgs.push(`${paramsType}::new(${ctorArgs.join(', ')})`);

@@ -1,0 +1,913 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Request contract regression (published WorkOS 0b0182d)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/data-integrations/{slug}/api-key": {
+      "post": {
+        "operationId": "postApiKey",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "connection_owner": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization"
+                    ]
+                  },
+                  "secret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "connection_intent": {
+                    "type": "string",
+                    "const": "add"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "secret",
+                  "connection_intent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "pipes"
+        ],
+        "x-feature-flag": "pipes-multiple-connections"
+      },
+      "put": {
+        "operationId": "putApiKey",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "secret": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "secret"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "secret": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "connection_intent": {
+                        "type": "string",
+                        "const": "reauthorize"
+                      },
+                      "connected_account_id": {
+                        "type": "string",
+                        "pattern": "^data_installation_.+$"
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "secret",
+                      "connection_intent",
+                      "connected_account_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "secret": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "connected_account_id": {
+                        "type": "string",
+                        "pattern": "^data_installation_.+$"
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "secret",
+                      "connected_account_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "pipes"
+        ]
+      }
+    },
+    "/data-integrations/{slug}/client-credentials": {
+      "post": {
+        "operationId": "postClientCredentials",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "connection_owner": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "organization"
+                    ]
+                  },
+                  "client_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "client_secret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "config": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "connection_intent": {
+                    "type": "string",
+                    "const": "add"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "client_id",
+                  "client_secret",
+                  "connection_intent"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "pipes"
+        ],
+        "x-feature-flag": "pipes-multiple-connections"
+      },
+      "put": {
+        "operationId": "putClientCredentials",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "config": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "client_id",
+                      "client_secret"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "config": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "connection_intent": {
+                        "type": "string",
+                        "const": "reauthorize"
+                      },
+                      "connected_account_id": {
+                        "type": "string",
+                        "pattern": "^data_installation_.+$"
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "client_id",
+                      "client_secret",
+                      "connection_intent",
+                      "connected_account_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "user_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "connection_owner": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "organization"
+                        ]
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "config": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "connected_account_id": {
+                        "type": "string",
+                        "pattern": "^data_installation_.+$"
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "client_id",
+                      "client_secret",
+                      "connected_account_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "pipes"
+        ]
+      }
+    },
+    "/organizations/{organization_id}/connected_accounts/{slug}": {
+      "post": {
+        "operationId": "postOrganizationConnection",
+        "parameters": [
+          {
+            "name": "organization_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrganizationConnectedAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "organizations.data-providers"
+        ],
+        "x-feature-flag": "pipes-org-integrations"
+      },
+      "put": {
+        "operationId": "putOrganizationConnection",
+        "parameters": [
+          {
+            "name": "organization_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "supports_multiple_connections",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "connected_account_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_intent",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "const": "reauthorize"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationConnectedAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "organizations.data-providers"
+        ],
+        "x-feature-flag": "pipes-org-integrations"
+      }
+    },
+    "/user_management/users/{user_id}/connected_accounts/{slug}": {
+      "post": {
+        "operationId": "postUserConnection",
+        "parameters": [
+          {
+            "name": "user_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "organization_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectedAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "user-management.data-providers"
+        ]
+      },
+      "put": {
+        "operationId": "putUserConnection",
+        "parameters": [
+          {
+            "name": "user_id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "organization_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "supports_multiple_connections",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "connected_account_id",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_intent",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "const": "reauthorize"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectedAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "user-management.data-providers"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateOrganizationConnectedAccountDto": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "needs_reauthorization"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "connection_intent": {
+            "type": "string",
+            "const": "add"
+          }
+        },
+        "required": [
+          "user_id"
+        ]
+      },
+      "OrganizationConnectedAccountDto": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "needs_reauthorization"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ]
+      },
+      "CreateConnectedAccountDto": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "needs_reauthorization"
+            ]
+          },
+          "connection_intent": {
+            "type": "string",
+            "const": "add"
+          }
+        }
+      },
+      "ConnectedAccountDto": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "needs_reauthorization"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

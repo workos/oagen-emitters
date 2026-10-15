@@ -271,6 +271,66 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     });
   }
 
+  // A nested response can gain a named schema without changing the wire field.
+  // Preserve its previous public name only when the baseline's fields still
+  // have the same Go types; don't guess aliases from structural similarity.
+  const declaredNames = new Set(modelBlocks.flatMap((block) => block.names));
+  const compatibilityAliases = new Map<string, { target: string; inScope: boolean }>();
+  for (const parent of models) {
+    const prior = ctx.apiSurface?.interfaces[className(parent.name)];
+    if (!prior) continue;
+    for (const field of parent.fields) {
+      const ref = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      if (ref.kind !== 'model') continue;
+      const legacyName = prior.fields[field.name]?.type.replace(/^\*/, '');
+      const targetName = className(ref.name);
+      const legacy = legacyName ? ctx.apiSurface?.interfaces[legacyName] : undefined;
+      const target = models.find((model) => model.name === ref.name);
+      if (!legacyName || !legacy || !target || declaredNames.has(legacyName) || !declaredNames.has(targetName))
+        continue;
+      if (
+        (legacy.sourceFile !== undefined && legacy.sourceFile !== 'models.go') ||
+        Object.keys(legacy.fields).length === 0
+      )
+        continue;
+      if (
+        !Object.entries(legacy.fields).every(([name, previous]) => {
+          const current = target.fields.find((candidate) => candidate.name === name);
+          return (
+            current &&
+            previous.type === (current.required ? mapTypeRef(current.type) : makeOptional(mapTypeRef(current.type)))
+          );
+        })
+      )
+        continue;
+      const existing = compatibilityAliases.get(legacyName);
+      if (existing && existing.target !== targetName)
+        throw new Error(`Ambiguous compatibility alias for ${legacyName}`);
+      compatibilityAliases.set(legacyName, {
+        target: targetName,
+        inScope: isModelInScope(parent.name, ctx) || isModelInScope(target.name, ctx),
+      });
+    }
+  }
+  // On the next run the parent already names the canonical model. Preserve
+  // aliases recorded by extraction too, rather than rediscovering them only
+  // from the old parent field. Leave aliases in hand-maintained files alone.
+  for (const alias of Object.values(ctx.apiSurface?.typeAliases ?? {})) {
+    if (alias.sourceFile !== 'models.go' || declaredNames.has(alias.name)) continue;
+    const targetBlock = modelBlocks.find((block) => block.names.includes(alias.value));
+    if (!targetBlock) continue;
+    const existing = compatibilityAliases.get(alias.name);
+    if (existing && existing.target !== alias.value) throw new Error(`Ambiguous compatibility alias for ${alias.name}`);
+    compatibilityAliases.set(alias.name, { target: alias.value, inScope: targetBlock.inScope ?? false });
+  }
+  for (const [name, alias] of compatibilityAliases) {
+    modelBlocks.push({
+      names: [name],
+      text: `// Deprecated: Use ${alias.target} instead.\ntype ${name} = ${alias.target}`,
+      inScope: alias.inScope,
+    });
+  }
+
   // Scoped runs: drop brand-new out-of-scope blocks; carry over prior blocks the
   // new spec renamed/removed (still referenced by un-regenerated resource code).
   // Full runs return every block unchanged.

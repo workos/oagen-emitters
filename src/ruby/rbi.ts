@@ -1,3 +1,5 @@
+import { isRequiredConstant } from '../shared/request-body.js';
+import { getRequestBodyFields } from './resources.js';
 import type { ApiSpec, EmitterContext, GeneratedFile, TypeRef, Model, Service } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import {
@@ -243,7 +245,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       // Drop body fields that collide with a parameter-group name; the group
       // dispatcher kwarg handles them. See ruby/resources.ts for the matching
       // filter on the runtime side.
-      const bodyFields = getRequestBodyFieldsFlat(op, hiddenParams, modelByName).filter(
+      const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName).filter(
         (f) => !groupedParamNames.has(f.name),
       );
       const parameterGroups = op.parameterGroups ?? [];
@@ -331,7 +333,20 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       }
       lines.push(`      ).returns(${retType})`);
       lines.push('    end');
-      lines.push(`    def ${method}(${sigParams.map((p) => p.split(':')[0].trim() + ':').join(', ')}); end`);
+      const defaulted = new Set([
+        'request_options',
+        ...bodyFields.filter((f) => !f.required || isRequiredConstant(f)).map((f) => fieldName(f.name)),
+        ...queryParams.filter((q) => !q.required).map((q) => safeParamName(q.name)),
+        ...parameterGroups.filter((g) => g.optional).map((g) => fieldName(g.name)),
+      ]);
+      lines.push(
+        `    def ${method}(${sigParams
+          .map((p) => {
+            const name = p.split(':')[0].trim();
+            return `${name}:${defaulted.has(name) ? ' T.unsafe(nil)' : ''}`;
+          })
+          .join(', ')}); end`,
+      );
       lines.push('');
     }
 
@@ -416,32 +431,4 @@ function mapSorbetReturnType(ref: TypeRef, listWrapperModels: Map<string, Model>
     return 'NilClass';
   }
   return mapSorbetType(ref);
-}
-
-/** Get body fields (flat) for RBI sig generation. */
-function getRequestBodyFieldsFlat(
-  op: { requestBody?: TypeRef },
-  hiddenParams: Set<string>,
-  modelByName: Map<string, Model>,
-): { name: string; required: boolean; type: TypeRef }[] {
-  void hiddenParams;
-  const ref = op.requestBody;
-  if (!ref) return [];
-  if (ref.kind === 'model') {
-    const model = modelByName.get(ref.name);
-    if (!model) return [];
-    return model.fields.map((f) => ({ name: f.name, required: f.required, type: f.type }));
-  }
-  if (ref.kind === 'nullable') {
-    return getRequestBodyFieldsFlat({ requestBody: ref.inner }, hiddenParams, modelByName);
-  }
-  if (ref.kind === 'union') {
-    for (const v of ref.variants) {
-      if (v.kind === 'model') {
-        const model = modelByName.get(v.name);
-        if (model) return model.fields.map((f) => ({ name: f.name, required: f.required, type: f.type }));
-      }
-    }
-  }
-  return [];
 }

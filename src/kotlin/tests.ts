@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import type {
   ApiSpec,
   EmitterContext,
@@ -156,6 +157,7 @@ interface OpTest {
   imports: Set<string>;
   /** Wire field names required in the request body — asserted via matchingJsonPath. */
   requiredBodyPaths: string[];
+  bodyConstants?: Record<string, string>;
   /** `name=value` pairs required on the query string — asserted via matchingRegex. */
   requiredQueryAssertions: { name: string; valueRegex: string }[];
   /** Wire field names that must NOT appear as query params (e.g. password on POST). */
@@ -250,6 +252,8 @@ function generateServiceTestClass(
   const anyQuery = uniqueTests.some((t) => t.canEmitHappyPath && t.requiredQueryAssertions.length > 0);
   const anyForbidden = uniqueTests.some((t) => t.canEmitHappyPath && t.forbiddenQueryParams.length > 0);
   if (anyBody) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath');
+  if (uniqueTests.some((t) => Object.keys(t.bodyConstants ?? {}).length > 0))
+    imports.add('com.github.tomakehurst.wiremock.client.WireMock.equalTo');
   if (anyQuery) imports.add('com.github.tomakehurst.wiremock.client.WireMock.matching');
   if (anyForbidden) imports.add('com.github.tomakehurst.wiremock.client.WireMock.absent');
   // assertEquals is needed when any test has response field assertions.
@@ -316,6 +320,7 @@ function buildOperationTest(
   const imports = new Set<string>();
   const argParts: string[] = [];
   const requiredBodyPaths: string[] = [];
+  const bodyConstants: Record<string, string> = {};
   const requiredQueryAssertions: { name: string; valueRegex: string }[] = [];
 
   for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
@@ -383,7 +388,8 @@ function buildOperationTest(
       const promotedType = promoteIso8601TypeRef(bf.type, bf.description);
       const val = synthValue(promotedType, ctx, imports);
       if (val === null) return null;
-      argParts.push(val);
+      if (isRequiredConstant(bf)) bodyConstants[bf.name] = String(bf.type.value);
+      else argParts.push(val);
       // matchingJsonPath on an array/map body field fails on empty
       // synthesized collections because JsonPath returns an empty result
       // set.  Scalar fields always materialize with a concrete value, so
@@ -442,6 +448,7 @@ function buildOperationTest(
     canEmitHappyPath,
     imports,
     requiredBodyPaths,
+    bodyConstants,
     requiredQueryAssertions,
     forbiddenQueryParams,
     responseAssertions,
@@ -679,10 +686,7 @@ function renderTypeForSynthesis(type: TypeRef, ctx: EmitterContext, imports: Set
 }
 
 function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
-  const body = op.requestBody;
-  if (!body) return null;
-  if (body.kind !== 'model') return null;
-  return ctx.spec.models.find((m) => m.name === body.name) ?? null;
+  return resolveRequestBodyModel(op, ctx.spec.models);
 }
 
 /**
@@ -867,7 +871,9 @@ function emitHappyPathTest(lines: string[], t: OpTest): void {
     lines.push('    wireMockRule.verify(');
     lines.push(`      ${t.httpMethod}RequestedFor(urlPathMatching(${ktStringLiteral(t.pathForWireMock)}))`);
     for (const path of t.requiredBodyPaths) {
-      lines.push(`        .withRequestBody(matchingJsonPath(${ktStringLiteral(`$.${path}`)}))`);
+      const value = t.bodyConstants?.[path];
+      const matcher = value === undefined ? '' : `, equalTo(${ktStringLiteral(value)})`;
+      lines.push(`        .withRequestBody(matchingJsonPath(${ktStringLiteral(`$.${path}`)}${matcher}))`);
     }
     for (const qa of t.requiredQueryAssertions) {
       lines.push(`        .withQueryParam(${ktStringLiteral(qa.name)}, matching(${ktStringLiteral(qa.valueRegex)}))`);

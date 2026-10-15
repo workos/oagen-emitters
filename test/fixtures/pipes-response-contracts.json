@@ -1,0 +1,233 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Credential response regression",
+    "version": "1"
+  },
+  "paths": {
+    "/credentials": {
+      "get": {
+        "operationId": "getCredentials",
+        "tags": [
+          "Pipes"
+        ],
+        "responses": {
+          "200": {
+            "description": "Credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataIntegrationCredentialsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DataIntegrationVendedCredential": {
+        "discriminator": {
+          "propertyName": "auth_method"
+        },
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "object": {
+                "type": "string",
+                "const": "credential"
+              },
+              "auth_method": {
+                "type": "string",
+                "x-extensible-enum": [
+                  "oauth",
+                  "api_key",
+                  "client_credentials"
+                ],
+                "const": "oauth"
+              },
+              "value": {
+                "type": "string",
+                "format": "password"
+              },
+              "expires_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "missing_scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "object",
+              "auth_method",
+              "value",
+              "expires_at",
+              "scopes",
+              "missing_scopes",
+              "config"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "object": {
+                "type": "string",
+                "const": "credential"
+              },
+              "auth_method": {
+                "type": "string",
+                "x-extensible-enum": [
+                  "oauth",
+                  "api_key",
+                  "client_credentials"
+                ],
+                "const": "api_key"
+              },
+              "value": {
+                "type": "string",
+                "format": "password"
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "object",
+              "auth_method",
+              "value",
+              "config"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "object": {
+                "type": "string",
+                "const": "credential"
+              },
+              "auth_method": {
+                "type": "string",
+                "x-extensible-enum": [
+                  "oauth",
+                  "api_key",
+                  "client_credentials"
+                ],
+                "const": "client_credentials"
+              },
+              "value": {
+                "type": "string",
+                "format": "password"
+              },
+              "expires_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "missing_scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "object",
+              "auth_method",
+              "value",
+              "expires_at",
+              "scopes",
+              "missing_scopes",
+              "metadata",
+              "config"
+            ]
+          }
+        ]
+      },
+      "DataIntegrationCredentialsResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": true
+              },
+              "credential": {
+                "$ref": "#/components/schemas/DataIntegrationVendedCredential"
+              }
+            },
+            "required": [
+              "active",
+              "credential"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean",
+                "const": false
+              },
+              "error": {
+                "type": "string",
+                "enum": [
+                  "not_installed",
+                  "needs_reauthorization"
+                ],
+                "x-extensible-enum": [
+                  "not_installed",
+                  "needs_reauthorization"
+                ]
+              }
+            },
+            "required": [
+              "active",
+              "error"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

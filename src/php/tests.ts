@@ -1,3 +1,5 @@
+import { phpStringLiteral } from './strings.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import type {
   ApiSpec,
   Service,
@@ -164,7 +166,7 @@ function generateMountGroupTest(
       lines.push("        $this->assertSame('DELETE', $request->getMethod());");
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for DELETE-with-body
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
+      if (plan.hasBody && resolveRequestBodyModel(op, ctx.spec.models)) {
         emitBodyAssertions(lines, op, ctx, hidden);
       }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
@@ -358,8 +360,8 @@ function buildTestArgs(
   }
 
   // Required body fields
-  if (op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+  if (resolveRequestBodyModel(op, ctx.spec.models)) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
       for (const f of bodyModel.fields) {
@@ -407,7 +409,7 @@ function buildTestArgs(
 }
 
 function generateTestValue(
-  ref: { kind: string; type?: string; name?: string; format?: string },
+  ref: { kind: string; type?: string; name?: string; format?: string; value?: string | number | boolean | null },
   ctx?: EmitterContext,
 ): string {
   switch (ref.kind) {
@@ -440,6 +442,8 @@ function generateTestValue(
       }
       return "'test_value'";
     }
+    case 'literal':
+      return typeof ref.value === 'string' ? phpStringLiteral(ref.value) : JSON.stringify(ref.value);
     case 'array':
       return '[]';
     case 'map':
@@ -647,8 +651,8 @@ function emitRedirectQueryAssertions(
  * Only asserts primitive required fields (strings, numbers, booleans).
  */
 function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
-  if (op.requestBody?.kind !== 'model') return;
-  const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+  if (!resolveRequestBodyModel(op, ctx.spec.models)) return;
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
   if (!bodyModel) return;
   // Skip fields that collide with path param names (they get deduped in the resource)
   const pathParamNames = new Set(op.pathParams.map((p) => p.name));
@@ -672,6 +676,8 @@ function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext,
       lines.push(`        $this->assertSame(1, $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.type === 'boolean') {
       lines.push(`        $this->assertTrue($body['${f.name}']);`);
+    } else if (f.type.kind === 'literal') {
+      lines.push(`        $this->assertSame(${generateTestValue(f.type, ctx)}, $body['${f.name}']);`);
     } else {
       lines.push(`        $this->assertArrayHasKey('${f.name}', $body);`);
     }

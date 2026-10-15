@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type {
   Service,
@@ -241,7 +242,7 @@ function emitMethodSignature(
   // Request body fields as keyword args (rename fields that clash with path params)
   const groupedBodyParamNames = collectGroupedParamNames(op);
   if (plan.hasBody && op.requestBody) {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) {
       const reqFields = bodyModel.fields.filter(
         (f) => f.required && !hiddenParams.has(f.name) && !groupedBodyParamNames.has(f.name),
@@ -254,7 +255,9 @@ function emitMethodSignature(
         if (usesClientCredentialDefaults && (f.name === 'client_id' || f.name === 'client_secret')) {
           lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${fieldType}] = None,`);
         } else {
-          lines.push(`        ${bodyParamName(f, pathParamNames)}: ${fieldType},`);
+          lines.push(
+            `        ${bodyParamName(f, pathParamNames)}: ${fieldType}${isRequiredConstant(f) && f.type.kind === 'literal' ? ` = ${pythonLiteral(f.type.value)}` : ''},`,
+          );
         }
       }
       for (const f of optFields) {
@@ -298,10 +301,8 @@ function emitMethodSignature(
       const paramName = fieldName(param.name);
       if (pathParamNames.has(paramName)) continue;
       // Skip query params that collide with body field names (using possibly-renamed names)
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
-        const bodyModel = ctx.spec.models.find(
-          (m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name,
-        );
+      if (plan.hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+        const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
         if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
       }
       const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
@@ -455,9 +456,8 @@ function emitMethodDocstring(
   // Add body model fields to docs
   const groupedDocBodyParams = collectGroupedParamNames(op);
   if (plan.hasBody && op.requestBody) {
-    if (op.requestBody.kind === 'model') {
-      const requestBodyName = op.requestBody.name;
-      const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyName);
+    if (resolveRequestBodyModel(op, ctx.spec.models)) {
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
       if (bodyModel) {
         for (const f of bodyModel.fields) {
           if (hiddenParams.has(f.name)) continue;
@@ -634,8 +634,8 @@ function emitMethodBody(
   if (isRedirect) {
     // Redirect endpoint: construct URL client-side instead of making HTTP request
     const bodyModel =
-      plan.hasBody && op.requestBody?.kind === 'model'
-        ? ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name)
+      plan.hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null
+        ? resolveRequestBodyModel(op, ctx.spec.models)
         : undefined;
     const redirectParamEntries: { key: string; varName: string }[] = [];
     if (bodyModel) {
@@ -768,7 +768,7 @@ function emitMethodBody(
     const deleteGroupedParams = collectGroupedParamNames(op);
     const deleteBodyFieldNames = new Set<string>();
     if (plan.hasBody && op.requestBody) {
-      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
       if (bodyModel) {
         const bodyFields = bodyModel.fields.filter(
           (f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name),
@@ -815,7 +815,7 @@ function emitMethodBody(
     const isBodyResponseDiscriminator = !!(bodyResponseModelObj as any)?.discriminator;
     // Build body dict
     const bodyGroupedParams = collectGroupedParamNames(op);
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     const bodyFieldNamesSet = new Set<string>();
     if (bodyModel) {
       const bodyFields = bodyModel.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name));
@@ -1149,11 +1149,11 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
         }
       }
-      if (op.requestBody?.kind === 'model') {
-        const requestBodyRef = op.requestBody;
+      if (resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+        const requestBodyRef = resolveRequestBodyModel(op, ctx.spec.models)!;
         modelImports.add(requestBodyRef.name);
         // Also collect types from body model fields (expanded as keyword params)
-        const bodyModel = ctx.spec.models.find((m) => m.name === requestBodyRef.name);
+        const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
         if (bodyModel) {
           // Grouped params are excluded from the flat keyword expansion, but
           // their types are still referenced by the variant dataclasses
@@ -1214,8 +1214,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // A file needs the NOT_GIVEN sentinel if any of its operations has a
     // nullable optional (clearable) body field.
     const needsNotGiven = allOperations.some((op) => {
-      if (!op.requestBody || op.requestBody.kind !== 'model') return false;
-      const bm = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+      const bm = resolveRequestBodyModel(op, ctx.spec.models);
       if (!bm) return false;
       const resolved = lookupResolved(op, resolvedLookup);
       const hidden = buildHiddenParams(resolved);
@@ -1497,6 +1496,14 @@ function emitBodyDict(
   pathParamNames: Set<string>,
   emitEmpty: boolean,
 ): void {
+  for (const f of bodyFields) {
+    if (f.required && f.type.kind === 'literal' && f.type.value !== null) {
+      lines.push(`        if ${bodyParamName(f, pathParamNames)} != ${pythonLiteral(f.type.value)}:`);
+      lines.push(
+        `            raise ValueError(${pythonStringLiteral(`${f.name} must equal ${JSON.stringify(f.type.value)}`)})`,
+      );
+    }
+  }
   const literalFields = bodyFields.filter((f) => !isClearableBodyField(f));
   const clearableFields = bodyFields.filter((f) => isClearableBodyField(f));
   const hasOptionalLiteral = literalFields.some((f) => !f.required);

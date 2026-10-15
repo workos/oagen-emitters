@@ -286,7 +286,7 @@ describe('generateTests', () => {
 
     expect(roundTripTest).toBeDefined();
     expect(roundTripTest!.content).toContain('def test_organization_minimal_payload(');
-    expect(roundTripTest!.content).toContain('def test_organization_omits_absent_optional_non_nullable_fields(');
+    expect(roundTripTest!.content).toContain('def test_organization_omits_absent_optional_fields(');
     expect(roundTripTest!.content).toContain('def test_organization_preserves_nullable_fields(');
     expect(roundTripTest!.content).toContain('def test_organization_round_trips_unknown_enum_values(');
   });

@@ -631,11 +631,8 @@ function buildCallArgsStub(
 
 /**
  * Build a Ruby `hash_including(...)` matcher describing the wire body the
- * SDK should send for an operation whose body is constructed (in part) by a
- * parameter-group dispatcher. Returns `null` for operations without body
- * groups — those are still stubbed without a body matcher.
- *
- * The matcher includes every required non-group body field plus the first
+ * SDK should send for a body-bearing operation. The matcher includes every
+ * required non-group body field plus the first
  * variant's wire-name leaves for each group dispatched into the body. This
  * catches regressions where the dispatcher silently drops a passed group
  * (the original `update_organization_membership` regression).
@@ -649,8 +646,7 @@ function buildBodyMatcher(
 ): string | null {
   const httpMethod = op.httpMethod.toLowerCase();
   const hasBodyMethod = !['get', 'head', 'delete'].includes(httpMethod);
-  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  if (!hasBodyMethod || !hasGroups) return null;
+  if (!hasBodyMethod) return null;
 
   const groupedParamNames = new Set<string>();
   for (const group of op.parameterGroups ?? []) {

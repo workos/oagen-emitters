@@ -1,3 +1,4 @@
+import { resolveRequestBodyModel, isRequiredConstant } from '../shared/request-body.js';
 import type {
   Service,
   Operation,
@@ -389,8 +390,8 @@ function leadingParamCount(
     op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
   const hasBody = plan.hasBody && op.requestBody;
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   } else if (hasBody) {
     hasVisibleBodyFields = true;
@@ -585,8 +586,8 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
     const hasBody = plan.hasBody && op.requestBody;
     let hasVisibleBodyFields = false;
-    if (hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
       if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
     } else if (hasBody) {
       hasVisibleBodyFields = true;
@@ -612,8 +613,8 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const emittedFields = new Set<string>();
 
     // Body fields
-    if (hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
       if (bodyModel) {
         for (const field of bodyModel.fields) {
           if (hidden.has(field.name)) continue;
@@ -650,7 +651,24 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
             optionsLines.push(`        [System.Obsolete("${msg}")]`);
           }
           optionsLines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
-          optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
+          if (isRequiredConstant(field)) {
+            const value = JSON.stringify(field.type.value);
+            optionsLines.push(`        public ${csType} ${csField}`);
+            optionsLines.push('        {');
+            optionsLines.push(`            get => ${value};`);
+            optionsLines.push('            set');
+            optionsLines.push('            {');
+            optionsLines.push(`                if (value != ${value})`);
+            optionsLines.push('                {');
+            optionsLines.push(
+              `                    throw new System.ArgumentException(${JSON.stringify(`${field.name} must equal ${value}`)}, nameof(value));`,
+            );
+            optionsLines.push('                }');
+            optionsLines.push('            }');
+            optionsLines.push('        }');
+          } else {
+            optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
+          }
           optionsLines.push('');
         }
       }
@@ -771,8 +789,8 @@ function generateMethod(
     op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
 
   let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   } else if (hasBody) {
     hasVisibleBodyFields = true;
@@ -977,8 +995,8 @@ function generateAutoPagingMethod(
     op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
 
   let hasVisibleBodyFields = false;
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (plan.hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   }
 
@@ -1104,8 +1122,8 @@ function generateCompatibilityMethod(
     op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
 
   let hasVisibleBodyFields = false;
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  if (plan.hasBody && resolveRequestBodyModel(op, ctx.spec.models) !== null) {
+    const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
     if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
   } else if (plan.hasBody && op.requestBody) {
     hasVisibleBodyFields = true;

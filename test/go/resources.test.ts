@@ -932,6 +932,7 @@ describe('go/resources', () => {
     expect(content).toContain('MarshalJSON() ([]byte, error)');
     expect(content).toContain('for _, f := range p.NullFields {');
     expect(content).toContain('m[f] = nil');
+    expect(content).toContain('decoder.UseNumber()');
     // Unknown/typo field names are rejected instead of silently injected.
     expect(content).toContain('nullable := map[string]bool{');
     expect(content).toContain('"external_id": true,');
@@ -989,6 +990,7 @@ describe('go/resources', () => {
     expect(content).toContain('NullFields []string `json:"-"`');
     expect(content).toContain('for _, f := range b.NullFields {');
     expect(content).toContain('is not a nullable field');
+    expect(content).toContain('decoder.UseNumber()');
     // And the params list is forwarded into the body struct.
     expect(content).toContain('body.NullFields = params.NullFields');
   });

@@ -433,11 +433,7 @@ function rawSchemaToTypeRef(
   return ref;
 }
 
-/**
- * Extract fields from a raw OpenAPI object schema.
- * All fields are returned as optional (not required) since they come from
- * oneOf variants where only one variant is active at a time.
- */
+/** Extract fields with their branch-local requiredness. */
 function extractFieldsFromRawSchema(
   schema: Record<string, any>,
   parentModelName?: string,
@@ -449,7 +445,7 @@ function extractFieldsFromRawSchema(
     fields.push({
       name,
       type: rawSchemaToTypeRef(propSchema, parentModelName, name, collector),
-      required: false, // All oneOf variant fields are optional
+      required: (schema.required ?? []).includes(name),
       description: propSchema.description,
       deprecated: propSchema.deprecated,
     });
@@ -458,49 +454,79 @@ function extractFieldsFromRawSchema(
 }
 
 /**
- * Recursively collect all fields from a oneOf schema, flattening nested
- * allOf+oneOf compositions. All fields are marked optional.
+ * Merge alternatives without pinning shared literals to the first branch.
+ * Requiredness is an intersection for alternatives, a union for allOf.
  */
+function mergeSchemaFields(branches: Field[][], alternatives: boolean): Field[] {
+  const byName = new Map<string, Field[]>();
+  for (const fields of branches) {
+    for (const field of fields) {
+      const definitions = byName.get(field.name) ?? [];
+      definitions.push(field);
+      byName.set(field.name, definitions);
+    }
+  }
+  return [...byName.values()].map((fields) => {
+    const first = fields[0];
+    const required = alternatives
+      ? fields.length === branches.length && fields.every((f) => f.required)
+      : fields.some((f) => f.required);
+    const types = fields.flatMap((f) => (f.type.kind === 'union' ? f.type.variants : [f.type]));
+    const unique = [...new Map(types.map((t) => [JSON.stringify(t), t])).values()];
+    // Only literals can be safely widened without synthesizing new model shapes.
+    const type: TypeRef =
+      alternatives && unique.length > 1 && unique.every((t) => t.kind === 'literal')
+        ? { kind: 'union', variants: unique }
+        : first.type;
+    return { ...first, type, required };
+  });
+}
+
+/** Recursively collect inline oneOf/anyOf fields, retaining allOf base requirements. */
 function collectOneOfFields(
   schema: Record<string, any>,
   parentModelName?: string,
   collector?: SyntheticCollector,
 ): Field[] {
-  const allFields: Field[] = [];
-  const seenFieldNames = new Set<string>();
-
-  function walkSchema(s: Record<string, any>): void {
-    // Direct properties
-    if (s.properties) {
-      for (const f of extractFieldsFromRawSchema(s, parentModelName, collector)) {
-        if (!seenFieldNames.has(f.name)) {
-          seenFieldNames.add(f.name);
-          allFields.push(f);
-        }
-      }
-    }
-    // allOf composition
-    if (s.allOf) {
-      for (const sub of s.allOf) {
-        walkSchema(sub);
-      }
-    }
-    // oneOf composition (flatten all variants)
-    if (s.oneOf) {
-      for (const variant of s.oneOf) {
-        walkSchema(variant);
-      }
-    }
-    // anyOf composition
-    if (s.anyOf) {
-      for (const variant of s.anyOf) {
-        walkSchema(variant);
-      }
-    }
+  const collect = (s: Record<string, any>) => collectOneOfFields(s, parentModelName, collector);
+  const groups = [extractFieldsFromRawSchema(schema, parentModelName, collector)];
+  for (const sub of schema.allOf ?? []) groups.push(collect(sub));
+  for (const alternatives of [schema.oneOf, schema.anyOf]) {
+    if (alternatives) groups.push(mergeSchemaFields(alternatives.map(collect), true));
   }
+  return mergeSchemaFields(groups, false).map((field) =>
+    (schema.required ?? []).includes(field.name) ? { ...field, required: true } : field,
+  );
+}
 
-  walkSchema(schema);
-  return allFields;
+/**
+ * The engine can flatten inline object unions before emitters see them, losing
+ * common requirements and later literal values (even with a discriminator).
+ * Restore those facts only: keep IR types/metadata and intentional dispatchers.
+ * Raw-schema availability is required until the engine retains this metadata.
+ */
+export function restoreUnionFieldsFromSpec(models: Model[]): Model[] {
+  // Referenced alternatives need engine resolution; do not infer requirements
+  // from a partial field set when some branches are opaque here.
+  const isInline = (schema: Record<string, any>): boolean =>
+    !schema.$ref && [...(schema.allOf ?? []), ...(schema.oneOf ?? []), ...(schema.anyOf ?? [])].every(isInline);
+  return models.map((model) => {
+    if (!model.fields.length || (model as any).discriminator) return model;
+    const raw = lookupRawSchema(model.name);
+    if (!raw || !isInline(raw) || !(raw.oneOf || raw.anyOf || raw.allOf?.some((s: any) => s.oneOf || s.anyOf)))
+      return model;
+    const collected = new Map(collectOneOfFields(raw).map((f) => [f.name, f]));
+    const fields = model.fields.map((field) => {
+      const merged = collected.get(field.name);
+      if (!merged) return field;
+      const type =
+        merged.type.kind === 'union' && merged.type.variants.every((t) => t.kind === 'literal')
+          ? merged.type
+          : field.type;
+      return { ...field, required: merged.required, type };
+    });
+    return { ...model, fields };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -691,10 +717,10 @@ export function detectDiscriminators(models: Model[]): Model[] {
  * Enrich IR models by flattening oneOf/allOf+oneOf variant fields from the raw spec.
  *
  * For models with 0 fields whose raw spec schema is a pure oneOf:
- *   - Collect all variant fields and add them as optional fields.
+ *   - Collect all variant fields, keeping those required in every alternative.
  *
  * For models whose raw spec schema has allOf containing a oneOf:
- *   - Collect the missing variant fields and add them as optional.
+ *   - Collect missing variant fields with their merged requiredness.
  *
  * Inline objects and enums in oneOf branches are promoted to synthetic
  * models/enums instead of degrading to `object` / `string`.
@@ -710,6 +736,7 @@ export function enrichModelsFromSpec(models: Model[], enums: Enum[] = []): Model
     return models;
   }
 
+  models = restoreUnionFieldsFromSpec(models);
   const collector = createCollector();
   // Avoid name collisions with existing models (check both PascalCase and
   // snake_case to prevent synthetic models from shadowing existing ones when

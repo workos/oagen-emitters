@@ -9,6 +9,7 @@ import type {
   ResolvedWrapper,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { scopedMountGroups, getOpDefaults } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
@@ -113,6 +114,21 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
       seen.add(method);
       const test = gen.operationTest(resolved, accessor, method);
       if (test) tests.push('', test);
+      const body = resolved.operation.requestBody;
+      if (body?.kind === 'union' && resolveRequestBodyModel(resolved.operation, spec.models)) {
+        for (const [index, variant] of body.variants.entries()) {
+          if (index === 0) continue;
+          const fields = resolveRequestBodyModel({ requestBody: variant }, spec.models)?.fields ?? [];
+          const variantTest = gen.operationTest(
+            resolved,
+            accessor,
+            method,
+            `WithBodyVariant${index}`,
+            new Set(fields.filter((field) => field.required).map((field) => field.name)),
+          );
+          if (variantTest) tests.push('', variantTest);
+        }
+      }
       if (!autoPagingEmitted) {
         const autoTest = gen.autoPagingTest(resolved, accessor, method);
         if (autoTest) {
@@ -161,21 +177,45 @@ class SuiteGenerator {
 
   /** Build a wire-level test for one operation, or null when a required
    * parameter cannot be sample-constructed (nested model bodies etc.). */
-  operationTest(resolved: ResolvedOperation, accessor: string, method: string): string | null {
+  operationTest(
+    resolved: ResolvedOperation,
+    accessor: string,
+    method: string,
+    suffix = '',
+    requiredBodyFields = new Set<string>(),
+  ): string | null {
     const op = resolved.operation;
     const params = collectMethodParams(resolved, this.ctx);
     const ordered = orderMethodParams(params);
 
     const args: string[] = [];
     const pathValues = new Map<string, string>();
-    let firstBodyWire: string | null = null;
+    const bodyAssertions: string[] = [];
     for (const p of ordered) {
-      if (p.optional) continue;
+      if (p.optional && (p.kind !== 'body' || !requiredBodyFields.has(p.wire))) continue;
       const sample = this.sampleArg(p);
       if (!sample) return null;
       args.push(`${p.name}: ${sample.expr}`);
       if (p.kind === 'path' && sample.pathValue) pathValues.set(p.wire, sample.pathValue);
-      if (p.kind === 'body' && firstBodyWire === null) firstBodyWire = p.wire;
+      if (p.kind === 'body') {
+        const scalarType =
+          p.ref.kind === 'primitive' && !p.ref.format
+            ? { string: 'String', integer: 'Int', number: 'Double', boolean: 'Bool', unknown: undefined }[p.ref.type]
+            : p.ref.kind === 'literal'
+              ? typeof p.ref.value === 'string'
+                ? 'String'
+                : typeof p.ref.value === 'number'
+                  ? 'Double'
+                  : typeof p.ref.value === 'boolean'
+                    ? 'Bool'
+                    : undefined
+              : undefined;
+        bodyAssertions.push(
+          scalarType
+            ? `#expect(json?[${JSON.stringify(p.wire)}] as? ${scalarType} == ${sample.expr})`
+            : `#expect(json?[${JSON.stringify(p.wire)}] != nil)`,
+        );
+      }
     }
 
     const expectedPath = this.expectedPath(op.path, pathValues);
@@ -184,7 +224,7 @@ class SuiteGenerator {
     if (fixture === null) return null;
 
     const lines: string[] = [];
-    lines.push(`    @Test func ${method}SendsExpectedRequest() async throws {`);
+    lines.push(`    @Test func ${method}${suffix}SendsExpectedRequest() async throws {`);
     lines.push(`        let (client, recorder) = makeTestClient(responding: ${swiftRawString(fixture.json)})`);
     const call = `client.${accessor}.${method}(${args.join(', ')})`;
     if (fixture.binding) {
@@ -196,10 +236,10 @@ class SuiteGenerator {
     lines.push('        let request = try #require(recorder.lastRequest)');
     lines.push(`        #expect(request.httpMethod == "${op.httpMethod.toUpperCase()}")`);
     lines.push(`        #expect(request.url?.path == "${expectedPath}")`);
-    if (firstBodyWire) {
+    if (bodyAssertions.length > 0) {
       lines.push('        let body = try #require(recorder.lastBody)');
       lines.push('        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]');
-      lines.push(`        #expect(json?[${JSON.stringify(firstBodyWire)}] != nil)`);
+      for (const assertion of bodyAssertions) lines.push(`        ${assertion}`);
     }
     for (const q of ordered) {
       if (q.kind !== 'query' || q.optional) continue;
