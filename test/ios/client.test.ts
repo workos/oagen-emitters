@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, AuthScheme } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateClient } from '../../src/ios/client.js';
 
@@ -29,7 +29,8 @@ const spec: ApiSpec = {
     { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
   ],
   enums: [],
-  auth: [{ kind: 'bearer' }],
+  // `schemeName` is required from @workos/oagen 0.31; the assertion keeps 0.30 compiling.
+  auth: [{ kind: 'bearer', schemeName: 'bearerAuth' } as AuthScheme],
   sdk: defaultSdkBehavior(),
 };
 

@@ -29,6 +29,7 @@ import {
   collectGroupedParamNames,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Generate C# test files and JSON fixtures.
@@ -687,9 +688,8 @@ function leadingCallArgs(op: Operation): string[] {
   for (const p of sortPathParamsByTemplateOrder(op)) {
     args.push(`"test_${p.name}"`);
   }
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+  const bearerParamName = bearerOverrideScheme(op);
+  if (bearerParamName !== null) {
     args.push(`"test_${bearerParamName}"`);
   }
   return args;

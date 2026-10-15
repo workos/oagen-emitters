@@ -44,6 +44,7 @@ import {
 } from '../shared/scoped-aggregate-merge.js';
 import { pythonLiteral } from './wrappers.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Resolve the Python class name to use for isinstance checks on paginated items.
@@ -1127,9 +1128,9 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
   }
 
   // Per-operation Bearer token auth (e.g., access_token for SSO)
-  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+  const bearerOverride = bearerOverrideScheme(op);
+  if (bearerOverride !== null) {
+    const tokenParamName = fieldName(bearerOverride);
     args.push(`${tokenParamName}="test_${tokenParamName}"`);
   }
 
