@@ -453,3 +453,60 @@ describe('dotnet/models', () => {
     expect(filePaths).not.toContain('Entities/ListMetadata.cs');
   });
 });
+
+describe('dotnet/models wire-name pinning', () => {
+  it('pins the wire name when snake_casing the C# property does not recover it', () => {
+    const service: Service = {
+      name: 'UserManagement',
+      operations: [
+        {
+          name: 'authenticate',
+          httpMethod: 'post',
+          path: '/user_management/authenticate',
+          pathParams: [],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'AuthenticateResponse' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const models: Model[] = [
+      {
+        name: 'AuthenticateResponse',
+        fields: [
+          { name: 'access_token', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'oauth_tokens',
+            type: { kind: 'model', name: 'AuthenticateResponseOAuthToken' },
+            required: false,
+          },
+        ],
+      },
+      {
+        name: 'AuthenticateResponseOAuthToken',
+        fields: [{ name: 'provider', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, services: [service], models },
+    });
+    const content = files.find((f) => f.path === 'Entities/AuthenticateResponse.cs')!.content;
+
+    // `OAuthTokens` snake_cases to `o_auth_tokens` under both serializers, so
+    // the wire key must be pinned (workos/workos-dotnet#319).
+    expect(content).toContain('using Newtonsoft.Json;');
+    expect(content).toContain('using STJS = System.Text.Json.Serialization;');
+    expect(content).toContain('[JsonProperty("oauth_tokens")]');
+    expect(content).toContain('[STJS.JsonPropertyName("oauth_tokens")]');
+    expect(content).toContain('public AuthenticateResponseOAuthToken? OAuthTokens { get; set; }');
+
+    // Names that round-trip stay convention-based.
+    expect(content).not.toContain('[JsonProperty("access_token")]');
+    expect(content).toContain('public string AccessToken { get; set; }');
+  });
+});

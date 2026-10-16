@@ -171,7 +171,7 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
 
       const isRequiredEnum = !isOptional && !!field && isEnumRef(field.type);
       lines.push(...emitXmlDoc(field?.description, '        '));
-      lines.push(...emitJsonPropertyAttributes(paramName, { isRequiredEnum }));
+      lines.push(...emitJsonPropertyAttributes(paramName, { isRequiredEnum, csName: csField }));
       lines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
       lines.push('');
     }
@@ -179,6 +179,7 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
     // Hidden fields (defaults + inferred)
     for (const key of Object.keys(wrapper.defaults)) {
       const csField = csFieldName(key);
+      lines.push(...emitJsonPropertyAttributes(key, { csName: csField }));
       lines.push(`        internal string ${csField} { get; set; } = default!;`);
       lines.push('');
     }
@@ -186,6 +187,7 @@ export function generateWrapperOptionsClasses(resolvedOp: ResolvedOperation, ctx
       const csField = csFieldName(key);
       // Skip if already added as a default
       if (Object.keys(wrapper.defaults).includes(key)) continue;
+      lines.push(...emitJsonPropertyAttributes(key, { csName: csField }));
       lines.push(`        internal string ${csField} { get; set; } = default!;`);
       lines.push('');
     }
