@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.18](https://github.com/workos/oagen-emitters/compare/v0.24.17...v0.24.18) (2026-10-16)
+
+
+### Bug Fixes
+
+* **dotnet:** pin wire names that don't survive snake_case naming ([#268](https://github.com/workos/oagen-emitters/issues/268)) ([4159142](https://github.com/workos/oagen-emitters/commit/41591420ed558450984500325c7878f3db549ac2))
+* read Operation.security as alternative sets for @workos/oagen 0.31 ([#267](https://github.com/workos/oagen-emitters/issues/267)) ([07ab5a4](https://github.com/workos/oagen-emitters/commit/07ab5a4a767ec84fa763b556786044261297a22d))
+
 ## [0.24.17](https://github.com/workos/oagen-emitters/compare/v0.24.16...v0.24.17) (2026-10-13)
 
 
