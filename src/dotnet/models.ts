@@ -9,6 +9,7 @@ import {
   isModelAlias,
   resolveModelName,
 } from './type-map.js';
+import { wireNameRoundTrips } from './wire-name.js';
 import {
   articleFor,
   csLiteral,
@@ -142,8 +143,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
     // SnakeCaseLower naming policy would otherwise serialize the domain name,
     // so these fields need an explicit pinned wire name (and thus the imports).
     const hasDomainRename = model.fields.some((f) => domainFieldName(f) !== fieldName(f.name));
+    // Acronym-cased names (`OAuthTokens`) don't snake_case back to their wire
+    // key (`oauth_tokens`), so they need the same explicit pin.
+    const hasNonRoundTrippingName = model.fields.some((f) => !wireNameRoundTrips(domainFieldName(f), f.name));
     const needsJsonAttrs =
-      hasClassNameCollision || hasDomainRename || model.fields.some((f) => f.required && isEnumRef(f.type));
+      hasClassNameCollision ||
+      hasDomainRename ||
+      hasNonRoundTrippingName ||
+      model.fields.some((f) => f.required && isEnumRef(f.type));
 
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -289,11 +296,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       const isRequiredEnum = field.required && isEnumRef(field.type) && constInit === null;
       // WIRE key: always derives from `field.name`. Pin it explicitly when the
       // C# property name (collision suffix or `domainName` override) no longer
-      // round-trips to the wire name via the SnakeCaseLower naming policy.
+      // round-trips to the wire name via the SnakeCaseLower naming policy, or
+      // when the name itself can't be snake_cased back to the wire key
+      // (acronym casing such as `OAuthTokens` → `o_auth_tokens`).
       lines.push(
         ...emitJsonPropertyAttributes(field.name, {
           isRequiredEnum,
           explicitWireName: collidesWithClassName || hasDomainOverride,
+          csName: csFieldName,
         }),
       );
       // Discriminated-union-typed field: attach the variant-dispatching converter

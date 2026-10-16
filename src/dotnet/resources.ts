@@ -649,7 +649,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
             const msg = escapeCsAttributeString(deprecationMessage(field.description, 'field'));
             optionsLines.push(`        [System.Obsolete("${msg}")]`);
           }
-          optionsLines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum }));
+          optionsLines.push(...emitJsonPropertyAttributes(field.name, { isRequiredEnum, csName: csField }));
           optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
           optionsLines.push('');
         }
@@ -694,7 +694,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
         const msg = escapeCsAttributeString(deprecationMessage(param.description, 'parameter'));
         optionsLines.push(`        [System.Obsolete("${msg}")]`);
       }
-      optionsLines.push(...emitJsonPropertyAttributes(param.name, { isRequiredEnum }));
+      optionsLines.push(...emitJsonPropertyAttributes(param.name, { isRequiredEnum, csName: csField }));
       optionsLines.push(`        public ${csType} ${csField} { get; set; }${initializer}`);
       optionsLines.push('');
     }
@@ -706,6 +706,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       const csField = fieldName(key);
       if (emittedFields.has(csField)) continue;
       emittedFields.add(csField);
+      optionsLines.push(...emitJsonPropertyAttributes(key, { csName: csField }));
       optionsLines.push(`        internal string ${csField} { get; set; } = default!;`);
       optionsLines.push('');
     }
@@ -713,6 +714,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
       const csField = fieldName(key);
       if (emittedFields.has(csField)) continue;
       emittedFields.add(csField);
+      optionsLines.push(...emitJsonPropertyAttributes(key, { csName: csField }));
       optionsLines.push(`        internal string ${csField} { get; set; } = default!;`);
       optionsLines.push('');
     }

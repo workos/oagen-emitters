@@ -1,6 +1,7 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import { className, modelClassName, csLiteral } from './naming.js';
+import { wireNameRoundTrips } from './wire-name.js';
 
 /** Known C# value types that need `?` for nullable. */
 const VALUE_TYPES = new Set(['int', 'long', 'double', 'bool', 'float', 'decimal', 'byte', 'short', 'DateTimeOffset']);
@@ -146,9 +147,18 @@ export function isEnumRef(ref: TypeRef): boolean {
 }
 
 /**
- * Emit JSON attributes for a request-side property. Property name mapping is
+ * Emit JSON attributes for a serialized property. Property name mapping is
  * handled by a global SnakeCaseLower / SnakeCaseNamingStrategy configuration
- * on both serializers, so per-property name attributes are not emitted.
+ * on both serializers, so per-property name attributes are only emitted when
+ * that convention cannot recover the wire key from the C# property name.
+ *
+ * Pass `csName` (the emitted C# property name) so that decision is made by
+ * actually round-tripping it through both serializers' snake_case
+ * algorithms: acronym-cased names such as `OAuthTokens` snake_case to
+ * `o_auth_tokens`, not the wire key `oauth_tokens`, and would otherwise
+ * silently deserialize as null. `explicitWireName` forces the pin for cases
+ * the caller already knows about (class-name collision suffix, `domainName`
+ * overrides).
  *
  * When `isRequiredEnum` is true, configure both serializers to skip the field
  * when its value equals the enum default (0 = Unknown sentinel). This converts
@@ -158,13 +168,18 @@ export function isEnumRef(ref: TypeRef): boolean {
  */
 export function emitJsonPropertyAttributes(
   wireName: string,
-  options: { isRequiredEnum?: boolean; explicitWireName?: boolean } = {},
+  options: { isRequiredEnum?: boolean; explicitWireName?: boolean; csName?: string } = {},
 ): string[] {
   // When the C# property name doesn't naturally map back to the wire name via
-  // the SnakeCaseLower naming policy (e.g. we suffixed the property to avoid a
-  // CS0542 class/member collision like `Error.Error` → `Error.ErrorValue`), the
-  // caller pins the wire name explicitly so JSON round-trip still works.
-  if (options.explicitWireName) {
+  // the snake_case naming policies — either because the caller renamed it
+  // (CS0542 collision suffix like `Error.Error` → `Error.ErrorValue`, or a
+  // `domainName` override) or because the name itself doesn't round-trip
+  // (`OAuthTokens` → `o_auth_tokens`) — pin the wire name explicitly so JSON
+  // round-trip still works.
+  const pinWireName =
+    options.explicitWireName === true ||
+    (options.csName !== undefined && !wireNameRoundTrips(options.csName, wireName));
+  if (pinWireName) {
     if (options.isRequiredEnum) {
       return [
         `        [JsonProperty(${csLiteral(wireName)}, DefaultValueHandling = DefaultValueHandling.Ignore)]`,

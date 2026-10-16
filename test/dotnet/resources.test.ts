@@ -1158,3 +1158,53 @@ describe('dotnet/resources', () => {
     expect(optContent).toContain(`public abstract class ${groupBase} { }`);
   });
 });
+
+describe('dotnet/resources wire-name pinning', () => {
+  it('pins body fields and query params whose C# names do not snake_case back to the wire key', () => {
+    const models: Model[] = [
+      {
+        name: 'CreateConnectionRequest',
+        fields: [
+          { name: 'name', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'oauth_resource_id', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'Connection',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Connections',
+        operations: [
+          {
+            name: 'createConnection',
+            httpMethod: 'post',
+            path: '/connections',
+            pathParams: [],
+            queryParams: [{ name: 'oauth_scope', type: { kind: 'primitive', type: 'string' }, required: false }],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'CreateConnectionRequest' },
+            response: { kind: 'model', name: 'Connection' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateResources(services, { ...ctx, spec: { ...emptySpec, services, models } });
+    const content = files.find((f) => f.path.includes('Options.cs'))!.content;
+
+    expect(content).toContain('[JsonProperty("oauth_resource_id")]');
+    expect(content).toContain('[STJS.JsonPropertyName("oauth_resource_id")]');
+    expect(content).toContain('public string OAuthResourceId { get; set; }');
+    expect(content).toContain('[JsonProperty("oauth_scope")]');
+    expect(content).toContain('[STJS.JsonPropertyName("oauth_scope")]');
+    expect(content).toContain('public string? OAuthScope { get; set; }');
+    // Names that round-trip stay convention-based.
+    expect(content).not.toContain('[JsonProperty("name")]');
+  });
+});
