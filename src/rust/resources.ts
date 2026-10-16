@@ -23,6 +23,7 @@ import {
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Generate one resource file per mount target under `src/resources/`, plus a
@@ -808,9 +809,9 @@ function ctorParamInit(p: CtorParam): string {
  * key). Returns the snake_case parameter name to use for the override.
  */
 function bearerOverrideToken(op: Operation): string | null {
-  const override = op.security?.find((s) => s.schemeName !== 'bearerAuth');
-  if (!override) return null;
-  return fieldName(override.schemeName);
+  const override = bearerOverrideScheme(op);
+  if (override === null) return null;
+  return fieldName(override);
 }
 
 function renderMethod(

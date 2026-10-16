@@ -48,6 +48,7 @@ import {
 } from './wrappers.js';
 import { buildPythonPathExpression } from './path-expression.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -177,7 +178,8 @@ interface SignatureMetadata {
   pathParamNames: Set<string>;
   isArrayResponse: boolean;
   isRedirect: boolean;
-  hasBearerOverride: boolean;
+  /** Scheme used in place of the client's bearer auth, or null. */
+  bearerOverride: string | null;
 }
 
 function emitDocArg(lines: string[], name: string, desc?: string): void {
@@ -369,10 +371,9 @@ function emitMethodSignature(
   }
 
   // Per-operation Bearer token auth (e.g., SSO.get_profile uses access_token instead of API key)
-  const hasBearerOverride = op.security?.some((s) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const tokenParamName = op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName;
-    lines.push(`        ${fieldName(tokenParamName)}: str,`);
+  const bearerOverride = bearerOverrideScheme(op);
+  if (bearerOverride !== null) {
+    lines.push(`        ${fieldName(bearerOverride)}: str,`);
   }
 
   lines.push('        request_options: Optional[RequestOptions] = None,');
@@ -412,7 +413,7 @@ function emitMethodSignature(
 
   lines.push(`    ) -> ${returnType}:`);
 
-  return { returnType, pathParamNames, isArrayResponse, isRedirect, hasBearerOverride };
+  return { returnType, pathParamNames, isArrayResponse, isRedirect, bearerOverride };
 }
 
 /**
@@ -429,7 +430,7 @@ function emitMethodDocstring(
   ctx: EmitterContext,
   resolvedOp?: ResolvedOperation,
 ): void {
-  const { returnType, pathParamNames, hasBearerOverride } = meta;
+  const { returnType, pathParamNames, bearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const hiddenParams = buildHiddenParams(resolvedOp);
   const clientOverrides = getUrlBuilderClientOverrides(op, resolvedOp);
@@ -552,9 +553,8 @@ function emitMethodDocstring(
   }
 
   // Add bearer override parameter to docs (e.g., access_token for SSO)
-  if (hasBearerOverride) {
-    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
-    allParams.push({ name: tokenParamName, desc: 'The bearer token for authentication.' });
+  if (bearerOverride !== null) {
+    allParams.push({ name: fieldName(bearerOverride), desc: 'The bearer token for authentication.' });
   }
 
   if (allParams.length > 0 || isPaginated) {
@@ -603,7 +603,7 @@ function emitMethodBody(
   ctx: EmitterContext,
   resolvedOp?: ResolvedOperation,
 ): void {
-  const { pathParamNames, isArrayResponse, isRedirect, hasBearerOverride } = meta;
+  const { pathParamNames, isArrayResponse, isRedirect, bearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
   const usesClientCredentialDefaults = false;
@@ -623,8 +623,8 @@ function emitMethodBody(
   const httpMethod = op.httpMethod;
 
   // Emit auth override for per-operation Bearer token security
-  if (hasBearerOverride) {
-    const tokenParamName = fieldName(op.security!.find((s) => s.schemeName !== 'bearerAuth')!.schemeName);
+  if (bearerOverride !== null) {
+    const tokenParamName = fieldName(bearerOverride);
     lines.push(`        request_options = request_options or {}`);
     lines.push(
       `        request_options = {**request_options, "extra_headers": {**(request_options.get("extra_headers") or {}), "Authorization": f"Bearer {${tokenParamName}}"}}`,

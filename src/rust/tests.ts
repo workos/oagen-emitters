@@ -15,6 +15,7 @@ import { scopedMountGroups, groupTypeBaseName } from '../shared/resolved-ops.js'
 import { exampleFor, generateFixtures } from './fixtures.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isInlineEnvelopeList } from './resources.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Generate integration tests under `tests/`. Each mount group gets one
@@ -618,9 +619,9 @@ function hasBodyParameterGroup(op: Operation): boolean {
 
 /** Pick the snake_case token-arg name for an op with a non-bearer security override. */
 function bearerOverrideTokenName(op: Operation): string | null {
-  const override = op.security?.find((s) => s.schemeName !== 'bearerAuth');
-  if (!override) return null;
-  return override.schemeName.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`).replace(/^_/, '');
+  const override = bearerOverrideScheme(op);
+  if (override === null) return null;
+  return override.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`).replace(/^_/, '');
 }
 
 /**

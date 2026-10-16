@@ -46,6 +46,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
  * Return path params sorted by their first occurrence in the URL template.
@@ -396,7 +397,7 @@ function leadingParamCount(
     hasVisibleBodyFields = true;
   }
   const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
+  const hasBearerOverride = bearerOverrideScheme(op) !== null;
   return op.pathParams.length + (hasBearerOverride ? 1 : 0) + (hasParams ? 1 : 0);
 }
 
@@ -785,10 +786,8 @@ function generateMethod(
   const hasHidden = hasHiddenParams(resolvedOp);
 
   // Per-operation Bearer token auth (e.g., SSO GetProfile uses access_token instead of API key)
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
-  const bearerParamName = hasBearerOverride
-    ? op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName
-    : null;
+  const bearerParamName = bearerOverrideScheme(op);
+  const hasBearerOverride = bearerParamName !== null;
 
   // URL-builder operations (e.g., /sso/authorize redirect endpoints) build a URL
   // string for the caller to redirect to instead of issuing an HTTP request.
@@ -1133,9 +1132,8 @@ function generateCompatibilityMethod(
     args.push(name);
   }
 
-  const hasBearerOverride = op.security?.some((s: any) => s.schemeName !== 'bearerAuth') ?? false;
-  if (hasBearerOverride) {
-    const bearerParamName = op.security!.find((s: any) => s.schemeName !== 'bearerAuth')!.schemeName;
+  const bearerParamName = bearerOverrideScheme(op);
+  if (bearerParamName !== null) {
     const bearerLocal = localName(bearerParamName);
     params.push(`string ${bearerLocal}`);
     args.push(bearerLocal);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec, Service } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Operation, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateResources } from '../../src/rust/resources.js';
 import { UnionRegistry } from '../../src/rust/type-map.js';
@@ -498,7 +498,9 @@ describe('rust/resources', () => {
             response: { kind: 'model', name: 'Profile' },
             errors: [],
             injectIdempotencyKey: false,
-            security: [{ schemeName: 'access_token', scopes: [] }],
+            // One alternative set, as @workos/oagen 0.31 shapes it; the cast lets the
+            // fixture compile on 0.30's flat list too, which the emitter also reads.
+            security: [[{ schemeName: 'access_token', scopes: [] }]] as unknown as Operation['security'],
           },
         ],
       },

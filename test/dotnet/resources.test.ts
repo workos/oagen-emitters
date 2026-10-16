@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateResources } from '../../src/dotnet/resources.js';
 import { primeEnumAliases } from '../../src/dotnet/enums.js';
-import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Operation, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
 const emptySpec: ApiSpec = {
@@ -184,7 +184,9 @@ describe('dotnet/resources', () => {
             response: { kind: 'primitive', type: 'unknown' } as const,
             errors: [],
             injectIdempotencyKey: false,
-            security: [{ schemeName: 'access_token', scopes: [] }],
+            // One alternative set, as @workos/oagen 0.31 shapes it; the cast lets the
+            // fixture compile on 0.30's flat list too, which the emitter also reads.
+            security: [[{ schemeName: 'access_token', scopes: [] }]] as unknown as Operation['security'],
           },
           {
             name: 'deleteToken',
