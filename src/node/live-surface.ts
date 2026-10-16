@@ -358,7 +358,7 @@ interface BraceScan {
   depth: number;
   /** Whether any code `{` has been seen — distinguishes "not yet opened" from "balanced and closed". */
   opened: boolean;
-  /** Whether we are mid `/* … *​/` block comment (spans lines). */
+  /** Whether we are inside a multi-line block comment (spans lines). */
   inBlockComment: boolean;
   /**
    * Interpolation-brace depth for each active template literal; a non-empty
