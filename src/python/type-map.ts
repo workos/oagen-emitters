@@ -37,15 +37,10 @@ export function mapTypeRef(ref: TypeRef): string {
 /**
  * Map an IR TypeRef to a plain Python type string (no quotes around model/enum refs).
  * Used for import collection and direct type references.
- *
- * With `allowRawEnumStrings` (the method-parameter context), enums widen to
- * `Union[Enum, str]` and `date-time` strings widen to `Union[datetime, str]`:
- * callers may pass a native `datetime`, which the client serializes to the
- * API's UTC `Z` form, or a pre-formatted string that passes through untouched.
  */
 export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allowRawEnumStrings = false): string {
   return irMapTypeRef<string>(ref, {
-    primitive: (r) => (allowRawEnumStrings && isDateTimePrimitive(r) ? 'Union[datetime, str]' : mapPrimitive(r)),
+    primitive: mapPrimitive,
     array: (ref, items) => {
       void ref;
       return `List[${items}]`;
@@ -78,10 +73,6 @@ export function mapTypeRefUnquoted(ref: TypeRef, knownEnums?: Set<string>, allow
 function toPythonLiteral(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'True' : 'False';
   return String(value);
-}
-
-function isDateTimePrimitive(ref: PrimitiveType): boolean {
-  return ref.type === 'string' && ref.format === 'date-time';
 }
 
 function mapPrimitive(ref: PrimitiveType): string {

@@ -192,11 +192,12 @@ describe('generateResources', () => {
           {
             name: 'listEvents',
             httpMethod: 'get',
-            path: '/events',
-            pathParams: [],
+            path: '/events/{as_of}',
+            pathParams: [{ name: 'as_of', type: dateTime, required: true }],
             queryParams: [
               { name: 'range_start', type: dateTime, required: false },
               { name: 'events', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'stamps', type: { kind: 'array', items: dateTime }, required: false, explode: false } as any,
             ],
             headerParams: [],
             response: { kind: 'model', name: 'Export' },
@@ -246,6 +247,11 @@ describe('generateResources', () => {
     expect(events).toContain('range_end: Optional[Union[datetime, str]] = None,');
     // Plain strings are untouched.
     expect(events).toContain('events: Optional[str] = None,');
+    // Path params and array items stay str: generated code applies str() to
+    // them before the client's encoder could format a datetime.
+    expect(events).toContain('as_of: str,');
+    expect(events).toContain('stamps: Optional[List[str]] = None,');
+    expect(events).not.toContain('List[Union[datetime, str]]');
     // The stdlib import lands before the typing import, and only where needed.
     expect(events.indexOf('from datetime import datetime')).toBeGreaterThan(-1);
     expect(events.indexOf('from datetime import datetime')).toBeLessThan(events.indexOf('from typing import'));
