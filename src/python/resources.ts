@@ -1104,6 +1104,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
+    // Index where `from datetime import datetime` is spliced in once the
+    // file's methods are emitted and we know whether any parameter needs it.
+    const datetimeImportIndex = lines.length;
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
 
     lines.push('');
@@ -1424,6 +1427,12 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push(...generateAsyncWrapperMethods(resolvedAsync, ctx));
         for (const w of resolvedAsync.wrappers) asyncEmittedMethods.add(w.name);
       }
+    }
+
+    // Method parameters typed as `Union[datetime, str]` (date-time params and
+    // body fields) need the stdlib import; models import it separately.
+    if (lines.some((line) => line.includes('Union[datetime, str]'))) {
+      lines.splice(datetimeImportIndex, 0, 'from datetime import datetime');
     }
 
     files.push({
