@@ -172,6 +172,22 @@ export function collectParameterGroupClassNames(operations: Operation[]): string
 
 // ─── Shared method-emission helpers ──────────────────────────────────
 
+/**
+ * Type hint for a request-body field or scalar query parameter.
+ *
+ * A scalar `date-time` string widens to `Union[datetime, str]`: callers may
+ * pass a native `datetime`, which the hand-maintained client serializes to
+ * the API's UTC `Z` form, or a pre-formatted string that passes through
+ * untouched. Path parameters and array items deliberately keep `str`: the
+ * generated code stringifies those with `str()` (URL building, comma-joined
+ * `explode=false` arrays) before the client's encoder can format them.
+ */
+function methodParamType(ref: TypeRef, specEnumNames: Set<string>): string {
+  if (ref.kind === 'nullable') return `Optional[${methodParamType(ref.inner, specEnumNames)}]`;
+  if (ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time') return 'Union[datetime, str]';
+  return mapTypeRefUnquoted(ref, specEnumNames, true);
+}
+
 /** Metadata returned by emitMethodSignature, consumed by docstring & body emitters. */
 interface SignatureMetadata {
   returnType: string;
@@ -252,7 +268,7 @@ function emitMethodSignature(
         (f) => !f.required && !hiddenParams.has(f.name) && !groupedBodyParamNames.has(f.name),
       );
       for (const f of reqFields) {
-        const fieldType = mapTypeRefUnquoted(f.type, specEnumNames, true);
+        const fieldType = methodParamType(f.type, specEnumNames);
         if (usesClientCredentialDefaults && (f.name === 'client_id' || f.name === 'client_secret')) {
           lines.push(`        ${bodyParamName(f, pathParamNames)}: Optional[${fieldType}] = None,`);
         } else {
@@ -260,10 +276,7 @@ function emitMethodSignature(
         }
       }
       for (const f of optFields) {
-        const innerType =
-          f.type.kind === 'nullable'
-            ? mapTypeRefUnquoted(f.type.inner, specEnumNames, true)
-            : mapTypeRefUnquoted(f.type, specEnumNames, true);
+        const innerType = methodParamType(f.type.kind === 'nullable' ? f.type.inner : f.type, specEnumNames);
         if (isClearableBodyField(f)) {
           lines.push(`        ${bodyParamName(f, pathParamNames)}: Union[${innerType}, None, NotGiven] = NOT_GIVEN,`);
         } else {
@@ -306,7 +319,7 @@ function emitMethodSignature(
         );
         if (bodyModel?.fields.some((f) => bodyParamName(f, pathParamNames) === paramName)) continue;
       }
-      const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
+      const paramType = methodParamType(param.type, specEnumNames);
       if (clientOverrides.has(param.name)) {
         lines.push(`        ${paramName}: Optional[${paramType}] = None,`);
       } else if (usesClientCredentialDefaults && (param.name === 'client_id' || param.name === 'client_secret')) {
@@ -344,7 +357,7 @@ function emitMethodSignature(
       if (hiddenParams.has(param.name)) continue;
       if (groupedParamNames.has(param.name)) continue;
       const paramName = fieldName(param.name);
-      const paramType = mapTypeRefUnquoted(param.type, specEnumNames, true);
+      const paramType = methodParamType(param.type, specEnumNames);
       if (param.required) {
         lines.push(`        ${paramName}: ${paramType},`);
       } else {
@@ -1104,6 +1117,9 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     const lines: string[] = [];
     lines.push('from __future__ import annotations');
     lines.push('');
+    // Index where `from datetime import datetime` is spliced in once the
+    // file's methods are emitted and we know whether any parameter needs it.
+    const datetimeImportIndex = lines.length;
     lines.push('from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast');
 
     lines.push('');
@@ -1424,6 +1440,13 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
         lines.push(...generateAsyncWrapperMethods(resolvedAsync, ctx));
         for (const w of resolvedAsync.wrappers) asyncEmittedMethods.add(w.name);
       }
+    }
+
+    // Scalar date-time query params and body fields are typed
+    // `Union[datetime, str]` and need the stdlib import; models import it
+    // separately.
+    if (lines.some((line) => line.includes('Union[datetime, str]'))) {
+      lines.splice(datetimeImportIndex, 0, 'from datetime import datetime');
     }
 
     files.push({
