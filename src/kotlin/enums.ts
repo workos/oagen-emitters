@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { className, ktStringLiteral } from './naming.js';
+import { className, ktStringLiteral, typealiasFile } from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -89,17 +89,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalType = className(canonicalName);
       // Skip when different IR names collapse to the same output name
       if (typeName === canonicalType) continue;
-      const aliasLine = `typealias ${typeName} = ${canonicalType}`;
-      // ktlint enforces a 140-char max line length. When the typealias
-      // exceeds that, add a @file:Suppress to avoid an unfixable violation.
-      const suppressLine = aliasLine.length > 140 ? `@file:Suppress("ktlint:standard:max-line-length")\n\n` : '';
-      const aliasContent = [
-        `${suppressLine}package ${ENUMS_PACKAGE}`,
-        '',
-        `/** Alias for [${canonicalType}]. */`,
-        aliasLine,
-        '',
-      ].join('\n');
+      const aliasContent = typealiasFile(ENUMS_PACKAGE, typeName, canonicalType);
       if (enumInScope) {
         files.push({
           path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,

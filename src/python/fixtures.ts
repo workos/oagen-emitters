@@ -125,6 +125,15 @@ export function generateModelFixture(
   modelMap: Map<string, Model>,
   enumMap: Map<string, Enum>,
 ): Record<string, any> {
+  // A discriminated union is one variant on the wire, never the merged
+  // superset its own `fields` describe (oagen 0.32 folds every variant's
+  // fields onto the union model). Build the payload from the first mapped
+  // variant alone: a field another variant declares (`metadata`, declared only
+  // for `client_credentials`) beside `auth_method: oauth` is dropped by the
+  // dispatched variant on the way back out, so the round-trip could never match.
+  const variantFixture = discriminatedVariantFixture(model, modelMap, enumMap);
+  if (variantFixture) return variantFixture;
+
   const fixture: Record<string, any> = {};
 
   // Deduplicate fields by DOMAIN identifier (matching model generation in
@@ -147,20 +156,40 @@ export function generateModelFixture(
     }
   }
 
-  if (model.discriminator) {
-    const [firstValue, variantName] = Object.entries(model.discriminator.mapping)[0];
-    fixture[model.discriminator.property] = firstValue;
-    const variantModel = modelMap.get(variantName);
-    if (variantModel) {
-      for (const field of variantModel.fields) {
-        fixture[field.name] =
-          field.example !== undefined
-            ? normalizeDateTimeExample(field, field.example)
-            : generateFieldValue(field.type, field.name, variantName, modelMap, enumMap);
-      }
-    }
+  // A union whose first variant the IR never materialized: keep the
+  // discriminator value so dispatch still has something to read.
+  const firstDiscriminatorValue = firstMappedVariant(model)?.[0];
+  if (model.discriminator && firstDiscriminatorValue !== undefined) {
+    fixture[model.discriminator.property] = firstDiscriminatorValue;
   }
 
+  return fixture;
+}
+
+/** The first `[value, variantModelName]` of a discriminated union's mapping, if any. */
+function firstMappedVariant(model: Model): [string, string] | undefined {
+  const entry = model.discriminator ? Object.entries(model.discriminator.mapping)[0] : undefined;
+  return entry as [string, string] | undefined;
+}
+
+/**
+ * The fixture of a discriminated union, built from its first mapped variant's
+ * own fields with the discriminator pinned to that variant's value — or
+ * undefined when the model is not a union or the variant has no model.
+ */
+function discriminatedVariantFixture(
+  model: Model,
+  modelMap: Map<string, Model>,
+  enumMap: Map<string, Enum>,
+): Record<string, any> | undefined {
+  if (!model.discriminator) return undefined;
+  const entry = firstMappedVariant(model);
+  if (!entry) return undefined;
+  const [value, variantName] = entry;
+  const variantModel = modelMap.get(variantName);
+  if (!variantModel || variantModel === model) return undefined;
+  const fixture = generateModelFixture(variantModel, modelMap, enumMap);
+  fixture[model.discriminator.property] = value;
   return fixture;
 }
 

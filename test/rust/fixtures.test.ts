@@ -275,4 +275,51 @@ describe('rust/fixtures', () => {
     const fixture = generateModelFixture(models[0]!, modelMap, new Map(), new Set());
     expect(fixture).toEqual({ kept: 'real' });
   });
+
+  it('builds a discriminated-union fixture from the first variant alone', () => {
+    // oagen 0.32 gives a discriminated union the merged superset of its
+    // variants' fields: `metadata` below is declared only by `client_credentials`.
+    const union = {
+      name: 'Credential',
+      fields: [
+        { name: 'auth_method', type: { kind: 'literal', value: 'oauth' }, required: false },
+        { name: 'value', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'metadata', type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } }, required: false },
+      ],
+      discriminator: {
+        property: 'auth_method',
+        mapping: { oauth: 'OAuthCredential', client_credentials: 'ClientCredentialsCredential' },
+      },
+    } as Model;
+    const unionModels: Model[] = [
+      union,
+      {
+        name: 'OAuthCredential',
+        fields: [
+          { name: 'auth_method', type: { kind: 'literal', value: 'oauth' }, required: true },
+          { name: 'value', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'ClientCredentialsCredential',
+        fields: [
+          { name: 'auth_method', type: { kind: 'literal', value: 'client_credentials' }, required: true },
+          { name: 'value', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'metadata',
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'CredentialsResponse',
+        fields: [{ name: 'credential', type: { kind: 'model', name: 'Credential' }, required: true }],
+      },
+    ];
+    const modelMap = new Map(unionModels.map((m) => [m.name, m]));
+    const fixture = generateModelFixture(union, modelMap, new Map(), new Set());
+    expect(Object.keys(fixture).sort()).toEqual(['auth_method', 'value']);
+    expect(fixture.auth_method).toBe('oauth');
+  });
 });
