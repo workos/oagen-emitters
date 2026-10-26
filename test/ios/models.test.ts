@@ -159,4 +159,9 @@ describe('ios/models scoped runs', () => {
     naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
     expect(naming.typeName('List')).toBe('ListModel');
   });
+
+  it('trims a method against the plain mount name, not the stepped type name', () => {
+    expect(naming.trimMountResource('getData', 'Data')).toBe('get');
+    expect(naming.trimMountResource('getDataModel', 'Data')).toBe('getModel');
+  });
 });

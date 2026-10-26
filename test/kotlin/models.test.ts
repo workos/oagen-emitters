@@ -261,4 +261,9 @@ describe('kotlin/models', () => {
     naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
     expect(naming.className('List')).toBe('ListModel');
   });
+
+  it('trims a method against the plain mount name, not the stepped type name', () => {
+    expect(naming.trimMountedResourceFromMethod('getList', 'List')).toBe('get');
+    expect(naming.trimMountedResourceFromMethod('getListModel', 'List')).toBe('getModel');
+  });
 });

@@ -171,9 +171,14 @@ function stepReservedTypeName(result: string): string {
   return candidate;
 }
 
+/** PascalCase identifier as written (no built-in guard): the form method trimming compares against. */
+export function pascalName(name: string): string {
+  return toPascalCase(stripUrnPrefix(name));
+}
+
 /** PascalCase type name; a built-in type's name is stepped to `<Name>Model` (see [primeReservedTypeNames]). */
 export function typeName(name: string): string {
-  return stepReservedTypeName(toPascalCase(stripUrnPrefix(name)));
+  return stepReservedTypeName(pascalName(name));
 }
 
 /** File base name (without extension) for a generated type. */
@@ -258,11 +263,13 @@ export function withResolvedOps(ctx: EmitterContext): EmitterContext {
 /**
  * Strip the mount-group resource noun when it directly follows the leading verb
  * (family-wide convention, shared with the Go/Kotlin/.NET emitters), so method
- * names match across languages. Canonicalizes the mount to the Swift type name
- * first; untrimmed words keep their original casing (acronyms survive intact).
+ * names match across languages. Canonicalizes the mount to its plain PascalCase
+ * form — not [typeName], whose built-in guard would turn a mount `Data` into
+ * `DataModel` and trim `getDataModel` as if it were `getData` — so untrimmed
+ * words keep their original casing (acronyms survive intact).
  */
 export function trimMountResource(method: string, mountName: string): string {
-  return trimMountedResourceFromMethod(method, typeName(mountName));
+  return trimMountedResourceFromMethod(method, pascalName(mountName));
 }
 
 /**

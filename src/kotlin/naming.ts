@@ -273,11 +273,12 @@ export function buildMountDirMap(ctx: EmitterContext): Map<string, string> {
 /**
  * Trim the mount-target resource words from the start of a method name.
  * E.g. `listOrganizations` on OrganizationsApi becomes `list`. Delegates to
- * the shared family-wide algorithm; canonicalizes the mount to Kotlin's class
- * name first.
+ * the shared family-wide algorithm; canonicalizes the mount to its plain
+ * PascalCase form — not [className], whose built-in guard would turn a mount
+ * `List` into `ListModel` and trim `getListModel` as if it were `getList`.
  */
-function trimMountedResourceFromMethod(method: string, mountName: string): string {
-  return trimMountedResource(method, className(mountName));
+export function trimMountedResourceFromMethod(method: string, mountName: string): string {
+  return trimMountedResource(method, pascalName(mountName));
 }
 
 /** Kotlin hard/soft keywords that must be back-ticked when used as identifiers. */
