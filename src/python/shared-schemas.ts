@@ -1,7 +1,7 @@
 import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
-import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
+import { buildListScaffoldingSkip, detectDiscriminators, collectErrorOnlyModelNames } from '../shared/model-utils.js';
 import { declaredParams } from '../shared/resolved-ops.js';
 
 /**
@@ -271,6 +271,8 @@ interface ModelUsage {
   requestOnly: Set<string>;
   response: Set<string>;
   mixed: Set<string>;
+  /** Models only error responses reach — never a canonical over a live model. */
+  errorOnly: Set<string>;
 }
 
 function collectModelUsage(spec: ApiSpec): ModelUsage {
@@ -296,11 +298,12 @@ function collectModelUsage(spec: ApiSpec): ModelUsage {
   const requestOnly = new Set([...request].filter((name) => !mixed.has(name)));
   const responseOnly = new Set([...response].filter((name) => !mixed.has(name)));
 
-  return { requestOnly, response: responseOnly, mixed };
+  return { requestOnly, response: responseOnly, mixed, errorOnly: collectErrorOnlyModelNames(spec) };
 }
 
 function compareAliasPriority(left: string, right: string, usage: ModelUsage): number {
   const score = (name: string): number => {
+    if (usage.errorOnly.has(name)) return 4;
     if (usage.response.has(name)) return 0;
     if (usage.mixed.has(name)) return 1;
     if (usage.requestOnly.has(name)) return 2;

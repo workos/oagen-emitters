@@ -5,6 +5,8 @@ import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 
@@ -97,10 +99,12 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (!hashGroups.has(h)) hashGroups.set(h, []);
     hashGroups.get(h)!.push(m.name);
   }
+  // A model only error responses reach never takes a domain model's name.
+  const errorOnly = collectErrorOnlyModelNames(ctx.spec);
   const aliasOf = new Map<string, string>();
   for (const names of hashGroups.values()) {
     if (names.length <= 1) continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort(preferLiveCanonical(errorOnly));
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
   }

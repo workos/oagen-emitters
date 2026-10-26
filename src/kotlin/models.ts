@@ -7,6 +7,8 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
 } from '../shared/model-utils.js';
 import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
 
@@ -98,10 +100,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     hashGroupsPass1.get(hash)!.push(model.name);
   }
 
+  // A model only error responses reach never takes a domain model's name,
+  // however short its own.
+  const errorOnly = collectErrorOnlyModelNames(ctx.spec);
+  const preferCanonical = preferLiveCanonical(errorOnly, preferShorterCanonical);
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroupsPass1) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort(preferShorterCanonical);
+    const sorted = [...names].sort(preferCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
@@ -123,7 +129,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
   for (const [hash, names] of hashGroupsPass2) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort(preferShorterCanonical);
+    const sorted = [...names].sort(preferCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (aliasOf.has(sorted[i])) continue;

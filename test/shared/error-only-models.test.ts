@@ -1,0 +1,86 @@
+import { describe, it, expect } from 'vitest';
+import type { ApiSpec, Model, Service } from '@workos/oagen';
+import { defaultSdkBehavior } from '@workos/oagen';
+import { collectErrorOnlyModelNames, preferLiveCanonical } from '../../src/shared/model-utils.js';
+
+const codeMessage: Model['fields'] = [
+  { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
+  { name: 'message', type: { kind: 'primitive', type: 'string' }, required: true },
+];
+// `Err` is reached only through an error response; `AuthenticationFailedDataError`
+// through the field of a response model. Both have the same shape, and `Err` is
+// the shorter and alphabetically earlier name.
+const models: Model[] = [
+  { name: 'Err', fields: codeMessage },
+  { name: 'AuthenticationFailedDataError', fields: codeMessage },
+  {
+    name: 'AuthenticationFailedData',
+    fields: [{ name: 'error', type: { kind: 'model', name: 'AuthenticationFailedDataError' }, required: true }],
+  },
+];
+const services: Service[] = [
+  {
+    name: 'Events',
+    operations: [
+      {
+        name: 'getEvent',
+        httpMethod: 'get',
+        path: '/events/{id}',
+        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model', name: 'AuthenticationFailedData' },
+        errors: [{ statusCode: 400, type: { kind: 'model', name: 'Err' } }],
+        injectIdempotencyKey: false,
+      },
+    ],
+  },
+];
+const spec: ApiSpec = {
+  name: 'Test',
+  version: '1.0.0',
+  baseUrl: '',
+  services,
+  models,
+  enums: [],
+  sdk: defaultSdkBehavior(),
+};
+
+describe('collectErrorOnlyModelNames', () => {
+  it('names the models only error responses reach', () => {
+    expect([...collectErrorOnlyModelNames(spec)]).toEqual(['Err']);
+  });
+
+  it('treats a model that a success response also reaches as live', () => {
+    const op = services[0].operations[0];
+    const alsoReturned: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'Events',
+          operations: [
+            op,
+            { ...op, name: 'getError', path: '/errors/{id}', response: { kind: 'model', name: 'Err' }, errors: [] },
+          ],
+        },
+      ],
+    };
+    expect(collectErrorOnlyModelNames(alsoReturned).size).toBe(0);
+  });
+});
+
+describe('preferLiveCanonical', () => {
+  it('sorts error-only names last and keeps plain string order otherwise', () => {
+    expect(['Err', 'Zed', 'Alpha'].sort(preferLiveCanonical(new Set(['Err'])))).toEqual(['Alpha', 'Zed', 'Err']);
+  });
+
+  it('applies the tie-break among names of one kind', () => {
+    const shorterFirst = (a: string, b: string) => a.length - b.length || a.localeCompare(b);
+    expect(['Err', 'Zed', 'Alpha', 'Bo'].sort(preferLiveCanonical(new Set(['Err', 'Bo']), shorterFirst))).toEqual([
+      'Zed',
+      'Alpha',
+      'Bo',
+      'Err',
+    ]);
+  });
+});
