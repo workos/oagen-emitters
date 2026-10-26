@@ -1,4 +1,4 @@
-import { csLiteral, escapeXml } from './naming.js';
+import { csLiteral, escapeXml, primeReservedTypeNames } from './naming.js';
 import type {
   Emitter,
   EmitterContext,
@@ -93,6 +93,7 @@ export const dotnetEmitter: Emitter = {
   language: 'dotnet',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const c = fixNamespace(ctx);
     primeEnumAliases(c.spec.enums);
     const enriched = enrichModelsFromSpec(models);
@@ -140,8 +141,8 @@ export const dotnetEmitter: Emitter = {
     // Generate discriminator converters for oneOf unions with discriminator
     // (union-type references, e.g. a field typed as oneOf with discriminator)
     if (discriminatedUnions.size > 0) {
-      for (const [baseName, disc] of discriminatedUnions) {
-        const converterName = `${baseName}DiscriminatorConverter`;
+      for (const disc of discriminatedUnions.values()) {
+        const converterName = `${disc.baseClass}DiscriminatorConverter`;
         const lines: string[] = [];
         lines.push(`namespace ${c.namespacePascal}`);
         lines.push('{');
@@ -284,6 +285,7 @@ export const dotnetEmitter: Emitter = {
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const c = fixNamespace(ctx);
     // Ensure synthetic enums are populated regardless of method execution order.
     // enrichModelsFromSpec is idempotent (cached raw spec) and populates the
@@ -295,6 +297,7 @@ export const dotnetEmitter: Emitter = {
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const c = fixNamespace(ctx);
     const synEnums = getSyntheticEnums();
     primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums);
@@ -333,6 +336,7 @@ export const dotnetEmitter: Emitter = {
   },
 
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const c = fixNamespace(ctx);
     return prefixSourcePaths(ensureTrailingNewlines(generateClient(spec, c)));
   },
@@ -346,6 +350,7 @@ export const dotnetEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const c = fixNamespace(ctx);
     const synEnumsForTests = getSyntheticEnums();
     primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums);
@@ -354,6 +359,7 @@ export const dotnetEmitter: Emitter = {
   },
 
   buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    primeReservedTypeNames(ctx.spec);
     return buildOperationsMap(spec, fixNamespace(ctx));
   },
 

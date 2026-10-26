@@ -101,10 +101,28 @@ export function pascalName(name: string): string {
   return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
 }
 
-/** PascalCase class/type name; a built-in type's name is stepped to `<Name>Model`. */
+let takenTypeNames: ReadonlySet<string> = new Set();
+
+/**
+ * Prime the names a stepped built-in must keep clear of: every model's and
+ * enum's own PascalCase name, so `List` steps to `ListModel2` in a document
+ * that also declares `ListModel`. Called at every emitter entry (cheap and
+ * idempotent); until then the step is the plain `<Name>Model`.
+ */
+export function primeReservedTypeNames(spec: { models: { name: string }[]; enums: { name: string }[] }): void {
+  takenTypeNames = new Set([...spec.models, ...spec.enums].map((d) => pascalName(d.name)));
+}
+
+function stepReservedTypeName(result: string): string {
+  if (!KOTLIN_RESERVED_TYPE_NAMES.has(result)) return result;
+  let candidate = `${result}Model`;
+  for (let n = 2; takenTypeNames.has(candidate); n += 1) candidate = `${result}Model${n}`;
+  return candidate;
+}
+
+/** PascalCase class/type name; a built-in type's name is stepped to `<Name>Model` (see [primeReservedTypeNames]). */
 export function className(name: string): string {
-  const result = pascalName(name);
-  return KOTLIN_RESERVED_TYPE_NAMES.has(result) ? `${result}Model` : result;
+  return stepReservedTypeName(pascalName(name));
 }
 
 /** PascalCase file name (matches the primary class). */

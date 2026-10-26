@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as naming from '../../src/dotnet/naming.js';
 import { generateModels } from '../../src/dotnet/models.js';
 import { primeEnumAliases } from '../../src/dotnet/enums.js';
 import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
@@ -556,5 +557,13 @@ describe('dotnet/models wire-name pinning', () => {
     const content = files.find((f) => f.path === 'Entities/ValidationError.cs')!.content;
     expect(content).toContain('OneOf.OneOf<string, List<string>>');
     expect(content).toContain('using System.Collections.Generic;');
+  });
+
+  it('steps past a schema that already owns the <Name>Model name', () => {
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }, { name: 'ListModel' }], enums: [] });
+    expect(naming.csTypeName('List')).toBe('ListModel2');
+    expect(naming.csTypeName('ListModel')).toBe('ListModel');
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
+    expect(naming.csTypeName('List')).toBe('ListModel');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as naming from '../../src/kotlin/naming.js';
 import { generateModels } from '../../src/kotlin/models.js';
 import { generateEnums } from '../../src/kotlin/enums.js';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
@@ -225,5 +226,13 @@ describe('kotlin/models', () => {
     expect(stepped.content).toContain('data class ListModel(');
     const waitlist = files.find((f) => f.path.endsWith('/Waitlist.kt'))!;
     expect(waitlist.content).toContain('List<ListModel>');
+  });
+
+  it('steps past a schema that already owns the <Name>Model name', () => {
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }, { name: 'ListModel' }], enums: [] });
+    expect(naming.className('List')).toBe('ListModel2');
+    expect(naming.className('ListModel')).toBe('ListModel');
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
+    expect(naming.className('List')).toBe('ListModel');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as naming from '../../src/ios/naming.js';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels } from '../../src/ios/models.js';
@@ -149,5 +150,13 @@ describe('ios/models scoped runs', () => {
     expect(stepped.content).toContain('public struct DataModel');
     const event = files.find((f) => f.path.endsWith('/Event.swift'))!;
     expect(event.content).toContain('public let data: DataModel');
+  });
+
+  it('steps past a schema that already owns the <Name>Model name', () => {
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }, { name: 'ListModel' }], enums: [] });
+    expect(naming.typeName('List')).toBe('ListModel2');
+    expect(naming.typeName('ListModel')).toBe('ListModel');
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
+    expect(naming.typeName('List')).toBe('ListModel');
   });
 });

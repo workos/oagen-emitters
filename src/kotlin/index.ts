@@ -8,6 +8,7 @@ import type {
   Enum,
   Service,
 } from '@workos/oagen';
+import { primeReservedTypeNames } from './naming.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -35,6 +36,7 @@ export const kotlinEmitter: Emitter = {
   language: 'kotlin',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     const enriched = enrichModelsFromSpec(models);
     // Kotlin uses sealed interfaces (WorkOSEvent) for event dispatch rather
     // than class inheritance, so discriminated base models like EventSchema
@@ -59,6 +61,7 @@ export const kotlinEmitter: Emitter = {
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     // Merge synthetic enums produced during model enrichment (inline oneOf
     // definitions) so they get proper enum class files.
     const syntheticEnums = getSyntheticEnums();
@@ -66,14 +69,17 @@ export const kotlinEmitter: Emitter = {
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     return ensureTrailingNewlines(generateResources(services, ctx));
   },
 
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     return ensureTrailingNewlines(generateClient(spec, ctx));
   },
 
   generateErrors(_ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(_ctx.spec);
     // Exception hierarchy is hand-maintained in workos-kotlin (see Phase 2).
     return [];
   },
@@ -83,6 +89,7 @@ export const kotlinEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     // Pass enriched models so round-trip tests see the full field set
     // (including optional oneOf-enriched fields and flattened discriminated-
     // union owner fields) and can filter accurately.
@@ -92,6 +99,7 @@ export const kotlinEmitter: Emitter = {
   },
 
   buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    primeReservedTypeNames(ctx.spec);
     return buildOperationsMap(spec, ctx);
   },
 

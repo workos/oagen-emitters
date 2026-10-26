@@ -20,6 +20,7 @@ import {
   deprecationMessage,
   escapeCsAttributeString,
   modelClassName,
+  primeReservedTypeNames,
 } from './naming.js';
 
 // Import and re-export shared model detection utilities
@@ -52,6 +53,7 @@ export interface DiscriminatorContext {
  * For initial generation, all models go into a flat Entities/ directory.
  */
 export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: DiscriminatorContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (models.length === 0) return [];
 
   // Build a lookup from enum name → single wire value for 1-value enums so

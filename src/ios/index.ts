@@ -8,6 +8,7 @@ import type {
   Enum,
   Service,
 } from '@workos/oagen';
+import { primeReservedTypeNames } from './naming.js';
 
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
@@ -47,6 +48,7 @@ export const iosEmitter: Emitter = {
   language: 'ios',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     // Mirror the Go emitter: flatten oneOf/allOf variant fields so Swift's flat
     // structs carry every variant's fields, and restore fields on discriminated
     // base models that enrichment clears for sum-type-capable languages.
@@ -63,16 +65,19 @@ export const iosEmitter: Emitter = {
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     // Include synthetic enums minted during model enrichment (inline oneOf sets).
     const syntheticEnums = getSyntheticEnums();
     return ensureTrailingNewlines(generateEnums([...enums, ...syntheticEnums], ctx));
   },
 
   generateResources(services: Service[], ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     return ensureTrailingNewlines(generateResources(services, ctx));
   },
 
   generateClient(_spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     return ensureTrailingNewlines(generateClient(ctx));
   },
 
@@ -87,10 +92,12 @@ export const iosEmitter: Emitter = {
   },
 
   generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
+    primeReservedTypeNames(ctx.spec);
     return ensureTrailingNewlines(generateTests(spec, ctx));
   },
 
   buildOperationsMap(spec: ApiSpec, ctx: EmitterContext) {
+    primeReservedTypeNames(ctx.spec);
     return buildOperationsMap(spec, ctx);
   },
 

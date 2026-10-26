@@ -8,6 +8,7 @@ import {
   escapeCsAttributeString,
   escapeXml,
   humanize,
+  primeReservedTypeNames,
 } from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
@@ -21,6 +22,7 @@ import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
  * by `mapTypeRef` via `setEnumAliases`.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (enums.length === 0) return [];
 
   // Publish the alias map + single-value enum set so model/options/wrapper

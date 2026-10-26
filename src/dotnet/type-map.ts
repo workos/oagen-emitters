@@ -227,7 +227,7 @@ function mapPrimitive(ref: PrimitiveType): string {
  */
 export const discriminatedUnions = new Map<
   string,
-  { property: string; mapping: Record<string, string>; variantTypes: string[] }
+  { property: string; mapping: Record<string, string>; variantTypes: string[]; baseClass: string }
 >();
 
 function joinUnionVariants(_ref: UnionType, variants: string[]): string {
@@ -251,6 +251,11 @@ function joinUnionVariants(_ref: UnionType, variants: string[]): string {
       property: _ref.discriminator.property,
       mapping: _ref.discriminator.mapping,
       variantTypes: unique,
+      // The converter is declared under the C# name of that first variant —
+      // the same `modelClassName` the field's `[JsonConverter(typeof(…))]`
+      // reference uses — so a variant stepped off a built-in (`List` →
+      // `ListModel`) still finds its `ListModelDiscriminatorConverter`.
+      baseClass: irVariantNames[0] ? modelClassName(irVariantNames[0]) : baseName,
     });
     // Use object with JsonConverter for discriminated unions since
     // AnyOf<> doesn't support discriminator-based deserialization
