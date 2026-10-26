@@ -173,6 +173,92 @@ describe('generateResources', () => {
     expect(content).not.toContain('order: Optional[str] = "desc"');
   });
 
+  it('types date-time parameters as Union[datetime, str] and imports datetime', () => {
+    const dateTime = { kind: 'primitive', type: 'string', format: 'date-time' } as const;
+    const models: Model[] = [
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'range_start', type: dateTime, required: true },
+          { name: 'range_end', type: dateTime, required: false },
+        ],
+      },
+      { name: 'Export', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Events',
+        operations: [
+          {
+            name: 'listEvents',
+            httpMethod: 'get',
+            path: '/events/{as_of}',
+            pathParams: [{ name: 'as_of', type: dateTime, required: true }],
+            queryParams: [
+              { name: 'range_start', type: dateTime, required: false },
+              { name: 'events', type: { kind: 'primitive', type: 'string' }, required: false },
+              { name: 'stamps', type: { kind: 'array', items: dateTime }, required: false, explode: false } as any,
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+          {
+            name: 'createExport',
+            httpMethod: 'post',
+            path: '/events/exports',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            requestBody: { kind: 'model', name: 'ExportCreation' },
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+      {
+        name: 'Plain',
+        operations: [
+          {
+            name: 'getPlain',
+            httpMethod: 'get',
+            path: '/plain',
+            pathParams: [],
+            queryParams: [{ name: 'since', type: { kind: 'primitive', type: 'string' }, required: false }],
+            headerParams: [],
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const ctxWithServices: EmitterContext = { ...ctx, spec: { ...emptySpec, services, models } };
+
+    const files = generateResources(services, ctxWithServices);
+    const events = files.find((f) => f.path.endsWith('/events/_resource.py'))!.content;
+    const plain = files.find((f) => f.path.endsWith('/plain/_resource.py'))!.content;
+
+    // Query params and body fields accept a native datetime or a pre-formatted string.
+    expect(events).toContain('range_start: Optional[Union[datetime, str]] = None,');
+    expect(events).toContain('range_start: Union[datetime, str],');
+    expect(events).toContain('range_end: Optional[Union[datetime, str]] = None,');
+    // Plain strings are untouched.
+    expect(events).toContain('events: Optional[str] = None,');
+    // Path params and array items stay str: generated code applies str() to
+    // them before the client's encoder could format a datetime.
+    expect(events).toContain('as_of: str,');
+    expect(events).toContain('stamps: Optional[List[str]] = None,');
+    expect(events).not.toContain('List[Union[datetime, str]]');
+    // The stdlib import lands before the typing import, and only where needed.
+    expect(events.indexOf('from datetime import datetime')).toBeGreaterThan(-1);
+    expect(events.indexOf('from datetime import datetime')).toBeLessThan(events.indexOf('from typing import'));
+    expect(plain).not.toContain('from datetime import datetime');
+    expect(plain).toContain('since: Optional[str] = None,');
+  });
+
   it('reads pagination order default from the spec rather than hardcoding "desc"', () => {
     const models: Model[] = [
       { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },

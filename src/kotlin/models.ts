@@ -1,6 +1,13 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
-import { className, domainPropertyName, ktStringLiteral, humanize, primeReservedTypeNames } from './naming.js';
+import {
+  className,
+  domainPropertyName,
+  ktStringLiteral,
+  humanize,
+  primeReservedTypeNames,
+  typealiasFile,
+} from './naming.js';
 import { enumCanonicalMap } from './enums.js';
 import {
   isListWrapperModel,
@@ -155,13 +162,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const canonicalType = className(canonical);
       // Skip when different IR names collapse to the same output name
       if (typeName === canonicalType) continue;
-      const aliasContent = [
-        `package ${MODELS_PACKAGE}`,
-        '',
-        `/** Alias for [${canonicalType}]. */`,
-        `typealias ${typeName} = ${canonicalType}`,
-        '',
-      ].join('\n');
+      const aliasContent = typealiasFile(MODELS_PACKAGE, typeName, canonicalType);
       if (modelInScope) {
         files.push({
           path: `${KOTLIN_SRC_PREFIX}${MODELS_DIR}/${typeName}.kt`,

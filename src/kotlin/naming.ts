@@ -391,3 +391,23 @@ function extractEnumName(type: TypeRef): string | null {
   if (type.kind === 'nullable') return extractEnumName(type.inner);
   return null;
 }
+
+/** ktlint's default `max-line-length`, which the generated SDK's .editorconfig keeps. */
+export const KTLINT_MAX_LINE_LENGTH = 140;
+
+/**
+ * A one-alias Kotlin file: `typealias typeName = canonicalType` under
+ * `packageName`, documented. oagen 0.32 names an inline error body
+ * `<Op>Error<code>`, and an alias between two such names runs past ktlint's
+ * limit, which `max-line-length` cannot auto-correct — such a file carries a
+ * file-level suppression instead (the KDoc line is measured too).
+ */
+export function typealiasFile(packageName: string, typeName: string, canonicalType: string): string {
+  const docLine = `/** Alias for [${canonicalType}]. */`;
+  const aliasLine = `typealias ${typeName} = ${canonicalType}`;
+  const suppress =
+    Math.max(docLine.length, aliasLine.length) > KTLINT_MAX_LINE_LENGTH
+      ? '@file:Suppress("ktlint:standard:max-line-length")\n\n'
+      : '';
+  return [`${suppress}package ${packageName}`, '', docLine, aliasLine, ''].join('\n');
+}

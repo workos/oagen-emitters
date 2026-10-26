@@ -206,6 +206,32 @@ describe('kotlin/models', () => {
     const aliasFile = files.find((f) => f.path.includes('/EmailChangeConfirmationUser.kt'))!;
     expect(aliasFile).toBeDefined();
     expect(aliasFile.content).toContain('typealias EmailChangeConfirmationUser = User');
+    expect(aliasFile.content).not.toContain('@file:Suppress');
+  });
+
+  it('suppresses ktlint max-line-length on a typealias file whose alias line exceeds 140 chars', () => {
+    // oagen 0.32 names inline error bodies `<Op>Error<code>`; two identical
+    // ones alias each other on a line ktlint cannot wrap.
+    const codeMessage: Model['fields'] = [
+      { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'message', type: { kind: 'primitive', type: 'string' }, required: true },
+    ];
+    const long = 'InvalidRequestParametersDataIntegrationsUserManagementUpdateUserDataInstallationError422';
+    const short = 'InvalidRequestParametersWebhookEndpointsCreateError422';
+    const models: Model[] = [
+      { name: long, fields: codeMessage },
+      { name: short, fields: codeMessage },
+    ];
+
+    generateEnums([], ctx);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    const aliasFile = files.find((f) => f.path.endsWith(`/${long}.kt`))!;
+    expect(aliasFile).toBeDefined();
+    expect(
+      aliasFile.content.startsWith('@file:Suppress("ktlint:standard:max-line-length")\n\npackage com.workos.models\n'),
+    ).toBe(true);
+    expect(aliasFile.content).toContain(`typealias ${long} = ${short}`);
   });
 
   it('steps a model named like a Kotlin built-in type to <Name>Model', () => {

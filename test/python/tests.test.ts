@@ -109,6 +109,54 @@ describe('generateTests', () => {
     expect(data).toHaveProperty('name');
   });
 
+  it('builds a discriminated-union fixture from the first variant alone', () => {
+    // oagen 0.32 gives a discriminated union the merged superset of its
+    // variants' fields: `metadata` below is declared only by `client_credentials`.
+    const union = {
+      name: 'Credential',
+      fields: [
+        { name: 'auth_method', type: { kind: 'literal', value: 'oauth' }, required: false },
+        { name: 'value', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'metadata', type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } }, required: false },
+      ],
+      discriminator: {
+        property: 'auth_method',
+        mapping: { oauth: 'OAuthCredential', client_credentials: 'ClientCredentialsCredential' },
+      },
+    } as Model;
+    const unionModels: Model[] = [
+      union,
+      {
+        name: 'OAuthCredential',
+        fields: [
+          { name: 'auth_method', type: { kind: 'literal', value: 'oauth' }, required: true },
+          { name: 'value', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'ClientCredentialsCredential',
+        fields: [
+          { name: 'auth_method', type: { kind: 'literal', value: 'client_credentials' }, required: true },
+          { name: 'value', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'metadata',
+            type: { kind: 'map', valueType: { kind: 'primitive', type: 'unknown' } },
+            required: true,
+          },
+        ],
+      },
+      {
+        name: 'CredentialsResponse',
+        fields: [{ name: 'credential', type: { kind: 'model', name: 'Credential' }, required: true }],
+      },
+    ];
+    const unionSpec: ApiSpec = { ...spec, models: [...models, ...unionModels] };
+    const files = generateTests(unionSpec, { ...ctx, spec: unionSpec });
+    const fixture = JSON.parse(files.find((f) => f.path === 'tests/fixtures/credentials_response.json')!.content);
+    expect(Object.keys(fixture.credential).sort()).toEqual(['auth_method', 'value']);
+    expect(fixture.credential.auth_method).toBe('oauth');
+  });
+
   it('generates discriminator dispatch tests for dispatcher models', () => {
     const discriminatorModel: any = {
       name: 'EventSchema',
@@ -289,5 +337,163 @@ describe('generateTests', () => {
     expect(roundTripTest!.content).toContain('def test_organization_omits_absent_optional_non_nullable_fields(');
     expect(roundTripTest!.content).toContain('def test_organization_preserves_nullable_fields(');
     expect(roundTripTest!.content).toContain('def test_organization_round_trips_unknown_enum_values(');
+  });
+
+  it('drives date-time query params and body fields through the client and asserts the UTC Z wire form', () => {
+    const dateTime = { kind: 'primitive', type: 'string', format: 'date-time' } as const;
+    const str = { kind: 'primitive', type: 'string' } as const;
+    const dtModels: Model[] = [
+      { name: 'Export', fields: [{ name: 'id', type: str, required: true }] },
+      {
+        name: 'ExportCreation',
+        fields: [
+          { name: 'name', type: str, required: true },
+          { name: 'range_start', type: dateTime, required: true },
+          { name: 'range_end', type: { kind: 'nullable', inner: dateTime }, required: false },
+        ],
+      },
+      {
+        name: 'ExportList',
+        fields: [
+          { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Export' } }, required: true },
+          { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: str, required: false },
+          { name: 'after', type: str, required: false },
+        ],
+      },
+    ];
+    const dtSpec: ApiSpec = {
+      ...spec,
+      models: dtModels,
+      services: [
+        {
+          name: 'Events',
+          operations: [
+            {
+              name: 'listEvents',
+              httpMethod: 'get',
+              path: '/events',
+              pathParams: [],
+              queryParams: [
+                { name: 'range_start', type: dateTime, required: false },
+                { name: 'range_end', type: { kind: 'nullable', inner: dateTime }, required: false },
+                { name: 'organization_id', type: str, required: false },
+                { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+                { name: 'after', type: str, required: false },
+              ],
+              headerParams: [],
+              response: { kind: 'model', name: 'ExportList' },
+              errors: [],
+              injectIdempotencyKey: false,
+              pagination: {
+                strategy: 'cursor',
+                param: 'after',
+                dataPath: 'data',
+                itemType: { kind: 'model', name: 'Export' },
+              },
+            },
+          ],
+        },
+        {
+          name: 'AuditLogs',
+          operations: [
+            {
+              name: 'createExport',
+              httpMethod: 'post',
+              path: '/audit_logs/exports',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              requestBody: { kind: 'model', name: 'ExportCreation' },
+              response: { kind: 'model', name: 'Export' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+        {
+          name: 'Plain',
+          operations: [
+            {
+              name: 'getPlain',
+              httpMethod: 'get',
+              path: '/plain',
+              pathParams: [],
+              queryParams: [{ name: 'since', type: str, required: false }],
+              headerParams: [],
+              response: { kind: 'model', name: 'Export' },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const files = generateTests(dtSpec, { ...ctx, spec: dtSpec });
+    const events = files.find((f) => f.path === 'tests/test_events.py')!.content;
+    const auditLogs = files.find((f) => f.path === 'tests/test_audit_logs.py')!.content;
+    const plain = files.find((f) => f.path === 'tests/test_plain.py')!.content;
+
+    // One shared value table per file: aware UTC, aware non-UTC, naive, and a
+    // pre-formatted string, all expected to hit the wire identically.
+    for (const content of [events, auditLogs]) {
+      expect(content).toContain('import json\nfrom datetime import datetime, timedelta, timezone\n\nimport pytest');
+      expect(content).toContain('DATETIME_PARAM_VALUES = [');
+      expect(content).toContain('datetime(2026, 10, 1, 18, 1, 14, 870000, tzinfo=timezone.utc),');
+      expect(content).toContain('datetime(2026, 10, 1, 14, 1, 14, 870000, tzinfo=timezone(timedelta(hours=-4))),');
+      expect(content).toContain('datetime(2026, 10, 1, 18, 1, 14, 870000),');
+      expect(content).toContain('"2026-10-01T18:01:14.870Z",');
+      expect(content).toContain('DATETIME_PARAM_WIRE = "2026-10-01T18:01:14.870Z"');
+    }
+
+    // Query params: sync and async, parametrized over the value table, asserting the encoded query.
+    expect(events).toContain(
+      '    @pytest.mark.parametrize("value", DATETIME_PARAM_VALUES)\n' +
+        '    def test_list_events_formats_datetime_query_params(self, workos, httpx_mock, value):\n' +
+        '        httpx_mock.add_response(json={"data": [], "list_metadata": {}})\n' +
+        '        workos.events.list_events(range_start=value, range_end=value)\n' +
+        '        request = httpx_mock.get_request()\n' +
+        '        assert request.url.params["range_start"] == DATETIME_PARAM_WIRE\n' +
+        '        assert request.url.params["range_end"] == DATETIME_PARAM_WIRE\n',
+    );
+    expect(events).toContain(
+      '    @pytest.mark.parametrize("value", DATETIME_PARAM_VALUES)\n' +
+        '    @pytest.mark.asyncio\n' +
+        '    async def test_list_events_formats_datetime_query_params(self, async_workos, httpx_mock, value):\n' +
+        '        httpx_mock.add_response(json={"data": [], "list_metadata": {}})\n' +
+        '        await async_workos.events.list_events(range_start=value, range_end=value)\n' +
+        '        request = httpx_mock.get_request()\n' +
+        '        assert request.url.params["range_start"] == DATETIME_PARAM_WIRE\n',
+    );
+    expect(events).not.toContain('formats_datetime_body_fields');
+    // Plain string params keep their pass-through assertion in the encoding test.
+    expect(events).toContain('assert request.url.params["organization_id"] == "value organization_id/test"');
+
+    // Body fields: required stubs stay, every date-time field (required or optional) is the parametrized value.
+    expect(auditLogs).toContain(
+      '    @pytest.mark.parametrize("value", DATETIME_PARAM_VALUES)\n' +
+        '    def test_create_export_formats_datetime_body_fields(self, workos, httpx_mock, value):\n' +
+        '        httpx_mock.add_response(json=load_fixture("export.json"))\n' +
+        '        workos.audit_logs.create_export(name="test_name", range_start=value, range_end=value)\n' +
+        '        request = httpx_mock.get_request()\n' +
+        '        body = json.loads(request.content)\n' +
+        '        assert body["range_start"] == DATETIME_PARAM_WIRE\n' +
+        '        assert body["range_end"] == DATETIME_PARAM_WIRE\n',
+    );
+    expect(auditLogs).toContain(
+      '    async def test_create_export_formats_datetime_body_fields(self, async_workos, httpx_mock, value):',
+    );
+    expect(auditLogs).not.toContain('formats_datetime_query_params');
+
+    // Files without a date-time parameter get neither the import nor the tests.
+    expect(plain).not.toContain('from datetime import');
+    expect(plain).not.toContain('DATETIME_PARAM_VALUES');
+    expect(plain).not.toContain('formats_datetime');
   });
 });

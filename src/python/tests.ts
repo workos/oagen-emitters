@@ -90,6 +90,158 @@ function buildDeleteSuccessResponseSetup(op: Operation): string {
   return `httpx_mock.add_response(status_code=${statusCode}, content=b"\\n")`;
 }
 
+// ─── Date-time parameter tests ───────────────────────────────────────
+//
+// Scalar `date-time` query params and body fields are typed
+// `Union[datetime, str]` by resources.ts, and the hand-maintained client is
+// what turns a `datetime` into the API's UTC `Z` string. The emitter's own
+// unit tests only see the generated source, so each such method also gets a
+// pytest case in the target SDK that drives it through the client and asserts
+// the wire value.
+
+/** A scalar `date-time` string, optionally nullable. */
+function isScalarDateTime(ref: TypeRef): boolean {
+  if (ref.kind === 'nullable') return isScalarDateTime(ref.inner);
+  return ref.kind === 'primitive' && ref.type === 'string' && ref.format === 'date-time';
+}
+
+/** A date-time parameter a generated test passes as `value`. */
+interface DatetimeTarget {
+  /** Python keyword argument on the generated method. */
+  kwarg: string;
+  /** Name the value travels under: the query key or the JSON body key. */
+  wireName: string;
+}
+
+/** Scalar date-time query params the method exposes as flat keyword arguments. */
+function datetimeQueryParams(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): DatetimeTarget[] {
+  const plan = planOperation(op);
+  const groupedParamNames = collectGroupedParamNames(op);
+  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  const bodyModel =
+    plan.hasBody && op.requestBody?.kind === 'model'
+      ? spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name)
+      : undefined;
+  const targets: DatetimeTarget[] = [];
+  for (const param of op.queryParams) {
+    if (!isScalarDateTime(param.type)) continue;
+    if (hiddenParams?.has(param.name) || groupedParamNames.has(param.name)) continue;
+    const kwarg = fieldName(param.name);
+    if (pathParamNames.has(kwarg)) continue;
+    if (bodyModel?.fields.some((field) => bodyParamName(field, pathParamNames) === kwarg)) continue;
+    targets.push({ kwarg, wireName: param.name });
+  }
+  return targets;
+}
+
+/** Scalar date-time request-body fields the method exposes as flat keyword arguments. */
+function datetimeBodyFields(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): DatetimeTarget[] {
+  const plan = planOperation(op);
+  if (!plan.hasBody || op.requestBody?.kind !== 'model') return [];
+  const bodyModel = spec.models.find((m) => m.name === (op.requestBody as { kind: string; name: string }).name);
+  if (!bodyModel) return [];
+  const groupedParamNames = collectGroupedParamNames(op);
+  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
+  return bodyModel.fields
+    .filter((f) => isScalarDateTime(f.type) && !hiddenParams?.has(f.name) && !groupedParamNames.has(f.name))
+    .map((f) => ({ kwarg: bodyParamName(f, pathParamNames), wireName: f.name }));
+}
+
+function hasDatetimeParams(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): boolean {
+  return (
+    datetimeQueryParams(op, spec, hiddenParams).length > 0 || datetimeBodyFields(op, spec, hiddenParams).length > 0
+  );
+}
+
+/**
+ * Module-level table shared by every date-time test in the file: an aware UTC
+ * datetime, an aware non-UTC datetime, a naive datetime (the client assumes
+ * UTC), and an already formatted string that must pass through untouched. All
+ * four must reach the wire as DATETIME_PARAM_WIRE.
+ */
+function pushDatetimeParamConstants(lines: string[]): void {
+  lines.push('');
+  lines.push('');
+  lines.push('# A datetime in any timezone, a naive datetime (assumed UTC), and an already');
+  lines.push('# formatted string all reach the wire as the same UTC timestamp with a Z suffix.');
+  lines.push('DATETIME_PARAM_VALUES = [');
+  lines.push('    datetime(2026, 10, 1, 18, 1, 14, 870000, tzinfo=timezone.utc),');
+  lines.push('    datetime(2026, 10, 1, 14, 1, 14, 870000, tzinfo=timezone(timedelta(hours=-4))),');
+  lines.push('    datetime(2026, 10, 1, 18, 1, 14, 870000),');
+  lines.push('    "2026-10-01T18:01:14.870Z",');
+  lines.push(']');
+  lines.push('DATETIME_PARAM_WIRE = "2026-10-01T18:01:14.870Z"');
+}
+
+/**
+ * Method arguments for a date-time test: the usual required stubs, with every
+ * target (required or optional) passed as the parametrized `value`.
+ */
+function buildDatetimeTestArgs(
+  op: Operation,
+  spec: ApiSpec,
+  hiddenParams: Set<string> | undefined,
+  targets: DatetimeTarget[],
+): string {
+  const overrides = new Map(targets.map((t) => [t.kwarg, 'value']));
+  const args = buildTestArgList(op, spec, hiddenParams, overrides);
+  for (const t of targets) {
+    if (!args.some((arg) => arg.startsWith(`${t.kwarg}=`))) args.push(`${t.kwarg}=value`);
+  }
+  return args.join(', ');
+}
+
+/**
+ * Emit one parametrized test per date-time surface (query params, body
+ * fields) that calls the generated method through the hand-maintained client
+ * and asserts the outgoing value is the UTC `Z` form for every input flavor.
+ */
+function emitDatetimeParamTests(
+  lines: string[],
+  op: Operation,
+  spec: ApiSpec,
+  method: string,
+  propName: string,
+  hiddenParams: Set<string> | undefined,
+  isAsync: boolean,
+): void {
+  const plan = planOperation(op);
+  const client = isAsync ? 'async_workos' : 'workos';
+  const surfaces: Array<{ suffix: string; targets: DatetimeTarget[]; assertion: (t: DatetimeTarget) => string }> = [
+    {
+      suffix: 'query_params',
+      targets: datetimeQueryParams(op, spec, hiddenParams),
+      assertion: (t) => `assert request.url.params["${t.wireName}"] == DATETIME_PARAM_WIRE`,
+    },
+    {
+      suffix: 'body_fields',
+      targets: datetimeBodyFields(op, spec, hiddenParams),
+      assertion: (t) => `assert body["${t.wireName}"] == DATETIME_PARAM_WIRE`,
+    },
+  ];
+  for (const { suffix, targets, assertion } of surfaces) {
+    if (targets.length === 0) continue;
+    const args = buildDatetimeTestArgs(op, spec, hiddenParams, targets);
+    lines.push('');
+    lines.push('    @pytest.mark.parametrize("value", DATETIME_PARAM_VALUES)');
+    const def = `    ${isAsync ? 'async ' : ''}def test_${method}_formats_datetime_${suffix}(self, ${client}, httpx_mock, value):`;
+    if (isAsync) {
+      pushAsyncTestDef(lines, def);
+    } else {
+      lines.push(def);
+    }
+    for (const setupLine of buildQueryEncodingResponseSetup(op, plan)) {
+      lines.push(`        ${setupLine}`);
+    }
+    lines.push(`        ${isAsync ? 'await ' : ''}${client}.${propName}.${method}(${args})`);
+    lines.push('        request = httpx_mock.get_request()');
+    if (suffix === 'body_fields') lines.push('        body = json.loads(request.content)');
+    for (const t of targets) {
+      lines.push(`        ${assertion(t)}`);
+    }
+  }
+}
+
 /**
  * Generate pytest test files and JSON fixtures for the Python SDK.
  */
@@ -168,6 +320,9 @@ function generateServiceTest(
   const lines: string[] = [];
 
   lines.push('import json');
+  // Index where `from datetime import ...` is spliced in if any method in this
+  // file takes a date-time parameter.
+  const datetimeImportIndex = lines.length;
   lines.push('');
   lines.push('import pytest');
   lines.push(`from ${ctx.namespace} import WorkOSClient, AsyncWorkOSClient`);
@@ -331,14 +486,24 @@ function generateServiceTest(
     lines.push(`from ${ctx.namespace}.${mountDir}._resource import ${[...groupVariantImports].join(', ')}`);
   }
 
-  lines.push('');
-  lines.push('');
-  lines.push(`class Test${resolvedName}:`);
-
   const resolvedLookup = buildResolvedLookup(ctx);
   // Redirect/urlBuilder ops construct a URL instead of making an HTTP request;
   // the canonical marker is the `urlBuilder` hint on the resolved operation.
   const isRedirectEndpoint = (op: Operation): boolean => lookupResolved(op, resolvedLookup)?.urlBuilder ?? false;
+
+  const needsDatetimeTests = service.operations.some(
+    (op) =>
+      !isRedirectEndpoint(op) && hasDatetimeParams(op, spec, buildHiddenParams(lookupResolved(op, resolvedLookup))),
+  );
+  if (needsDatetimeTests) {
+    lines.splice(datetimeImportIndex, 0, 'from datetime import datetime, timedelta, timezone');
+    pushDatetimeParamConstants(lines);
+  }
+
+  lines.push('');
+  lines.push('');
+  lines.push(`class Test${resolvedName}:`);
+
   const emittedTestMethods = new Set<string>();
   for (const op of service.operations) {
     const plan = planOperation(op);
@@ -552,6 +717,10 @@ function generateServiceTest(
           lines.push(`        ${assertion}`);
         }
       }
+    }
+
+    if (!isRedirectEndpoint(op)) {
+      emitDatetimeParamTests(lines, op, spec, method, propName, hiddenParams, false);
     }
   }
 
@@ -841,6 +1010,10 @@ function generateServiceTest(
         }
       }
     }
+
+    if (!isRedirectEndpoint(op)) {
+      emitDatetimeParamTests(lines, op, spec, method, propName, asyncHiddenParams, true);
+    }
   }
 
   // Generate tests for wrapper (union-split) methods (async)
@@ -1095,6 +1268,20 @@ function buildExpectedPath(op: Operation): string {
  * Build test arguments string for an operation call.
  */
 function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>): string {
+  return buildTestArgList(op, spec, hiddenParams).join(', ');
+}
+
+/**
+ * Required arguments for a generated method as `kwarg=value` (or positional
+ * path) Python fragments. `valueOverrides` replaces the stub literal for the
+ * named keyword arguments.
+ */
+function buildTestArgList(
+  op: Operation,
+  spec: ApiSpec,
+  hiddenParams?: Set<string>,
+  valueOverrides?: Map<string, string>,
+): string[] {
   const args: string[] = [];
 
   // Path params as positional args
@@ -1113,7 +1300,7 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
       const reqFields = bodyModel.fields.filter((f) => f.required && !hiddenParams?.has(f.name));
       for (const f of reqFields) {
         const paramName = bodyParamName(f, pathParamNames);
-        args.push(`${paramName}=${generateTestValue(f.type, f.name)}`);
+        args.push(`${paramName}=${valueOverrides?.get(paramName) ?? generateTestValue(f.type, f.name)}`);
       }
     }
   } else if (plan.hasBody && op.requestBody?.kind === 'union') {
@@ -1166,12 +1353,13 @@ function buildTestArgs(op: Operation, spec: ApiSpec, hiddenParams?: Set<string>)
         if (bodyModel?.fields.some((f) => domainFieldName(f) === fieldName(param.name))) continue;
       }
       if (param.required && !pathParamNames.has(fieldName(param.name))) {
-        args.push(`${fieldName(param.name)}=${generateTestValue(param.type, param.name)}`);
+        const paramName = fieldName(param.name);
+        args.push(`${paramName}=${valueOverrides?.get(paramName) ?? generateTestValue(param.type, param.name)}`);
       }
     }
   }
 
-  return args.join(', ');
+  return args;
 }
 
 function buildQueryEncodingTestArgs(op: Operation, spec: ApiSpec): string {
