@@ -1,6 +1,13 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
-import { className, domainPropertyName, ktStringLiteral, humanize, typealiasFile } from './naming.js';
+import {
+  className,
+  domainPropertyName,
+  ktStringLiteral,
+  humanize,
+  primeReservedTypeNames,
+  typealiasFile,
+} from './naming.js';
 import { enumCanonicalMap } from './enums.js';
 import {
   isListWrapperModel,
@@ -65,6 +72,7 @@ function promoteFieldType(f: Field): Field {
  * model are skipped — the hand-maintained runtime provides [Page]/[ListMetadata].
  */
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (models.length === 0) return [];
 
   // First pass: call mapTypeRef on every model field so discriminator info is

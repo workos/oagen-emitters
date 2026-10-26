@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { className, ktStringLiteral, typealiasFile } from './naming.js';
+import { className, ktStringLiteral, pascalName, primeReservedTypeNames, typealiasFile } from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -26,6 +26,7 @@ export const enumCanonicalMap = new Map<string, string>();
  * files pointing at the canonical class.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (enums.length === 0) return [];
 
   // Reset the canonical map on every generation run (guards against re-entry).
@@ -130,7 +131,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (seenWire.has(wire)) continue;
       seenWire.add(wire);
 
-      let memberName = className(wire);
+      let memberName = pascalName(wire);
       if (!memberName || /^[0-9]/.test(memberName)) memberName = `Value${memberName || wire}`;
       if (memberName === typeName || seenNames.has(memberName)) {
         let suffix = 2;

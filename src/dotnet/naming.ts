@@ -8,6 +8,97 @@ export function className(name: string): string {
   return toPascalCase(stripUrnPrefix(name));
 }
 
+/**
+ * Type names every generated source reaches unqualified — the BCL,
+ * Newtonsoft / System.Text.Json and OneOf types the emitted code uses, and the
+ * xUnit attributes the generated tests use. A class declared under one of
+ * these names in `namespace WorkOS` is found by enclosing-namespace lookup
+ * before any `using` directive (`WorkOS.List` fails every `List<string>` with
+ * CS0308), so such a model or enum is emitted as `<Name>Model`, as the Python
+ * and PHP emitters already do for their own built-ins. Enum members and
+ * service/property identifiers keep [className]: they cannot shadow a type.
+ */
+const DOTNET_RESERVED_TYPE_NAMES = new Set([
+  'Array',
+  'ArgumentException',
+  'Assert',
+  'BindingFlags',
+  'Buffer',
+  'CancellationToken',
+  'Convert',
+  'DateTime',
+  'DateTimeOffset',
+  'DefaultValueHandling',
+  'Dictionary',
+  'Encoding',
+  'Enum',
+  'EnumMember',
+  'Exception',
+  'Fact',
+  'Guid',
+  'HttpClient',
+  'HttpMethod',
+  'HttpStatusCode',
+  'IAsyncEnumerable',
+  'IEnumerable',
+  'IList',
+  'IReadOnlyDictionary',
+  'IReadOnlyList',
+  'InvalidOperationException',
+  'JArray',
+  'JObject',
+  'JToken',
+  'JTokenType',
+  'JsonConvert',
+  'JsonConverter',
+  'JsonIgnore',
+  'JsonIgnoreCondition',
+  'JsonProperty',
+  'JsonPropertyName',
+  'JsonSerializer',
+  'KeyValuePair',
+  'List',
+  'Math',
+  'Newtonsoft',
+  'Nullable',
+  'Object',
+  'Obsolete',
+  'OneOf',
+  'String',
+  'StringComparer',
+  'System',
+  'Task',
+  'Theory',
+  'TimeSpan',
+  'Tuple',
+  'Type',
+  'Uri',
+]);
+
+let takenTypeNames: ReadonlySet<string> = new Set();
+
+/**
+ * Prime the names a stepped built-in must keep clear of: every model's and
+ * enum's own PascalCase name, so `List` steps to `ListModel2` in a document
+ * that also declares `ListModel`. Called at every emitter entry (cheap and
+ * idempotent); until then the step is the plain `<Name>Model`.
+ */
+export function primeReservedTypeNames(spec: { models: { name: string }[]; enums: { name: string }[] }): void {
+  takenTypeNames = new Set([...spec.models, ...spec.enums].map((d) => className(d.name)));
+}
+
+function stepReservedTypeName(result: string): string {
+  if (!DOTNET_RESERVED_TYPE_NAMES.has(result)) return result;
+  let candidate = `${result}Model`;
+  for (let n = 2; takenTypeNames.has(candidate); n += 1) candidate = `${result}Model${n}`;
+  return candidate;
+}
+
+/** PascalCase type name for a model or enum; a built-in type's name is stepped to `<Name>Model` (see [primeReservedTypeNames]). */
+export function csTypeName(name: string): string {
+  return stepReservedTypeName(className(name));
+}
+
 /** Display name for a model type, including consumer-friendly aliases. */
 export function modelClassName(name: string): string {
   switch (name) {
@@ -15,13 +106,13 @@ export function modelClassName(name: string): string {
     case 'UserlandUser':
       return 'User';
     default:
-      return className(name);
+      return csTypeName(name);
   }
 }
 
-/** PascalCase file name (without extension). */
+/** PascalCase file name (without extension), matching the type it holds. */
 export function fileName(name: string): string {
-  return toPascalCase(stripUrnPrefix(name));
+  return csTypeName(name);
 }
 
 /** snake_case file name for fixtures/test data. */

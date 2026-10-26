@@ -1,6 +1,13 @@
 import type { Enum, EnumValue, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
-import { typeName, fileName, escapeReserved, swiftStringLiteral, moduleName } from './naming.js';
+import {
+  typeName,
+  fileName,
+  escapeReserved,
+  swiftStringLiteral,
+  moduleName,
+  primeReservedTypeNames,
+} from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 /**
@@ -15,6 +22,7 @@ import { isEnumInScope } from '../shared/resolved-ops.js';
  * Scoped (`--services`) runs leave out-of-scope enum files untouched on disk.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   const module = moduleName(ctx);
   return enums
     .filter((e) => isEnumInScope(e.name, ctx))

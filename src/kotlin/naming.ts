@@ -27,14 +27,107 @@ function uppercaseAcronyms(pascal: string): string {
   return result;
 }
 
-/** PascalCase class/type name. */
-export function className(name: string): string {
+/**
+ * Type names Kotlin resolves without an import — `kotlin.*`,
+ * `kotlin.collections.*`, `java.lang.*` — plus the JDK, coroutine and Jackson
+ * types the generated sources import. A model declared under one of these
+ * names shadows the built-in in its own package and in every file that
+ * star-imports the models (`data class List` turns each `List<T>` into
+ * "No type arguments expected for 'data class List'"), so such a model or
+ * enum is emitted as `<Name>Model`, as the Python and PHP emitters already do
+ * for their own built-ins. Enum members are named by [pascalName] and are not
+ * stepped: a member cannot shadow a type.
+ */
+const KOTLIN_RESERVED_TYPE_NAMES = new Set([
+  'Any',
+  'Array',
+  'ArrayList',
+  'Boolean',
+  'Byte',
+  'ByteArray',
+  'Char',
+  'CharSequence',
+  'Deprecated',
+  'Double',
+  'Error',
+  'Exception',
+  'Float',
+  'HashMap',
+  'Int',
+  'Iterable',
+  'LinkedHashMap',
+  'List',
+  'Long',
+  'Map',
+  'MutableList',
+  'MutableMap',
+  'MutableSet',
+  'Nothing',
+  'Number',
+  'Object',
+  'Pair',
+  'RuntimeException',
+  'Set',
+  'Short',
+  'String',
+  'Suppress',
+  'System',
+  'Throwable',
+  'Throws',
+  'Triple',
+  'Unit',
+  'Regex',
+  'Instant',
+  'OffsetDateTime',
+  'URL',
+  'Dispatchers',
+  'JvmName',
+  'JvmOverloads',
+  'JvmStatic',
+  'JsonProperty',
+  'JsonSubTypes',
+  'JsonTypeInfo',
+  'JsonCreator',
+  'JsonValue',
+  'JsonIgnore',
+  'JsonInclude',
+  'JsonNode',
+  'ObjectMapper',
+  'TypeReference',
+]);
+
+/** PascalCase identifier with acronym preservation, as written (no built-in guard). */
+export function pascalName(name: string): string {
   return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
+}
+
+let takenTypeNames: ReadonlySet<string> = new Set();
+
+/**
+ * Prime the names a stepped built-in must keep clear of: every model's and
+ * enum's own PascalCase name, so `List` steps to `ListModel2` in a document
+ * that also declares `ListModel`. Called at every emitter entry (cheap and
+ * idempotent); until then the step is the plain `<Name>Model`.
+ */
+export function primeReservedTypeNames(spec: { models: { name: string }[]; enums: { name: string }[] }): void {
+  takenTypeNames = new Set([...spec.models, ...spec.enums].map((d) => pascalName(d.name)));
+}
+
+function stepReservedTypeName(result: string): string {
+  if (!KOTLIN_RESERVED_TYPE_NAMES.has(result)) return result;
+  let candidate = `${result}Model`;
+  for (let n = 2; takenTypeNames.has(candidate); n += 1) candidate = `${result}Model${n}`;
+  return candidate;
+}
+
+/** PascalCase class/type name; a built-in type's name is stepped to `<Name>Model` (see [primeReservedTypeNames]). */
+export function className(name: string): string {
+  return stepReservedTypeName(pascalName(name));
 }
 
 /** PascalCase file name (matches the primary class). */
 export function fileName(name: string): string {
-  return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
+  return className(name);
 }
 
 /** snake_case file name for fixtures/test data. */
@@ -180,11 +273,12 @@ export function buildMountDirMap(ctx: EmitterContext): Map<string, string> {
 /**
  * Trim the mount-target resource words from the start of a method name.
  * E.g. `listOrganizations` on OrganizationsApi becomes `list`. Delegates to
- * the shared family-wide algorithm; canonicalizes the mount to Kotlin's class
- * name first.
+ * the shared family-wide algorithm; canonicalizes the mount to its plain
+ * PascalCase form — not [className], whose built-in guard would turn a mount
+ * `List` into `ListModel` and trim `getListModel` as if it were `getList`.
  */
-function trimMountedResourceFromMethod(method: string, mountName: string): string {
-  return trimMountedResource(method, className(mountName));
+export function trimMountedResourceFromMethod(method: string, mountName: string): string {
+  return trimMountedResource(method, pascalName(mountName));
 }
 
 /** Kotlin hard/soft keywords that must be back-ticked when used as identifiers. */
