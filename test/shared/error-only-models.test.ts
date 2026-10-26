@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ApiSpec, Model, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
-import { collectErrorOnlyModelNames, preferLiveCanonical } from '../../src/shared/model-utils.js';
+import { collectErrorOnlyModelNames, preferLiveCanonical } from '../../src/shared/resolved-ops.js';
 
 const codeMessage: Model['fields'] = [
   { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
@@ -49,6 +49,25 @@ const spec: ApiSpec = {
 describe('collectErrorOnlyModelNames', () => {
   it('names the models only error responses reach', () => {
     expect([...collectErrorOnlyModelNames(spec)]).toEqual(['Err']);
+  });
+
+  it('treats a model a body-owned query parameter reaches as live', () => {
+    const op = services[0].operations[0];
+    const viaParam: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'Events',
+          operations: [
+            {
+              ...op,
+              bodyOwnedQueryParams: [{ name: 'filter', type: { kind: 'model', name: 'Err' }, required: false }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(collectErrorOnlyModelNames(viaParam).size).toBe(0);
   });
 
   it('treats a model that a success response also reaches as live', () => {

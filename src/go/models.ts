@@ -5,7 +5,13 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName } from './naming.js';
 import { humanize } from './humanize.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
-import { isModelInScope, isScopedRun, declaredParams } from '../shared/resolved-ops.js';
+import {
+  isModelInScope,
+  isScopedRun,
+  declaredParams,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+} from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, parseFlatGoBlocks, type NamedBlock } from './flat-merge.js';
 
 // Import and re-export shared model detection utilities
@@ -14,8 +20,6 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
-  collectErrorOnlyModelNames,
-  preferLiveCanonical,
 } from '../shared/model-utils.js';
 export { isListWrapperModel, isListMetadataModel };
 
@@ -132,7 +136,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     !isScopedRun(ctx) || isModelInScope(name, ctx) || priorModelNames.has(className(name));
 
   // A model only error responses reach never takes a domain model's name.
-  const errorOnly = collectErrorOnlyModelNames(ctx.spec);
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroups) {
     if (names.length <= 1) continue;

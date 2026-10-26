@@ -1,8 +1,8 @@
 import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
-import { buildListScaffoldingSkip, detectDiscriminators, collectErrorOnlyModelNames } from '../shared/model-utils.js';
-import { declaredParams } from '../shared/resolved-ops.js';
+import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
+import { declaredParams, collectErrorOnlyModelNames } from '../shared/resolved-ops.js';
 
 /**
  * Walk every operation across all services and tally, per schema, the set of

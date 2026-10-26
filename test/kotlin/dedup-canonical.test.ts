@@ -58,4 +58,24 @@ describe('kotlin/models canonical election', () => {
     const err = files.find((f) => f.path.endsWith('/Err.kt'))!;
     expect(err.content).toContain('typealias Err = AuthenticationFailedDataError');
   });
+
+  it('scoped run: force-emits an out-of-scope canonical that an in-scope alias points at', () => {
+    // Only the service that uses `Err` is selected; the live twin it now
+    // aliases is out of scope and brand-new (absent from the prior manifest).
+    const scopedCtx: EmitterContext = {
+      ...ctx,
+      scopedServices: new Set(['Events']),
+      scopedModelNames: new Set(['Err']),
+      priorTargetManifestPaths: new Set<string>(),
+    };
+    generateEnums([], scopedCtx);
+    const files = generateModels(models, scopedCtx);
+
+    expect(files.find((f) => f.path.endsWith('/Err.kt'))!.content).toContain(
+      'typealias Err = AuthenticationFailedDataError',
+    );
+    const canonical = files.find((f) => f.path.endsWith('/AuthenticationFailedDataError.kt'))!;
+    expect(canonical).toBeDefined();
+    expect(canonical.content).toContain('data class AuthenticationFailedDataError(');
+  });
 });

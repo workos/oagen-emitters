@@ -28,10 +28,13 @@ import {
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
+} from '../shared/model-utils.js';
+import {
+  isModelInScope,
+  declaredParams,
   collectErrorOnlyModelNames,
   preferLiveCanonical,
-} from '../shared/model-utils.js';
-import { isModelInScope, declaredParams } from '../shared/resolved-ops.js';
+} from '../shared/resolved-ops.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -75,7 +78,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // but is the canonical for a field-referenced alias (e.g. `SlimRole`)
   // would be wrongly classified as body-only and skipped from emission,
   // leaving every alias-rewritten field reference dangling.
-  primeModelAliases(models, collectErrorOnlyModelNames(ctx.spec));
+  primeModelAliases(models, collectErrorOnlyModelNames({ services: ctx.spec.services, models }));
 
   // Models that are referenced ONLY as an operation request body (not by any
   // response, field, or other operation type) are dead surface in .NET because

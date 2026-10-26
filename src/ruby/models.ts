@@ -5,10 +5,13 @@ import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
+} from '../shared/model-utils.js';
+import {
+  isModelInScope,
   collectErrorOnlyModelNames,
   preferLiveCanonical,
-} from '../shared/model-utils.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+  isScopedRun,
+} from '../shared/resolved-ops.js';
 
 /** Folder under lib/workos/ for models not owned by any service. */
 export const SHARED_MODEL_DIR = 'shared';
@@ -100,7 +103,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     hashGroups.get(h)!.push(m.name);
   }
   // A model only error responses reach never takes a domain model's name.
-  const errorOnly = collectErrorOnlyModelNames(ctx.spec);
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
   const aliasOf = new Map<string, string>();
   for (const names of hashGroups.values()) {
     if (names.length <= 1) continue;
@@ -109,8 +112,20 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
   }
 
+  // A canonical an in-scope alias points at must exist after the run even
+  // when it is itself out of scope and brand-new (it would be dropped) or on
+  // disk as the former alias of that very model (the two files would alias
+  // each other): force-emit it, as go/models.ts does.
+  const forcedCanonicals = new Set<string>();
+  if (isScopedRun(ctx)) {
+    for (const [aliasName, canonical] of aliasOf) {
+      if (isModelInScope(aliasName, ctx)) forcedCanonicals.add(canonical);
+    }
+  }
+
   for (const model of models) {
     if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    const modelInScope = isModelInScope(model.name, ctx) || forcedCanonicals.has(model.name);
 
     const cls = className(model.name);
     const file = fileName(model.name);
@@ -127,7 +142,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads
       // by path, so there is no barrel to keep in sync; out-of-scope alias files
       // are left untouched on disk.
-      if (isModelInScope(model.name, ctx)) {
+      if (modelInScope) {
         files.push({
           path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
           content: lines.join('\n'),
@@ -227,7 +242,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads by
     // path, so there is no barrel to keep in sync; out-of-scope model files are
     // left untouched on disk.
-    if (isModelInScope(model.name, ctx)) {
+    if (modelInScope) {
       files.push({
         path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
         content: lines.join('\n'),
