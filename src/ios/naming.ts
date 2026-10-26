@@ -87,8 +87,74 @@ export function escapeReserved(name: string): string {
 }
 
 /** PascalCase type name for models, enums, and resources. */
+/**
+ * Type names every generated source reaches without an import — the Swift
+ * standard library and the Foundation types the emitted code uses, plus
+ * SwiftUI's `List`, which an app importing both SwiftUI and WorkOS could no
+ * longer name unqualified. A module-level type under one of these names
+ * shadows the built-in for the whole module, so such a model or enum is
+ * emitted as `<Name>Model`, as the Python and PHP emitters already do for
+ * their own built-ins.
+ */
+const SWIFT_RESERVED_TYPE_NAMES = new Set([
+  'Any',
+  'AnyObject',
+  'Array',
+  'Bool',
+  'Codable',
+  'CodingKey',
+  'Data',
+  'Date',
+  'DateFormatter',
+  'Decodable',
+  'Decoder',
+  'DecodingError',
+  'Dictionary',
+  'Double',
+  'Encodable',
+  'Encoder',
+  'EncodingError',
+  'Error',
+  'Float',
+  'Hashable',
+  'Equatable',
+  'Int',
+  'Int32',
+  'Int64',
+  'UInt8',
+  'UInt32',
+  'UInt64',
+  'ISO8601DateFormatter',
+  'JSONDecoder',
+  'JSONEncoder',
+  'List',
+  'Locale',
+  'Never',
+  'Optional',
+  'RawRepresentable',
+  'Result',
+  'Sendable',
+  'Set',
+  'String',
+  'Task',
+  'TimeInterval',
+  'TimeZone',
+  'URL',
+  'URLComponents',
+  'URLQueryItem',
+  'URLRequest',
+  'URLResponse',
+  'URLSession',
+  'HTTPURLResponse',
+  'UUID',
+  'Void',
+  'AsyncSequence',
+  'AsyncIteratorProtocol',
+]);
+
 export function typeName(name: string): string {
-  return toPascalCase(stripUrnPrefix(name));
+  const result = toPascalCase(stripUrnPrefix(name));
+  return SWIFT_RESERVED_TYPE_NAMES.has(result) ? `${result}Model` : result;
 }
 
 /** File base name (without extension) for a generated type. */

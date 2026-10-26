@@ -27,14 +27,89 @@ function uppercaseAcronyms(pascal: string): string {
   return result;
 }
 
-/** PascalCase class/type name. */
-export function className(name: string): string {
+/**
+ * Type names Kotlin resolves without an import — `kotlin.*`,
+ * `kotlin.collections.*`, `java.lang.*` — plus the JDK, coroutine and Jackson
+ * types the generated sources import. A model declared under one of these
+ * names shadows the built-in in its own package and in every file that
+ * star-imports the models (`data class List` turns each `List<T>` into
+ * "No type arguments expected for 'data class List'"), so such a model or
+ * enum is emitted as `<Name>Model`, as the Python and PHP emitters already do
+ * for their own built-ins. Enum members are named by [pascalName] and are not
+ * stepped: a member cannot shadow a type.
+ */
+const KOTLIN_RESERVED_TYPE_NAMES = new Set([
+  'Any',
+  'Array',
+  'ArrayList',
+  'Boolean',
+  'Byte',
+  'ByteArray',
+  'Char',
+  'CharSequence',
+  'Deprecated',
+  'Double',
+  'Error',
+  'Exception',
+  'Float',
+  'HashMap',
+  'Int',
+  'Iterable',
+  'LinkedHashMap',
+  'List',
+  'Long',
+  'Map',
+  'MutableList',
+  'MutableMap',
+  'MutableSet',
+  'Nothing',
+  'Number',
+  'Object',
+  'Pair',
+  'RuntimeException',
+  'Set',
+  'Short',
+  'String',
+  'Suppress',
+  'System',
+  'Throwable',
+  'Throws',
+  'Triple',
+  'Unit',
+  'Regex',
+  'Instant',
+  'OffsetDateTime',
+  'URL',
+  'Dispatchers',
+  'JvmName',
+  'JvmOverloads',
+  'JvmStatic',
+  'JsonProperty',
+  'JsonSubTypes',
+  'JsonTypeInfo',
+  'JsonCreator',
+  'JsonValue',
+  'JsonIgnore',
+  'JsonInclude',
+  'JsonNode',
+  'ObjectMapper',
+  'TypeReference',
+]);
+
+/** PascalCase identifier with acronym preservation, as written (no built-in guard). */
+export function pascalName(name: string): string {
   return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
+}
+
+/** PascalCase class/type name; a built-in type's name is stepped to `<Name>Model`. */
+export function className(name: string): string {
+  const result = pascalName(name);
+  return KOTLIN_RESERVED_TYPE_NAMES.has(result) ? `${result}Model` : result;
 }
 
 /** PascalCase file name (matches the primary class). */
 export function fileName(name: string): string {
-  return uppercaseAcronyms(toPascalCase(stripUrnPrefix(name)));
+  return className(name);
 }
 
 /** snake_case file name for fixtures/test data. */

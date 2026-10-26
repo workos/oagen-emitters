@@ -134,4 +134,20 @@ describe('ios/models scoped runs', () => {
       'Sources/WorkOS/Models/DataIntegration.swift',
     ]);
   });
+
+  it('steps a model named like a Swift standard-library type to <Name>Model', () => {
+    const models: Model[] = [
+      { name: 'Data', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      { name: 'Event', fields: [{ name: 'data', type: { kind: 'model', name: 'Data' }, required: true }] },
+    ];
+
+    const files = generateModels(models, ctx);
+
+    expect(files.find((f) => f.path.endsWith('/Data.swift'))).toBeUndefined();
+    const stepped = files.find((f) => f.path.endsWith('/DataModel.swift'))!;
+    expect(stepped).toBeDefined();
+    expect(stepped.content).toContain('public struct DataModel');
+    const event = files.find((f) => f.path.endsWith('/Event.swift'))!;
+    expect(event.content).toContain('public let data: DataModel');
+  });
 });

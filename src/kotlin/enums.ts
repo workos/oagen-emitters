@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { className, ktStringLiteral } from './naming.js';
+import { className, ktStringLiteral, pascalName } from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -140,7 +140,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (seenWire.has(wire)) continue;
       seenWire.add(wire);
 
-      let memberName = className(wire);
+      let memberName = pascalName(wire);
       if (!memberName || /^[0-9]/.test(memberName)) memberName = `Value${memberName || wire}`;
       if (memberName === typeName || seenNames.has(memberName)) {
         let suffix = 2;

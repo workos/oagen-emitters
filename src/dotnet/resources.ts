@@ -31,6 +31,7 @@ import {
   escapeCsAttributeString,
   humanize,
   modelClassName,
+  csTypeName,
 } from './naming.js';
 import {
   buildResolvedLookup,
@@ -109,7 +110,7 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
 function reservedTypeNames(ctx: EmitterContext): Set<string> {
   const reserved = new Set<string>();
   for (const model of ctx.spec.models) reserved.add(modelClassName(model.name));
-  for (const enumDef of ctx.spec.enums) reserved.add(className(enumDef.name));
+  for (const enumDef of ctx.spec.enums) reserved.add(csTypeName(enumDef.name));
   return reserved;
 }
 

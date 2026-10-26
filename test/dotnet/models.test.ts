@@ -509,4 +509,24 @@ describe('dotnet/models wire-name pinning', () => {
     expect(content).not.toContain('[JsonProperty("access_token")]');
     expect(content).toContain('public string AccessToken { get; set; }');
   });
+
+  it('steps a model named like a BCL type to <Name>Model', () => {
+    const models: Model[] = [
+      { name: 'List', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'Waitlist',
+        fields: [{ name: 'lists', type: { kind: 'array', items: { kind: 'model', name: 'List' } }, required: true }],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    expect(files.find((f) => f.path === 'Entities/List.cs')).toBeUndefined();
+    const stepped = files.find((f) => f.path === 'Entities/ListModel.cs')!;
+    expect(stepped).toBeDefined();
+    expect(stepped.content).toContain('public class ListModel');
+    const waitlist = files.find((f) => f.path === 'Entities/Waitlist.cs')!;
+    expect(waitlist.content).toContain('List<ListModel>');
+  });
 });

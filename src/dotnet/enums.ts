@@ -1,6 +1,14 @@
 import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
-import { className, csLiteral, deprecationMessage, escapeCsAttributeString, escapeXml, humanize } from './naming.js';
+import {
+  className,
+  csLiteral,
+  csTypeName,
+  deprecationMessage,
+  escapeCsAttributeString,
+  escapeXml,
+  humanize,
+} from './naming.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
@@ -30,7 +38,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const files: GeneratedFile[] = [];
 
   for (const enumDef of enums) {
-    const typeName = className(enumDef.name);
+    const typeName = csTypeName(enumDef.name);
 
     // Skip duplicate enums — their references are retargeted to the canonical.
     if (aliasOf.has(enumDef.name)) continue;
@@ -324,7 +332,7 @@ function collectReferencedEnumNames(ctx: EmitterContext): Set<string> {
 /** Get the canonical enum name if the given enum is an alias. */
 export function resolveEnumName(name: string, enums: Enum[]): string {
   const aliasOf = collectEnumAliasOf(enums);
-  return aliasOf.get(name) ? className(aliasOf.get(name)!) : className(name);
+  return aliasOf.get(name) ? csTypeName(aliasOf.get(name)!) : csTypeName(name);
 }
 
 export function assignEnumsToServices(enums: Enum[], services: Service[]): Map<string, string> {

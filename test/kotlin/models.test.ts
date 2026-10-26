@@ -206,4 +206,24 @@ describe('kotlin/models', () => {
     expect(aliasFile).toBeDefined();
     expect(aliasFile.content).toContain('typealias EmailChangeConfirmationUser = User');
   });
+
+  it('steps a model named like a Kotlin built-in type to <Name>Model', () => {
+    const models: Model[] = [
+      { name: 'List', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'Waitlist',
+        fields: [{ name: 'lists', type: { kind: 'array', items: { kind: 'model', name: 'List' } }, required: true }],
+      },
+    ];
+
+    generateEnums([], ctx);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    expect(files.find((f) => f.path.endsWith('/List.kt'))).toBeUndefined();
+    const stepped = files.find((f) => f.path.endsWith('/ListModel.kt'))!;
+    expect(stepped).toBeDefined();
+    expect(stepped.content).toContain('data class ListModel(');
+    const waitlist = files.find((f) => f.path.endsWith('/Waitlist.kt'))!;
+    expect(waitlist.content).toContain('List<ListModel>');
+  });
 });

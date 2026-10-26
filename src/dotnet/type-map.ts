@@ -1,6 +1,6 @@
 import type { TypeRef, PrimitiveType, UnionType } from '@workos/oagen';
 import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
-import { className, modelClassName, csLiteral } from './naming.js';
+import { csTypeName, modelClassName, csLiteral } from './naming.js';
 import { wireNameRoundTrips } from './wire-name.js';
 
 /** Known C# value types that need `?` for nullable. */
@@ -76,7 +76,7 @@ export function mapTypeRef(ref: TypeRef): string {
       // owning property emits a const initializer separately.
       if ((r.values?.length ?? 0) === 1) return 'string';
       if (singleValueEnumNames.has(r.name)) return 'string';
-      return className(resolveEnumTypeName(r.name));
+      return csTypeName(resolveEnumTypeName(r.name));
     },
     union: (_r, variants) => joinUnionVariants(_r, variants),
     nullable: (_ref, inner) => {
