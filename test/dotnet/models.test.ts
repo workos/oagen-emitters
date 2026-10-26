@@ -529,4 +529,32 @@ describe('dotnet/models wire-name pinning', () => {
     const waitlist = files.find((f) => f.path === 'Entities/Waitlist.cs')!;
     expect(waitlist.content).toContain('List<ListModel>');
   });
+
+  it('adds the collections using when a List appears only inside a union', () => {
+    const models: Model[] = [
+      {
+        name: 'ValidationError',
+        fields: [
+          {
+            name: 'message',
+            type: {
+              kind: 'union',
+              variants: [
+                { kind: 'primitive', type: 'string' },
+                { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+              ],
+            },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    const content = files.find((f) => f.path === 'Entities/ValidationError.cs')!.content;
+    expect(content).toContain('OneOf.OneOf<string, List<string>>');
+    expect(content).toContain('using System.Collections.Generic;');
+  });
 });
