@@ -14,7 +14,7 @@ import {
   getMountTarget,
   declaredParams,
   forcedModelNames,
-  forcedEnumNames,
+  forcedEnumNamesWithCanonicals,
 } from '../shared/resolved-ops.js';
 
 /**
@@ -42,7 +42,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // every model that canonical reaches, under the names it uses — otherwise
   // the alias module imports a file the run never wrote (see forcedModelNames).
   const forcedModels = forcedModelNames(models, aliasOf, ctx);
-  const forcedEnums = forcedEnumNames(ctx);
+  // Expanded by enum alias as the enum pass does, so the barrel exports the
+  // canonical a forced alias resolves to.
+  const forcedEnums = forcedEnumNamesWithCanonicals(ctx, (name) => placement.enumAliases.get(name));
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];

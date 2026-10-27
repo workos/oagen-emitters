@@ -101,4 +101,37 @@ describe('python scoped canonical election', () => {
     const files = generateEnums(enums, enumCtx);
     expect(files.some((f) => f.path.endsWith('/live_status.py'))).toBe(true);
   });
+
+  it('scoped run: the barrel exports the canonical an aliased forced enum resolves to', () => {
+    // `ZStatus` and `AStatus` share their values, so `ZStatus` aliases `AStatus`.
+    // Only the error side is selected; the live tree it aliases names `ZStatus`.
+    const status = (name: string): Model['fields'][number] => ({
+      name: 'status',
+      type: { kind: 'enum', name },
+      required: true,
+    });
+    const withEnum: Model[] = models.map((m) =>
+      m.name === 'Err'
+        ? { ...m, fields: [...m.fields, status('AStatus')] }
+        : m.name === 'AuthenticationFailedDataError'
+          ? { ...m, fields: [...m.fields, status('ZStatus')] }
+          : m,
+    );
+    const values = [
+      { name: 'OK', value: 'ok' },
+      { name: 'FAILED', value: 'failed' },
+    ];
+    const enums: Enum[] = [
+      { name: 'ZStatus', values },
+      { name: 'AStatus', values },
+    ];
+    const enumCtx: EmitterContext = { ...scopedCtx, spec: { ...scopedCtx.spec, models: withEnum, enums } };
+
+    const files = generateModels(withEnum, enumCtx);
+    const barrels = files
+      .filter((f) => f.path.endsWith('/models/__init__.py'))
+      .map((f) => f.content)
+      .join('\n');
+    expect(barrels).toContain('AStatus');
+  });
 });
