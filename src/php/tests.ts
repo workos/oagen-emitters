@@ -173,7 +173,7 @@ function generateMountGroupTest(
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for DELETE-with-body
       if (plan.hasBody) {
-        emitBodyAssertions(lines, op, ctx, hidden);
+        emitBodyAssertions(lines, op, ctx, hidden, baseline);
       }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       const fixtureStem = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
@@ -231,7 +231,7 @@ function generateMountGroupTest(
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for POST/PUT/PATCH
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
-        emitBodyAssertions(lines, op, ctx, hidden);
+        emitBodyAssertions(lines, op, ctx, hidden, baseline);
       }
     } else {
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
@@ -348,12 +348,29 @@ function generateClientTest(ctx: EmitterContext): string {
   return lines.join('\n');
 }
 
-function testRequestBodyModel(op: Operation, ctx: EmitterContext): Model | null {
+/**
+ * A test request must satisfy one branch, not an arbitrary mix of alternatives.
+ * Prefer the first branch that supplies every baseline-required input.
+ */
+function testRequestBodyModel(op: Operation, ctx: EmitterContext, baseline?: ApiParam[]): Model | null {
   resolveRequestBodyModel(op, ctx.spec.models);
-  // A test request must satisfy one branch, not an arbitrary mix of alternatives.
-  let requestBody = op.requestBody;
-  while (requestBody?.kind === 'union') requestBody = requestBody.variants[0];
-  return resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models);
+  const leaves = (ref: TypeRef): TypeRef[] => (ref.kind === 'union' ? ref.variants.flatMap(leaves) : [ref]);
+  const branches = (op.requestBody ? leaves(op.requestBody) : []).map((requestBody) =>
+    resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models),
+  );
+  if (branches.length === 0) return null;
+  const required = baseline?.filter((p) => !p.optional).map((p) => p.name) ?? [];
+  const otherNames = new Set([...op.pathParams, ...op.queryParams].map((p) => toCamelCase(p.name)));
+  const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
+  const supplies = (model: Model | null): boolean => {
+    const names = new Set(otherNames);
+    for (const f of model?.fields ?? []) {
+      const phpName = toCamelCase(f.name);
+      names.add(pathParamNames.has(phpName) ? `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}` : phpName);
+    }
+    return required.every((name) => names.has(name));
+  };
+  return branches.find(supplies) ?? branches[0];
 }
 
 function buildTestArgs(
@@ -376,7 +393,7 @@ function buildTestArgs(
   }
 
   // Required body fields
-  const bodyModel = testRequestBodyModel(op, ctx);
+  const bodyModel = testRequestBodyModel(op, ctx, opts?.baseline);
   if (bodyModel) {
     const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
     for (const f of bodyModel.fields) {
@@ -412,11 +429,24 @@ function buildTestArgs(
   for (const q of op.queryParams) {
     if (hidden.has(q.name)) continue;
     if (groupedParamNames.has(q.name)) continue;
-    const phpName = toCamelCase(q.name);
+    let phpName = toCamelCase(q.name);
+    if (usedNames.has(phpName)) phpName = `query${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
     if (!q.required && !includeOptional && !required.has(phpName)) continue;
     if (usedNames.has(phpName)) continue;
     usedNames.add(phpName);
     args.push(`${phpName}: ${generateTestValue(q.type, ctx)}`);
+  }
+
+  // No single branch supplies every baseline-required input: fill the rest from the merged body.
+  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models);
+  const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
+  for (const f of mergedBody?.fields ?? []) {
+    if (hidden.has(f.name)) continue;
+    let phpName = toCamelCase(f.name);
+    if (pathParamNames.has(phpName)) phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+    if (!required.has(phpName) || usedNames.has(phpName)) continue;
+    usedNames.add(phpName);
+    args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
   }
 
   return args.join(', ');
@@ -660,8 +690,14 @@ function emitRedirectQueryAssertions(
  * Emit body field assertions for POST/PUT/PATCH operations.
  * Only asserts primitive required fields (strings, numbers, booleans).
  */
-function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
-  const bodyModel = testRequestBodyModel(op, ctx);
+function emitBodyAssertions(
+  lines: string[],
+  op: Operation,
+  ctx: EmitterContext,
+  hidden?: Set<string>,
+  baseline?: ApiParam[],
+): void {
+  const bodyModel = testRequestBodyModel(op, ctx, baseline);
   if (!bodyModel) return;
   // Skip fields that collide with path param names (they get deduped in the resource)
   const pathParamNames = new Set(op.pathParams.map((p) => p.name));

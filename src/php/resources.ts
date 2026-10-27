@@ -367,11 +367,11 @@ function generateMethod(
   }
 
   // @param for query params (skip grouped params — they appear as group union params)
+  const queryParamMap = buildQueryParamMap(op, bodyModel, hiddenParams);
   for (const q of op.queryParams) {
-    if (hiddenParams.has(q.name)) continue;
-    if (groupedParamNames.has(q.name)) continue;
+    const phpName = queryParamMap.get(q.name);
+    if (!phpName) continue;
     const docType = mapTypeRefForPHPDoc(q.type);
-    const phpName = fieldName(q.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
     // Spec-defaulted enum params on HTTP calls are non-nullable because the
@@ -552,7 +552,7 @@ function generateMethod(
       }
     }
     // Build query params if present
-    const deleteQueryLines = buildQueryArray(op);
+    const deleteQueryLines = buildQueryArray(op, undefined, { bodyModel });
     if (deleteQueryLines.length > 0) {
       lines.push('        $query = array_filter([');
       for (const q of deleteQueryLines) {
@@ -611,7 +611,7 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
-    const queryLines = buildQueryArray(op, hiddenParams);
+    const queryLines = buildQueryArray(op, hiddenParams, { bodyModel });
     if (queryLines.length > 0) {
       lines.push('        $query = array_filter([');
       for (const q of queryLines) lines.push(`            ${q}`);
@@ -780,13 +780,11 @@ function buildMethodParams(
   }
 
   // Query params (skip grouped params — they are serialized via group dispatch)
+  const queryParamMap = buildQueryParamMap(op, bodyModel, hidden);
   for (const q of op.queryParams) {
-    if (hidden.has(q.name)) continue;
-    if (groupedParams.has(q.name)) continue;
+    const phpName = queryParamMap.get(q.name);
+    if (!phpName) continue;
     const phpType = mapTypeRef(q.type, { qualified: true });
-    let phpName = fieldName(q.name);
-    if (usedNames.has(phpName)) continue;
-    usedNames.add(phpName);
     if (q.required) {
       required.push(`${phpType} $${phpName}`);
     } else if (shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true)) {
@@ -859,17 +857,49 @@ function isDateTimeType(ref: import('@workos/oagen').TypeRef): boolean {
   return false;
 }
 
+/**
+ * Build a mapping from wire name to PHP variable name for visible query params,
+ * disambiguating collisions with path params, body fields, and parameter groups.
+ * Params that cannot be given a distinct name are omitted.
+ */
+function buildQueryParamMap(op: Operation, bodyModel: Model | null, hidden: Set<string>): Map<string, string> {
+  const groupedParams = collectGroupedParamNames(op);
+  const usedNames = new Set<string>();
+  for (const p of op.pathParams) {
+    const phpName = fieldName(p.name);
+    usedNames.add(usedNames.has(phpName) ? `path${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}` : phpName);
+  }
+  const bodyParamMap = buildBodyParamMap(op, bodyModel);
+  for (const field of bodyModel?.fields ?? []) {
+    if (hidden.has(field.name) || groupedParams.has(field.name)) continue;
+    usedNames.add(bodyParamMap.get(field.name)!);
+  }
+  for (const group of op.parameterGroups ?? []) usedNames.add(fieldName(group.name));
+
+  const map = new Map<string, string>();
+  for (const q of op.queryParams) {
+    if (hidden.has(q.name) || groupedParams.has(q.name)) continue;
+    let phpName = fieldName(q.name);
+    if (usedNames.has(phpName)) {
+      phpName = `query${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+      if (usedNames.has(phpName)) continue;
+    }
+    usedNames.add(phpName);
+    map.set(q.name, phpName);
+  }
+  return map;
+}
+
 function buildQueryArray(
   op: Operation,
   hiddenParams?: Set<string>,
-  opts?: { materializeQueryDefaults?: boolean },
+  opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null },
 ): string[] {
-  const hidden = hiddenParams ?? new Set();
-  const groupedParams = collectGroupedParamNames(op);
+  const queryParamMap = buildQueryParamMap(op, opts?.bodyModel ?? null, hiddenParams ?? new Set());
   return op.queryParams
-    .filter((q) => !hidden.has(q.name) && !groupedParams.has(q.name))
+    .filter((q) => queryParamMap.has(q.name))
     .map((q) => {
-      const phpName = fieldName(q.name);
+      const phpName = queryParamMap.get(q.name)!;
       if (isEnumType(q.type)) {
         // Mirrors the signature: only materialized enum defaults are
         // non-nullable, so other optional enum params use the nullsafe op.

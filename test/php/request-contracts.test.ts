@@ -218,6 +218,42 @@ describe('PHP request contracts', () => {
     );
   });
 
+  it('picks a test branch that supplies every baseline-required input', () => {
+    const ctx = context(
+      spec,
+      surface({ authorizeDataIntegration: ['slug', 'userId', 'connectedAccountId', 'options?'] }),
+    );
+    expect(parameters(resource(ctx), 'authorizeDataIntegration').slice(0, 3)).toEqual([
+      'slug',
+      'userId',
+      'connectedAccountId',
+    ]);
+    const tests = generateTests(spec, ctx).find((f) => f.path === 'tests/Service/PipesTest.php')!.content;
+    expect(tests).toContain(
+      "authorizeDataIntegration(slug: 'test_slug', userId: 'test_value', connectionIntent: 'reauthorize', connectedAccountId: 'test_value')",
+    );
+    expect(tests).toContain("$this->assertSame('reauthorize', $body['connection_intent'])");
+  });
+
+  it('fills baseline-required inputs that no single branch supplies', () => {
+    const input = structuredClone(spec);
+    input.models
+      .find((m) => m.name === 'AuthorizeReauthorize')!
+      .fields.push({
+        name: 'return_to',
+        required: false,
+        type: { kind: 'primitive', type: 'string' },
+      });
+    const ctx = context(
+      input,
+      surface({ authorizeDataIntegration: ['slug', 'userId', 'returnTo', 'connectedAccountId', 'options?'] }),
+    );
+    const tests = generateTests(input, ctx).find((f) => f.path === 'tests/Service/PipesTest.php')!.content;
+    const call = tests.match(/authorizeDataIntegration\((.*)\);/)![1];
+    expect(call).toContain("returnTo: 'test_value'");
+    expect(call).toContain("connectedAccountId: 'test_value'");
+  });
+
   it('uses named path arguments in generated tests when the baseline order differs from the schema', () => {
     const ctx = context(spec, surface({ createUserConnectedAccount: ['slug', 'userId', 'options?'] }));
     expect(parameters(resource(ctx), 'createUserConnectedAccount').slice(0, 3)).toEqual(['slug', 'userId', 'options']);
@@ -313,6 +349,25 @@ echo json_encode($client->requests, JSON_THROW_ON_ERROR);
       ],
       [{ access_token: 'access' }, []],
     ]);
+  });
+
+  it('gives a query param that collides with a path param or body field its own argument', () => {
+    const input = structuredClone(spec);
+    const op = input.services[0].operations.find((o) => o.name === 'createUserConnectedAccount')!;
+    input.services[0].operations = [op];
+    op.queryParams = [
+      { name: 'slug', required: false, type: { kind: 'primitive', type: 'string' } },
+      { name: 'access_token', required: false, type: { kind: 'primitive', type: 'string' } },
+    ];
+    const source = resource(context(input));
+    expect(source).toContain('?string $querySlug = null');
+    expect(source).toContain('?string $queryAccessToken = null');
+    expect(source).toContain('@param string|null $querySlug');
+    expect(source).toContain("'slug' => $querySlug,");
+    expect(source).toContain("'access_token' => $queryAccessToken,");
+    expect(source).not.toContain("'slug' => $slug,");
+    const tests = generateTests(input, context(input)).find((f) => f.path === 'tests/Service/PipesTest.php')!.content;
+    expect(tests).not.toMatch(/createUserConnectedAccount\([^)]*\bslug: [^)]*\bslug:/);
   });
 
   it('also handles union request bodies on DELETE', () => {
