@@ -332,4 +332,71 @@ assert AuthorizeDataIntegrationRequest(user_id='user_1', required_nullable=None)
       ),
     ).not.toContain('user_id:');
   });
+  it('sends explicit null for required nullable model fields passed as individual kwargs', () => {
+    const ctx = context();
+    ctx.spec.models.push({ name: 'Selector', fields: [field('id', true)] });
+    const selector = { kind: 'model', name: 'Selector' } as const;
+    for (const model of ctx.spec.models.slice(0, 3)) {
+      model.fields.push(
+        { name: 'selector', type: { kind: 'nullable', inner: selector }, required: true },
+        { name: 'selectors', type: { kind: 'nullable', inner: { kind: 'array', items: selector } }, required: true },
+      );
+    }
+    runPython(
+      ctx,
+      `
+from workos.pipes._resource import Pipes
+from workos.pipes.models import Selector
+class Client:
+    def request(self, **request): return request['body']
+pipes = Pipes(Client())
+assert pipes.authorize_data_integration('github', user_id='user_1', selector=None, selectors=None) == {'user_id': 'user_1', 'selector': None, 'selectors': None}
+assert pipes.authorize_data_integration('github', user_id='user_1', selector=Selector(id='s_1'), selectors=[Selector(id='s_2')]) == {'user_id': 'user_1', 'selector': {'id': 's_1'}, 'selectors': [{'id': 's_2'}]}
+`,
+    );
+  });
+
+  it('keeps the body-only API when a body field collides with the auth override parameter', () => {
+    const ctx = context();
+    const op = ctx.spec.services[0].operations[0];
+    op.security = [[{ schemeName: 'access_token', scopes: [] }]] as unknown as Operation['security'];
+    for (const model of ctx.spec.models.slice(0, 3)) model.fields.push(field('access_token'));
+    const resource = generateResources(ctx.spec.services, ctx)[0].content;
+    const start = resource.indexOf('def authorize_data_integration(');
+    const signature = resource.slice(start, resource.indexOf(') ->', start));
+    expect(signature).not.toContain('user_id:');
+    expect(signature.match(/access_token:/g)).toHaveLength(1);
+    runPython(ctx, 'import workos.pipes._resource');
+  });
+
+  it('scoped runs only export alias literals from alias files they rewrite', () => {
+    const ctx = context();
+    ctx.spec.enums.push(
+      { name: 'CanonicalState', values: [{ name: 'Connected', value: 'connected' }] },
+      { name: 'PipeConnectedAccountState', values: [{ name: 'Connected', value: 'connected' }] },
+    );
+    ctx.spec.models.push({
+      name: 'PipeConnectedAccount',
+      fields: [{ name: 'state', type: { kind: 'enum', name: 'PipeConnectedAccountState' }, required: true }],
+    });
+    const barrel = (scopedEnumNames: string[]) => {
+      const scoped = {
+        ...ctx,
+        scopedServices: new Set(['Pipes']),
+        scopedModelNames: new Set<string>(),
+        scopedEnumNames: new Set(scopedEnumNames),
+        priorTargetManifestPaths: new Set([
+          'src/workos/common/models/canonical_state.py',
+          'src/workos/common/models/pipe_connected_account_state.py',
+        ]),
+      } as EmitterContext;
+      return generateModels(ctx.spec.models, scoped).find((f) => f.path === 'src/workos/common/models/__init__.py')!
+        .content;
+    };
+    const retained = barrel([]);
+    expect(retained).toContain('PipeConnectedAccountState');
+    expect(retained).toContain('CanonicalStateLiteral');
+    expect(retained).not.toContain('PipeConnectedAccountStateLiteral');
+    expect(barrel(['PipeConnectedAccountState'])).toContain('PipeConnectedAccountStateLiteral');
+  });
 });

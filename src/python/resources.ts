@@ -877,7 +877,7 @@ function emitMethodBody(
               `                raise TypeError(${pythonStringLiteral(`Missing required keyword argument: '${name}'`)})`,
             );
             lines.push(
-              `            _body[${pythonStringLiteral(field.name)}] = ${serializeBodyFieldValue(field.type, name, true)}`,
+              `            _body[${pythonStringLiteral(field.name)}] = ${serializeBodyFieldValue(field.type, name, field.type.kind !== 'nullable')}`,
             );
           } else {
             const omitNone = field.type.kind !== 'nullable' ? ` and ${name} is not None` : '';

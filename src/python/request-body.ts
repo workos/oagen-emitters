@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, Field, Model, Operation, TypeRef } from '@workos/oagen';
 import { collectModelRefs, collectResponseHeaders } from '@workos/oagen';
 import { fieldName } from './naming.js';
+import { bearerOverrideScheme } from '../shared/security.js';
 
 /** Add flat kwargs for compatible object unions without replacing the body API. */
 export function unionBodyFields(op: Operation, ctx: EmitterContext): Field[] | null {
@@ -30,6 +31,8 @@ export function unionBodyFields(op: Operation, ctx: EmitterContext): Field[] | n
     '_body',
     ...op.queryParams.map((p) => fieldName(p.name)),
   ]);
+  const bearerOverride = bearerOverrideScheme(op);
+  if (bearerOverride !== null) reserved.add(fieldName(bearerOverride));
   const names = new Set<string>();
   for (const model of variants) {
     for (const field of model.fields) {

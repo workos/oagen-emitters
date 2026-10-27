@@ -10,6 +10,7 @@ import {
   isModelInScope,
   isEnumInScope,
   fileExistsAfterRun,
+  isScopedRun,
   priorManifestBasenames,
   isMountInScope,
   getMountTarget,
@@ -563,11 +564,15 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // the canonical enum's scope (the alias file is only written when the
   // canonical enum is in scope; see enums.ts).
   const aliasToCanonicalEnum = new Map<string, string>();
+  // Dedup-alias files written by older emitters lack `*Literal`, so a scoped run
+  // may only export it when it rewrites that file.
+  const aliasLiterals = new Set<string>();
   for (const enumDef of emittedEnums) {
     if (enumDef.values.length > 0) {
       const literal = `${enumDef.name}Literal`;
       symbolToFile.set(literal, fileName(enumDef.name));
       aliasToCanonicalEnum.set(literal, enumDef.name);
+      if (placement.enumAliases.has(enumDef.name)) aliasLiterals.add(literal);
     }
   }
   for (const [canonical, aliasNames] of collectCompatEnumAliases(emittedEnums, ctx)) {
@@ -583,7 +588,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const enumFilePath = `${key}/${symbolToFile.get(name) ?? fileName(name)}.py`;
       const scopeName = aliasToCanonicalEnum.get(name) ?? name;
       const enumWritten = isEnumInScope(scopeName, ctx) || forcedEnums.has(name) || forcedEnums.has(scopeName);
-      if (fileExistsAfterRun(enumFilePath, enumWritten, ctx)) {
+      const exists = aliasLiterals.has(name)
+        ? !isScopedRun(ctx) || enumWritten
+        : fileExistsAfterRun(enumFilePath, enumWritten, ctx);
+      if (exists) {
         symbolsByDir.get(key)!.push({ name });
       }
     }
