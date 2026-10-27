@@ -340,7 +340,7 @@ function generateMethod(
   // @param for body fields
   const groupedParamNames = collectGroupedParamNames(op);
   if (bodyModel) {
-    const bodyParamMap = buildBodyParamMap(op, bodyModel);
+    const bodyParamMap = buildBodyParamMap(op, bodyModel, hiddenParams);
     for (const field of bodyModel.fields) {
       if (hiddenParams.has(field.name)) continue;
       if (groupedParamNames.has(field.name)) continue;
@@ -367,7 +367,7 @@ function generateMethod(
   }
 
   // @param for query params (skip grouped params — they appear as group union params)
-  const queryParamMap = buildQueryParamMap(op, bodyModel, hiddenParams);
+  const queryParamMap = buildParamNames(op, bodyModel, hiddenParams).query;
   for (const q of op.queryParams) {
     const phpName = queryParamMap.get(q.name);
     if (!phpName) continue;
@@ -513,7 +513,7 @@ function generateMethod(
   } else if (plan.isDelete) {
     // Build body if the operation has a request body (e.g., DELETE with criteria)
     if (plan.hasBody) {
-      const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
+      const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null, hiddenParams);
       const deleteGroupedParams = collectGroupedParamNames(op);
       const visibleFields =
         bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name)) ?? [];
@@ -573,7 +573,7 @@ function generateMethod(
     lines.push('            options: $options,');
     lines.push('        );');
   } else if (plan.hasBody) {
-    const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
+    const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null, hiddenParams);
     const bodyGroupedParams = collectGroupedParamNames(op);
     const visibleFields =
       bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name)) ?? [];
@@ -733,7 +733,7 @@ function buildMethodParams(
   const optional: string[] = [];
   const usedNames = new Set<string>();
   const hidden = hiddenParams ?? new Set();
-  const groupedParams = collectGroupedParamNames(op);
+  const names = buildParamNames(op, bodyModel, hidden);
   // Path params (always required)
   for (const p of op.pathParams) {
     const phpType = mapTypeRef(p.type, { qualified: true });
@@ -746,15 +746,9 @@ function buildMethodParams(
   // Body fields
   if (bodyModel) {
     for (const field of bodyModel.fields) {
-      if (hidden.has(field.name)) continue;
-      if (groupedParams.has(field.name)) continue;
+      const phpName = names.body.get(field.name);
+      if (!phpName) continue;
       const phpType = mapTypeRef(field.type, { qualified: true });
-      let phpName = fieldName(field.name);
-      if (usedNames.has(phpName)) {
-        // Disambiguate body field from path param with same name
-        phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-        if (usedNames.has(phpName)) continue; // truly duplicate, skip
-      }
       usedNames.add(phpName);
       if (field.required) {
         required.push(`${phpType} $${phpName}`);
@@ -780,9 +774,8 @@ function buildMethodParams(
   }
 
   // Query params (skip grouped params — they are serialized via group dispatch)
-  const queryParamMap = buildQueryParamMap(op, bodyModel, hidden);
   for (const q of op.queryParams) {
-    const phpName = queryParamMap.get(q.name);
+    const phpName = names.query.get(q.name);
     if (!phpName) continue;
     const phpType = mapTypeRef(q.type, { qualified: true });
     if (q.required) {
@@ -819,22 +812,9 @@ function getReturnType(plan: ReturnType<typeof planOperation>, ctx: EmitterConte
   return 'mixed';
 }
 
-/**
- * Build a mapping from wire name to PHP variable name for body fields,
- * disambiguating collisions with path param names.
- */
-function buildBodyParamMap(op: Operation, bodyModel: Model | null): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!bodyModel) return map;
-  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-  for (const field of bodyModel.fields) {
-    let phpName = fieldName(field.name);
-    if (pathParamNames.has(phpName)) {
-      phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-    }
-    map.set(field.name, phpName);
-  }
-  return map;
+/** Body field wire name -> PHP argument name (see buildParamNames). */
+function buildBodyParamMap(op: Operation, bodyModel: Model | null, hidden?: Set<string>): Map<string, string> {
+  return buildParamNames(op, bodyModel, hidden ?? new Set()).body;
 }
 
 function buildPathString(op: Operation): string {
@@ -858,36 +838,40 @@ function isDateTimeType(ref: import('@workos/oagen').TypeRef): boolean {
 }
 
 /**
- * Build a mapping from wire name to PHP variable name for visible query params,
- * disambiguating collisions with path params, body fields, and parameter groups.
- * Params that cannot be given a distinct name are omitted.
+ * Allocate PHP argument names for visible body fields and query params, in
+ * signature order (path, body, groups, query). Colliding body fields get a
+ * `body` prefix and colliding query params a `query` prefix; anything still
+ * colliding is omitted. Shared by signatures, PHPDoc, payloads, and tests.
  */
-function buildQueryParamMap(op: Operation, bodyModel: Model | null, hidden: Set<string>): Map<string, string> {
+export function buildParamNames(
+  op: Operation,
+  bodyModel: Model | null,
+  hidden: Set<string>,
+): { body: Map<string, string>; query: Map<string, string> } {
   const groupedParams = collectGroupedParamNames(op);
   const usedNames = new Set<string>();
-  for (const p of op.pathParams) {
-    const phpName = fieldName(p.name);
-    usedNames.add(usedNames.has(phpName) ? `path${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}` : phpName);
-  }
-  const bodyParamMap = buildBodyParamMap(op, bodyModel);
+  const allocate = (name: string, prefix: string): string | undefined => {
+    let phpName = fieldName(name);
+    if (usedNames.has(phpName)) phpName = `${prefix}${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+    if (usedNames.has(phpName)) return undefined;
+    usedNames.add(phpName);
+    return phpName;
+  };
+  for (const p of op.pathParams) allocate(p.name, 'path');
+  const body = new Map<string, string>();
   for (const field of bodyModel?.fields ?? []) {
     if (hidden.has(field.name) || groupedParams.has(field.name)) continue;
-    usedNames.add(bodyParamMap.get(field.name)!);
+    const phpName = allocate(field.name, 'body');
+    if (phpName) body.set(field.name, phpName);
   }
   for (const group of op.parameterGroups ?? []) usedNames.add(fieldName(group.name));
-
-  const map = new Map<string, string>();
+  const query = new Map<string, string>();
   for (const q of op.queryParams) {
     if (hidden.has(q.name) || groupedParams.has(q.name)) continue;
-    let phpName = fieldName(q.name);
-    if (usedNames.has(phpName)) {
-      phpName = `query${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-      if (usedNames.has(phpName)) continue;
-    }
-    usedNames.add(phpName);
-    map.set(q.name, phpName);
+    const phpName = allocate(q.name, 'query');
+    if (phpName) query.set(q.name, phpName);
   }
-  return map;
+  return { body, query };
 }
 
 function buildQueryArray(
@@ -895,7 +879,7 @@ function buildQueryArray(
   hiddenParams?: Set<string>,
   opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null },
 ): string[] {
-  const queryParamMap = buildQueryParamMap(op, opts?.bodyModel ?? null, hiddenParams ?? new Set());
+  const queryParamMap = buildParamNames(op, opts?.bodyModel ?? null, hiddenParams ?? new Set()).query;
   return op.queryParams
     .filter((q) => queryParamMap.has(q.name))
     .map((q) => {

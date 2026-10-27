@@ -370,6 +370,50 @@ echo json_encode($client->requests, JSON_THROW_ON_ERROR);
     expect(tests).not.toMatch(/createUserConnectedAccount\([^)]*\bslug: [^)]*\bslug:/);
   });
 
+  it('uses the same query argument names in generated tests as in the resource signature', () => {
+    const input = structuredClone(spec);
+    const op = input.services[0].operations.find((o) => o.name === 'createUserConnectedAccount')!;
+    input.services[0].operations = [op];
+    if (op.requestBody?.kind !== 'model') throw new Error('fixture must be a model body');
+    const bodyName = op.requestBody.name;
+    input.models
+      .find((m) => m.name === bodyName)!
+      .fields.push({
+        name: 'label',
+        required: false,
+        type: { kind: 'primitive', type: 'string' },
+      });
+    op.queryParams = [{ name: 'label', required: true, type: { kind: 'primitive', type: 'string' } }];
+    const ctx = { ...context(input), apiSurface: undefined };
+    expect(resource(ctx)).toContain('string $queryLabel,');
+    const tests = generateTests(input, ctx).find((f) => f.path === 'tests/Service/PipesTest.php')!.content;
+    const call = tests.match(/createUserConnectedAccount\((.*)\);/)![1];
+    expect(call).toContain("queryLabel: 'test_value'");
+    expect(call).not.toMatch(/\blabel:/);
+  });
+
+  it('never declares the same argument twice when body fields collide with each other', () => {
+    const input = structuredClone(spec);
+    const op = input.services[0].operations.find((o) => o.name === 'createUserConnectedAccount')!;
+    input.services[0].operations = [op];
+    if (op.requestBody?.kind !== 'model') throw new Error('fixture must be a model body');
+    const bodyName = op.requestBody.name;
+    input.models
+      .find((m) => m.name === bodyName)!
+      .fields.push(
+        { name: 'foo_bar', required: false, type: { kind: 'primitive', type: 'string' } },
+        { name: 'fooBar', required: false, type: { kind: 'primitive', type: 'string' } },
+      );
+    op.queryParams = [{ name: 'body_foo_bar', required: false, type: { kind: 'primitive', type: 'string' } }];
+    const source = resource({ ...context(input), apiSurface: undefined });
+    const names = parameters(source, 'createUserConnectedAccount');
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual(expect.arrayContaining(['fooBar', 'bodyFooBar', 'queryBodyFooBar']));
+    expect(source).toContain("'foo_bar' => $fooBar,");
+    expect(source).toContain("'fooBar' => $bodyFooBar,");
+    expect(source).toContain("'body_foo_bar' => $queryBodyFooBar,");
+  });
+
   it('also handles union request bodies on DELETE', () => {
     const input = structuredClone(spec);
     input.services[0].operations[0].httpMethod = 'delete';

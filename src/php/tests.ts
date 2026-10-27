@@ -35,7 +35,7 @@ import {
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
+import { buildParamNames, isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
 // Deterministic date-time seed shared by generated call args and request-body
 // assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the
@@ -352,23 +352,27 @@ function generateClientTest(ctx: EmitterContext): string {
  * A test request must satisfy one branch, not an arbitrary mix of alternatives.
  * Prefer the first branch that supplies every baseline-required input.
  */
-function testRequestBodyModel(op: Operation, ctx: EmitterContext, baseline?: ApiParam[]): Model | null {
-  resolveRequestBodyModel(op, ctx.spec.models);
+function testRequestBodyModel(
+  op: Operation,
+  ctx: EmitterContext,
+  baseline?: ApiParam[],
+  hidden: Set<string> = new Set(),
+): Model | null {
+  const names = buildParamNames(op, resolveRequestBodyModel(op, ctx.spec.models), hidden);
   const leaves = (ref: TypeRef): TypeRef[] => (ref.kind === 'union' ? ref.variants.flatMap(leaves) : [ref]);
   const branches = (op.requestBody ? leaves(op.requestBody) : []).map((requestBody) =>
     resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models),
   );
   if (branches.length === 0) return null;
   const required = baseline?.filter((p) => !p.optional).map((p) => p.name) ?? [];
-  const otherNames = new Set([...op.pathParams, ...op.queryParams].map((p) => toCamelCase(p.name)));
-  const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
+  const otherNames = new Set([...op.pathParams.map((p) => toCamelCase(p.name)), ...names.query.values()]);
   const supplies = (model: Model | null): boolean => {
-    const names = new Set(otherNames);
+    const supplied = new Set(otherNames);
     for (const f of model?.fields ?? []) {
-      const phpName = toCamelCase(f.name);
-      names.add(pathParamNames.has(phpName) ? `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}` : phpName);
+      const phpName = names.body.get(f.name);
+      if (phpName) supplied.add(phpName);
     }
-    return required.every((name) => names.has(name));
+    return required.every((name) => supplied.has(name));
   };
   return branches.find(supplies) ?? branches[0];
 }
@@ -393,15 +397,13 @@ function buildTestArgs(
   }
 
   // Required body fields
-  const bodyModel = testRequestBodyModel(op, ctx, opts?.baseline);
+  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models);
+  const names = buildParamNames(op, mergedBody, hidden);
+  const bodyModel = testRequestBodyModel(op, ctx, opts?.baseline, hidden);
   if (bodyModel) {
-    const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
     for (const f of bodyModel.fields) {
-      if (hidden.has(f.name)) continue;
-      let phpName = toCamelCase(f.name);
-      if (pathParamNames.has(phpName)) {
-        phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-      }
+      const phpName = names.body.get(f.name);
+      if (!phpName) continue;
       if (!f.required && !includeOptional && !required.has(phpName)) continue;
       if (usedNames.has(phpName)) continue;
       usedNames.add(phpName);
@@ -429,8 +431,8 @@ function buildTestArgs(
   for (const q of op.queryParams) {
     if (hidden.has(q.name)) continue;
     if (groupedParamNames.has(q.name)) continue;
-    let phpName = toCamelCase(q.name);
-    if (usedNames.has(phpName)) phpName = `query${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+    const phpName = names.query.get(q.name);
+    if (!phpName) continue;
     if (!q.required && !includeOptional && !required.has(phpName)) continue;
     if (usedNames.has(phpName)) continue;
     usedNames.add(phpName);
@@ -438,13 +440,9 @@ function buildTestArgs(
   }
 
   // No single branch supplies every baseline-required input: fill the rest from the merged body.
-  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models);
-  const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
   for (const f of mergedBody?.fields ?? []) {
-    if (hidden.has(f.name)) continue;
-    let phpName = toCamelCase(f.name);
-    if (pathParamNames.has(phpName)) phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-    if (!required.has(phpName) || usedNames.has(phpName)) continue;
+    const phpName = names.body.get(f.name);
+    if (!phpName || !required.has(phpName) || usedNames.has(phpName)) continue;
     usedNames.add(phpName);
     args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
   }
@@ -697,7 +695,7 @@ function emitBodyAssertions(
   hidden?: Set<string>,
   baseline?: ApiParam[],
 ): void {
-  const bodyModel = testRequestBodyModel(op, ctx, baseline);
+  const bodyModel = testRequestBodyModel(op, ctx, baseline, hidden);
   if (!bodyModel) return;
   // Skip fields that collide with path param names (they get deduped in the resource)
   const pathParamNames = new Set(op.pathParams.map((p) => p.name));
