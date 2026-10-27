@@ -20,7 +20,7 @@ import {
   fileExistsAfterRun,
   collectErrorOnlyModelNames,
   preferLiveCanonical,
-  isScopedRun,
+  forcedModelNames,
 } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -153,13 +153,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // A canonical an in-scope alias points at must exist after the run even
   // when it is itself out of scope and brand-new (it would be dropped) or on
   // disk as the former alias of that very model (the two files would alias
-  // each other): force-emit it, as go/models.ts does.
-  const forcedCanonicals = new Set<string>();
-  if (isScopedRun(ctx)) {
-    for (const [aliasName, canonical] of aliasOf) {
-      if (isModelInScope(aliasName, ctx)) forcedCanonicals.add(canonical);
-    }
-  }
+  // each other) — and so must every model its fields reach, under the names
+  // it uses for them: force-emit that closure (see forcedModelNames).
+  const forcedModels = forcedModelNames(models, aliasOf, ctx);
 
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
@@ -168,7 +164,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // `.kt` file (no barrel), so an out-of-scope model left untouched on disk
     // stays importable. The WorkOSEvent sealed interface below is an aggregate
     // built from many event models, so it is NOT gated.
-    const modelInScope = isModelInScope(model.name, ctx) || forcedCanonicals.has(model.name);
+    const modelInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
 
     // Parent of a discriminated union: emit a sealed class.
     if (model.fields.length === 0 && discriminatedUnions.has(typeName)) {

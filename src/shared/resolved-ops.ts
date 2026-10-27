@@ -439,3 +439,38 @@ export function preferLiveCanonical(
 ): (a: string, b: string) => number {
   return (a, b) => Number(errorOnly.has(a)) - Number(errorOnly.has(b)) || tieBreak(a, b);
 }
+
+/**
+ * Models a scoped run must write beyond its selection so that no emitted file
+ * names a class the run never writes: the canonical a selected alias points
+ * at, and — transitively — every model that canonical's fields or variants
+ * reach, each together with its own canonical. A reached model that is itself
+ * an out-of-scope alias is included too, because the forced parent still
+ * refers to it by that name. Models the selection already covers are left to
+ * the ordinary gate. Empty on a full run.
+ */
+export function forcedModelNames(
+  models: Model[],
+  aliasOf: ReadonlyMap<string, string>,
+  ctx: EmitterContext,
+): Set<string> {
+  const forced = new Set<string>();
+  if (!isScopedRun(ctx)) return forced;
+  const byName = new Map(models.map((m) => [m.name, m]));
+  const queue: string[] = [];
+  for (const [alias, canonical] of aliasOf) {
+    if (isModelInScope(alias, ctx)) queue.push(canonical);
+  }
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (forced.has(name) || isModelInScope(name, ctx)) continue;
+    forced.add(name);
+    const canonical = aliasOf.get(name);
+    if (canonical) queue.push(canonical);
+    const model = byName.get(name);
+    if (!model) continue;
+    for (const field of model.fields) walkTypeRef(field.type, { model: (r) => queue.push(r.name) });
+    if (model.discriminator) queue.push(...Object.values(model.discriminator.mapping));
+  }
+  return forced;
+}
