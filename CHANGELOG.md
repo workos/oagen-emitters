@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/workos/oagen-emitters/compare/v0.24.18...v0.25.0) (2026-10-27)
+
+
+### Features
+
+* **python:** accept datetime for date-time parameters ([#270](https://github.com/workos/oagen-emitters/issues/270)) ([a757504](https://github.com/workos/oagen-emitters/commit/a7575045771ae3ae506d8b2bcb1c4f79521e1fec))
+
+
+### Bug Fixes
+
+* never elect a model only errors reach as a dedup canonical ([#278](https://github.com/workos/oagen-emitters/issues/278)) ([2cb6eb2](https://github.com/workos/oagen-emitters/commit/2cb6eb22966384d985da6ac00ff8ceee0c7b9c9d))
+* step model names that shadow Kotlin, .NET and Swift built-in types ([#277](https://github.com/workos/oagen-emitters/issues/277)) ([8184845](https://github.com/workos/oagen-emitters/commit/81848454ea6f150bb80c0db5ad2379c1a0520bb4))
+* variant-only union fixtures; suppress ktlint on long Kotlin typealiases ([#274](https://github.com/workos/oagen-emitters/issues/274)) ([eca7bd9](https://github.com/workos/oagen-emitters/commit/eca7bd96c3c2017e95a5e3b692e94feb05c0f810))
+
 ## [0.24.18](https://github.com/workos/oagen-emitters/compare/v0.24.17...v0.24.18) (2026-10-16)
 
 
