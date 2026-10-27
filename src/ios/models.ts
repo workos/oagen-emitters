@@ -1,6 +1,6 @@
 import type { Model, Field, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
-import { typeName, fileName, propertyName, escapeReserved, moduleName } from './naming.js';
+import { typeName, fileName, propertyName, escapeReserved, moduleName, primeReservedTypeNames } from './naming.js';
 import { fieldSwiftType } from './type-map.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
 
@@ -17,6 +17,7 @@ import { isModelInScope } from '../shared/resolved-ops.js';
  * were never regenerated against.
  */
 export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   const module = moduleName(ctx);
   return models
     .filter((model) => isModelInScope(model.name, ctx))

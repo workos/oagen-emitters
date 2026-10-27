@@ -20,6 +20,7 @@ import {
   deprecationMessage,
   escapeCsAttributeString,
   modelClassName,
+  primeReservedTypeNames,
 } from './naming.js';
 
 // Import and re-export shared model detection utilities
@@ -57,6 +58,7 @@ export interface DiscriminatorContext {
  * For initial generation, all models go into a flat Entities/ directory.
  */
 export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: DiscriminatorContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (models.length === 0) return [];
 
   // Build a lookup from enum name → single wire value for 1-value enums so
@@ -135,7 +137,11 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
 
     const lines: string[] = [];
     const fieldTypes = model.fields.map((f) => mapTypeRef(f.type));
-    const needsCollections = fieldTypes.some((t) => t.startsWith('List<') || t.startsWith('Dictionary<'));
+    // Match the collection anywhere in the rendered type, not only at its
+    // start: a union renders as `OneOf.OneOf<string, List<string>>` and a
+    // nullable as `List<string>?`, and both need the using as much as a
+    // bare `List<string>` does.
+    const needsCollections = fieldTypes.some((t) => /\b(?:List|Dictionary)</.test(t));
     const needsSystem = fieldTypes.some((t) => t.includes('DateTimeOffset'));
     // Required enums need JsonProperty / STJS; a field whose PascalCase name
     // collides with the enclosing class needs the same imports for the wire-

@@ -1,5 +1,5 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { className, ktStringLiteral } from './naming.js';
+import { className, ktStringLiteral, pascalName, primeReservedTypeNames, typealiasFile } from './naming.js';
 import { isEnumInScope } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -26,6 +26,7 @@ export const enumCanonicalMap = new Map<string, string>();
  * files pointing at the canonical class.
  */
 export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
   if (enums.length === 0) return [];
 
   // Reset the canonical map on every generation run (guards against re-entry).
@@ -89,17 +90,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       const canonicalType = className(canonicalName);
       // Skip when different IR names collapse to the same output name
       if (typeName === canonicalType) continue;
-      const aliasLine = `typealias ${typeName} = ${canonicalType}`;
-      // ktlint enforces a 140-char max line length. When the typealias
-      // exceeds that, add a @file:Suppress to avoid an unfixable violation.
-      const suppressLine = aliasLine.length > 140 ? `@file:Suppress("ktlint:standard:max-line-length")\n\n` : '';
-      const aliasContent = [
-        `${suppressLine}package ${ENUMS_PACKAGE}`,
-        '',
-        `/** Alias for [${canonicalType}]. */`,
-        aliasLine,
-        '',
-      ].join('\n');
+      const aliasContent = typealiasFile(ENUMS_PACKAGE, typeName, canonicalType);
       if (enumInScope) {
         files.push({
           path: `${KOTLIN_SRC_PREFIX}${ENUMS_DIR}/${typeName}.kt`,
@@ -140,7 +131,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       if (seenWire.has(wire)) continue;
       seenWire.add(wire);
 
-      let memberName = className(wire);
+      let memberName = pascalName(wire);
       if (!memberName || /^[0-9]/.test(memberName)) memberName = `Value${memberName || wire}`;
       if (memberName === typeName || seenNames.has(memberName)) {
         let suffix = 2;

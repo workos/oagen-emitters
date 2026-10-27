@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as naming from '../../src/kotlin/naming.js';
 import { generateModels } from '../../src/kotlin/models.js';
 import { generateEnums } from '../../src/kotlin/enums.js';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
@@ -205,5 +206,64 @@ describe('kotlin/models', () => {
     const aliasFile = files.find((f) => f.path.includes('/EmailChangeConfirmationUser.kt'))!;
     expect(aliasFile).toBeDefined();
     expect(aliasFile.content).toContain('typealias EmailChangeConfirmationUser = User');
+    expect(aliasFile.content).not.toContain('@file:Suppress');
+  });
+
+  it('suppresses ktlint max-line-length on a typealias file whose alias line exceeds 140 chars', () => {
+    // oagen 0.32 names inline error bodies `<Op>Error<code>`; two identical
+    // ones alias each other on a line ktlint cannot wrap.
+    const codeMessage: Model['fields'] = [
+      { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
+      { name: 'message', type: { kind: 'primitive', type: 'string' }, required: true },
+    ];
+    const long = 'InvalidRequestParametersDataIntegrationsUserManagementUpdateUserDataInstallationError422';
+    const short = 'InvalidRequestParametersWebhookEndpointsCreateError422';
+    const models: Model[] = [
+      { name: long, fields: codeMessage },
+      { name: short, fields: codeMessage },
+    ];
+
+    generateEnums([], ctx);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    const aliasFile = files.find((f) => f.path.endsWith(`/${long}.kt`))!;
+    expect(aliasFile).toBeDefined();
+    expect(
+      aliasFile.content.startsWith('@file:Suppress("ktlint:standard:max-line-length")\n\npackage com.workos.models\n'),
+    ).toBe(true);
+    expect(aliasFile.content).toContain(`typealias ${long} = ${short}`);
+  });
+
+  it('steps a model named like a Kotlin built-in type to <Name>Model', () => {
+    const models: Model[] = [
+      { name: 'List', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      {
+        name: 'Waitlist',
+        fields: [{ name: 'lists', type: { kind: 'array', items: { kind: 'model', name: 'List' } }, required: true }],
+      },
+    ];
+
+    generateEnums([], ctx);
+    const files = generateModels(models, { ...ctx, spec: { ...emptySpec, models } });
+
+    expect(files.find((f) => f.path.endsWith('/List.kt'))).toBeUndefined();
+    const stepped = files.find((f) => f.path.endsWith('/ListModel.kt'))!;
+    expect(stepped).toBeDefined();
+    expect(stepped.content).toContain('data class ListModel(');
+    const waitlist = files.find((f) => f.path.endsWith('/Waitlist.kt'))!;
+    expect(waitlist.content).toContain('List<ListModel>');
+  });
+
+  it('steps past a schema that already owns the <Name>Model name', () => {
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }, { name: 'ListModel' }], enums: [] });
+    expect(naming.className('List')).toBe('ListModel2');
+    expect(naming.className('ListModel')).toBe('ListModel');
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
+    expect(naming.className('List')).toBe('ListModel');
+  });
+
+  it('trims a method against the plain mount name, not the stepped type name', () => {
+    expect(naming.trimMountedResourceFromMethod('getList', 'List')).toBe('get');
+    expect(naming.trimMountedResourceFromMethod('getListModel', 'List')).toBe('getModel');
   });
 });

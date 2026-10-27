@@ -19,6 +19,7 @@ import {
   propertyName,
   domainPropertyName,
   buildExportedClassNameSet,
+  KTLINT_MAX_LINE_LENGTH,
 } from './naming.js';
 import { mapTypeRef } from './type-map.js';
 import {
@@ -1037,8 +1038,6 @@ function emitCall(lines: string[], indent: string, prefix: string, args: string)
   }
   lines.push(`${exprIndent})`);
 }
-
-const KTLINT_MAX_LINE_LENGTH = 140;
 
 /** Split a call-argument string on top-level commas (ignoring nested parens/quotes). */
 function splitTopLevelArgs(args: string): string[] {

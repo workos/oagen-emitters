@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as naming from '../../src/ios/naming.js';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { generateModels } from '../../src/ios/models.js';
@@ -133,5 +134,34 @@ describe('ios/models scoped runs', () => {
       'Sources/WorkOS/Models/Profile.swift',
       'Sources/WorkOS/Models/DataIntegration.swift',
     ]);
+  });
+
+  it('steps a model named like a Swift standard-library type to <Name>Model', () => {
+    const models: Model[] = [
+      { name: 'Data', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      { name: 'Event', fields: [{ name: 'data', type: { kind: 'model', name: 'Data' }, required: true }] },
+    ];
+
+    const files = generateModels(models, ctx);
+
+    expect(files.find((f) => f.path.endsWith('/Data.swift'))).toBeUndefined();
+    const stepped = files.find((f) => f.path.endsWith('/DataModel.swift'))!;
+    expect(stepped).toBeDefined();
+    expect(stepped.content).toContain('public struct DataModel');
+    const event = files.find((f) => f.path.endsWith('/Event.swift'))!;
+    expect(event.content).toContain('public let data: DataModel');
+  });
+
+  it('steps past a schema that already owns the <Name>Model name', () => {
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }, { name: 'ListModel' }], enums: [] });
+    expect(naming.typeName('List')).toBe('ListModel2');
+    expect(naming.typeName('ListModel')).toBe('ListModel');
+    naming.primeReservedTypeNames({ models: [{ name: 'List' }], enums: [] });
+    expect(naming.typeName('List')).toBe('ListModel');
+  });
+
+  it('trims a method against the plain mount name, not the stepped type name', () => {
+    expect(naming.trimMountResource('getData', 'Data')).toBe('get');
+    expect(naming.trimMountResource('getDataModel', 'Data')).toBe('getModel');
   });
 });
