@@ -85,13 +85,20 @@ export function enumClassName(name: string): string {
   return className(resolveEnumName(name));
 }
 
+/** PascalCase with acronym preservation, before any reserved-name stepping. */
+function pascalName(name: string): string {
+  return applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));
+}
+
+/** Whether {@link className} has to step `name` past a PHP builtin (`List` -> `ListModel`). */
+function isReservedClassName(name: string): boolean {
+  return PHP_RESERVED_CLASS_NAMES.has(pascalName(name));
+}
+
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
-  let result = applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));
-  if (PHP_RESERVED_CLASS_NAMES.has(result)) {
-    result += 'Model';
-  }
-  return result;
+  const result = pascalName(name);
+  return isReservedClassName(name) ? `${result}Model` : result;
 }
 
 /**
@@ -151,6 +158,21 @@ export function domainFieldName(field: { name: string; domainName?: string }): s
 /** snake_case name for fixtures and other snake_case contexts. */
 export function snakeName(name: string): string {
   return toSnakeCase(stripUrnPrefix(name));
+}
+
+/**
+ * File stem of a model's JSON fixture: `tests/Fixtures/<stem>.json`.
+ *
+ * Follows the reserved-name stepping of {@link className} so the fixture is
+ * named after the class the test deserializes into: IR `List` is class
+ * `ListModel` and loads `list_model.json`. Naming it from the IR alone would
+ * land on `list.json`, a hand-maintained fixture tracked in the SDK repo, and
+ * the generated test would hydrate the wrong payload. Every other model keeps
+ * its plain {@link snakeName} stem.
+ */
+export function fixtureName(name: string): string {
+  const stem = snakeName(name);
+  return isReservedClassName(name) ? `${stem}_model` : stem;
 }
 
 /** snake_case wire name (preserves the original API field name). */

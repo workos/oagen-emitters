@@ -468,4 +468,100 @@ describe('generateTests', () => {
     expect(content).toContain('RetentionPeriod::Value1Month');
     expect(content).not.toContain('RetentionPeriod::1Month');
   });
+
+  describe('non-paginated list wrapper response', () => {
+    // GET /user_management/waitlists returns the standard list envelope but
+    // is not paginated, so oagen keeps the envelope as a plain response model.
+    // On oagen 0.32.0 that model is named `List` (stepped to `ListModel` in
+    // PHP); 0.32.1 names it for its operation. Either way the test needs a
+    // fixture for it. (oagen-emitters#279)
+    const wrapperModels = (wrapperName: string): Model[] => [
+      {
+        name: 'Waitlist',
+        fields: [
+          { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'email', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+      {
+        name: 'ListMetadata',
+        fields: [
+          { name: 'before', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: true },
+          { name: 'after', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: true },
+        ],
+      },
+      {
+        name: wrapperName,
+        fields: [
+          { name: 'object', type: { kind: 'literal', value: 'list' }, required: true },
+          { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Waitlist' } }, required: true },
+          { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+        ],
+      },
+      // A wrapper nothing responds with stays redundant: no class, no fixture.
+      {
+        name: 'OrganizationList',
+        fields: [
+          { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Organization' } }, required: true },
+          { name: 'list_metadata', type: { kind: 'model', name: 'ListMetadata' }, required: true },
+        ],
+      },
+    ];
+
+    const wrapperSpec = (wrapperName: string): ApiSpec => ({
+      ...spec,
+      models: [...models, ...wrapperModels(wrapperName)],
+      services: [
+        ...services,
+        {
+          name: 'UserManagement',
+          operations: [
+            {
+              name: 'listWaitlists',
+              httpMethod: 'get',
+              path: '/user_management/waitlists',
+              pathParams: [],
+              queryParams: [],
+              headerParams: [],
+              response: { kind: 'model', name: wrapperName },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    it('emits a fixture for the wrapper, shaped like the envelope', () => {
+      const s = wrapperSpec('ListWaitlistsResponse');
+      const result = generateTests(s, { ...ctx, spec: s });
+
+      const fixture = result.find((f) => f.path === 'tests/Fixtures/list_waitlists_response.json');
+      expect(fixture).toBeDefined();
+      const parsed = JSON.parse(fixture!.content);
+      expect(parsed.object).toBe('list');
+      expect(parsed.data[0]).toHaveProperty('id');
+      expect(parsed.list_metadata).toEqual(expect.objectContaining({ before: expect.anything() }));
+
+      const test = result.find((f) => f.path === 'tests/Service/UserManagementTest.php');
+      expect(test!.content).toContain("$this->loadFixture('list_waitlists_response')");
+      expect(test!.content).toContain('ListWaitlistsResponse::class');
+
+      // Still no fixture for a wrapper that is only ever paginated through.
+      expect(result.find((f) => f.path === 'tests/Fixtures/organization_list.json')).toBeUndefined();
+    });
+
+    it('names a reserved-stepped wrapper fixture after the emitted class, never list.json', () => {
+      const s = wrapperSpec('List');
+      const result = generateTests(s, { ...ctx, spec: s });
+
+      expect(result.find((f) => f.path === 'tests/Fixtures/list_model.json')).toBeDefined();
+      expect(result.find((f) => f.path === 'tests/Fixtures/list.json')).toBeUndefined();
+
+      const test = result.find((f) => f.path === 'tests/Service/UserManagementTest.php');
+      expect(test!.content).toContain("$this->loadFixture('list_model')");
+      expect(test!.content).toContain('ListModel::class');
+      expect(test!.content).not.toContain("loadFixture('list')");
+    });
+  });
 });

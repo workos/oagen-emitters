@@ -13,7 +13,7 @@ import {
   enumClassName,
   guardEnumCaseName,
   resolveMethodName,
-  snakeName,
+  fixtureName,
   servicePropertyName,
   domainFieldName,
 } from './naming.js';
@@ -168,9 +168,9 @@ function generateMountGroupTest(
         emitBodyAssertions(lines, op, ctx, hidden);
       }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
-      const fixtureName = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
+      const fixtureStem = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
       // Pass all params (including optional enums) to verify serialization
-      lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+      lines.push(`        $fixture = $this->loadFixture('${fixtureStem}');`);
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
       lines.push(
         `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden })});`,
@@ -195,8 +195,8 @@ function generateMountGroupTest(
       emitRedirectQueryAssertions(lines, op, ctx, hidden, resolvedOp);
     } else if (plan.responseModelName) {
       const modelName = className(plan.responseModelName);
-      const fixtureName = `${snakeName(plan.responseModelName)}`;
-      lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+      const fixtureStem = `${fixtureName(plan.responseModelName)}`;
+      lines.push(`        $fixture = $this->loadFixture('${fixtureStem}');`);
       if (op.response.kind === 'array') {
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => [$fixture]]]);");
       } else {
@@ -257,8 +257,8 @@ function generateMountGroupTest(
 
       if (responseModel) {
         const modelName = className(responseModel);
-        const fixtureName = `${snakeName(responseModel)}`;
-        lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+        const fixtureStem = `${fixtureName(responseModel)}`;
+        lines.push(`        $fixture = $this->loadFixture('${fixtureStem}');`);
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
         lines.push(`        $result = $client->${accessor}()->${method}(${wrapperArgs});`);
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result);`);
@@ -284,13 +284,13 @@ function generateMountGroupTest(
       const op = firstPaginatedOp.op;
       const paginatedHidden = buildHiddenParams(firstPaginatedOp.resolvedOp);
       const itemType = op.pagination!.itemType as { name: string };
-      const fixtureName = `list_${resolveFixtureModelName(itemType.name, ctx)}`;
+      const fixtureStem = `list_${resolveFixtureModelName(itemType.name, ctx)}`;
       const method = resolveMethodName(op, firstPaginatedOp.service, ctx);
 
       lines.push('');
       lines.push(`    public function ${testName}(): void`);
       lines.push('    {');
-      lines.push(`        $fixture = $this->loadFixture('${fixtureName}');`);
+      lines.push(`        $fixture = $this->loadFixture('${fixtureStem}');`);
       lines.push('        // Ensure cursors are null (first/last page boundary)');
       lines.push("        $fixture['list_metadata']['before'] = null;");
       lines.push("        $fixture['list_metadata']['after'] = null;");
@@ -452,8 +452,8 @@ function generateTestValue(
     case 'model': {
       if (ref.name) {
         const modelClass = className(ref.name);
-        const fixtureName = snakeName(ref.name);
-        return `\\WorkOS\\Resource\\${modelClass}::fromArray($this->loadFixture('${fixtureName}'))`;
+        const fixtureStem = fixtureName(ref.name);
+        return `\\WorkOS\\Resource\\${modelClass}::fromArray($this->loadFixture('${fixtureStem}'))`;
       }
       return '[]';
     }
@@ -486,10 +486,10 @@ function resolveFixtureModelName(modelName: string, ctx: EmitterContext): string
   if (model && isListWrapperModel(model)) {
     const dataField = model.fields.find((f) => f.name === 'data');
     if (dataField?.type.kind === 'array' && dataField.type.items.kind === 'model') {
-      return snakeName(dataField.type.items.name);
+      return fixtureName(dataField.type.items.name);
     }
   }
-  return snakeName(modelName);
+  return fixtureName(modelName);
 }
 
 /**
