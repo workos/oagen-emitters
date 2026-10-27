@@ -6,7 +6,7 @@ import {
   unwrapListModel,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
-import { snakeName } from './naming.js';
+import { fixtureName } from './naming.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -63,14 +63,18 @@ export function generateFixtures(
 
   for (const model of spec.models) {
     if (isListMetadataModel(model) && !listMetadataNeeded.has(model.name)) continue;
-    if (isListWrapperModel(model)) continue;
+    // A list wrapper is redundant when the runtime paginates it, but one that
+    // is itself a non-paginated operation's response model is emitted as a
+    // class (models.ts) and the generated test hydrates it from a fixture, so
+    // it needs one. Same gate as the Python, Go and Node fixture generators.
+    if (isListWrapperModel(model) && !nonPaginatedRefs.has(model.name)) continue;
     // Scoped run: emit only the selected models' fixtures.
     if (!inScope(model.name)) continue;
 
     const fixture = generateModelFixture(model, modelMap, enumMap);
 
     files.push({
-      path: `tests/Fixtures/${snakeName(model.name)}.json`,
+      path: `tests/Fixtures/${fixtureName(model.name)}.json`,
       content: JSON.stringify(fixture, null, 2),
     });
   }
@@ -95,7 +99,7 @@ export function generateFixtures(
             },
           };
           files.push({
-            path: `tests/Fixtures/list_${snakeName(itemModel.name)}.json`,
+            path: `tests/Fixtures/list_${fixtureName(itemModel.name)}.json`,
             content: JSON.stringify(listFixture, null, 2),
           });
         }
