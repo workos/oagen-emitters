@@ -1,11 +1,7 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
-import {
-  isListWrapperModel,
-  isListMetadataModel,
-  collectNonPaginatedResponseModelNames,
-} from '../shared/model-utils.js';
+import { buildListScaffoldingSkip } from '../shared/model-utils.js';
 import {
   isModelInScope,
   collectErrorOnlyModelNames,
@@ -87,17 +83,20 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const files: GeneratedFile[] = [];
 
-  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
-  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
-  // code references them by name and the pagination iterator doesn't unwrap them.
-  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
-  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+  // List scaffolding the pagination iterator replaces at runtime is not
+  // emitted — except a wrapper a non-paginated operation returns (vault's
+  // `VersionListResponse`), which the resource references by name, and any
+  // `ListMetadata` model its fields reach: that class was never written, so
+  // `WorkOS::ListMetadata.new(...)` inside the wrapper raised NameError. The
+  // shared predicate keeps models, rbi, tests and the client's autoload
+  // bookkeeping on one answer.
+  const skipScaffolding = buildListScaffoldingSkip(models, ctx.spec.services);
 
   // Dedup identical models (by recursive structural hash).
   const recursiveHashes = buildRecursiveHashMap(models, enumNames);
   const hashGroups = new Map<string, string[]>();
   for (const m of models) {
-    if (skipAsListWrapper(m) || isListMetadataModel(m)) continue;
+    if (skipScaffolding(m)) continue;
     const h = recursiveHashes.get(m.name) ?? '';
     if (!hashGroups.has(h)) hashGroups.set(h, []);
     hashGroups.get(h)!.push(m.name);
@@ -124,7 +123,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipScaffolding(model)) continue;
     const modelInScope = isModelInScope(model.name, ctx) || forcedCanonicals.has(model.name);
 
     const cls = className(model.name);

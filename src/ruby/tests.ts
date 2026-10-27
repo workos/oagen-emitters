@@ -30,7 +30,7 @@ import {
   readPriorFile,
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { isListWrapperModel, buildListScaffoldingSkip } from '../shared/model-utils.js';
 import { classifyUnassignedModel } from './models.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js';
@@ -262,7 +262,8 @@ const LEGACY_ROUNDTRIP_PATH = 'test/workos/test_model_round_trip.rb';
  * same-delta change to an out-of-scope model out of a scoped batch.
  */
 function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
-  const models = (spec.models as Model[]).filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
+  const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
+  const models = (spec.models as Model[]).filter((m) => !skipScaffolding(m));
   const enumNames = new Set(spec.enums.map((e) => e.name));
   const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
