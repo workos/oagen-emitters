@@ -1,10 +1,11 @@
 import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
+import { collectFieldDependencies } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { unionRequestModels } from './request-body.js';
 import {
   isModelInScope,
   isEnumInScope,
@@ -12,7 +13,6 @@ import {
   priorManifestBasenames,
   isMountInScope,
   getMountTarget,
-  declaredParams,
   forcedModelNames,
   forcedEnumNamesWithCanonicals,
 } from '../shared/resolved-ops.js';
@@ -28,6 +28,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // a spec view with the passed-in models to keep the placement logic accurate.
   const placementSpec = models === ctx.spec.models ? ctx.spec : { ...ctx.spec, models };
   const placement = computeSchemaPlacement(placementSpec, ctx);
+  const requestModels = unionRequestModels(placementSpec);
   const {
     modelToService,
     enumToService,
@@ -294,6 +295,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
     const hasOptional = deduplicatedFields.some((f) => isOptionalField(model.name, f, ctx));
     if (hasOptional) typingImports.add('Optional');
+    const isOmittableRequestField = (field: Model['fields'][number]) =>
+      requestModels.has(model.name) && !field.required && field.type.kind === 'nullable';
+    const needsNotGiven = deduplicatedFields.some(isOmittableRequestField);
+    if (needsNotGiven) typingImports.add('Union');
     const usesDateTime = deduplicatedFields.some((f) => isDateTimeType(f.type));
     const usesEnum = deps.enums.size > 0;
 
@@ -309,6 +314,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('from typing import cast');
     lines.push(`from typing import ${[...typingImports].sort().join(', ')}`);
     lines.push(`from ${ctx.namespace}._types import _raise_deserialize_error`);
+    if (needsNotGiven) lines.push(`from ${ctx.namespace}._types import NOT_GIVEN, NotGiven`);
     if (usesDateTime) {
       lines.push(`from ${ctx.namespace}._types import _format_datetime, _parse_datetime`);
     }
@@ -405,15 +411,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const pyFieldName = domainFieldName(field);
       const innerType =
         field.type.kind === 'nullable' ? resolveModelFieldType(field.type.inner) : resolveModelFieldType(field.type);
-      const pyType = `Optional[${rewriteDiscriminatorType(innerType)}]`;
+      const omitted = isOmittableRequestField(field);
+      const pyType = omitted
+        ? `Union[${rewriteDiscriminatorType(innerType)}, None, NotGiven]`
+        : `Optional[${rewriteDiscriminatorType(innerType)}]`;
+      const defaultValue = omitted ? 'NOT_GIVEN' : 'None';
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);
         if (field.deprecated) parts.push('.. deprecated:: This field is deprecated.');
-        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+        lines.push(`    ${pyFieldName}: ${pyType} = ${defaultValue}`);
         lines.push(`    """${pythonDocstring(parts.join('\n\n    '))}"""`);
       } else {
-        lines.push(`    ${pyFieldName}: ${pyType} = None`);
+        lines.push(`    ${pyFieldName}: ${pyType} = ${defaultValue}`);
       }
     }
 
@@ -436,7 +446,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const discPrelude = renderDiscriminatedUnionPrelude(field, pyFieldName, wireKey, modelClassName, isRequired);
       if (discPrelude) {
         preludeLines.push(...discPrelude.prelude);
-        fieldAssignmentLines.push(`                ${pyFieldName}=${discPrelude.expr},`);
+        const value = isOmittableRequestField(field)
+          ? `(${discPrelude.expr}) if ${pythonStringLiteral(wireKey)} in data else NOT_GIVEN`
+          : discPrelude.expr;
+        fieldAssignmentLines.push(`                ${pyFieldName}=${value},`);
         continue;
       }
 
@@ -453,7 +466,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const deserRequired = isRequired && field.type.kind !== 'nullable';
       const walrusVar = `_v_${pyFieldName}`;
       const deserExpr = deserializeField(field.type, accessor, deserRequired, walrusVar);
-      fieldAssignmentLines.push(`                ${pyFieldName}=${deserExpr},`);
+      const value = isOmittableRequestField(field)
+        ? `(${deserExpr}) if ${pythonStringLiteral(wireKey)} in data else NOT_GIVEN`
+        : deserExpr;
+      fieldAssignmentLines.push(`                ${pyFieldName}=${value},`);
     }
 
     for (const preludeLine of preludeLines) lines.push(preludeLine);
@@ -484,10 +500,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
         // Nullable fields should round-trip explicit None as null, even when optional
         const innerType = (field.type as any).inner;
         const serExpr = serializeField(innerType, `self.${pyFieldName}`);
-        lines.push(`        if self.${pyFieldName} is not None:`);
-        lines.push(`            result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
-        lines.push(`        else:`);
-        lines.push(`            result[${pythonStringLiteral(wireKey)}] = None`);
+        const omitted = isOmittableRequestField(field);
+        if (omitted) lines.push(`        if not isinstance(self.${pyFieldName}, NotGiven):`);
+        const indent = omitted ? '    ' : '';
+        lines.push(`${indent}        if self.${pyFieldName} is not None:`);
+        lines.push(`${indent}            result[${pythonStringLiteral(wireKey)}] = ${serExpr}`);
+        lines.push(`${indent}        else:`);
+        lines.push(`${indent}            result[${pythonStringLiteral(wireKey)}] = None`);
       } else {
         // Optional non-nullable fields should be omitted when unset
         const serExpr = serializeField(field.type, `self.${pyFieldName}`);
@@ -537,13 +556,20 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   // Also include enums in the barrels using the enum emitter's actual output placement.
-  const reachableEnumNames = collectReachableEnumNames(ctx);
-  const emittedEnums = ctx.spec.enums.filter((enumDef) => reachableEnumNames.has(enumDef.name));
+  // Match the enum emitter: aliases still have public files even when no operation uses them directly.
+  const emittedEnums = ctx.spec.enums;
   const enumSymbolsByDir = collectGeneratedEnumSymbolsByDir(emittedEnums, ctx);
   // Map each compat-alias symbol back to its canonical enum so we can gate it by
   // the canonical enum's scope (the alias file is only written when the
   // canonical enum is in scope; see enums.ts).
   const aliasToCanonicalEnum = new Map<string, string>();
+  for (const enumDef of emittedEnums) {
+    if (enumDef.values.length > 0) {
+      const literal = `${enumDef.name}Literal`;
+      symbolToFile.set(literal, fileName(enumDef.name));
+      aliasToCanonicalEnum.set(literal, enumDef.name);
+    }
+  }
   for (const [canonical, aliasNames] of collectCompatEnumAliases(emittedEnums, ctx)) {
     for (const aliasName of aliasNames) aliasToCanonicalEnum.set(aliasName, canonical);
   }
@@ -554,7 +580,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // Reference an enum (or its compat alias) from the barrel only when its
       // per-enum file exists on disk after the run. A brand-new out-of-scope
       // enum whose file is never emitted must NOT be referenced.
-      const enumFilePath = `${key}/${fileName(name)}.py`;
+      const enumFilePath = `${key}/${symbolToFile.get(name) ?? fileName(name)}.py`;
       const scopeName = aliasToCanonicalEnum.get(name) ?? name;
       const enumWritten = isEnumInScope(scopeName, ctx) || forcedEnums.has(name) || forcedEnums.has(scopeName);
       if (fileExistsAfterRun(enumFilePath, enumWritten, ctx)) {
@@ -760,56 +786,6 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
       if (ref.type === 'unknown') imports.add('Any');
       break;
   }
-}
-
-function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
-  const referencedModels = new Set<string>();
-  const referencedEnums = new Set<string>();
-
-  const collectFromTypeRef = (ref: any): void => {
-    walkTypeRef(ref, {
-      model: (r) => referencedModels.add(r.name),
-      enum: (r) => referencedEnums.add(r.name),
-    });
-  };
-
-  for (const service of ctx.spec.services) {
-    for (const op of service.operations) {
-      for (const p of declaredParams(op)) {
-        collectFromTypeRef(p.type);
-      }
-      if (op.requestBody) collectFromTypeRef(op.requestBody);
-      collectFromTypeRef(op.response);
-      if (op.pagination) collectFromTypeRef(op.pagination.itemType);
-      for (const err of op.errors) {
-        if (err.type) collectFromTypeRef(err.type);
-      }
-      if (op.successResponses) {
-        for (const sr of op.successResponses) {
-          collectFromTypeRef(sr.type);
-        }
-      }
-    }
-  }
-
-  const modelsByName = new Map(ctx.spec.models.map((m) => [m.name, m]));
-  const visited = new Set<string>();
-  const queue = [...referencedModels];
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (visited.has(name)) continue;
-    visited.add(name);
-    const model = modelsByName.get(name);
-    if (!model) continue;
-    for (const field of model.fields) {
-      collectFromTypeRef(field.type);
-      for (const modelName of referencedModels) {
-        if (!visited.has(modelName)) queue.push(modelName);
-      }
-    }
-  }
-
-  return referencedEnums;
 }
 
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {

@@ -1,6 +1,7 @@
 import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oagen';
 import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
+import { unionRequestModels } from './request-body.js';
 import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
 import { declaredParams, collectErrorOnlyModelNames } from '../shared/resolved-ops.js';
 
@@ -334,7 +335,7 @@ function canAliasModels(canonical: string, alias: string, usage: ModelUsage): bo
  * canonicals when their aliases are shared.
  */
 export function computeModelAliases(spec: ApiSpec): Map<string, string> {
-  const recursiveHashes = buildRecursiveHashMap(spec.models, spec.enums);
+  const recursiveHashes = buildRecursiveHashMap(spec.models, spec.enums, unionRequestModels(spec));
   const usage = collectModelUsage(spec);
   // List scaffolding the emitter never writes (paginated wrappers and their
   // metadata) must not participate in dedup: a surviving metadata model whose
@@ -394,7 +395,7 @@ export function computeEnumAliases(enums: Enum[]): Map<string, string> {
  * Recursive structural hashing for models so dedup runs against deeply-equal
  * shapes, not just same-named ones. Cycles fall back to the model name.
  */
-function buildRecursiveHashMap(models: Model[], enums: Enum[]): Map<string, string> {
+function buildRecursiveHashMap(models: Model[], enums: Enum[], requestModels: Set<string>): Map<string, string> {
   const modelByName = new Map(models.map((m) => [m.name, m]));
   const hashCache = new Map<string, string>();
   const visiting = new Set<string>();
@@ -424,7 +425,11 @@ function buildRecursiveHashMap(models: Model[], enums: Enum[]): Map<string, stri
 
     const hash = [...model.fields]
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((f) => `${f.name}:${deepTypeHash(f.type)}:${f.required}`)
+      .map((f) => {
+        // Different omission defaults must also keep their parent models distinct.
+        const omitted = requestModels.has(name) && !f.required && f.type.kind === 'nullable';
+        return `${f.name}:${deepTypeHash(f.type)}:${f.required}:${omitted}`;
+      })
       .join('|');
 
     visiting.delete(name);

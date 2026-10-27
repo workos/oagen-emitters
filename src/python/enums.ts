@@ -61,7 +61,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // Use explicit __all__ to prevent ruff F401 from stripping the re-export
       // Always use direct file import to avoid barrel dependency on the canonical
       if (canonicalDir === dirName) {
-        lines.push('from typing import TypeAlias');
+        lines.push(`from typing import ${enumDef.values.length > 0 ? 'Literal, ' : ''}TypeAlias`);
         lines.push(`from .${fileName(canonicalName)} import ${canonicalCls}`);
         lines.push('');
         lines.push(`${aliasCls}: TypeAlias = ${canonicalCls}`);
@@ -70,7 +70,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         // circular imports caused by service __init__.py eagerly re-exporting
         // all models (e.g. common → radar → common cycle).
         const modPath = `${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)}`;
-        lines.push('from typing import TYPE_CHECKING');
+        lines.push(`from typing import TYPE_CHECKING${enumDef.values.length > 0 ? ', Literal, TypeAlias' : ''}`);
         lines.push('');
         lines.push('if TYPE_CHECKING:');
         lines.push(`    from ${modPath} import ${canonicalCls} as ${aliasCls}`);
@@ -81,7 +81,11 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         lines.push(`            return ${canonicalCls}`);
         lines.push('        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")');
       }
-      lines.push(`__all__ = ["${aliasCls}"]`);
+      if (enumDef.values.length > 0) {
+        const values = [...new Set(enumDef.values.map((v) => String(v.value)))].map(pythonStringLiteral);
+        lines.push(`${aliasCls}Literal: TypeAlias = Literal[${values.join(', ')}]`);
+      }
+      lines.push(`__all__ = ["${aliasCls}"${enumDef.values.length > 0 ? `, "${aliasCls}Literal"` : ''}]`);
       if (enumInScope) {
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(enumDef.name)}.py`,
@@ -324,6 +328,9 @@ export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterCont
     const dirName = resolveDir(service);
     if (!symbolsByDir.has(dirName)) symbolsByDir.set(dirName, []);
     symbolsByDir.get(dirName)!.push(enumDef.name);
+    if (enumDef.values.length > 0) {
+      symbolsByDir.get(dirName)!.push(`${enumDef.name}Literal`);
+    }
     for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
       symbolsByDir.get(dirName)!.push(aliasName);
     }

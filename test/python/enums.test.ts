@@ -252,7 +252,8 @@ describe('generateEnums', () => {
     expect(alias).toBeDefined();
     expect(alias.content).toContain('import ConnectionType');
     expect(alias.content).toContain('ProfileConnectionType: TypeAlias = ConnectionType');
-    expect(alias.content).not.toContain('Literal');
+    expect(alias.content).not.toContain('ProfileConnectionType: TypeAlias = Literal[');
+    expect(alias.content).toContain('ProfileConnectionTypeLiteral: TypeAlias = Literal["saml", "oidc"]');
   });
 
   it('handles enum with descriptions', () => {
