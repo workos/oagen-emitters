@@ -1,4 +1,6 @@
 import { phpStringLiteral } from './strings.js';
+import { resolveRequestBodyModel } from './request-body.js';
+import type { ApiParam } from '@workos/oagen/compat';
 import type {
   Service,
   Operation,
@@ -309,7 +311,14 @@ function generateMethod(
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const materializeQueryDefaults = !isRedirect;
-  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults });
+  const bodyModel = plan.hasBody ? resolveRequestBodyModel(op, [...modelMap.values()]) : null;
+  const resourceName = className(resolveServiceTarget(service.name, buildExportedClassNameSet(ctx)));
+  const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
+  const params = preserveMethodParameters(
+    buildMethodParams(op, bodyModel, ctx, hiddenParams, { materializeQueryDefaults }),
+    baseline,
+    `${resourceName}.${method}`,
+  );
   const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block
@@ -330,22 +339,19 @@ function generateMethod(
 
   // @param for body fields
   const groupedParamNames = collectGroupedParamNames(op);
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
-    if (bodyModel) {
-      const bodyParamMap = buildBodyParamMap(op, bodyModel);
-      for (const field of bodyModel.fields) {
-        if (hiddenParams.has(field.name)) continue;
-        if (groupedParamNames.has(field.name)) continue;
-        const docType = mapTypeRefForPHPDoc(field.type);
-        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-        if (seenDocParams.has(phpName)) continue;
-        seenDocParams.add(phpName);
-        const nullSuffix = !field.required && !docType.endsWith('|null') ? '|null' : '';
-        const prefix = field.deprecated ? '(deprecated) ' : '';
-        const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
-        docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
-      }
+  if (bodyModel) {
+    const bodyParamMap = buildBodyParamMap(op, bodyModel);
+    for (const field of bodyModel.fields) {
+      if (hiddenParams.has(field.name)) continue;
+      if (groupedParamNames.has(field.name)) continue;
+      const docType = mapTypeRefForPHPDoc(field.type);
+      const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+      if (seenDocParams.has(phpName)) continue;
+      seenDocParams.add(phpName);
+      const nullSuffix = !field.required && !docType.endsWith('|null') ? '|null' : '';
+      const prefix = field.deprecated ? '(deprecated) ' : '';
+      const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
+      docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
     }
   }
 
@@ -507,7 +513,6 @@ function generateMethod(
   } else if (plan.isDelete) {
     // Build body if the operation has a request body (e.g., DELETE with criteria)
     if (plan.hasBody) {
-      const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
       const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
       const deleteGroupedParams = collectGroupedParamNames(op);
       const visibleFields =
@@ -568,7 +573,6 @@ function generateMethod(
     lines.push('            options: $options,');
     lines.push('        );');
   } else if (plan.hasBody) {
-    const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
     const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
     const bodyGroupedParams = collectGroupedParamNames(op);
     const visibleFields =
@@ -607,10 +611,17 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
+    const queryLines = buildQueryArray(op, hiddenParams);
+    if (queryLines.length > 0) {
+      lines.push('        $query = array_filter([');
+      for (const q of queryLines) lines.push(`            ${q}`);
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
     lines.push('            body: $body,');
+    if (queryLines.length > 0) lines.push('            query: $query,');
     lines.push('            options: $options,');
     lines.push('        );');
 
@@ -686,10 +697,32 @@ function generateMethod(
   lines.push('    }');
 }
 
+function preserveMethodParameters(params: string[], baseline: ApiParam[] | undefined, method: string): string[] {
+  if (!baseline) return params;
+  const byName = new Map(params.map((param) => [param.match(/\$(\w+)/)![1], param]));
+  const ordered: string[] = [];
+  for (const previous of baseline) {
+    const declaration = byName.get(previous.name);
+    if (!declaration) throw new Error(`PHP ${method}: baseline parameter $${previous.name} was removed`);
+    if (previous.optional && !declaration.includes(' = ')) {
+      throw new Error(`PHP ${method}: baseline parameter $${previous.name} became required`);
+    }
+    // Keep previously-required arguments required: a new default must not move their slots.
+    ordered.push(previous.optional ? declaration : declaration.replace(/ = .*$/, ''));
+    byName.delete(previous.name);
+  }
+  for (const [name, declaration] of byName) {
+    if (!declaration.includes(' = ')) {
+      throw new Error(`PHP ${method}: new parameter $${name} is required; cannot preserve the baseline signature`);
+    }
+    ordered.push(declaration);
+  }
+  return ordered;
+}
+
 function buildMethodParams(
   op: Operation,
-  plan: ReturnType<typeof planOperation>,
-  modelMap: Map<string, Model>,
+  bodyModel: Model | null,
   ctx: EmitterContext,
   hiddenParams?: Set<string>,
   opts?: { materializeQueryDefaults?: boolean },
@@ -711,26 +744,22 @@ function buildMethodParams(
   }
 
   // Body fields
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
-    if (bodyModel) {
-      for (const field of bodyModel.fields) {
-        if (hidden.has(field.name)) continue;
-        if (groupedParams.has(field.name)) continue;
-        const phpType = mapTypeRef(field.type, { qualified: true });
-        let phpName = fieldName(field.name);
-        if (usedNames.has(phpName)) {
-          // Disambiguate body field from path param with same name
-          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-          if (usedNames.has(phpName)) continue; // truly duplicate, skip
-        }
-        usedNames.add(phpName);
-        if (field.required) {
-          required.push(`${phpType} $${phpName}`);
-        } else {
-          const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
-          optional.push(`${nullableType} $${phpName} = null`);
-        }
+  if (bodyModel) {
+    for (const field of bodyModel.fields) {
+      if (hidden.has(field.name)) continue;
+      if (groupedParams.has(field.name)) continue;
+      const phpType = mapTypeRef(field.type, { qualified: true });
+      let phpName = fieldName(field.name);
+      if (usedNames.has(phpName)) {
+        // Disambiguate body field from path param with same name
+        phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+        if (usedNames.has(phpName)) continue; // truly duplicate, skip
+      }
+      usedNames.add(phpName);
+      if (field.required) {
+        required.push(`${phpType} $${phpName}`);
+      } else {
+        optional.push(`${nullableTypeHint(phpType)} $${phpName} = null`);
       }
     }
   }

@@ -1,0 +1,180 @@
+# Reduced request contracts from openapi-spec@247ddc7; response bodies simplified.
+openapi: 3.1.0
+info:
+  title: PHP Pipes regression
+  version: '1.0'
+paths:
+  /data-integrations/{slug}/authorize:
+    post:
+      tags: [Pipes]
+      operationId: authorizeDataIntegration
+      parameters: &slug
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/AuthorizeLegacy'
+                - $ref: '#/components/schemas/AuthorizeAdd'
+                - $ref: '#/components/schemas/AuthorizeReauthorize'
+      responses: &responses
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reply'
+  /data-integrations/{slug}/api-key:
+    put:
+      tags: [Pipes]
+      operationId: updateDataIntegrationApiKey
+      parameters: *slug
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/ApiKeyLegacy'
+                - $ref: '#/components/schemas/ApiKeyReauthorize'
+                - $ref: '#/components/schemas/ApiKeySelected'
+      responses: *responses
+  /data-integrations/{slug}/client-credentials:
+    put:
+      tags: [Pipes]
+      operationId: updateDataIntegrationClientCredentials
+      parameters: *slug
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/ClientCredentialsLegacy'
+                - $ref: '#/components/schemas/ClientCredentialsReauthorize'
+                - $ref: '#/components/schemas/ClientCredentialsSelected'
+      responses: *responses
+  /user_management/users/{user_id}/connected_accounts/{slug}:
+    post:
+      tags: [Pipes]
+      operationId: createUserConnectedAccount
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                account_display_name: { type: string }
+                account_identifier: { type: string }
+                access_token: { type: string }
+                refresh_token: { type: string }
+                expires_at: { type: string, format: date-time }
+                scopes: { type: array, items: { type: string } }
+                state: { type: string }
+                connection_intent: { type: string, const: add }
+      responses: *responses
+components:
+  schemas:
+    Reply:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+    PipesOwnership:
+      type: string
+      enum: [user, organization]
+    AuthorizeLegacy:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties: &authorize
+        account_display_name: { type: string }
+        user_id: { type: string }
+        organization_id: { type: string }
+        connection_owner: { $ref: '#/components/schemas/PipesOwnership' }
+        return_to: { type: string }
+        config: { type: object, additionalProperties: { type: string } }
+    AuthorizeAdd:
+      type: object
+      additionalProperties: false
+      required: [user_id, connection_intent]
+      properties:
+        <<: *authorize
+        connection_intent: { type: string, const: add }
+    AuthorizeReauthorize:
+      type: object
+      additionalProperties: false
+      required: [user_id, connection_intent, connected_account_id]
+      properties:
+        <<: *authorize
+        connection_intent: { type: string, const: reauthorize }
+        connected_account_id: { type: string }
+    ApiKeyLegacy:
+      type: object
+      additionalProperties: false
+      required: [user_id, secret]
+      properties: &apiKey
+        account_display_name: { type: string }
+        account_identifier: { type: string }
+        user_id: { type: string }
+        organization_id: { type: string }
+        connection_owner: { $ref: '#/components/schemas/PipesOwnership' }
+        secret: { type: string }
+    ApiKeyReauthorize:
+      type: object
+      additionalProperties: false
+      required: [user_id, secret, connection_intent, connected_account_id]
+      properties:
+        <<: *apiKey
+        connection_intent: { type: string, const: reauthorize }
+        connected_account_id: { type: string }
+    ApiKeySelected:
+      type: object
+      additionalProperties: false
+      required: [user_id, secret, connected_account_id]
+      properties:
+        <<: *apiKey
+        connected_account_id: { type: string }
+    ClientCredentialsLegacy:
+      type: object
+      additionalProperties: false
+      required: [user_id, client_id, client_secret]
+      properties: &clientCredentials
+        account_display_name: { type: string }
+        account_identifier: { type: string }
+        user_id: { type: string }
+        organization_id: { type: string }
+        connection_owner: { $ref: '#/components/schemas/PipesOwnership' }
+        client_id: { type: string }
+        client_secret: { type: string }
+        config: { type: object, additionalProperties: { type: string } }
+    ClientCredentialsReauthorize:
+      type: object
+      additionalProperties: false
+      required: [user_id, client_id, client_secret, connection_intent, connected_account_id]
+      properties:
+        <<: *clientCredentials
+        connection_intent: { type: string, const: reauthorize }
+        connected_account_id: { type: string }
+    ClientCredentialsSelected:
+      type: object
+      additionalProperties: false
+      required: [user_id, client_id, client_secret, connected_account_id]
+      properties:
+        <<: *clientCredentials
+        connected_account_id: { type: string }

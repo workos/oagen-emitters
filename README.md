@@ -77,6 +77,21 @@ npm run typecheck # verify types
 npm run build     # build dist/ output
 ```
 
+### PHP method compatibility
+
+Pass `--api-surface <surface.json>` to `oagen generate --lang php` to preserve
+existing method parameter names and positions, including `RequestOptions`. Extract
+that surface with `oagen extract --lang php --sdk-path <previous-sdk> --output <surface.json>`.
+New optional parameters are appended; removed parameters, newly required parameters,
+and optional-to-required changes stop generation with a diagnostic. Without a
+baseline, parameters follow the schema order. For a regression repair, use the
+last compatible SDK rather than the already-broken release.
+
+PHP projects compatible object request-body alternatives onto named inputs. An
+unsupported request-body shape stops generation rather than silently sending an
+empty body. These checks do not guarantee compatibility of response types or model
+constructors; the consumer's compatibility checks are still required.
+
 ### Using a local `oagen` checkout
 
 ```bash
