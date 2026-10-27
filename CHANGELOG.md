@@ -11,6 +11,7 @@
 ### Bug Fixes
 
 * never elect a model only errors reach as a dedup canonical ([#278](https://github.com/workos/oagen-emitters/issues/278)) ([2cb6eb2](https://github.com/workos/oagen-emitters/commit/2cb6eb22966384d985da6ac00ff8ceee0c7b9c9d))
+* **php:** give a non-paginated list wrapper a fixture named after its class ([#281](https://github.com/workos/oagen-emitters/issues/281)) ([12d0203](https://github.com/workos/oagen-emitters/commit/12d0203af7195e6c686e6172c3b00b1290aac344))
 * step model names that shadow Kotlin, .NET and Swift built-in types ([#277](https://github.com/workos/oagen-emitters/issues/277)) ([8184845](https://github.com/workos/oagen-emitters/commit/81848454ea6f150bb80c0db5ad2379c1a0520bb4))
 * variant-only union fixtures; suppress ktlint on long Kotlin typealiases ([#274](https://github.com/workos/oagen-emitters/issues/274)) ([eca7bd9](https://github.com/workos/oagen-emitters/commit/eca7bd96c3c2017e95a5e3b692e94feb05c0f810))
 
