@@ -8,7 +8,7 @@ import type {
   ParameterGroup,
   TypeRef,
 } from '@workos/oagen';
-import { toPascalCase } from '@workos/oagen';
+import { toPascalCase, walkTypeRef } from '@workos/oagen';
 import { getSyntheticParent } from './model-utils.js';
 
 /**
@@ -372,4 +372,137 @@ export function declaredParams(op: Operation): Parameter[] {
     ...op.headerParams,
     ...(op.cookieParams ?? []),
   ];
+}
+
+/**
+ * Names of the models an operation reaches only through its error responses
+ * (`errors[].type`) — never from a success response, request body, declared
+ * parameter ({@link declaredParams}, body-owned query parameters included),
+ * pagination item or envelope, nor from the fields or discriminator variants
+ * of a model reached one of those ways. oagen 0.32 mints one such model per
+ * operation and status code (`<Op>Error<code>`), hundreds of which share one
+ * shape with a domain model (`{ code, message }`), so a structural dedup that
+ * elects its canonical by name alone hands a domain model's public name to
+ * an error body. Callers rank these last ({@link preferLiveCanonical}).
+ *
+ * `models` must be the list the dedup groups — the enriched one, when the
+ * emitter enriches (`enrichModelsFromSpec` recovers inline error children as
+ * models of their own) — so every candidate is classified.
+ */
+export function collectErrorOnlyModelNames(spec: { services: Service[]; models: Model[] }): Set<string> {
+  const byName = new Map(spec.models.map((m) => [m.name, m]));
+  const modelRefs = (ref: TypeRef | undefined): string[] => {
+    const out: string[] = [];
+    if (ref) walkTypeRef(ref, { model: (r) => out.push(r.name) });
+    return out;
+  };
+  const closure = (roots: string[]): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [...roots];
+    while (stack.length > 0) {
+      const name = stack.pop()!;
+      const model = byName.get(name);
+      if (!model || seen.has(name)) continue;
+      seen.add(name);
+      for (const field of model.fields) stack.push(...modelRefs(field.type));
+      if (model.discriminator) stack.push(...Object.values(model.discriminator.mapping));
+    }
+    return seen;
+  };
+  const live: string[] = [];
+  const errors: string[] = [];
+  for (const service of spec.services) {
+    for (const op of service.operations) {
+      live.push(...modelRefs(op.response), ...modelRefs(op.requestBody));
+      for (const success of op.successResponses ?? []) live.push(...modelRefs(success.type));
+      for (const param of declaredParams(op)) live.push(...modelRefs(param.type));
+      if (op.pagination) {
+        live.push(...modelRefs(op.pagination.itemType));
+        for (const field of op.pagination.envelopeFields ?? []) live.push(...modelRefs(field.type));
+      }
+      for (const error of op.errors) errors.push(...modelRefs(error.type));
+    }
+  }
+  const reachable = closure(live);
+  return new Set([...closure(errors)].filter((name) => !reachable.has(name)));
+}
+
+/**
+ * Canonical-election order for structurally identical models: a model only
+ * error responses reach ({@link collectErrorOnlyModelNames}) sorts after any
+ * other, then `tieBreak` decides — by default the plain string order the
+ * emitters used before, so nothing else moves.
+ */
+export function preferLiveCanonical(
+  errorOnly: ReadonlySet<string>,
+  tieBreak: (a: string, b: string) => number = (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+): (a: string, b: string) => number {
+  return (a, b) => Number(errorOnly.has(a)) - Number(errorOnly.has(b)) || tieBreak(a, b);
+}
+
+/**
+ * Models a scoped run must write beyond its selection so that no emitted file
+ * names a class the run never writes: the canonical a selected alias points
+ * at, and — transitively — every model that canonical's fields or variants
+ * reach, each together with its own canonical. A reached model that is itself
+ * an out-of-scope alias is included too, because the forced parent still
+ * refers to it by that name. Models the selection already covers are left to
+ * the ordinary gate. Empty on a full run.
+ */
+export function forcedModelNames(
+  models: Model[],
+  aliasOf: ReadonlyMap<string, string>,
+  ctx: EmitterContext,
+): Set<string> {
+  const forced = new Set<string>();
+  const enums = new Set<string>();
+  forcedEnumsBySpec = { spec: ctx.spec, enums };
+  if (!isScopedRun(ctx)) return forced;
+  const byName = new Map(models.map((m) => [m.name, m]));
+  const queue: string[] = [];
+  for (const [alias, canonical] of aliasOf) {
+    if (isModelInScope(alias, ctx)) queue.push(canonical);
+  }
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (forced.has(name) || isModelInScope(name, ctx)) continue;
+    forced.add(name);
+    const canonical = aliasOf.get(name);
+    if (canonical) queue.push(canonical);
+    const model = byName.get(name);
+    if (!model) continue;
+    for (const field of model.fields) {
+      walkTypeRef(field.type, { model: (r) => queue.push(r.name), enum: (r) => enums.add(r.name) });
+    }
+    if (model.discriminator) queue.push(...Object.values(model.discriminator.mapping));
+  }
+  return forced;
+}
+
+/** The enums the forced models of the most recent model pass reach, keyed by the spec they were computed for. */
+let forcedEnumsBySpec: { spec: unknown; enums: Set<string> } | null = null;
+const NO_ENUMS: ReadonlySet<string> = new Set();
+
+/**
+ * Enums that a model {@link forcedModelNames} selected reaches, so a forced
+ * model never imports an enum file the run did not write. The engine runs
+ * the model pass before the enum pass, which gates its files on this set
+ * beside the scope; an aliased enum's canonical is the emitter's to add.
+ * Empty on a full run, or for a spec no model pass has seen.
+ */
+export function forcedEnumNames(ctx: EmitterContext): ReadonlySet<string> {
+  return forcedEnumsBySpec?.spec === ctx.spec ? forcedEnumsBySpec.enums : NO_ENUMS;
+}
+
+/** {@link forcedEnumNames} closed over the enum alias map: an aliased enum's canonical is forced with it. */
+export function forcedEnumNamesWithCanonicals(
+  ctx: EmitterContext,
+  canonicalOf: (name: string) => string | undefined,
+): Set<string> {
+  const forced = new Set(forcedEnumNames(ctx));
+  for (const name of forcedEnumNames(ctx)) {
+    const canonical = canonicalOf(name);
+    if (canonical) forced.add(canonical);
+  }
+  return forced;
 }

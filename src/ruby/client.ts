@@ -13,7 +13,7 @@ import {
 } from './naming.js';
 import { classifyUnassignedModel } from './models.js';
 import { getMountTarget, isScopedRun } from '../shared/resolved-ops.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { buildListScaffoldingSkip } from '../shared/model-utils.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
 /**
@@ -110,8 +110,9 @@ function buildInflectionMap(spec: ApiSpec, ctx: EmitterContext): Map<string, str
   }
 
   const seenClasses = new Set<string>();
+  const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
   for (const model of spec.models as Model[]) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipScaffolding(model)) continue;
     const cls = className(model.name);
     if (seenClasses.has(cls)) continue;
     seenClasses.add(cls);
@@ -257,8 +258,9 @@ function collectModelSubdirs(spec: ApiSpec, ctx: EmitterContext): string[] {
   const modelToService = assignModelsToServices(spec.models as Model[], spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const subdirs = new Set<string>();
+  const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
   for (const model of spec.models as Model[]) {
-    if (isListWrapperModel(model) || isListMetadataModel(model)) continue;
+    if (skipScaffolding(model)) continue;
     const service = modelToService.get(model.name);
     const dir = service
       ? (mountDirMap.get(service) ?? classifyUnassignedModel(model.name))

@@ -20,7 +20,12 @@ import { generateClient } from './client.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { generateWrapperOptionsClasses } from './wrappers.js';
-import { groupByMount, isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+import {
+  groupByMount,
+  isModelInScope,
+  fileExistsAfterRun,
+  collectErrorOnlyModelNames,
+} from '../shared/resolved-ops.js';
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { discriminatedUnions, resolveModelName } from './type-map.js';
 import { modelClassName } from './naming.js';
@@ -301,7 +306,11 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnums = getSyntheticEnums();
     primeEnumAliases(synEnums.length > 0 ? [...c.spec.enums, ...synEnums] : c.spec.enums);
-    primeModelAliases(enrichModelsFromSpec(c.spec.models));
+    const enrichedForAliases = enrichModelsFromSpec(c.spec.models);
+    primeModelAliases(
+      enrichedForAliases,
+      collectErrorOnlyModelNames({ services: c.spec.services, models: enrichedForAliases }),
+    );
     const files = generateResources(services, c);
 
     // Also generate wrapper options classes
@@ -354,7 +363,11 @@ export const dotnetEmitter: Emitter = {
     const c = fixNamespace(ctx);
     const synEnumsForTests = getSyntheticEnums();
     primeEnumAliases(synEnumsForTests.length > 0 ? [...spec.enums, ...synEnumsForTests] : spec.enums);
-    primeModelAliases(enrichModelsFromSpec(c.spec.models));
+    const enrichedForAliases = enrichModelsFromSpec(c.spec.models);
+    primeModelAliases(
+      enrichedForAliases,
+      collectErrorOnlyModelNames({ services: c.spec.services, models: enrichedForAliases }),
+    );
     return prefixTestPaths(ensureTrailingNewlines(generateTests(spec, c)));
   },
 

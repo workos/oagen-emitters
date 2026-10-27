@@ -5,7 +5,13 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName } from './naming.js';
 import { humanize } from './humanize.js';
 import { lowerFirstForDoc, fieldDocComment, articleFor } from '../shared/naming-utils.js';
-import { isModelInScope, isScopedRun, declaredParams } from '../shared/resolved-ops.js';
+import {
+  isModelInScope,
+  isScopedRun,
+  declaredParams,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+} from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, parseFlatGoBlocks, type NamedBlock } from './flat-merge.js';
 
 // Import and re-export shared model detection utilities
@@ -129,11 +135,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const aliasEmitted = (name: string): boolean =>
     !isScopedRun(ctx) || isModelInScope(name, ctx) || priorModelNames.has(className(name));
 
+  // A model only error responses reach never takes a domain model's name.
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroups) {
     if (names.length <= 1) continue;
     if (hash === '') continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort(preferLiveCanonical(errorOnly));
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       aliasOf.set(sorted[i], canonical);

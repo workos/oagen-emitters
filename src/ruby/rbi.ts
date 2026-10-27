@@ -24,7 +24,7 @@ import {
   collectGroupedParamNames,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
-import { isListWrapperModel, isListMetadataModel } from '../shared/model-utils.js';
+import { isListWrapperModel, buildListScaffoldingSkip } from '../shared/model-utils.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
 
 /**
@@ -80,7 +80,8 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const _enumNames = new Set(spec.enums.map((e) => e.name));
 
   // 1. Generate model RBI files
-  const models = (spec.models as Model[]).filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
+  const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
+  const models = (spec.models as Model[]).filter((m) => !skipScaffolding(m));
 
   for (const model of models) {
     const cls = className(model.name);

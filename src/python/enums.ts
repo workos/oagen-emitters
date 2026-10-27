@@ -3,7 +3,7 @@ import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, forcedEnumNamesWithCanonicals } from '../shared/resolved-ops.js';
 
 /**
  * Convert a PascalCase class name to a human-readable lowercase string,
@@ -36,6 +36,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   const compatAliases = collectCompatEnumAliases(enums, ctx);
 
   const aliasOf = placement.enumAliases;
+  // A scoped run also writes the enums a forced model reaches (see
+  // forcedModelNames), with the canonical an aliased one points at.
+  const forcedEnums = forcedEnumNamesWithCanonicals(ctx, (name) => aliasOf.get(name));
 
   for (const enumDef of enums) {
     const service = enumToService.get(enumDef.name);
@@ -43,7 +46,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // FR-1.4: write per-enum FILES only when in scope; the enum barrel is built
     // separately (collectGeneratedEnumSymbolsByDir over the full set), so an
     // out-of-scope enum left on disk stays exported and importable.
-    const enumInScope = isEnumInScope(enumDef.name, ctx);
+    const enumInScope = isEnumInScope(enumDef.name, ctx) || forcedEnums.has(enumDef.name);
 
     // If this enum is an alias for a canonical enum, generate a type alias file
     const canonicalName = aliasOf.get(enumDef.name);

@@ -671,9 +671,17 @@ describe('python scoped aggregates', () => {
       },
       {
         name: 'AgentThing',
+        // Shaped unlike WidgetA on purpose: identical shapes would make WidgetA
+        // an alias of AgentThing, and a scoped run then has to write the
+        // canonical its alias imports — which is a different test.
         fields: [
           {
             name: 'id',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+          },
+          {
+            name: 'name',
             type: { kind: 'primitive', type: 'string' },
             required: true,
           },

@@ -15,7 +15,13 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
-import { isModelInScope, fileExistsAfterRun } from '../shared/resolved-ops.js';
+import {
+  isModelInScope,
+  fileExistsAfterRun,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+  forcedModelNames,
+} from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const MODELS_PACKAGE = 'com.workos.models';
@@ -106,10 +112,14 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     hashGroupsPass1.get(hash)!.push(model.name);
   }
 
+  // A model only error responses reach never takes a domain model's name,
+  // however short its own.
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
+  const preferCanonical = preferLiveCanonical(errorOnly, preferShorterCanonical);
   const aliasOf = new Map<string, string>();
   for (const [hash, names] of hashGroupsPass1) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort(preferShorterCanonical);
+    const sorted = [...names].sort(preferCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (hasRequestSuffix(sorted[i]) !== hasRequestSuffix(canonical)) continue;
@@ -131,7 +141,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
   for (const [hash, names] of hashGroupsPass2) {
     if (names.length <= 1 || hash === '') continue;
-    const sorted = [...names].sort(preferShorterCanonical);
+    const sorted = [...names].sort(preferCanonical);
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       if (aliasOf.has(sorted[i])) continue;
@@ -140,6 +150,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
   }
 
+  // A canonical an in-scope alias points at must exist after the run even
+  // when it is itself out of scope and brand-new (it would be dropped) or on
+  // disk as the former alias of that very model (the two files would alias
+  // each other) — and so must every model its fields reach, under the names
+  // it uses for them: force-emit that closure (see forcedModelNames).
+  const forcedModels = forcedModelNames(models, aliasOf, ctx);
+
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     const typeName = className(model.name);
@@ -147,7 +164,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // `.kt` file (no barrel), so an out-of-scope model left untouched on disk
     // stays importable. The WorkOSEvent sealed interface below is an aggregate
     // built from many event models, so it is NOT gated.
-    const modelInScope = isModelInScope(model.name, ctx);
+    const modelInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
 
     // Parent of a discriminated union: emit a sealed class.
     if (model.fields.length === 0 && discriminatedUnions.has(typeName)) {

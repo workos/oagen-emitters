@@ -30,7 +30,12 @@ import {
   collectNonPaginatedResponseModelNames,
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
-import { isModelInScope, declaredParams } from '../shared/resolved-ops.js';
+import {
+  isModelInScope,
+  declaredParams,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+} from '../shared/resolved-ops.js';
 export { isListWrapperModel, isListMetadataModel };
 
 /**
@@ -75,7 +80,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // but is the canonical for a field-referenced alias (e.g. `SlimRole`)
   // would be wrongly classified as body-only and skipped from emission,
   // leaving every alias-rewritten field reference dangling.
-  primeModelAliases(models);
+  primeModelAliases(models, collectErrorOnlyModelNames({ services: ctx.spec.services, models }));
 
   // Models that are referenced ONLY as an operation request body (not by any
   // response, field, or other operation type) are dead surface in .NET because
@@ -462,7 +467,7 @@ function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, 
  * (idempotent for a given set of models). Must be invoked before any emitter
  * phase that calls `mapTypeRef` with model references.
  */
-export function primeModelAliases(models: Model[]): void {
+export function primeModelAliases(models: Model[], errorOnly: ReadonlySet<string> = new Set()): void {
   const eligibleModels = models.filter((m) => !isListWrapperModel(m) && !isListMetadataModel(m));
   const aliasOf = new Map<string, string>();
   while (true) {
@@ -477,7 +482,8 @@ export function primeModelAliases(models: Model[]): void {
     for (const [hash, names] of hashGroups) {
       if (names.length <= 1) continue;
       if (hash === '') continue;
-      const sorted = [...names].sort();
+      // A model only error responses reach never takes a domain model's name.
+      const sorted = [...names].sort(preferLiveCanonical(errorOnly));
       const canonical = sorted[0];
       for (let i = 1; i < sorted.length; i++) {
         const name = sorted[i];

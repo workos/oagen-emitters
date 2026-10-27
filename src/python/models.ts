@@ -13,6 +13,8 @@ import {
   isMountInScope,
   getMountTarget,
   declaredParams,
+  forcedModelNames,
+  forcedEnumNamesWithCanonicals,
 } from '../shared/resolved-ops.js';
 
 /**
@@ -36,6 +38,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     modelAliases: aliasOf,
   } = placement;
   const mountDirMap = buildMountDirMap(ctx);
+  // A scoped run also writes the canonical an in-scope alias points at and
+  // every model that canonical reaches, under the names it uses — otherwise
+  // the alias module imports a file the run never wrote (see forcedModelNames).
+  const forcedModels = forcedModelNames(models, aliasOf, ctx);
+  // Expanded by enum alias as the enum pass does, so the barrel exports the
+  // canonical a forced alias resolves to.
+  const forcedEnums = forcedEnumNamesWithCanonicals(ctx, (name) => placement.enumAliases.get(name));
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
@@ -185,7 +194,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // gated on the file existing after the run so out-of-scope models that
       // are already on disk stay exported, but brand-new out-of-scope models
       // (whose file is never emitted) are NOT referenced by the barrel.
-      const dispInScope = isModelInScope(model.name, ctx);
+      const dispInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
       if (dispInScope) {
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`,
@@ -240,7 +249,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       }
       lines.push('');
       lines.push(`${modelClassName}: TypeAlias = ${canonicalClassName}`);
-      const aliasInScope = isModelInScope(model.name, ctx);
+      const aliasInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
       const aliasPath = `src/${ctx.namespace}/${dirName}/models/${fileName(model.name)}.py`;
       if (aliasInScope) {
         files.push({
@@ -489,7 +498,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('        return result');
 
-    const regularInScope = isModelInScope(model.name, ctx);
+    const regularInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
     if (regularInScope) {
       files.push({
         path: modelFilePath,
@@ -547,7 +556,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // enum whose file is never emitted must NOT be referenced.
       const enumFilePath = `${key}/${fileName(name)}.py`;
       const scopeName = aliasToCanonicalEnum.get(name) ?? name;
-      if (fileExistsAfterRun(enumFilePath, isEnumInScope(scopeName, ctx), ctx)) {
+      const enumWritten = isEnumInScope(scopeName, ctx) || forcedEnums.has(name) || forcedEnums.has(scopeName);
+      if (fileExistsAfterRun(enumFilePath, enumWritten, ctx)) {
         symbolsByDir.get(key)!.push({ name });
       }
     }

@@ -1,12 +1,13 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
+import { buildListScaffoldingSkip } from '../shared/model-utils.js';
 import {
-  isListWrapperModel,
-  isListMetadataModel,
-  collectNonPaginatedResponseModelNames,
-} from '../shared/model-utils.js';
-import { isModelInScope } from '../shared/resolved-ops.js';
+  isModelInScope,
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+  forcedModelNames,
+} from '../shared/resolved-ops.js';
 
 /** Folder under lib/workos/ for models not owned by any service. */
 export const SHARED_MODEL_DIR = 'shared';
@@ -82,31 +83,44 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
   const files: GeneratedFile[] = [];
 
-  // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
-  // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
-  // code references them by name and the pagination iterator doesn't unwrap them.
-  const nonPaginatedRefs = collectNonPaginatedResponseModelNames(ctx.spec.services);
-  const skipAsListWrapper = (m: Model): boolean => isListWrapperModel(m) && !nonPaginatedRefs.has(m.name);
+  // List scaffolding the pagination iterator replaces at runtime is not
+  // emitted — except a wrapper a non-paginated operation returns (vault's
+  // `VersionListResponse`), which the resource references by name, and any
+  // `ListMetadata` model its fields reach: that class was never written, so
+  // `WorkOS::ListMetadata.new(...)` inside the wrapper raised NameError. The
+  // shared predicate keeps models, rbi, tests and the client's autoload
+  // bookkeeping on one answer.
+  const skipScaffolding = buildListScaffoldingSkip(models, ctx.spec.services);
 
   // Dedup identical models (by recursive structural hash).
   const recursiveHashes = buildRecursiveHashMap(models, enumNames);
   const hashGroups = new Map<string, string[]>();
   for (const m of models) {
-    if (skipAsListWrapper(m) || isListMetadataModel(m)) continue;
+    if (skipScaffolding(m)) continue;
     const h = recursiveHashes.get(m.name) ?? '';
     if (!hashGroups.has(h)) hashGroups.set(h, []);
     hashGroups.get(h)!.push(m.name);
   }
+  // A model only error responses reach never takes a domain model's name.
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
   const aliasOf = new Map<string, string>();
   for (const names of hashGroups.values()) {
     if (names.length <= 1) continue;
-    const sorted = [...names].sort();
+    const sorted = [...names].sort(preferLiveCanonical(errorOnly));
     const canonical = sorted[0];
     for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
   }
 
+  // A canonical an in-scope alias points at must exist after the run even
+  // when it is itself out of scope and brand-new (it would be dropped) or on
+  // disk as the former alias of that very model (the two files would alias
+  // each other) — and so must every model its fields reach, under the names
+  // it uses for them: force-emit that closure (see forcedModelNames).
+  const forcedModels = forcedModelNames(models, aliasOf, ctx);
+
   for (const model of models) {
-    if (skipAsListWrapper(model) || isListMetadataModel(model)) continue;
+    if (skipScaffolding(model)) continue;
+    const modelInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
 
     const cls = className(model.name);
     const file = fileName(model.name);
@@ -123,7 +137,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads
       // by path, so there is no barrel to keep in sync; out-of-scope alias files
       // are left untouched on disk.
-      if (isModelInScope(model.name, ctx)) {
+      if (modelInScope) {
         files.push({
           path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
           content: lines.join('\n'),
@@ -223,7 +237,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     // FR-1.4: write the per-model file only when in scope. Zeitwerk autoloads by
     // path, so there is no barrel to keep in sync; out-of-scope model files are
     // left untouched on disk.
-    if (isModelInScope(model.name, ctx)) {
+    if (modelInScope) {
       files.push({
         path: `lib/workos/${dirFor(model.name)}/${file}.rb`,
         content: lines.join('\n'),

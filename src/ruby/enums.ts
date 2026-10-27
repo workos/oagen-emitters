@@ -1,7 +1,7 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toUpperSnakeCase } from '@workos/oagen';
 import { className, fileName } from './naming.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, forcedEnumNamesWithCanonicals } from '../shared/resolved-ops.js';
 
 /**
  * Generate Ruby enum class files.
@@ -14,12 +14,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
   const files: GeneratedFile[] = [];
   const aliasOf = collectEnumAliasOf(enums);
+  // A scoped run also writes the enums a forced model reaches (see
+  // forcedModelNames), with the canonical an aliased one points at.
+  const forcedEnums = forcedEnumNamesWithCanonicals(ctx, (name) => aliasOf.get(name));
 
   for (const enumDef of enums) {
     const cls = className(enumDef.name);
     // FR-1.4: write the per-enum file only when in scope. Out-of-scope enum
     // files are left untouched on disk; Zeitwerk autoloads them by path.
-    const enumInScope = isEnumInScope(enumDef.name, ctx);
+    const enumInScope = isEnumInScope(enumDef.name, ctx) || forcedEnums.has(enumDef.name);
 
     // If this enum duplicates another (by value set), emit a Ruby constant
     // alias. Zeitwerk autoloads the canonical when the alias is first
