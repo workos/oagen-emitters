@@ -1,6 +1,6 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { className, ktStringLiteral, pascalName, primeReservedTypeNames, typealiasFile } from './naming.js';
-import { isEnumInScope } from '../shared/resolved-ops.js';
+import { isEnumInScope, forcedEnumNamesWithCanonicals } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const ENUMS_PACKAGE = 'com.workos.types';
@@ -70,6 +70,9 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   }
 
   const files: GeneratedFile[] = [];
+  // A scoped run also writes the enums a forced model reaches (see
+  // forcedModelNames), with the canonical an aliased one points at.
+  const forcedEnums = forcedEnumNamesWithCanonicals(ctx, (name) => aliasOf.get(name) ?? enumCanonicalMap.get(name));
 
   for (const enumDef of enums) {
     if (enumDef.values.length === 0) continue;
@@ -79,7 +82,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // FR-1.4: write per-enum FILES only when in scope. Each enum is its own
     // `.kt` file (no barrel), so an out-of-scope enum left untouched on disk
     // stays importable.
-    const enumInScope = isEnumInScope(enumDef.name, ctx);
+    const enumInScope = isEnumInScope(enumDef.name, ctx) || forcedEnums.has(enumDef.name);
 
     // Non-canonical enum: emit a typealias instead of a full enum class.
     const sharedSortEmitter = sharedSortEmitters.has(enumDef.name);

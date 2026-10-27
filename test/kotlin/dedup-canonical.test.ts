@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { generateModels } from '../../src/kotlin/models.js';
 import { generateEnums } from '../../src/kotlin/enums.js';
-import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Model, Service, Enum } from '@workos/oagen';
+import { forcedModelNames } from '../../src/shared/resolved-ops.js';
 import { defaultSdkBehavior } from '@workos/oagen';
 
 const codeMessage = (detail: string): Model['fields'] => [
@@ -95,5 +96,28 @@ describe('kotlin/models canonical election', () => {
     expect(has('/Detail.kt')).toBe(true);
     // Nothing else out of scope leaks in.
     expect(has('/AuthenticationFailedData.kt')).toBe(false);
+  });
+
+  it('scoped run: writes the enum a forced model reaches', () => {
+    // Prime the forced set as the model pass does, pointing the in-scope alias
+    // at a canonical whose field names an out-of-scope, brand-new enum.
+    const withEnum: Model[] = [
+      ...models,
+      { name: 'Live', fields: [{ name: 'status', type: { kind: 'enum', name: 'LiveStatus' }, required: true }] },
+    ];
+    const enums: Enum[] = [
+      {
+        name: 'LiveStatus',
+        values: [
+          { name: 'OK', value: 'ok' },
+          { name: 'FAILED', value: 'failed' },
+        ],
+      },
+    ];
+    const enumCtx: EmitterContext = { ...scopedCtx, spec: { ...scopedCtx.spec, models: withEnum, enums } };
+    forcedModelNames(withEnum, new Map([['Err', 'Live']]), enumCtx);
+
+    const files = generateEnums(enums, enumCtx);
+    expect(files.some((f) => f.path.endsWith('/LiveStatus.kt'))).toBe(true);
   });
 });

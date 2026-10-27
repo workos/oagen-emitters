@@ -14,6 +14,7 @@ import {
   getMountTarget,
   declaredParams,
   forcedModelNames,
+  forcedEnumNames,
 } from '../shared/resolved-ops.js';
 
 /**
@@ -41,6 +42,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // every model that canonical reaches, under the names it uses — otherwise
   // the alias module imports a file the run never wrote (see forcedModelNames).
   const forcedModels = forcedModelNames(models, aliasOf, ctx);
+  const forcedEnums = forcedEnumNames(ctx);
   const resolveDir = (irService: string | undefined) =>
     irService ? (mountDirMap.get(irService) ?? 'common') : 'common';
   const files: GeneratedFile[] = [];
@@ -552,7 +554,8 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // enum whose file is never emitted must NOT be referenced.
       const enumFilePath = `${key}/${fileName(name)}.py`;
       const scopeName = aliasToCanonicalEnum.get(name) ?? name;
-      if (fileExistsAfterRun(enumFilePath, isEnumInScope(scopeName, ctx), ctx)) {
+      const enumWritten = isEnumInScope(scopeName, ctx) || forcedEnums.has(name) || forcedEnums.has(scopeName);
+      if (fileExistsAfterRun(enumFilePath, enumWritten, ctx)) {
         symbolsByDir.get(key)!.push({ name });
       }
     }

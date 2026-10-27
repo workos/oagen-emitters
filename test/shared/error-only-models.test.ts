@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { ApiSpec, Model, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
-import { collectErrorOnlyModelNames, preferLiveCanonical } from '../../src/shared/resolved-ops.js';
+import {
+  collectErrorOnlyModelNames,
+  preferLiveCanonical,
+  forcedModelNames,
+  forcedEnumNames,
+} from '../../src/shared/resolved-ops.js';
 
 const codeMessage: Model['fields'] = [
   { name: 'code', type: { kind: 'primitive', type: 'string' }, required: true },
@@ -101,5 +106,40 @@ describe('preferLiveCanonical', () => {
       'Bo',
       'Err',
     ]);
+  });
+});
+
+describe('forcedModelNames', () => {
+  const withEnum: Model[] = [
+    ...models,
+    {
+      name: 'Live',
+      fields: [
+        { name: 'status', type: { kind: 'enum', name: 'LiveStatus' }, required: true },
+        { name: 'child', type: { kind: 'model', name: 'LiveChild' }, required: true },
+      ],
+    },
+    { name: 'LiveChild', fields: [{ name: 'kind', type: { kind: 'enum', name: 'ChildKind' }, required: true }] },
+  ];
+  const scopedCtx = {
+    namespace: 'workos',
+    namespacePascal: 'WorkOS',
+    spec: { ...spec, models: withEnum },
+    scopedServices: new Set(['Events']),
+    scopedModelNames: new Set(['Err']),
+    scopedEnumNames: new Set<string>(),
+    priorTargetManifestPaths: new Set<string>(),
+  } as any;
+
+  it('forces the canonical of an in-scope alias, what it reaches, and records the enums on the way', () => {
+    const forced = forcedModelNames(withEnum, new Map([['Err', 'Live']]), scopedCtx);
+    expect([...forced].sort()).toEqual(['Live', 'LiveChild']);
+    expect([...forcedEnumNames(scopedCtx)].sort()).toEqual(['ChildKind', 'LiveStatus']);
+  });
+
+  it('forces nothing on a full run and reports no enums for another spec', () => {
+    const fullCtx = { ...scopedCtx, scopedServices: undefined, scopedModelNames: undefined } as any;
+    expect(forcedModelNames(withEnum, new Map([['Err', 'Live']]), fullCtx).size).toBe(0);
+    expect(forcedEnumNames({ ...scopedCtx, spec: { ...spec } } as any).size).toBe(0);
   });
 });

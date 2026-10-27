@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { generateModels } from '../../src/ruby/models.js';
-import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Model, Service, Enum } from '@workos/oagen';
+import { forcedModelNames } from '../../src/shared/resolved-ops.js';
+import { generateEnums } from '../../src/ruby/enums.js';
 import { defaultSdkBehavior } from '@workos/oagen';
 
 const codeMessage = (detail: string): Model['fields'] => [
@@ -84,5 +86,28 @@ describe('ruby/models canonical election', () => {
     expect(has('/detail_info.rb')).toBe(true);
     expect(has('/detail.rb')).toBe(true);
     expect(has('/authentication_failed_data.rb')).toBe(false);
+  });
+
+  it('scoped run: writes the enum a forced model reaches', () => {
+    // Prime the forced set as the model pass does, pointing the in-scope alias
+    // at a canonical whose field names an out-of-scope, brand-new enum.
+    const withEnum: Model[] = [
+      ...models,
+      { name: 'Live', fields: [{ name: 'status', type: { kind: 'enum', name: 'LiveStatus' }, required: true }] },
+    ];
+    const enums: Enum[] = [
+      {
+        name: 'LiveStatus',
+        values: [
+          { name: 'OK', value: 'ok' },
+          { name: 'FAILED', value: 'failed' },
+        ],
+      },
+    ];
+    const enumCtx: EmitterContext = { ...scopedCtx, spec: { ...scopedCtx.spec, models: withEnum, enums } };
+    forcedModelNames(withEnum, new Map([['Err', 'Live']]), enumCtx);
+
+    const files = generateEnums(enums, enumCtx);
+    expect(files.some((f) => f.path.endsWith('/live_status.rb'))).toBe(true);
   });
 });

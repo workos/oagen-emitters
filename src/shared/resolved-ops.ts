@@ -455,6 +455,8 @@ export function forcedModelNames(
   ctx: EmitterContext,
 ): Set<string> {
   const forced = new Set<string>();
+  const enums = new Set<string>();
+  forcedEnumsBySpec = { spec: ctx.spec, enums };
   if (!isScopedRun(ctx)) return forced;
   const byName = new Map(models.map((m) => [m.name, m]));
   const queue: string[] = [];
@@ -469,8 +471,38 @@ export function forcedModelNames(
     if (canonical) queue.push(canonical);
     const model = byName.get(name);
     if (!model) continue;
-    for (const field of model.fields) walkTypeRef(field.type, { model: (r) => queue.push(r.name) });
+    for (const field of model.fields) {
+      walkTypeRef(field.type, { model: (r) => queue.push(r.name), enum: (r) => enums.add(r.name) });
+    }
     if (model.discriminator) queue.push(...Object.values(model.discriminator.mapping));
+  }
+  return forced;
+}
+
+/** The enums the forced models of the most recent model pass reach, keyed by the spec they were computed for. */
+let forcedEnumsBySpec: { spec: unknown; enums: Set<string> } | null = null;
+const NO_ENUMS: ReadonlySet<string> = new Set();
+
+/**
+ * Enums that a model {@link forcedModelNames} selected reaches, so a forced
+ * model never imports an enum file the run did not write. The engine runs
+ * the model pass before the enum pass, which gates its files on this set
+ * beside the scope; an aliased enum's canonical is the emitter's to add.
+ * Empty on a full run, or for a spec no model pass has seen.
+ */
+export function forcedEnumNames(ctx: EmitterContext): ReadonlySet<string> {
+  return forcedEnumsBySpec?.spec === ctx.spec ? forcedEnumsBySpec.enums : NO_ENUMS;
+}
+
+/** {@link forcedEnumNames} closed over the enum alias map: an aliased enum's canonical is forced with it. */
+export function forcedEnumNamesWithCanonicals(
+  ctx: EmitterContext,
+  canonicalOf: (name: string) => string | undefined,
+): Set<string> {
+  const forced = new Set(forcedEnumNames(ctx));
+  for (const name of forcedEnumNames(ctx)) {
+    const canonical = canonicalOf(name);
+    if (canonical) forced.add(canonical);
   }
   return forced;
 }
