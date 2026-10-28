@@ -12,15 +12,6 @@ import {
 /** Folder under lib/workos/ for models not owned by any service. */
 export const SHARED_MODEL_DIR = 'shared';
 
-/** Preserve the pre-write-response Ruby type without dropping the new warnings field. */
-export function getModelBaseClasses(modelNames: ReadonlySet<string>): Map<string, string> {
-  return new Map(
-    modelNames.has('ConnectedAccountWriteResponse') && modelNames.has('ConnectedAccount')
-      ? [['ConnectedAccountWriteResponse', 'ConnectedAccount']]
-      : [],
-  );
-}
-
 /**
  * Prefix → mount-target-dir map for models that `assignModelsToServices` can't
  * place (mostly webhook event payloads whose types aren't directly returned by
@@ -78,7 +69,6 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // Enum name set — used to detect enum-typed fields (treated as plain strings in Ruby).
   const enumNames = new Set(ctx.spec.enums.map((e) => e.name));
   const modelNames = new Set(models.map((m) => m.name));
-  const baseClasses = getModelBaseClasses(modelNames);
 
   // Model → mount target directory. Each model is assigned to the first service
   // that references it (transitively). Orphans land in `shared/`. Zeitwerk is
@@ -126,7 +116,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   // disk as the former alias of that very model (the two files would alias
   // each other) — and so must every model its fields reach, under the names
   // it uses for them: force-emit that closure (see forcedModelNames).
-  const forcedModels = forcedModelNames(models, new Map([...aliasOf, ...baseClasses]), ctx);
+  const forcedModels = forcedModelNames(models, aliasOf, ctx);
 
   for (const model of models) {
     if (skipScaffolding(model)) continue;
@@ -170,8 +160,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     const lines: string[] = [];
     lines.push('module WorkOS');
-    const base = baseClasses.get(model.name);
-    lines.push(`  class ${cls} < ${base ? `WorkOS::${className(base)}` : 'WorkOS::Types::BaseModel'}`);
+    lines.push(`  class ${cls} < WorkOS::Types::BaseModel`);
     lines.push('');
 
     // Split fields into non-deprecated (attr_accessor) and deprecated (explicit accessors with warn).

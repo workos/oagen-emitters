@@ -27,7 +27,6 @@ import {
 import { isListWrapperModel, buildListScaffoldingSkip } from '../shared/model-utils.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
 import { getRequestBodyFields } from './resources.js';
-import { getModelBaseClasses } from './models.js';
 
 /**
  * Map an IR TypeRef to a Sorbet type string for RBI files.
@@ -79,10 +78,6 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const files: GeneratedFile[] = [];
 
   const modelNames = new Set(spec.models.map((m) => m.name));
-  const baseClasses = getModelBaseClasses(modelNames);
-  const inheritedModels = new Set(
-    [...baseClasses].filter(([name]) => isModelInScope(name, ctx)).map(([, base]) => base),
-  );
   const _enumNames = new Set(spec.enums.map((e) => e.name));
 
   // 1. Generate model RBI files
@@ -95,8 +90,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('# typed: strong');
     lines.push('');
     lines.push('module WorkOS');
-    const base = baseClasses.get(model.name);
-    lines.push(`  class ${cls}${base ? ` < WorkOS::${className(base)}` : ''}`);
+    lines.push(`  class ${cls}`);
 
     // Constructor
     lines.push('    sig { params(json: T.any(String, T::Hash[Symbol, T.untyped])).void }');
@@ -132,7 +126,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     // FR-1.4: write the per-model .rbi only when in scope. The client.rbi
     // aggregate (section 3) stays on the full set so sigs for out-of-scope
     // services whose .rb/.rbi still exist keep resolving.
-    if (isModelInScope(model.name, ctx) || inheritedModels.has(model.name)) {
+    if (isModelInScope(model.name, ctx)) {
       files.push({
         path: `rbi/workos/${fileName(model.name)}.rbi`,
         content: lines.join('\n'),
