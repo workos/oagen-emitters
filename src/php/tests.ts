@@ -6,7 +6,11 @@ import type {
   GeneratedFile,
   Model,
   ResolvedOperation,
+  TypeRef,
 } from '@workos/oagen';
+import type { ApiParam } from '@workos/oagen/compat';
+import { resolveRequestBodyModel } from './request-body.js';
+import { phpStringLiteral } from './strings.js';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import {
   className,
@@ -16,6 +20,8 @@ import {
   fixtureName,
   servicePropertyName,
   domainFieldName,
+  resolveServiceTarget,
+  buildExportedClassNameSet,
 } from './naming.js';
 import { isListWrapperModel } from './models.js';
 import { generateFixtures } from './fixtures.js';
@@ -29,7 +35,7 @@ import {
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
-import { isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
+import { buildParamNames, isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
 // Deterministic date-time seed shared by generated call args and request-body
 // assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the
@@ -119,6 +125,7 @@ function generateMountGroupTest(
   const ns = ctx.namespacePascal;
   const name = className(target);
   const accessor = servicePropertyName(target);
+  const resourceName = className(resolveServiceTarget(target, buildExportedClassNameSet(ctx)));
   const lines: string[] = [];
 
   // No <?php here — the file header from fileHeader() provides it
@@ -146,6 +153,7 @@ function generateMountGroupTest(
     const method = resolveMethodName(op, service, ctx);
     const testName = `test${method.charAt(0).toUpperCase()}${method.slice(1)}`;
     const hidden = buildHiddenParams(resolvedOp);
+    const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
 
     if (emitted.has(testName)) continue;
     emitted.add(testName);
@@ -158,14 +166,14 @@ function generateMountGroupTest(
 
     if (plan.isDelete) {
       lines.push("        $client = $this->createMockClient([['status' => 204]]);");
-      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden, baseline })});`);
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push("        $this->assertSame('DELETE', $request->getMethod());");
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for DELETE-with-body
-      if (plan.hasBody && op.requestBody?.kind === 'model') {
-        emitBodyAssertions(lines, op, ctx, hidden);
+      if (plan.hasBody) {
+        emitBodyAssertions(lines, op, ctx, hidden, baseline);
       }
     } else if (plan.isPaginated && op.pagination?.itemType.kind === 'model') {
       const fixtureStem = `list_${resolveFixtureModelName(op.pagination.itemType.name, ctx)}`;
@@ -173,7 +181,7 @@ function generateMountGroupTest(
       lines.push(`        $fixture = $this->loadFixture('${fixtureStem}');`);
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
       lines.push(
-        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden })});`,
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden, baseline })});`,
       );
       lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
       // Request assertions
@@ -187,7 +195,7 @@ function generateMountGroupTest(
       // Pass all params (including optional) to verify they appear in the URL.
       lines.push('        $client = $this->createMockClient([]);');
       lines.push(
-        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden })});`,
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { includeOptional: true, hidden, baseline })});`,
       );
       lines.push('        $this->assertIsString($result);');
       lines.push(`        $this->assertStringContainsString('${expectedPath}', $result);`);
@@ -202,7 +210,9 @@ function generateMountGroupTest(
       } else {
         lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
       }
-      lines.push(`        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
+      lines.push(
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden, baseline })});`,
+      );
       if (op.response.kind === 'array') {
         lines.push('        $this->assertIsArray($result);');
         lines.push(`        $this->assertInstanceOf(\\${ns}\\Resource\\${modelName}::class, $result[0]);`);
@@ -221,11 +231,11 @@ function generateMountGroupTest(
       lines.push(`        $this->assertStringEndsWith('${expectedPath}', $request->getUri()->getPath());`);
       // Body assertions for POST/PUT/PATCH
       if (plan.hasBody && ['post', 'put', 'patch'].includes(op.httpMethod.toLowerCase())) {
-        emitBodyAssertions(lines, op, ctx, hidden);
+        emitBodyAssertions(lines, op, ctx, hidden, baseline);
       }
     } else {
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => []]]);");
-      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden })});`);
+      lines.push(`        $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden, baseline })});`);
       // Request assertions
       lines.push('        $request = $this->getLastRequest();');
       lines.push(`        $this->assertSame('${op.httpMethod.toUpperCase()}', $request->getMethod());`);
@@ -286,6 +296,7 @@ function generateMountGroupTest(
       const itemType = op.pagination!.itemType as { name: string };
       const fixtureStem = `list_${resolveFixtureModelName(itemType.name, ctx)}`;
       const method = resolveMethodName(op, firstPaginatedOp.service, ctx);
+      const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
 
       lines.push('');
       lines.push(`    public function ${testName}(): void`);
@@ -296,7 +307,7 @@ function generateMountGroupTest(
       lines.push("        $fixture['list_metadata']['after'] = null;");
       lines.push("        $client = $this->createMockClient([['status' => 200, 'body' => $fixture]]);");
       lines.push(
-        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden: paginatedHidden })});`,
+        `        $result = $client->${accessor}()->${method}(${buildTestArgs(op, ctx, { hidden: paginatedHidden, baseline })});`,
       );
       lines.push(`        $this->assertInstanceOf(\\${ns}\\PaginatedResponse::class, $result);`);
       lines.push('        // Verify cursors are null on boundary page');
@@ -337,42 +348,66 @@ function generateClientTest(ctx: EmitterContext): string {
   return lines.join('\n');
 }
 
+/**
+ * A test request must satisfy one branch, not an arbitrary mix of alternatives.
+ * Prefer the first branch that supplies every baseline-required input.
+ */
+function testRequestBodyModel(
+  op: Operation,
+  ctx: EmitterContext,
+  baseline?: ApiParam[],
+  hidden: Set<string> = new Set(),
+): Model | null {
+  const names = buildParamNames(op, resolveRequestBodyModel(op, ctx.spec.models), hidden);
+  const leaves = (ref: TypeRef): TypeRef[] => (ref.kind === 'union' ? ref.variants.flatMap(leaves) : [ref]);
+  const branches = (op.requestBody ? leaves(op.requestBody) : []).map((requestBody) =>
+    resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models),
+  );
+  if (branches.length === 0) return null;
+  const required = baseline?.filter((p) => !p.optional).map((p) => p.name) ?? [];
+  const otherNames = new Set([...op.pathParams.map((p) => toCamelCase(p.name)), ...names.query.values()]);
+  const supplies = (model: Model | null): boolean => {
+    const supplied = new Set(otherNames);
+    for (const f of model?.fields ?? []) {
+      const phpName = names.body.get(f.name);
+      if (phpName) supplied.add(phpName);
+    }
+    return required.every((name) => supplied.has(name));
+  };
+  return branches.find(supplies) ?? branches[0];
+}
+
 function buildTestArgs(
   op: Operation,
   ctx: EmitterContext,
-  opts?: { includeOptional?: boolean; hidden?: Set<string> },
+  opts?: { includeOptional?: boolean; hidden?: Set<string>; baseline?: ApiParam[] },
 ): string {
   const includeOptional = opts?.includeOptional ?? false;
   const hidden = opts?.hidden ?? new Set<string>();
+  const required = new Set(opts?.baseline?.filter((p) => !p.optional).map((p) => p.name));
   const args: string[] = [];
   const usedNames = new Set<string>();
 
-  // Path params (use enum values for enum-typed path params)
+  // Baseline-preserved slots may differ from schema order; names work in either order.
   for (const p of op.pathParams) {
-    if (p.type.kind === 'enum' || p.type.kind === 'model') {
-      args.push(generateTestValue(p.type, ctx));
-    } else {
-      args.push(`'test_${p.name}'`);
-    }
+    const value =
+      p.type.kind === 'enum' || p.type.kind === 'model' ? generateTestValue(p.type, ctx) : `'test_${p.name}'`;
+    args.push(opts?.baseline ? `${toCamelCase(p.name)}: ${value}` : value);
     usedNames.add(toCamelCase(p.name));
   }
 
   // Required body fields
-  if (op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
-    if (bodyModel) {
-      const pathParamNames = new Set(op.pathParams.map((p) => toCamelCase(p.name)));
-      for (const f of bodyModel.fields) {
-        if (hidden.has(f.name)) continue;
-        if (!f.required && !includeOptional) continue;
-        let phpName = toCamelCase(f.name);
-        if (pathParamNames.has(phpName)) {
-          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-        }
-        if (usedNames.has(phpName)) continue;
-        usedNames.add(phpName);
-        args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
-      }
+  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models);
+  const names = buildParamNames(op, mergedBody, hidden);
+  const bodyModel = testRequestBodyModel(op, ctx, opts?.baseline, hidden);
+  if (bodyModel) {
+    for (const f of bodyModel.fields) {
+      const phpName = names.body.get(f.name);
+      if (!phpName) continue;
+      if (!f.required && !includeOptional && !required.has(phpName)) continue;
+      if (usedNames.has(phpName)) continue;
+      usedNames.add(phpName);
+      args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
     }
   }
 
@@ -396,21 +431,31 @@ function buildTestArgs(
   for (const q of op.queryParams) {
     if (hidden.has(q.name)) continue;
     if (groupedParamNames.has(q.name)) continue;
-    if (!q.required && !includeOptional) continue;
-    const phpName = toCamelCase(q.name);
+    const phpName = names.query.get(q.name);
+    if (!phpName) continue;
+    if (!q.required && !includeOptional && !required.has(phpName)) continue;
     if (usedNames.has(phpName)) continue;
     usedNames.add(phpName);
     args.push(`${phpName}: ${generateTestValue(q.type, ctx)}`);
   }
 
+  // No single branch supplies every baseline-required input: fill the rest from the merged body.
+  for (const f of mergedBody?.fields ?? []) {
+    const phpName = names.body.get(f.name);
+    if (!phpName || !required.has(phpName) || usedNames.has(phpName)) continue;
+    usedNames.add(phpName);
+    args.push(`${phpName}: ${generateTestValue(f.type, ctx)}`);
+  }
+
   return args.join(', ');
 }
 
-function generateTestValue(
-  ref: { kind: string; type?: string; name?: string; format?: string },
-  ctx?: EmitterContext,
-): string {
+function generateTestValue(ref: TypeRef, ctx?: EmitterContext): string {
   switch (ref.kind) {
+    case 'literal':
+      return typeof ref.value === 'string' ? phpStringLiteral(ref.value) : String(ref.value);
+    case 'union':
+      return generateTestValue(ref.variants[0], ctx);
     case 'primitive':
       if (ref.format === 'date-time') {
         return TEST_DATE_TIME_ARG;
@@ -445,10 +490,7 @@ function generateTestValue(
     case 'map':
       return '[]';
     case 'nullable':
-      return generateTestValue(
-        (ref as unknown as { inner: { kind: string; type?: string; name?: string } }).inner,
-        ctx,
-      );
+      return generateTestValue(ref.inner, ctx);
     case 'model': {
       if (ref.name) {
         const modelClass = className(ref.name);
@@ -646,9 +688,14 @@ function emitRedirectQueryAssertions(
  * Emit body field assertions for POST/PUT/PATCH operations.
  * Only asserts primitive required fields (strings, numbers, booleans).
  */
-function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext, hidden?: Set<string>): void {
-  if (op.requestBody?.kind !== 'model') return;
-  const bodyModel = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
+function emitBodyAssertions(
+  lines: string[],
+  op: Operation,
+  ctx: EmitterContext,
+  hidden?: Set<string>,
+  baseline?: ApiParam[],
+): void {
+  const bodyModel = testRequestBodyModel(op, ctx, baseline, hidden);
   if (!bodyModel) return;
   // Skip fields that collide with path param names (they get deduped in the resource)
   const pathParamNames = new Set(op.pathParams.map((p) => p.name));
@@ -663,7 +710,9 @@ function emitBodyAssertions(lines: string[], op: Operation, ctx: EmitterContext,
 
   lines.push('        $body = json_decode((string) $request->getBody(), true);');
   for (const f of primitiveRequired) {
-    if (f.type.kind === 'primitive' && f.type.format === 'date-time') {
+    if (f.type.kind === 'literal') {
+      lines.push(`        $this->assertSame(${generateTestValue(f.type, ctx)}, $body['${f.name}']);`);
+    } else if (f.type.kind === 'primitive' && f.type.format === 'date-time') {
       // Serialized by the client via RFC3339_EXTENDED, not the raw string seed.
       lines.push(`        $this->assertSame('${TEST_DATE_TIME_WIRE}', $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.type === 'string') {

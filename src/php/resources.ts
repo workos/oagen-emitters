@@ -1,4 +1,6 @@
 import { phpStringLiteral } from './strings.js';
+import { resolveRequestBodyModel } from './request-body.js';
+import type { ApiParam } from '@workos/oagen/compat';
 import type {
   Service,
   Operation,
@@ -309,7 +311,14 @@ function generateMethod(
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const materializeQueryDefaults = !isRedirect;
-  const params = buildMethodParams(op, plan, modelMap, ctx, hiddenParams, { materializeQueryDefaults });
+  const bodyModel = plan.hasBody ? resolveRequestBodyModel(op, [...modelMap.values()]) : null;
+  const resourceName = className(resolveServiceTarget(service.name, buildExportedClassNameSet(ctx)));
+  const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
+  const params = preserveMethodParameters(
+    buildMethodParams(op, bodyModel, ctx, hiddenParams, { materializeQueryDefaults }),
+    baseline,
+    `${resourceName}.${method}`,
+  );
   const returnType = isRedirect ? 'string' : getReturnType(plan, ctx);
 
   // PHPDoc block
@@ -330,22 +339,19 @@ function generateMethod(
 
   // @param for body fields
   const groupedParamNames = collectGroupedParamNames(op);
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
-    if (bodyModel) {
-      const bodyParamMap = buildBodyParamMap(op, bodyModel);
-      for (const field of bodyModel.fields) {
-        if (hiddenParams.has(field.name)) continue;
-        if (groupedParamNames.has(field.name)) continue;
-        const docType = mapTypeRefForPHPDoc(field.type);
-        const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
-        if (seenDocParams.has(phpName)) continue;
-        seenDocParams.add(phpName);
-        const nullSuffix = !field.required && !docType.endsWith('|null') ? '|null' : '';
-        const prefix = field.deprecated ? '(deprecated) ' : '';
-        const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
-        docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
-      }
+  if (bodyModel) {
+    const bodyParamMap = buildBodyParamMap(op, bodyModel, hiddenParams);
+    for (const field of bodyModel.fields) {
+      if (hiddenParams.has(field.name)) continue;
+      if (groupedParamNames.has(field.name)) continue;
+      const docType = mapTypeRefForPHPDoc(field.type);
+      const phpName = bodyParamMap.get(field.name) ?? fieldName(field.name);
+      if (seenDocParams.has(phpName)) continue;
+      seenDocParams.add(phpName);
+      const nullSuffix = !field.required && !docType.endsWith('|null') ? '|null' : '';
+      const prefix = field.deprecated ? '(deprecated) ' : '';
+      const desc = field.description ? ` ${prefix}${field.description}` : field.deprecated ? ' (deprecated)' : '';
+      docParts.push(`@param ${docType}${nullSuffix} $${phpName}${desc}`);
     }
   }
 
@@ -361,11 +367,11 @@ function generateMethod(
   }
 
   // @param for query params (skip grouped params — they appear as group union params)
+  const queryParamMap = buildParamNames(op, bodyModel, hiddenParams).query;
   for (const q of op.queryParams) {
-    if (hiddenParams.has(q.name)) continue;
-    if (groupedParamNames.has(q.name)) continue;
+    const phpName = queryParamMap.get(q.name);
+    if (!phpName) continue;
     const docType = mapTypeRefForPHPDoc(q.type);
-    const phpName = fieldName(q.name);
     if (seenDocParams.has(phpName)) continue;
     seenDocParams.add(phpName);
     // Spec-defaulted enum params on HTTP calls are non-nullable because the
@@ -507,8 +513,7 @@ function generateMethod(
   } else if (plan.isDelete) {
     // Build body if the operation has a request body (e.g., DELETE with criteria)
     if (plan.hasBody) {
-      const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
-      const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
+      const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null, hiddenParams);
       const deleteGroupedParams = collectGroupedParamNames(op);
       const visibleFields =
         bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !deleteGroupedParams.has(f.name)) ?? [];
@@ -547,7 +552,7 @@ function generateMethod(
       }
     }
     // Build query params if present
-    const deleteQueryLines = buildQueryArray(op);
+    const deleteQueryLines = buildQueryArray(op, undefined, { bodyModel });
     if (deleteQueryLines.length > 0) {
       lines.push('        $query = array_filter([');
       for (const q of deleteQueryLines) {
@@ -568,8 +573,7 @@ function generateMethod(
     lines.push('            options: $options,');
     lines.push('        );');
   } else if (plan.hasBody) {
-    const bodyModel = op.requestBody?.kind === 'model' ? modelMap.get(op.requestBody.name) : null;
-    const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null);
+    const bodyParamMap = buildBodyParamMap(op, bodyModel ?? null, hiddenParams);
     const bodyGroupedParams = collectGroupedParamNames(op);
     const visibleFields =
       bodyModel?.fields.filter((f) => !hiddenParams.has(f.name) && !bodyGroupedParams.has(f.name)) ?? [];
@@ -607,10 +611,17 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
+    const queryLines = buildQueryArray(op, hiddenParams, { bodyModel });
+    if (queryLines.length > 0) {
+      lines.push('        $query = array_filter([');
+      for (const q of queryLines) lines.push(`            ${q}`);
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
     lines.push(`            path: ${path},`);
     lines.push('            body: $body,');
+    if (queryLines.length > 0) lines.push('            query: $query,');
     lines.push('            options: $options,');
     lines.push('        );');
 
@@ -686,10 +697,41 @@ function generateMethod(
   lines.push('    }');
 }
 
+/**
+ * Keep the baseline's parameter names and positions and append new optional
+ * parameters after them. A method whose baseline the current contract can no
+ * longer honor — a parameter removed, made required, or newly required — is
+ * emitted from the schema instead: a signature the API rejects is not worth
+ * preserving, so the correct one wins and the warning names the break.
+ */
+function preserveMethodParameters(params: string[], baseline: ApiParam[] | undefined, method: string): string[] {
+  if (!baseline) return params;
+  const regenerate = (reason: string): string[] => {
+    console.warn(`[oagen] php: ${method}: ${reason}; emitting the schema signature instead of the baseline`);
+    return params;
+  };
+  const byName = new Map(params.map((param) => [param.match(/\$(\w+)/)![1], param]));
+  const ordered: string[] = [];
+  for (const previous of baseline) {
+    const declaration = byName.get(previous.name);
+    if (!declaration) return regenerate(`baseline parameter $${previous.name} was removed`);
+    if (previous.optional && !declaration.includes(' = ')) {
+      return regenerate(`baseline parameter $${previous.name} became required`);
+    }
+    // Keep previously-required arguments required: a new default must not move their slots.
+    ordered.push(previous.optional ? declaration : declaration.replace(/ = .*$/, ''));
+    byName.delete(previous.name);
+  }
+  for (const [name, declaration] of byName) {
+    if (!declaration.includes(' = ')) return regenerate(`new parameter $${name} is required`);
+    ordered.push(declaration);
+  }
+  return ordered;
+}
+
 function buildMethodParams(
   op: Operation,
-  plan: ReturnType<typeof planOperation>,
-  modelMap: Map<string, Model>,
+  bodyModel: Model | null,
   ctx: EmitterContext,
   hiddenParams?: Set<string>,
   opts?: { materializeQueryDefaults?: boolean },
@@ -700,7 +742,7 @@ function buildMethodParams(
   const optional: string[] = [];
   const usedNames = new Set<string>();
   const hidden = hiddenParams ?? new Set();
-  const groupedParams = collectGroupedParamNames(op);
+  const names = buildParamNames(op, bodyModel, hidden);
   // Path params (always required)
   for (const p of op.pathParams) {
     const phpType = mapTypeRef(p.type, { qualified: true });
@@ -711,26 +753,16 @@ function buildMethodParams(
   }
 
   // Body fields
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = modelMap.get(op.requestBody.name);
-    if (bodyModel) {
-      for (const field of bodyModel.fields) {
-        if (hidden.has(field.name)) continue;
-        if (groupedParams.has(field.name)) continue;
-        const phpType = mapTypeRef(field.type, { qualified: true });
-        let phpName = fieldName(field.name);
-        if (usedNames.has(phpName)) {
-          // Disambiguate body field from path param with same name
-          phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-          if (usedNames.has(phpName)) continue; // truly duplicate, skip
-        }
-        usedNames.add(phpName);
-        if (field.required) {
-          required.push(`${phpType} $${phpName}`);
-        } else {
-          const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
-          optional.push(`${nullableType} $${phpName} = null`);
-        }
+  if (bodyModel) {
+    for (const field of bodyModel.fields) {
+      const phpName = names.body.get(field.name);
+      if (!phpName) continue;
+      const phpType = mapTypeRef(field.type, { qualified: true });
+      usedNames.add(phpName);
+      if (field.required) {
+        required.push(`${phpType} $${phpName}`);
+      } else {
+        optional.push(`${nullableTypeHint(phpType)} $${phpName} = null`);
       }
     }
   }
@@ -752,12 +784,9 @@ function buildMethodParams(
 
   // Query params (skip grouped params — they are serialized via group dispatch)
   for (const q of op.queryParams) {
-    if (hidden.has(q.name)) continue;
-    if (groupedParams.has(q.name)) continue;
+    const phpName = names.query.get(q.name);
+    if (!phpName) continue;
     const phpType = mapTypeRef(q.type, { qualified: true });
-    let phpName = fieldName(q.name);
-    if (usedNames.has(phpName)) continue;
-    usedNames.add(phpName);
     if (q.required) {
       required.push(`${phpType} $${phpName}`);
     } else if (shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true)) {
@@ -792,22 +821,9 @@ function getReturnType(plan: ReturnType<typeof planOperation>, ctx: EmitterConte
   return 'mixed';
 }
 
-/**
- * Build a mapping from wire name to PHP variable name for body fields,
- * disambiguating collisions with path param names.
- */
-function buildBodyParamMap(op: Operation, bodyModel: Model | null): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!bodyModel) return map;
-  const pathParamNames = new Set(op.pathParams.map((p) => fieldName(p.name)));
-  for (const field of bodyModel.fields) {
-    let phpName = fieldName(field.name);
-    if (pathParamNames.has(phpName)) {
-      phpName = `body${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
-    }
-    map.set(field.name, phpName);
-  }
-  return map;
+/** Body field wire name -> PHP argument name (see buildParamNames). */
+function buildBodyParamMap(op: Operation, bodyModel: Model | null, hidden?: Set<string>): Map<string, string> {
+  return buildParamNames(op, bodyModel, hidden ?? new Set()).body;
 }
 
 function buildPathString(op: Operation): string {
@@ -830,17 +846,53 @@ function isDateTimeType(ref: import('@workos/oagen').TypeRef): boolean {
   return false;
 }
 
+/**
+ * Allocate PHP argument names for visible body fields and query params, in
+ * signature order (path, body, groups, query). Colliding body fields get a
+ * `body` prefix and colliding query params a `query` prefix; anything still
+ * colliding is omitted. Shared by signatures, PHPDoc, payloads, and tests.
+ */
+export function buildParamNames(
+  op: Operation,
+  bodyModel: Model | null,
+  hidden: Set<string>,
+): { body: Map<string, string>; query: Map<string, string> } {
+  const groupedParams = collectGroupedParamNames(op);
+  const usedNames = new Set<string>();
+  const allocate = (name: string, prefix: string): string | undefined => {
+    let phpName = fieldName(name);
+    if (usedNames.has(phpName)) phpName = `${prefix}${phpName.charAt(0).toUpperCase()}${phpName.slice(1)}`;
+    if (usedNames.has(phpName)) return undefined;
+    usedNames.add(phpName);
+    return phpName;
+  };
+  for (const p of op.pathParams) allocate(p.name, 'path');
+  const body = new Map<string, string>();
+  for (const field of bodyModel?.fields ?? []) {
+    if (hidden.has(field.name) || groupedParams.has(field.name)) continue;
+    const phpName = allocate(field.name, 'body');
+    if (phpName) body.set(field.name, phpName);
+  }
+  for (const group of op.parameterGroups ?? []) usedNames.add(fieldName(group.name));
+  const query = new Map<string, string>();
+  for (const q of op.queryParams) {
+    if (hidden.has(q.name) || groupedParams.has(q.name)) continue;
+    const phpName = allocate(q.name, 'query');
+    if (phpName) query.set(q.name, phpName);
+  }
+  return { body, query };
+}
+
 function buildQueryArray(
   op: Operation,
   hiddenParams?: Set<string>,
-  opts?: { materializeQueryDefaults?: boolean },
+  opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null },
 ): string[] {
-  const hidden = hiddenParams ?? new Set();
-  const groupedParams = collectGroupedParamNames(op);
+  const queryParamMap = buildParamNames(op, opts?.bodyModel ?? null, hiddenParams ?? new Set()).query;
   return op.queryParams
-    .filter((q) => !hidden.has(q.name) && !groupedParams.has(q.name))
+    .filter((q) => queryParamMap.has(q.name))
     .map((q) => {
-      const phpName = fieldName(q.name);
+      const phpName = queryParamMap.get(q.name)!;
       if (isEnumType(q.type)) {
         // Mirrors the signature: only materialized enum defaults are
         // non-nullable, so other optional enum params use the nullsafe op.
