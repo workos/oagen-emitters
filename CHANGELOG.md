@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.25.1](https://github.com/workos/oagen-emitters/compare/v0.25.0...v0.25.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **php:** preserve request inputs and positional signatures ([#284](https://github.com/workos/oagen-emitters/issues/284)) ([d24da22](https://github.com/workos/oagen-emitters/commit/d24da22cbfd7da5131a19255abf51a56969e420f))
+* **python:** restore generated enum and Literal exports ([#286](https://github.com/workos/oagen-emitters/issues/286)) ([41ef2a6](https://github.com/workos/oagen-emitters/commit/41ef2a65b7d32a9c38379729dba312c830d73683))
+* **ruby:** default optional RBI kwargs and merge union variants in RBI sigs ([#285](https://github.com/workos/oagen-emitters/issues/285)) ([6ef1083](https://github.com/workos/oagen-emitters/commit/6ef1083cc1cb6b6d61c3700af61d145f9eb936a5))
+
 ## [0.25.0](https://github.com/workos/oagen-emitters/compare/v0.24.18...v0.25.0) (2026-10-27)
 
 
