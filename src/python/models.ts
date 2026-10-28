@@ -1,6 +1,6 @@
 import { pythonStringLiteral, pythonDocstring } from './strings.js';
 import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { collectFieldDependencies, walkTypeRef } from '@workos/oagen';
+import { collectFieldDependencies } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases } from './enums.js';
@@ -9,10 +9,10 @@ import {
   isModelInScope,
   isEnumInScope,
   fileExistsAfterRun,
+  isScopedRun,
   priorManifestBasenames,
   isMountInScope,
   getMountTarget,
-  declaredParams,
   forcedModelNames,
   forcedEnumNamesWithCanonicals,
 } from '../shared/resolved-ops.js';
@@ -537,13 +537,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   }
 
   // Also include enums in the barrels using the enum emitter's actual output placement.
-  const reachableEnumNames = collectReachableEnumNames(ctx);
-  const emittedEnums = ctx.spec.enums.filter((enumDef) => reachableEnumNames.has(enumDef.name));
+  // Match the enum emitter: aliases still have public files even when no operation uses them directly.
+  const emittedEnums = ctx.spec.enums;
   const enumSymbolsByDir = collectGeneratedEnumSymbolsByDir(emittedEnums, ctx);
   // Map each compat-alias symbol back to its canonical enum so we can gate it by
   // the canonical enum's scope (the alias file is only written when the
   // canonical enum is in scope; see enums.ts).
   const aliasToCanonicalEnum = new Map<string, string>();
+  // Dedup-alias files written by older emitters lack `*Literal`, so a scoped run
+  // may only export it when it rewrites that file.
+  const aliasLiterals = new Set<string>();
+  for (const enumDef of emittedEnums) {
+    if (enumDef.values.length > 0) {
+      const literal = `${enumDef.name}Literal`;
+      symbolToFile.set(literal, fileName(enumDef.name));
+      aliasToCanonicalEnum.set(literal, enumDef.name);
+      if (placement.enumAliases.has(enumDef.name)) aliasLiterals.add(literal);
+    }
+  }
   for (const [canonical, aliasNames] of collectCompatEnumAliases(emittedEnums, ctx)) {
     for (const aliasName of aliasNames) aliasToCanonicalEnum.set(aliasName, canonical);
   }
@@ -554,10 +565,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // Reference an enum (or its compat alias) from the barrel only when its
       // per-enum file exists on disk after the run. A brand-new out-of-scope
       // enum whose file is never emitted must NOT be referenced.
-      const enumFilePath = `${key}/${fileName(name)}.py`;
+      const enumFilePath = `${key}/${symbolToFile.get(name) ?? fileName(name)}.py`;
       const scopeName = aliasToCanonicalEnum.get(name) ?? name;
       const enumWritten = isEnumInScope(scopeName, ctx) || forcedEnums.has(name) || forcedEnums.has(scopeName);
-      if (fileExistsAfterRun(enumFilePath, enumWritten, ctx)) {
+      const exists = aliasLiterals.has(name)
+        ? !isScopedRun(ctx) || enumWritten
+        : fileExistsAfterRun(enumFilePath, enumWritten, ctx);
+      if (exists) {
         symbolsByDir.get(key)!.push({ name });
       }
     }
@@ -760,56 +774,6 @@ function collectTypingImports(ref: any, imports: Set<string>): void {
       if (ref.type === 'unknown') imports.add('Any');
       break;
   }
-}
-
-function collectReachableEnumNames(ctx: EmitterContext): Set<string> {
-  const referencedModels = new Set<string>();
-  const referencedEnums = new Set<string>();
-
-  const collectFromTypeRef = (ref: any): void => {
-    walkTypeRef(ref, {
-      model: (r) => referencedModels.add(r.name),
-      enum: (r) => referencedEnums.add(r.name),
-    });
-  };
-
-  for (const service of ctx.spec.services) {
-    for (const op of service.operations) {
-      for (const p of declaredParams(op)) {
-        collectFromTypeRef(p.type);
-      }
-      if (op.requestBody) collectFromTypeRef(op.requestBody);
-      collectFromTypeRef(op.response);
-      if (op.pagination) collectFromTypeRef(op.pagination.itemType);
-      for (const err of op.errors) {
-        if (err.type) collectFromTypeRef(err.type);
-      }
-      if (op.successResponses) {
-        for (const sr of op.successResponses) {
-          collectFromTypeRef(sr.type);
-        }
-      }
-    }
-  }
-
-  const modelsByName = new Map(ctx.spec.models.map((m) => [m.name, m]));
-  const visited = new Set<string>();
-  const queue = [...referencedModels];
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (visited.has(name)) continue;
-    visited.add(name);
-    const model = modelsByName.get(name);
-    if (!model) continue;
-    for (const field of model.fields) {
-      collectFromTypeRef(field.type);
-      for (const modelName of referencedModels) {
-        if (!visited.has(modelName)) queue.push(modelName);
-      }
-    }
-  }
-
-  return referencedEnums;
 }
 
 function isOptionalField(modelName: string, field: Model['fields'][number], ctx: EmitterContext): boolean {
