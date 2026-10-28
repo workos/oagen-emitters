@@ -49,7 +49,6 @@ import {
 import { buildPythonPathExpression } from './path-expression.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 import { bearerOverrideScheme } from '../shared/security.js';
-import { unionBodyFields } from './request-body.js';
 
 /**
  * Compute the Python parameter name for a body field, prefixing with `body_` if it
@@ -293,15 +292,7 @@ function emitMethodSignature(
       for (const vm of variantModels) {
         modelImports.add(vm);
       }
-      const flatFields = unionBodyFields(op, ctx);
-      if (flatFields) {
-        for (const field of flatFields) {
-          const type = methodParamType(field.type, specEnumNames);
-          const optionalNone = !field.required && field.type.kind !== 'nullable' ? ', None' : '';
-          lines.push(`        ${fieldName(field.name)}: Union[${type}${optionalNone}, NotGiven] = NOT_GIVEN,`);
-        }
-        lines.push(`        body: Union[${[...variantModels, 'Dict[str, Any]', 'NotGiven'].join(', ')}] = NOT_GIVEN,`);
-      } else if (variantModels.length > 0) {
+      if (variantModels.length > 0) {
         const unionType = `Union[${[...variantModels, 'Dict[str, Any]'].join(', ')}]`;
         lines.push(`        body: ${unionType},`);
       } else {
@@ -500,11 +491,7 @@ function emitMethodDocstring(
         variantModels.length > 0
           ? `The request body. Accepts: ${variantModels.join(', ')}, or a plain dict.`
           : 'The request body.';
-      const flatFields = unionBodyFields(op, ctx);
-      allParams.push({ name: 'body', desc: flatFields ? `${desc} Do not combine with individual body fields.` : desc });
-      for (const field of flatFields ?? []) {
-        allParams.push({ name: fieldName(field.name), desc: field.description });
-      }
+      allParams.push({ name: 'body', desc });
     }
   }
 
@@ -864,39 +851,8 @@ function emitMethodBody(
       // isinstance dispatch for parameter groups into body
       emitGroupDispatch(lines, op, 'body', collectBodyFieldTypes(op, ctx.spec.models));
     } else {
-      const flatFields = unionBodyFields(op, ctx);
-      if (flatFields) {
-        lines.push('        _body: Dict[str, Any]');
-        lines.push('        if isinstance(body, NotGiven):');
-        lines.push('            _body = {}');
-        for (const field of flatFields) {
-          const name = fieldName(field.name);
-          if (field.required) {
-            lines.push(`            if isinstance(${name}, NotGiven):`);
-            lines.push(
-              `                raise TypeError(${pythonStringLiteral(`Missing required keyword argument: '${name}'`)})`,
-            );
-            lines.push(
-              `            _body[${pythonStringLiteral(field.name)}] = ${serializeBodyFieldValue(field.type, name, field.type.kind !== 'nullable')}`,
-            );
-          } else {
-            const omitNone = field.type.kind !== 'nullable' ? ` and ${name} is not None` : '';
-            lines.push(`            if not isinstance(${name}, NotGiven)${omitNone}:`);
-            lines.push(
-              `                _body[${pythonStringLiteral(field.name)}] = ${serializeBodyFieldValue(field.type, name, false)}`,
-            );
-          }
-        }
-        lines.push('        else:');
-        lines.push(
-          `            if any(not isinstance(value, NotGiven) for value in (${flatFields.map((f) => fieldName(f.name)).join(', ')},)):`,
-        );
-        lines.push('                raise TypeError("Pass either body or individual body fields, not both")');
-        lines.push('            _body = body if isinstance(body, dict) else body.to_dict()');
-      } else {
-        // Union or non-model body — convert model instances to dicts
-        lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
-      }
+      // Union or non-model body — convert model instances to dicts
+      lines.push('        _body: Dict[str, Any] = body if isinstance(body, dict) else body.to_dict()');
     }
     // Build query params dict if any exist alongside the body
     const bodyHasParams =
@@ -1225,10 +1181,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
           }
         }
       }
-      for (const field of unionBodyFields(op, ctx) ?? []) {
-        for (const ref of collectModelRefs(field.type)) modelImports.add(ref);
-        for (const ref of collectEnumRefs(field.type)) enumImports.add(ref);
-      }
       // Collect from params
       for (const p of [...op.pathParams, ...op.queryParams]) {
         for (const ref of collectEnumRefs(p.type)) {
@@ -1278,7 +1230,6 @@ export function generateResources(services: Service[], ctx: EmitterContext): Gen
     // A file needs the NOT_GIVEN sentinel if any of its operations has a
     // nullable optional (clearable) body field.
     const needsNotGiven = allOperations.some((op) => {
-      if (unionBodyFields(op, ctx)) return true;
       if (!op.requestBody || op.requestBody.kind !== 'model') return false;
       const bm = ctx.spec.models.find((m) => m.name === (op.requestBody as { name: string }).name);
       if (!bm) return false;
