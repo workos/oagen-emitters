@@ -901,7 +901,7 @@ function findPrimaryResponseModel(ref: TypeRef): string | null {
 }
 
 /** Get the body fields, expanded from model refs. Handles nested/model refs and unions. */
-function getRequestBodyFields(
+export function getRequestBodyFields(
   op: Operation,
   hiddenParams: Set<string>,
   modelByName: Map<string, Model>,

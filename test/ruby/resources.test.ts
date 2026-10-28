@@ -172,6 +172,173 @@ describe('ruby/resources', () => {
     expect(content).not.toContain("'external_id' => external_id");
   });
 
+  it.each([
+    ['updateDataIntegrationApiKey', 'secret'],
+    ['updateDataIntegrationClientCredentials', 'client_secret'],
+    ['authorizeDataIntegration', undefined],
+  ])('exposes every Pipes request variant in the RBI for %s', (name, credential) => {
+    const common: Model['fields'] = [
+      { name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true },
+      {
+        name: 'account_display_name',
+        type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+        required: false,
+      },
+      ...(credential
+        ? [{ name: credential, type: { kind: 'primitive', type: 'string' } as const, required: true }]
+        : []),
+    ];
+    const selector: Model['fields'] = [
+      { name: 'connected_account_id', type: { kind: 'primitive', type: 'string' }, required: true },
+    ];
+    const models: Model[] = [
+      { name: 'CompatibilityRequest', fields: common },
+      {
+        name: 'ReauthorizeRequest',
+        fields: [
+          ...common,
+          { name: 'connection_intent', type: { kind: 'literal', value: 'reauthorize' }, required: true },
+          ...selector,
+        ],
+      },
+      {
+        name: 'OtherRequest',
+        fields: credential
+          ? [...common, ...selector]
+          : [...common, { name: 'connection_intent', type: { kind: 'literal', value: 'add' }, required: true }],
+      },
+    ];
+    const services: Service[] = [
+      {
+        name: 'Pipes',
+        operations: [
+          makeOp({
+            name,
+            httpMethod: credential ? 'put' : 'post',
+            path: '/data-integrations/{slug}',
+            pathParams: [{ name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true }],
+            requestBody: {
+              kind: 'union',
+              compositionKind: 'oneOf',
+              variants: models.map((m) => ({ kind: 'model', name: m.name })),
+            },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, models);
+    const ctx = makeCtx(spec);
+    const rbi = generateRbiFiles(spec, ctx).find((f) => f.path === 'rbi/workos/pipes.rbi')!.content;
+    const runtime = generateResources(services, ctx)[0].content;
+
+    expect(rbi).toContain('connection_intent: T.nilable(String)');
+    expect(rbi).toContain('connected_account_id: T.nilable(String)');
+    expect(rbi).toContain(
+      `def ${toSnakeCase(name)}(slug:, user_id:, ${credential ? `${credential}:, ` : ''}` +
+        'account_display_name: nil, connection_intent: nil, connected_account_id: nil, request_options: {}); end',
+    );
+    expect(runtime).toContain('connection_intent: nil');
+    expect(runtime).toContain('connected_account_id: nil');
+    expect(runtime).toContain("'connection_intent' => connection_intent");
+    expect(runtime).toContain("'connected_account_id' => connected_account_id");
+    expect(runtime).toContain(
+      "body['account_display_name'] = account_display_name unless account_display_name.equal?(WorkOS::OMIT)",
+    );
+    expect(runtime).not.toContain('raise ArgumentError');
+  });
+
+  it('keeps a common union field optional when only some variants require it', () => {
+    const models: Model[] = [true, false].map((required, i) => ({
+      name: `Request${i}`,
+      fields: [{ name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required }],
+    }));
+    const services: Service[] = [
+      {
+        name: 'Pipes',
+        operations: [
+          makeOp({
+            name: 'authorize',
+            requestBody: {
+              kind: 'nullable',
+              inner: { kind: 'union', variants: models.map((m) => ({ kind: 'model', name: m.name })) },
+            },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, models);
+    const rbi = generateRbiFiles(spec, makeCtx(spec)).find((f) => f.path === 'rbi/workos/pipes.rbi')!.content;
+    expect(rbi).toContain('def authorize(organization_id: nil, request_options: {}); end');
+  });
+
+  it.each(['createOrganizationConnectedAccount', 'updateOrganizationConnectedAccount'])(
+    'keeps the current spec-required user_id in %s',
+    (name) => {
+      const services: Service[] = [
+        {
+          name: 'Pipes',
+          operations: [
+            makeOp({
+              name,
+              httpMethod: 'post',
+              path: '/organizations/{organization_id}/connected_accounts/{slug}',
+              pathParams: ['organization_id', 'slug'].map((name) => ({
+                name,
+                type: { kind: 'primitive', type: 'string' },
+                required: true,
+              })),
+              queryParams: [
+                { name: 'connected_account_id', type: { kind: 'primitive', type: 'string' }, required: false },
+              ],
+              requestBody: { kind: 'model', name: 'OrganizationWriteRequest' },
+            }),
+          ],
+        },
+      ];
+      const spec = makeSpec(services, [
+        {
+          name: 'OrganizationWriteRequest',
+          fields: [{ name: 'user_id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        },
+      ]);
+      const ctx = makeCtx(spec);
+      const rbi = generateRbiFiles(spec, ctx).find((f) => f.path === 'rbi/workos/pipes.rbi')!.content;
+      expect(rbi).toContain(
+        `def ${toSnakeCase(name)}(organization_id:, slug:, user_id:, connected_account_id: nil, request_options: {}); end`,
+      );
+      expect(generateResources(services, ctx)[0].content).toContain('user_id:,');
+    },
+  );
+
+  it.each([
+    ['grant_type', 'authorization_code', 'refresh_token'],
+    ['application_type', 'oauth', 'm2m'],
+  ])('does not default or restrict the union discriminator %s', (field, first, second) => {
+    const models: Model[] = [first, second].map((value, i) => ({
+      name: `Variant${i}`,
+      fields: [{ name: field, type: { kind: 'literal', value }, required: true }],
+    }));
+    const services: Service[] = [
+      {
+        name: 'Example',
+        operations: [
+          makeOp({
+            name: 'create',
+            httpMethod: 'post',
+            requestBody: { kind: 'union', variants: models.map((m) => ({ kind: 'model', name: m.name })) },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, models);
+    const ctx = makeCtx(spec);
+    const runtime = generateResources(services, ctx)[0].content;
+    const rbi = generateRbiFiles(spec, ctx).find((f) => f.path === 'rbi/workos/example.rbi')!.content;
+    expect(runtime).toContain(`${field}:,`);
+    expect(runtime).not.toContain('raise ArgumentError');
+    expect(rbi).toContain(`def create(${field}:, request_options: {}); end`);
+  });
+
   // ── P0-2: pagination cursor direction ──────────────────────────────────
 
   it('uses after cursor for fetch_next lambda (not before)', () => {
@@ -544,6 +711,8 @@ describe('ruby/resources', () => {
     // YARD documents the fallback and String return
     expect(content).toContain("Defaults to the client's configured client_id.");
     expect(content).toContain('# @return [String]');
+    const rbi = generateRbiFiles(spec, ctx).find((f) => f.path === 'rbi/workos/user_management.rbi')!.content;
+    expect(rbi).toContain('def get_authorization_url(redirect_uri:, client_id: nil, state: nil); end');
   });
 
   it('emits optional variant members with a nil default, trailing order, and omit-when-unset dispatch', () => {
@@ -647,6 +816,7 @@ describe('ruby/resources', () => {
     expect(hashedRbi).toContain('sig { returns(T.nilable(String)) }\n      def password_salt_position; end');
     expect(hashedRbi).toContain('password_hash: String,');
     expect(hashedRbi).toContain('password_salt_position: T.nilable(String)');
+    expect(rbi!.content).toContain('def create_user(email:, password: nil, request_options: {}); end');
   });
 
   it('leaves variants without optional members byte-identical to a bare Data.define', () => {
