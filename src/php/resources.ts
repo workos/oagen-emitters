@@ -697,24 +697,33 @@ function generateMethod(
   lines.push('    }');
 }
 
+/**
+ * Keep the baseline's parameter names and positions and append new optional
+ * parameters after them. A method whose baseline the current contract can no
+ * longer honor — a parameter removed, made required, or newly required — is
+ * emitted from the schema instead: a signature the API rejects is not worth
+ * preserving, so the correct one wins and the warning names the break.
+ */
 function preserveMethodParameters(params: string[], baseline: ApiParam[] | undefined, method: string): string[] {
   if (!baseline) return params;
+  const regenerate = (reason: string): string[] => {
+    console.warn(`[oagen] php: ${method}: ${reason}; emitting the schema signature instead of the baseline`);
+    return params;
+  };
   const byName = new Map(params.map((param) => [param.match(/\$(\w+)/)![1], param]));
   const ordered: string[] = [];
   for (const previous of baseline) {
     const declaration = byName.get(previous.name);
-    if (!declaration) throw new Error(`PHP ${method}: baseline parameter $${previous.name} was removed`);
+    if (!declaration) return regenerate(`baseline parameter $${previous.name} was removed`);
     if (previous.optional && !declaration.includes(' = ')) {
-      throw new Error(`PHP ${method}: baseline parameter $${previous.name} became required`);
+      return regenerate(`baseline parameter $${previous.name} became required`);
     }
     // Keep previously-required arguments required: a new default must not move their slots.
     ordered.push(previous.optional ? declaration : declaration.replace(/ = .*$/, ''));
     byName.delete(previous.name);
   }
   for (const [name, declaration] of byName) {
-    if (!declaration.includes(' = ')) {
-      throw new Error(`PHP ${method}: new parameter $${name} is required; cannot preserve the baseline signature`);
-    }
+    if (!declaration.includes(' = ')) return regenerate(`new parameter $${name} is required`);
     ordered.push(declaration);
   }
   return ordered;

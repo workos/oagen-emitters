@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { parseSpec, type ApiSpec, type EmitterContext, type TypeRef } from '@workos/oagen';
@@ -261,19 +261,24 @@ describe('PHP request contracts', () => {
     expect(tests).toContain("createUserConnectedAccount(userId: 'test_user_id', slug: 'test_slug')");
   });
 
-  it('refuses a new required input instead of shifting existing arguments', () => {
-    const baseline = surface({ authorizeDataIntegration: ['slug', 'options?'] });
-    expect(() => resource(context(spec, baseline))).toThrow(/Pipes\.authorizeDataIntegration.*userId.*required/);
-  });
-
-  it('refuses to turn an existing optional input into a required input', () => {
-    const baseline = surface({ authorizeDataIntegration: ['slug', 'userId?', 'options?'] });
-    expect(() => resource(context(spec, baseline))).toThrow(/Pipes\.authorizeDataIntegration.*userId.*required/);
-  });
-
-  it('refuses to remove a baseline parameter rather than shifting later slots', () => {
-    const baseline = surface({ authorizeDataIntegration: ['slug', 'userId', 'removed?', 'options?'] });
-    expect(() => resource(context(spec, baseline))).toThrow(/Pipes\.authorizeDataIntegration.*removed/);
+  it.each([
+    ['a new required input', ['slug', 'options?'], /new parameter \$userId is required/],
+    ['an optional input that became required', ['slug', 'userId?', 'options?'], /\$userId became required/],
+    ['a removed baseline parameter', ['slug', 'userId', 'removed?', 'options?'], /\$removed was removed/],
+  ])('emits the schema signature and warns when the baseline cannot be honored: %s', (_case, params, reason) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const withBaseline = resource(context(spec, surface({ authorizeDataIntegration: params })));
+      const fresh = resource({ ...context(spec), apiSurface: undefined });
+      expect(parameters(withBaseline, 'authorizeDataIntegration')).toEqual(
+        parameters(fresh, 'authorizeDataIntegration'),
+      );
+      expect(parameters(withBaseline, 'authorizeDataIntegration').slice(0, 2)).toEqual(['slug', 'userId']);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Pipes\.authorizeDataIntegration/));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(reason));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it.each<TypeRef>([

@@ -82,9 +82,11 @@ npm run build     # build dist/ output
 Pass `--api-surface <surface.json>` to `oagen generate --lang php` to preserve
 existing method parameter names and positions, including `RequestOptions`. Extract
 that surface with `oagen extract --lang php --sdk-path <previous-sdk> --output <surface.json>`.
-New optional parameters are appended; removed parameters, newly required parameters,
-and optional-to-required changes stop generation with a diagnostic. Without a
-baseline, parameters follow the schema order. For a regression repair, use the
+New optional parameters are appended. A method whose baseline the schema can no
+longer honor, because a parameter was removed, became required, or is newly
+required, is emitted from the schema with a warning naming the method: the
+signature the API rejects is not preserved. Without a baseline, parameters follow
+the schema order. For a regression repair, use the
 last compatible SDK rather than the already-broken release.
 
 PHP projects compatible object request-body alternatives onto named inputs. An
