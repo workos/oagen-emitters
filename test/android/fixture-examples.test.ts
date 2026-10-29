@@ -37,3 +37,37 @@ describe('android/fixtures: whole-object examples', () => {
     expect(Object.keys(nested).sort()).toEqual(Object.keys(generateModelFixture(account, modelMap, enumMap)).sort());
   });
 });
+
+describe('android/fixtures: self-referential examples', () => {
+  it('fills a nested child of a recursive example instead of copying it incomplete', () => {
+    const tree: Model = {
+      name: 'Tree',
+      fields: [
+        { name: 'label', type: str, required: true },
+        { name: 'children', type: { kind: 'array', items: { kind: 'model', name: 'Tree' } }, required: true },
+      ],
+    };
+    const wrapper: Model = {
+      name: 'Wrapper',
+      fields: [
+        {
+          name: 'root',
+          type: { kind: 'model', name: 'Tree' },
+          required: true,
+          example: { label: 'root', children: [{ children: [] }] },
+        },
+      ],
+    };
+    const modelMap = new Map([tree, wrapper].map((m) => [m.name, m]));
+
+    const root = generateModelFixture(wrapper, modelMap, new Map<string, Enum>()).root as {
+      label: string;
+      children: { label: string; children: unknown[] }[];
+    };
+
+    expect(root.label).toBe('root');
+    expect(root.children).toHaveLength(1);
+    expect(root.children[0].children).toEqual([]);
+    expect(typeof root.children[0].label).toBe('string');
+  });
+});

@@ -125,6 +125,34 @@ describe('shared/fixture-examples', () => {
     expect(result).toEqual({ label: 'root', child: { label: 'leaf', child: null } });
   });
 
+  it('still conforms finite children of a self-referential example, filling their missing fields', () => {
+    // No field examples on `Tree` itself; the wrapper's example nests a child
+    // that lacks the required `label`. The builder is depth-bounded like
+    // Android's and iOS's. The child must be rebuilt and filled, not copied.
+    const tree: Model = {
+      name: 'Tree',
+      fields: [field('label'), field('children', { kind: 'array', items: { kind: 'model', name: 'Tree' } })],
+    };
+    const treeMap = new Map([[tree.name, tree]]);
+    const bounded = (m: Model, depth = 0): Record<string, unknown> =>
+      Object.fromEntries(
+        m.fields.map((f) => {
+          if (f.example !== undefined) return [f.name, conformExample(f.type, f.example, reentrant)];
+          if (f.type.kind === 'array') return [f.name, depth < 2 ? [bounded(m, depth + 1)] : []];
+          return [f.name, `gen_${f.name}`];
+        }),
+      );
+    const reentrant: ExampleConformer = { modelMap: treeMap, buildModel: (m) => bounded(m) };
+
+    const result = conformExample(
+      { kind: 'model', name: 'Tree' },
+      { label: 'root', children: [{ children: [] }] },
+      reentrant,
+    );
+
+    expect(result).toEqual({ label: 'root', children: [{ label: 'gen_label', children: [] }] });
+  });
+
   it('never touches the pinned discriminator and overlays variant fields only where the builder kept them', () => {
     const oauth: Model = {
       name: 'OauthCredential',

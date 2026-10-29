@@ -55,58 +55,65 @@ export function conformExample(ref: TypeRef, example: unknown, conformer: Exampl
 }
 
 /**
- * Models whose example is being overlaid right now, outermost first. The
- * builder re-enters this module for every nested field that carries an
- * example, so a self-referential model (`Tree.child: Tree` with an example on
- * `child`) would otherwise rebuild itself forever: overlay → build → the same
- * field's example → overlay → … Module state rather than a parameter because
+ * Models whose fixture is being built for an overlay right now. The builder
+ * re-enters this module for every field that carries an example, so a
+ * self-referential model (`Tree.child: Tree` with an example on `child`)
+ * would otherwise rebuild itself forever: overlay → build → the same field's
+ * example → overlay → build → … Module state rather than a parameter because
  * each emitter's builder constructs its own conformer on re-entry.
  */
-const overlaying = new Set<string>();
+const building = new Set<string>();
 
 /**
  * `model`'s generated fixture with `example`'s values laid over the fields it
- * keeps. An occurrence of a model already being overlaid further up the stack
- * is copied as-is instead — the finite example, exactly what every builder
- * did before — so recursion ends where the example does.
+ * keeps.
+ *
+ * Only the build step is guarded: an occurrence of a model whose fixture is
+ * already being built further up the stack is copied as-is — the finite
+ * example, exactly what every builder did before. Overlaying the example's
+ * own children is never cut short: it recurses as deep as the example does,
+ * so a nested `Tree` inside a `Tree` example still gets its missing required
+ * fields filled from a fresh build.
  */
 export function overlayExample(
   model: Model,
   example: Record<string, unknown>,
   conformer: ExampleConformer,
 ): Record<string, unknown> {
-  if (overlaying.has(model.name)) return example;
-  overlaying.add(model.name);
+  if (building.has(model.name)) return example;
+  building.add(model.name);
+  let base: Record<string, unknown>;
   try {
-    const base = conformer.buildModel(model);
-    const wireKey = conformer.wireKey ?? ((name: string) => name);
-    const normalize = conformer.normalize ?? ((_field: Field, value: unknown) => value);
-
-    // The fields that can stand behind `base`: the model's own and, for a
-    // discriminated union, its first mapped variant's — a builder either makes
-    // the union's fixture from that variant alone or folds the variant's extra
-    // fields in. `key in base` decides what is actually overlaid, so a wire key
-    // the builder dropped (a camelCase twin collapsed onto its snake_case field)
-    // is ignored, and the discriminator the builder pinned is never touched.
-    const fields = [...model.fields];
-    const variantName = model.discriminator ? Object.entries(model.discriminator.mapping)[0]?.[1] : undefined;
-    const variant = variantName ? conformer.modelMap.get(variantName) : undefined;
-    if (variant && variant !== model) fields.push(...variant.fields);
-    const discriminatorKey = model.discriminator ? wireKey(model.discriminator.property) : undefined;
-
-    const seen = new Set<string>();
-    for (const field of fields) {
-      const key = wireKey(field.name);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (key === discriminatorKey) continue;
-      if (!(key in base) || !(key in example)) continue;
-      base[key] = normalize(field, conformExample(field.type, example[key], conformer));
-    }
-    return base;
+    base = conformer.buildModel(model);
   } finally {
-    overlaying.delete(model.name);
+    building.delete(model.name);
   }
+
+  const wireKey = conformer.wireKey ?? ((name: string) => name);
+  const normalize = conformer.normalize ?? ((_field: Field, value: unknown) => value);
+
+  // The fields that can stand behind `base`: the model's own and, for a
+  // discriminated union, its first mapped variant's — a builder either makes
+  // the union's fixture from that variant alone or folds the variant's extra
+  // fields in. `key in base` decides what is actually overlaid, so a wire key
+  // the builder dropped (a camelCase twin collapsed onto its snake_case field)
+  // is ignored, and the discriminator the builder pinned is never touched.
+  const fields = [...model.fields];
+  const variantName = model.discriminator ? Object.entries(model.discriminator.mapping)[0]?.[1] : undefined;
+  const variant = variantName ? conformer.modelMap.get(variantName) : undefined;
+  if (variant && variant !== model) fields.push(...variant.fields);
+  const discriminatorKey = model.discriminator ? wireKey(model.discriminator.property) : undefined;
+
+  const seen = new Set<string>();
+  for (const field of fields) {
+    const key = wireKey(field.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (key === discriminatorKey) continue;
+    if (!(key in base) || !(key in example)) continue;
+    base[key] = normalize(field, conformExample(field.type, example[key], conformer));
+  }
+  return base;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
