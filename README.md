@@ -92,7 +92,7 @@ Each emitter lives in `src/<lang>/` and implements the `Emitter` interface from 
 
 When building or changing an emitter:
 
-1. Implement or update the emitter code in `src/<lang>/`
+1. Implement or update the emitter code in `src/<lang>/`, and check every other `src/<lang>/` for the same pattern: the emitters are parallel implementations of one contract, so a fix usually applies to all of them (see `CLAUDE.md`)
 2. Implement or update the extractor in `src/compat/extractors/` if needed
 3. Implement or update the smoke runner in `smoke/` if needed
 4. Export the emitter through `src/plugin.ts` and `src/index.ts`
