@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { gitQuiet, initTempRepo } from '../shared/git.js';
 import type { EmitterContext, ApiSpec, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { nodeEmitter } from '../../src/node/index.js';
@@ -37,8 +37,7 @@ function createTrackedSdkRoot(): string {
     path.join(tmpRoot, 'src', 'index.ts'),
     '// @oagen-ignore-file\nexport { WorkOS } from "./workos";\n',
   );
-  execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+  initTempRepo(tmpRoot);
   return tmpRoot;
 }
 
@@ -442,7 +441,7 @@ describe('generateResources', () => {
         path.join(tmpRoot, 'src', 'groups', 'groups.ts'),
         'export class Groups { async createGroup() {} }\n',
       );
-      execFileSync('git', ['add', 'src/groups/groups.ts'], { cwd: tmpRoot, stdio: 'ignore' });
+      gitQuiet(tmpRoot, 'add', 'src/groups/groups.ts');
 
       const groupService: Service = {
         name: 'Groups',
@@ -494,7 +493,7 @@ describe('generateResources', () => {
         path.join(tmpRoot, 'src', 'groups', 'groups.ts'),
         '// @oagen-ignore-file\nexport class Groups {}\n',
       );
-      execFileSync('git', ['add', 'src/groups/groups.ts'], { cwd: tmpRoot, stdio: 'ignore' });
+      gitQuiet(tmpRoot, 'add', 'src/groups/groups.ts');
 
       const groupService: Service = {
         name: 'Groups',
