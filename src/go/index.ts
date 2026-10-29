@@ -10,7 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
-import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { enrichModelsFromSpec, getSyntheticEnums, loadRawSpec } from '../shared/model-utils.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
@@ -26,6 +26,31 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
     }
   }
   return files;
+}
+
+/**
+ * The parser merges a discriminated `oneOf` schema's object variants into one
+ * model with every field optional. A field every variant requires is always
+ * present, so keep it required (a value, not a pointer) in the Go struct.
+ * Undiscriminated oneOfs go through enrichModelsFromSpec instead and have
+ * always been emitted with pointers, so they are left alone.
+ */
+function requireFieldsSharedByVariants(models: Model[]): Model[] {
+  const schemas = loadRawSpec()?.components?.schemas;
+  if (!schemas) return models;
+  const resolve = (s: any) => (typeof s?.$ref === 'string' ? schemas[s.$ref.replace('#/components/schemas/', '')] : s);
+  return models.map((model) => {
+    const schema = resolve(schemas[model.name]);
+    if (!schema?.discriminator) return model;
+    const variants = (schema.oneOf ?? []).map(resolve);
+    if (variants.length === 0 || variants.some((v: any) => v?.type !== 'object' || !v.properties)) return model;
+    const shared = (name: string) => variants.every((v: any) => v.required?.includes(name));
+    if (!model.fields.some((f) => !f.required && shared(f.name))) return model;
+    return {
+      ...model,
+      fields: model.fields.map((f) => (!f.required && shared(f.name) ? { ...f, required: true } : f)),
+    };
+  });
 }
 
 export const goEmitter: Emitter = {
@@ -57,7 +82,9 @@ export const goEmitter: Emitter = {
     // renders as its first variant, dropping fields that only exist on later
     // variants (organization_id on the user owner). Flatten such unions into a
     // single superset struct so every variant field survives.
-    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(goModels), ctx));
+    return ensureTrailingNewlines(
+      generateModels(flattenDiscriminatedUnionFields(requireFieldsSharedByVariants(goModels)), ctx),
+    );
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

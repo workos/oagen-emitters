@@ -5,6 +5,7 @@ import { className } from './naming.js';
 import { humanize } from './humanize.js';
 import { isEnumInScope, isScopedRun, declaredParams } from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, type NamedBlock } from './flat-merge.js';
+import { keepsAliasEnumConstants } from './compat.js';
 
 /**
  * Generate Go typed string enum constants from IR Enum definitions.
@@ -64,9 +65,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       // enums from enrichModelsFromSpec whose underscore names collapse to the
       // same PascalCase as the original enum).
       if (aliasType === canonicalType) continue;
+      const aliasLines = [`// ${aliasType} is an alias for ${canonicalType}.`, `type ${aliasType} = ${canonicalType}`];
+      if (keepsAliasEnumConstants(enumDef.name) && enumDef.values.length > 0) {
+        aliasLines.push('', ...enumConstBlock(aliasType, enumDef.values));
+      }
       enumBlocks.push({
         names: [aliasType],
-        text: [`// ${aliasType} is an alias for ${canonicalType}.`, `type ${aliasType} = ${canonicalType}`].join('\n'),
+        text: aliasLines.join('\n'),
         inScope: isEnumInScope(enumDef.name, ctx),
       });
       continue;
@@ -84,50 +89,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       continue;
     }
 
-    // Deduplicate values
-    const seenValues = new Set<string>();
-    const uniqueValues: typeof enumDef.values = [];
-    for (const v of enumDef.values) {
-      const vs = String(v.value);
-      if (!seenValues.has(vs)) {
-        seenValues.add(vs);
-        uniqueValues.push(v);
-      }
-    }
-
     const humanized = humanize(enumDef.name);
     const blockLines: string[] = [];
     blockLines.push(`// ${typeName} represents ${humanized} values.`);
     blockLines.push(`type ${typeName} string`);
     blockLines.push('');
-    blockLines.push('const (');
-
-    const usedNames = new Set<string>();
-    for (const v of uniqueValues) {
-      let constSuffix = className(String(v.value));
-      // Avoid collision with the type itself
-      if (usedNames.has(`${typeName}${constSuffix}`)) {
-        let suffix = 2;
-        while (usedNames.has(`${typeName}${constSuffix}${suffix}`)) suffix++;
-        constSuffix = `${constSuffix}${suffix}`;
-      }
-      const constName = `${typeName}${constSuffix}`;
-      usedNames.add(constName);
-      const valueStr = typeof v.value === 'string' ? goStringLiteral(v.value) : String(v.value);
-      if (v.description) {
-        blockLines.push(
-          ...`\t// ${constName} is ${v.description}.`
-            .split('\n')
-            .map((line, index) => (index === 0 ? line : `\t// ${line}`)),
-        );
-      }
-      if (v.deprecated) {
-        if (v.description) blockLines.push(`\t//`);
-        blockLines.push(`\t// Deprecated: this value is deprecated.`);
-      }
-      blockLines.push(`\t${constName} ${typeName} = ${valueStr}`);
-    }
-    blockLines.push(')');
+    blockLines.push(...enumConstBlock(typeName, enumDef.values));
     enumBlocks.push({
       names: [typeName],
       text: blockLines.join('\n'),
@@ -150,6 +117,49 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   if (eventConstantsFile) files.push(eventConstantsFile);
 
   return files;
+}
+
+/** The `const (...)` block declaring one typed constant per distinct enum value. */
+function enumConstBlock(typeName: string, values: Enum['values']): string[] {
+  // Deduplicate values
+  const seenValues = new Set<string>();
+  const uniqueValues: Enum['values'] = [];
+  for (const v of values) {
+    const vs = String(v.value);
+    if (!seenValues.has(vs)) {
+      seenValues.add(vs);
+      uniqueValues.push(v);
+    }
+  }
+
+  const blockLines: string[] = ['const ('];
+  const usedNames = new Set<string>();
+  for (const v of uniqueValues) {
+    let constSuffix = className(String(v.value));
+    // Avoid collision with the type itself
+    if (usedNames.has(`${typeName}${constSuffix}`)) {
+      let suffix = 2;
+      while (usedNames.has(`${typeName}${constSuffix}${suffix}`)) suffix++;
+      constSuffix = `${constSuffix}${suffix}`;
+    }
+    const constName = `${typeName}${constSuffix}`;
+    usedNames.add(constName);
+    const valueStr = typeof v.value === 'string' ? goStringLiteral(v.value) : String(v.value);
+    if (v.description) {
+      blockLines.push(
+        ...`\t// ${constName} is ${v.description}.`
+          .split('\n')
+          .map((line, index) => (index === 0 ? line : `\t// ${line}`)),
+      );
+    }
+    if (v.deprecated) {
+      if (v.description) blockLines.push(`\t//`);
+      blockLines.push(`\t// Deprecated: this value is deprecated.`);
+    }
+    blockLines.push(`\t${constName} ${typeName} = ${valueStr}`);
+  }
+  blockLines.push(')');
+  return blockLines;
 }
 
 function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
