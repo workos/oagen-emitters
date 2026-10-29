@@ -48,8 +48,14 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     // those unions, so `_unions.rs` must keep them. A full run registers every
     // model (fileExistsAfterRun ⇒ true when scoping is inert).
     const inScope = isModelInScope(model.name, ctx);
-    const hintPath = ctx.overlayLookup?.fileBySymbol?.get(model.name);
-    const path = hintPath ?? `src/models/${mod}.rs`;
+    // Always the module's own path. The barrel declares `mod <module>` from the
+    // IR name, so an overlay file hint (`overlayLookup.fileBySymbol`) pointing
+    // at another symbol's file — a structural look-alike or a renamed
+    // predecessor — would leave `mod.rs` declaring a module with no file
+    // behind it, while two models fight over the hinted file. Unlike the Node
+    // emitter, this one keeps IR struct names, so the SDK's file placement has
+    // nothing to tell it; the other non-Node emitters ignore the hint as well.
+    const path = `src/models/${mod}.rs`;
     if (!fileExistsAfterRun(path, inScope, ctx)) continue;
 
     const content = renderModel(model, registry, taggedVariantFields.get(model.name));
