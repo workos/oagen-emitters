@@ -523,7 +523,9 @@ function generateParamsStruct(
         const goField = domainFieldName(field);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
-        if (!field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
+        // Flattened unions clear fields through Body instead: a NullFields slice
+        // would make the restored params struct non-comparable.
+        if (!flatFields && !field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
         const isOptional = !field.required;
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
         const jsonTag = field.name + (field.required ? '' : ',omitempty');

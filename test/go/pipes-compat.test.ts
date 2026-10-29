@@ -120,7 +120,6 @@ describe('Go Pipes compatibility', () => {
         'ConnectionIntent *string `json:"connection_intent,omitempty" url:"-"`',
         'ConnectedAccountID *string `json:"connected_account_id,omitempty" url:"-"`',
         'Body interface{} `json:"-"`',
-        'NullFields []string `json:"-" url:"-"`',
       ]);
     });
 
@@ -142,26 +141,42 @@ describe('Go Pipes compatibility', () => {
           '\t\treturn json.Marshal(body)',
           '\t}',
           '\ttype Alias PipesAuthorizeDataIntegrationParams',
-          '\tdata, err := json.Marshal(Alias(p))',
+          '\treturn json.Marshal(Alias(p))',
+          '}',
         ].join('\n'),
       );
-      expect(marshal).toContain('"account_display_name": true,');
       expect(content).toMatch(/import \(\n\t"context"\n\t"encoding\/json"\n\t"fmt"\n\t"net\/url"\n\t"reflect"\n\)/);
     });
 
-    it('marshals typed params directly when no field is clearable', () => {
+    it('keeps the API key params comparable, as in v10.5.0: no NullFields, slices, or maps', () => {
+      const base = [
+        label,
+        { ...label, name: 'account_identifier' },
+        field('user_id', true),
+        field('organization_id'),
+        owner('UpsertAPIKeyRequestConnectionOwner'),
+        field('secret', true),
+      ];
       const ctx = context(
         [
-          { name: 'A', fields: [field('user_id', true)] },
-          { name: 'B', fields: [field('user_id', true), field('secret')] },
+          { name: 'UpsertAPIKeyRequest', fields: base },
+          {
+            name: 'ReauthorizeUpsertAPIKeyRequest',
+            fields: [...base, intent('reauthorize'), field('connected_account_id', true)],
+          },
         ],
-        [unionOp('updateApiKey', ['A', 'B'])],
+        [unionOp('updateDataIntegrationApiKey', ['UpsertAPIKeyRequest', 'ReauthorizeUpsertAPIKeyRequest'])],
       );
-      const marshal = block(
-        generateResources(ctx.spec.services, ctx)[0].content,
-        'func (p PipesUpdateAPIKeyParams) MarshalJSON()',
-      );
-      expect(marshal).toMatch(/\ttype Alias PipesUpdateAPIKeyParams\n\treturn json.Marshal\(Alias\(p\)\)\n}$/);
+      const content = generateResources(ctx.spec.services, ctx)[0].content;
+      const struct = block(content, 'type PipesUpdateDataIntegrationAPIKeyParams struct');
+      expect(struct).toContain('\tAccountIdentifier *string `json:"account_identifier,omitempty" url:"-"`\n');
+      expect(struct).not.toContain('NullFields');
+      expect(struct).not.toMatch(/^\t\w+ (\[\]|map\[)/m);
+      // Clearing a label goes through Body, which is marshaled untouched, so
+      // Body: map[string]any{"account_display_name": nil} still sends JSON null.
+      const marshal = block(content, 'func (p PipesUpdateDataIntegrationAPIKeyParams) MarshalJSON()');
+      expect(marshal).toContain('\t\tbody := p.Body\n\t\tp.Body = nil\n');
+      expect(marshal).toContain('\t\treturn json.Marshal(body)\n');
     });
 
     it('keeps the Body-only struct for unions that do not flatten unambiguously', () => {
