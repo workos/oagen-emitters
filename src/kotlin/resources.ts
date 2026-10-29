@@ -1032,7 +1032,7 @@ function valueExprForQuery(type: TypeRef): string {
   const inner = type.kind === 'nullable' ? type.inner : type;
   if (inner.kind === 'enum') return 'it.value';
   if (inner.kind === 'primitive' && inner.type === 'string') {
-    return inner.format === 'date-time' ? dateTimeWireExpr('it') : 'it';
+    return inner.format === 'date-time' ? dateTimeWireExpr('it', type.kind === 'nullable') : 'it';
   }
   return 'it.toString()';
 }
@@ -1044,10 +1044,13 @@ function valueExprForQuery(type: TypeRef): string {
  * non-zero (`2025-01-01T00:00:00Z`). `OffsetDateTime.toString()` keeps the
  * value's own offset (`+02:00`), which the API rejects, and drops the seconds
  * when they are zero (`2025-01-01T00:00Z`), which fails its pattern
- * (oagen-emitters#293).
+ * (oagen-emitters#293). A nullable receiver (`OffsetDateTime?`: a required
+ * parameter whose schema admits null, a nullable array item) is converted
+ * through `?.`, as `toInstant()` has no null-safe form; `toString()` on the
+ * resulting `Instant?` then renders `null` as the plain `toString()` did.
  */
-function dateTimeWireExpr(varName: string): string {
-  return `${varName}.toInstant().toString()`;
+function dateTimeWireExpr(varName: string, nullable = false): string {
+  return `${varName}${nullable ? '?' : ''}.toInstant().toString()`;
 }
 
 function emitQueryParam(p: Parameter, indent: string, receiverMode = false): string[] {
@@ -1095,14 +1098,14 @@ function emitQueryParam(p: Parameter, indent: string, receiverMode = false): str
   return [`${indent}${prop}?.let { ${addPair(`${ktLiteral(p.name)} to ${queryParamToString(inner, 'it')}`)} }`];
 }
 
-function queryParamToString(type: TypeRef, varName: string): string {
+function queryParamToString(type: TypeRef, varName: string, nullable = false): string {
   if (type.kind === 'enum') return `${varName}.value`;
-  if (type.kind === 'nullable') return queryParamToString(type.inner, varName);
+  if (type.kind === 'nullable') return queryParamToString(type.inner, varName, true);
   // Plain `string` is already the wire type. ISO-8601 strings get promoted to
   // `OffsetDateTime`, which is rendered as a UTC instant (`dateTimeWireExpr`)
   // so the wire form is the one the API accepts.
   if (type.kind === 'primitive' && type.type === 'string') {
-    return type.format === 'date-time' ? dateTimeWireExpr(varName) : varName;
+    return type.format === 'date-time' ? dateTimeWireExpr(varName, nullable) : varName;
   }
   return `${varName}.toString()`;
 }
