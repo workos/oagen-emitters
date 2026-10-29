@@ -29,6 +29,7 @@ import {
 import { AUTOGEN_NOTICE } from '../shared/file-header.js';
 import { discriminatedUnions, resolveModelName } from './type-map.js';
 import { modelClassName } from './naming.js';
+import { compatBaseClasses } from './compat.js';
 
 /**
  * Fix the namespace for C#. The CLI passes `--namespace workos` which gives
@@ -140,8 +141,21 @@ export const dotnetEmitter: Emitter = {
       discriminatorProperties.set(baseName, disc.property);
     }
 
+    // 6.4.0 compatibility base classes (see compat.ts). A scoped run that
+    // rewrites a derived model also writes its base so the base type exists.
+    const compat = compatBaseClasses(dotnetModels);
+    let modelCtx = c;
+    for (const [derived, base] of compat.variantToBase) {
+      if (variantToBase.has(derived)) continue;
+      variantToBase.set(derived, base);
+      if (c.scopedModelNames && isModelInScope(derived, c)) {
+        modelCtx = { ...modelCtx, scopedModelNames: new Set([...modelCtx.scopedModelNames!, base]) };
+      }
+    }
+    dotnetModels.push(...compat.synthesized);
+
     const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase, discriminatorProperties };
-    const files = generateModels(dotnetModels, c, discCtx);
+    const files = generateModels(dotnetModels, modelCtx, discCtx);
 
     // Generate discriminator converters for oneOf unions with discriminator
     // (union-type references, e.g. a field typed as oneOf with discriminator)

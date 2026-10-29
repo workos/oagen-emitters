@@ -47,6 +47,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { resolveRequestBodyModel } from './request-body.js';
 import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
@@ -614,8 +615,8 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const emittedFields = new Set<string>();
 
     // Body fields
-    if (hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+    if (hasBody) {
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
       if (bodyModel) {
         for (const field of bodyModel.fields) {
           if (hidden.has(field.name)) continue;
