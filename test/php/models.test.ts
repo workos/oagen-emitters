@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { spawnSync } from 'node:child_process';
 import { generateModels } from '../../src/php/models.js';
+import { generateRuntime } from '../../src/php/runtime.js';
+
+const hasPhp = spawnSync('php', ['--version'], { timeout: 5000 }).status === 0;
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -571,5 +575,68 @@ describe('generateModels', () => {
     expect(() => generateModels(models, { ...ctx, spec: specWithModels })).toThrow(
       /heterogeneous union.*model:SomeModel \| primitive/,
     );
+  });
+});
+
+describe('generateModels date-time serialization', () => {
+  // oagen-emitters#293: every date-time a model writes back — a required
+  // field, an optional one, an array of them — goes through the one generated
+  // helper, so a model never sends an offset the API rejects.
+  const models: Model[] = [
+    {
+      name: 'Session',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'created_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+        { name: 'ended_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+        {
+          name: 'seen_at',
+          type: { kind: 'array', items: { kind: 'primitive', type: 'string', format: 'date-time' } },
+          required: false,
+        },
+      ],
+    },
+  ];
+  const specWithModels = { ...emptySpec, models };
+  const result = generateModels(models, { ...ctx, spec: specWithModels });
+  const content = findModel(result, 'Session')!.content;
+
+  it('routes required, optional and array date-time fields through DateTimeFormat::iso8601', () => {
+    expect(content).toContain("'created_at' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($this->createdAt),");
+    expect(content).toContain("'ended_at' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($this->endedAt),");
+    expect(content).toContain(
+      "'seen_at' => $this->seenAt !== null ? array_map(fn ($item) => \\WorkOS\\Internal\\DateTimeFormat::iso8601($item), $this->seenAt) : null,",
+    );
+    expect(content).not.toContain('RFC3339_EXTENDED');
+  });
+
+  it.skipIf(!hasPhp)('serializes the model to UTC Z strings, null and arrays alike, in PHP', () => {
+    const program = `<?php
+declare(strict_types=1);
+${generateRuntime({ ...ctx, spec: specWithModels })
+  .map((f) => f.content)
+  .join('\n')}
+${result.map((f) => f.content).join('\n')}
+namespace WorkOS;
+$session = new \\WorkOS\\Resource\\Session(
+    id: 'session_01',
+    createdAt: new \\DateTimeImmutable('2025-01-01T02:00:00+02:00'),
+    seenAt: [new \\DateTimeImmutable('2023-01-01T00:00:00.123456Z'), new \\DateTimeImmutable('2024-06-01T12:30:00-05:00')],
+);
+$roundTrip = \\WorkOS\\Resource\\Session::fromArray(['id' => 'session_02', 'created_at' => '2025-01-01T00:00:00.000Z']);
+echo json_encode([$session->toArray(), $roundTrip->toArray()], JSON_THROW_ON_ERROR);
+`;
+    const run = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
+    expect(run.stderr).toBe('');
+    expect(run.status, run.stdout || run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([
+      {
+        id: 'session_01',
+        created_at: '2025-01-01T00:00:00.000Z',
+        ended_at: null,
+        seen_at: ['2023-01-01T00:00:00.123Z', '2024-06-01T17:30:00.000Z'],
+      },
+      { id: 'session_02', created_at: '2025-01-01T00:00:00.000Z', ended_at: null, seen_at: null },
+    ]);
   });
 });

@@ -15,6 +15,7 @@ import { generateModels } from './models.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
 import { generateClient } from './client.js';
+import { generateRuntime } from './runtime.js';
 import { generateTests } from './tests.js';
 import { buildOperationsMap } from './manifest.js';
 import { initializeEnumDedup } from './naming.js';
@@ -86,7 +87,9 @@ export const phpEmitter: Emitter = {
 
   generateClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile[] {
     ensureNamingInitialized(ctx);
-    return ensureTrailingNewlines(generateClient(spec, ctx));
+    // The runtime helpers ride with the client: every generated model and
+    // service may call them, and the client is emitted on every run.
+    return ensureTrailingNewlines([...generateClient(spec, ctx), ...generateRuntime(ctx)]);
   },
 
   generateErrors(): GeneratedFile[] {

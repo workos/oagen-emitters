@@ -263,3 +263,76 @@ describe('iOS signature order', () => {
     expect(signatureLabels(orderingSpec(false))).toEqual(signatureLabels(orderingSpec(true)));
   });
 });
+
+describe('ios/resources date-time wire format', () => {
+  // oagen-emitters#293: a `Date` interpolated as `"\(rangeStart)"` renders
+  // Foundation's description (`2026-10-29 12:34:56 +0000`), which the API
+  // rejects. Every date reaching a query item or a path segment goes through
+  // the SDK's own ISO 8601 formatter instead.
+  const service: Service = {
+    name: 'Events',
+    operations: [
+      {
+        name: 'list_events',
+        httpMethod: 'get',
+        path: '/events',
+        pathParams: [],
+        queryParams: [
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+          { name: 'on', type: { kind: 'primitive', type: 'string', format: 'date' }, required: false },
+          {
+            name: 'stamps',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string', format: 'date-time' } },
+            required: false,
+          },
+        ],
+        headerParams: [],
+        response: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+      {
+        name: 'get_snapshot',
+        httpMethod: 'get',
+        path: '/snapshots/{at}',
+        pathParams: [{ name: 'at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true }],
+        queryParams: [],
+        headerParams: [],
+        response: { kind: 'model', name: 'Organization' },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+  const dateCtx: EmitterContext = {
+    namespace: 'workos',
+    namespacePascal: 'WorkOS',
+    spec: { ...spec, services: [service] },
+  };
+  const content = generateResources([service], dateCtx)[0].content;
+
+  it('renders date-time query params through Coding.iso8601Fractional', () => {
+    expect(content).toContain(
+      'query.append(URLQueryItem(name: "range_start", value: Coding.iso8601Fractional.string(from: rangeStart)))',
+    );
+    expect(content).toContain(
+      'query.append(URLQueryItem(name: "range_end", value: Coding.iso8601Fractional.string(from: rangeEnd)))',
+    );
+    expect(content).toContain(
+      'query.append(URLQueryItem(name: "stamps", value: Coding.iso8601Fractional.string(from: value)))',
+    );
+    expect(content).not.toContain('value: "\\(rangeStart)"');
+    expect(content).not.toContain('value: "\\(rangeEnd)"');
+  });
+
+  it('renders date query params through Coding.dateOnly', () => {
+    expect(content).toContain('query.append(URLQueryItem(name: "on", value: Coding.dateOnly.string(from: on)))');
+  });
+
+  it('renders a date-time path segment through the formatter before percent-encoding it', () => {
+    expect(content).toContain(
+      'let path = "snapshots/\\(PathEncoding.segment(Coding.iso8601Fractional.string(from: at)))"',
+    );
+  });
+});

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { parseSpec, type ApiSpec, type EmitterContext, type TypeRef } from '@workos/oagen';
 import type { ApiSurface } from '@workos/oagen/compat';
 import { generateResources } from '../../src/php/resources.js';
+import { generateRuntime } from '../../src/php/runtime.js';
 import { generateTests } from '../../src/php/tests.js';
 
 let spec: ApiSpec;
@@ -337,6 +338,7 @@ class HttpClient {
 }
 namespace WorkOS\\Resource;
 class Reply { public static function fromArray(array $data): self { return new self(); } }
+${runtime()}
 ${source}
 namespace WorkOS;
 $client = new HttpClient();
@@ -431,6 +433,17 @@ echo json_encode($client->requests, JSON_THROW_ON_ERROR);
 });
 
 const hasPhp = spawnSync('php', ['--version'], { timeout: 5000 }).status === 0;
+
+/**
+ * The generated runtime helpers (`lib/Internal/DateTimeFormat.php`), as the
+ * generated service calls into them, so the programs below run the SDK's own
+ * serialization path rather than a stub of it.
+ */
+function runtime(): string {
+  return generateRuntime({ namespace: 'workos', namespacePascal: 'WorkOS', spec } as EmitterContext)
+    .map((file) => file.content)
+    .join('\n');
+}
 it.skipIf(!hasPhp)(
   'executes legacy positional/named calls and both authorization selectors with the generated PHP',
   () => {
@@ -448,6 +461,7 @@ class HttpClient {
 namespace WorkOS\\Resource;
 enum PipeOwnership: string { case User = 'user'; case Organization = 'organization'; }
 class Reply { public static function fromArray(array $data): self { return new self(); } }
+${runtime()}
 ${resource()}
 namespace WorkOS;
 $client = new HttpClient();
@@ -531,3 +545,22 @@ echo json_encode($client->requests, JSON_THROW_ON_ERROR);
     ]);
   },
 );
+
+describe.skipIf(!hasPhp)('PHP runtime DateTimeFormat', () => {
+  it('renders any offset as UTC ISO 8601 with milliseconds and a literal Z, and passes null through', () => {
+    const program = `<?php
+declare(strict_types=1);
+${runtime()}
+namespace WorkOS;
+echo json_encode([
+  \\WorkOS\\Internal\\DateTimeFormat::iso8601(new \\DateTimeImmutable('2025-01-01T02:00:00+02:00')),
+  \\WorkOS\\Internal\\DateTimeFormat::iso8601(new \\DateTime('2023-01-01T00:00:00.123456Z')),
+  \\WorkOS\\Internal\\DateTimeFormat::iso8601(null),
+], JSON_THROW_ON_ERROR);
+`;
+    const result = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
+    expect(result.stderr).toBe('');
+    expect(result.status, result.stdout || result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(['2025-01-01T00:00:00.000Z', '2023-01-01T00:00:00.123Z', null]);
+  });
+});

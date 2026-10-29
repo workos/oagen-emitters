@@ -1018,7 +1018,7 @@ describe('generateResources', () => {
     expect(content).toMatch(/function getProfileAndToken\(\s*string \$code/);
   });
 
-  it('serializes required date-time body fields via RFC3339_EXTENDED', () => {
+  it('serializes date-time body fields and query params through the shared UTC Z formatter', () => {
     const dtModels: Model[] = [
       {
         name: 'ExportCreation',
@@ -1052,10 +1052,47 @@ describe('generateResources', () => {
     const dtSpec: ApiSpec = { ...emptySpec, models: dtModels, services: dtServices };
     const content = generateResources(dtServices, { ...ctx, spec: dtSpec })[0].content;
 
-    // date-time body fields must be formatted, not passed as raw \DateTimeImmutable
-    expect(content).toContain("'range_start' => $rangeStart->format(\\DateTimeInterface::RFC3339_EXTENDED)");
-    expect(content).toContain("'range_end' => $rangeEnd->format(\\DateTimeInterface::RFC3339_EXTENDED)");
+    // date-time body fields go through the one runtime formatter (UTC, `Z`);
+    // `RFC3339_EXTENDED` kept the value's own offset, which the API rejects
+    // (oagen-emitters#293).
+    expect(content).toContain("'range_start' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($rangeStart)");
+    expect(content).toContain("'range_end' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($rangeEnd)");
+    expect(content).not.toContain('RFC3339_EXTENDED');
     // plain string fields are unaffected
     expect(content).toContain("'organization_id' => $organizationId");
+
+    // Optional date-time query params (the Events range filter): the helper
+    // passes null through and array_filter drops the key, so no nullsafe call.
+    const eventsServices: Service[] = [
+      {
+        name: 'Events',
+        operations: [
+          {
+            name: 'listEvents',
+            httpMethod: 'get',
+            path: '/events',
+            pathParams: [],
+            queryParams: [
+              { name: 'events', type: { kind: 'array', items: { kind: 'primitive', type: 'string' } }, required: true },
+              {
+                name: 'range_start',
+                type: { kind: 'primitive', type: 'string', format: 'date-time' },
+                required: false,
+              },
+              { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Export' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const eventsSpec: ApiSpec = { ...emptySpec, models: dtModels, services: eventsServices };
+    const events = generateResources(eventsServices, { ...ctx, spec: eventsSpec })[0].content;
+    expect(events).toContain("'range_start' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($rangeStart),");
+    expect(events).toContain("'range_end' => \\WorkOS\\Internal\\DateTimeFormat::iso8601($rangeEnd),");
+    expect(events).not.toContain('RFC3339_EXTENDED');
   });
 });

@@ -38,10 +38,11 @@ import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { buildParamNames, isRedirectEndpoint, deriveVariantFieldName } from './resources.js';
 
 // Deterministic date-time seed shared by generated call args and request-body
-// assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the
-// RFC3339_EXTENDED form the generated client emits for `\DateTimeImmutable`.
+// assertions so the two stay in sync. TEST_DATE_TIME_WIRE is the form the
+// generated client emits for `\DateTimeImmutable` through
+// `Internal\DateTimeFormat::iso8601`: UTC, milliseconds, a literal `Z`.
 const TEST_DATE_TIME_ARG = "new \\DateTimeImmutable('2023-01-01T00:00:00Z')";
-const TEST_DATE_TIME_WIRE = '2023-01-01T00:00:00.000+00:00';
+const TEST_DATE_TIME_WIRE = '2023-01-01T00:00:00.000Z';
 
 /**
  * Generate PHPUnit test files and fixture JSON files.
@@ -713,7 +714,7 @@ function emitBodyAssertions(
     if (f.type.kind === 'literal') {
       lines.push(`        $this->assertSame(${generateTestValue(f.type, ctx)}, $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.format === 'date-time') {
-      // Serialized by the client via RFC3339_EXTENDED, not the raw string seed.
+      // Serialized by the client via DateTimeFormat::iso8601, not the raw string seed.
       lines.push(`        $this->assertSame('${TEST_DATE_TIME_WIRE}', $body['${f.name}']);`);
     } else if (f.type.kind === 'primitive' && f.type.type === 'string') {
       lines.push(`        $this->assertSame('test_value', $body['${f.name}']);`);

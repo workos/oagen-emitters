@@ -3,6 +3,7 @@ import type { Model, TypeRef, EmitterContext, GeneratedFile } from '@workos/oage
 import { mapTypeRef, mapTypeRefForPHPDoc } from './type-map.js';
 import { className, enumClassName, domainFieldName } from './naming.js';
 import { phpDocComment } from './utils.js';
+import { dateTimeWireExpr } from './runtime.js';
 
 // Import and re-export shared model detection utilities
 import {
@@ -134,7 +135,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpName = domainFieldName(field);
       // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
-      const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required);
+      const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
       lines.push(`            ${phpStringLiteral(wireName)} => ${serialized},`);
     }
     lines.push('        ];');
@@ -307,12 +308,13 @@ function isComplexType(ref: TypeRef): boolean {
 /**
  * Generate the toArray serialization expression for a field value.
  */
-function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false): string {
+function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false, namespace = 'WorkOS'): string {
   const ns = nullable ? '?' : '';
   switch (ref.kind) {
     case 'primitive':
       if (ref.format === 'date-time') {
-        return `${accessor}${ns}->format(\\DateTimeInterface::RFC3339_EXTENDED)`;
+        // The helper passes `null` through, so a nullable field needs no guard.
+        return dateTimeWireExpr(namespace, accessor);
       }
       return accessor;
     case 'model':
@@ -331,18 +333,19 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false):
           : `array_map(fn ($item) => $item->value, ${accessor})`;
       }
       if (ref.items.kind === 'primitive' && ref.items.format === 'date-time') {
+        const item = dateTimeWireExpr(namespace, '$item');
         return nullable
-          ? `${accessor} !== null ? array_map(fn ($item) => $item->format(\\DateTimeInterface::RFC3339_EXTENDED), ${accessor}) : null`
-          : `array_map(fn ($item) => $item->format(\\DateTimeInterface::RFC3339_EXTENDED), ${accessor})`;
+          ? `${accessor} !== null ? array_map(fn ($item) => ${item}, ${accessor}) : null`
+          : `array_map(fn ($item) => ${item}, ${accessor})`;
       }
       return accessor;
     case 'nullable':
-      return generateToArrayValue(ref.inner, accessor, true);
+      return generateToArrayValue(ref.inner, accessor, true, namespace);
     case 'map':
       return accessor;
     case 'union': {
       const resolved = resolveDegenerateUnion(ref);
-      if (resolved) return generateToArrayValue(resolved, accessor, nullable);
+      if (resolved) return generateToArrayValue(resolved, accessor, nullable, namespace);
       // Polymorphic union of model variants: PHP dispatches to the concrete
       // instance's toArray() at runtime, so a single ->toArray() call serializes
       // any branch correctly without a match here.

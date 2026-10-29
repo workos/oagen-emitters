@@ -466,3 +466,38 @@ describe('kotlin/tests', () => {
     expect(content).not.toMatch(/created_at.*"sample"/);
   });
 });
+
+describe('kotlin/tests date-time query assertions', () => {
+  // oagen-emitters#293: the generated test passes a fixed instant and pins the
+  // exact wire value the resource renders for it (UTC, `Z`, seconds present).
+  it('passes a fixed OffsetDateTime and asserts its ISO instant on the wire', () => {
+    const dateServices: Service[] = [
+      {
+        name: 'Events',
+        operations: [
+          {
+            name: 'listEvents',
+            httpMethod: 'get',
+            path: '/events',
+            pathParams: [],
+            queryParams: [
+              { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'Organization' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const dateSpec: ApiSpec = { ...spec, services: dateServices };
+    const dateCtx: EmitterContext = { ...ctx, spec: dateSpec, resolvedOperations: buildResolvedOps(dateServices) };
+    generateEnums([], dateCtx);
+    const files = generateTests(dateSpec, dateCtx);
+    const content = files.find((f) => f.path.includes('EventsTest.kt'))!.content;
+    expect(content).toContain('OffsetDateTime.parse("2024-01-01T00:00:00Z")');
+    expect(content).not.toContain('OffsetDateTime.now()');
+    expect(content).toContain('.withQueryParam("range_end", matching("2024-01-01T00:00:00Z"))');
+  });
+});

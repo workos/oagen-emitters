@@ -106,3 +106,40 @@ describe('ios/tests', () => {
     expect(suite).toContain('#expect(query.contains(URLQueryItem(name: "after", value: "cursor_2")))');
   });
 });
+
+describe('ios/tests date-time query assertions', () => {
+  // oagen-emitters#293: the generated Swift test pins the exact wire value the
+  // resource renders for a `Date` (UTC ISO 8601 with a `Z` suffix), so a
+  // regression to `"\(date)"` interpolation fails the SDK's own suite.
+  it('asserts the ISO 8601 UTC value of a required date-time query param', () => {
+    const dateSpec: ApiSpec = {
+      ...spec,
+      services: [
+        {
+          name: 'Events',
+          operations: [
+            {
+              name: 'list_events',
+              httpMethod: 'get',
+              path: '/events',
+              pathParams: [],
+              queryParams: [
+                { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+              ],
+              headerParams: [],
+              response: { kind: 'array', items: { kind: 'model', name: 'Organization' } },
+              errors: [],
+              injectIdempotencyKey: false,
+            },
+          ],
+        },
+      ],
+    };
+    const files = generateTests(dateSpec, { ...ctx, spec: dateSpec });
+    const suite = fileByPath(files, 'Tests/WorkOSTests/EventsTests.swift');
+    expect(suite).toContain('rangeEnd: Date(timeIntervalSince1970: 1_672_531_200)');
+    expect(suite).toContain(
+      '#expect(query.contains(URLQueryItem(name: "range_end", value: "2023-01-01T00:00:00.000Z")))',
+    );
+  });
+});
