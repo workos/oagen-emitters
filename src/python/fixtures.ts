@@ -8,6 +8,7 @@ import {
   unwrapListModel,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
+import { conformExample, type ExampleConformer } from '../shared/fixture-examples.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -135,6 +136,11 @@ export function generateModelFixture(
   if (variantFixture) return variantFixture;
 
   const fixture: Record<string, any> = {};
+  const conformer: ExampleConformer = {
+    modelMap,
+    buildModel: (nested) => generateModelFixture(nested, modelMap, enumMap),
+    normalize: normalizeDateTimeExample,
+  };
 
   // Deduplicate fields by DOMAIN identifier (matching model generation in
   // models.ts, which honors `domainName`); the wire key below stays `field.name`.
@@ -150,7 +156,7 @@ export function generateModelFixture(
     // Use the original field name as the wire key (matches from_dict access patterns)
     const wireName = field.name;
     if (field.example !== undefined) {
-      fixture[wireName] = normalizeDateTimeExample(field, conformExample(field.type, field.example, modelMap, enumMap));
+      fixture[wireName] = normalizeDateTimeExample(field, conformExample(field.type, field.example, conformer));
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
@@ -164,78 +170,6 @@ export function generateModelFixture(
   }
 
   return fixture;
-}
-
-/**
- * Fit a spec example to the shape the generated model can round-trip.
- *
- * A scalar example is copied as-is, but a whole-object example is hand-written
- * in the spec and drifts from the schema it illustrates: the data-integrations
- * list response carried camelCase duplicates (`createdAt` beside `created_at`)
- * that the model collapses into one field, and the finish-connection example
- * omitted nullable fields the serializer always emits, so `from_dict` →
- * `to_dict` could never reproduce the fixture. For a model-typed value, build
- * the object the way a field without an example is built, then overlay the
- * example's values for the fields that object declares: unknown keys are
- * dropped, missing fields keep their generated value, nested objects and array
- * items recurse. Anything else is left to the example.
- */
-function conformExample(
-  ref: TypeRef,
-  example: unknown,
-  modelMap: Map<string, Model>,
-  enumMap: Map<string, Enum>,
-): unknown {
-  switch (ref.kind) {
-    case 'nullable':
-      return example === null ? null : conformExample(ref.inner, example, modelMap, enumMap);
-    case 'model': {
-      const nested = modelMap.get(ref.name);
-      if (!nested || !isPlainObject(example)) return example;
-      return overlayExample(nested, example, modelMap, enumMap);
-    }
-    case 'array':
-      return Array.isArray(example)
-        ? example.map((item) => conformExample(ref.items, item, modelMap, enumMap))
-        : example;
-    case 'map':
-      return isPlainObject(example)
-        ? Object.fromEntries(
-            Object.entries(example).map(([key, value]) => [
-              key,
-              conformExample(ref.valueType, value, modelMap, enumMap),
-            ]),
-          )
-        : example;
-    default:
-      return example;
-  }
-}
-
-/** `model`'s generated fixture with `example`'s values laid over the fields it keeps. */
-function overlayExample(
-  model: Model,
-  example: Record<string, unknown>,
-  modelMap: Map<string, Model>,
-  enumMap: Map<string, Enum>,
-): Record<string, unknown> {
-  const base = generateModelFixture(model, modelMap, enumMap);
-  // A discriminated union's fixture is its first mapped variant's, so the
-  // fields to overlay are that variant's, and the pinned discriminator stays.
-  const variantName = firstMappedVariant(model)?.[1];
-  const variant = variantName ? modelMap.get(variantName) : undefined;
-  const source = variant && variant !== model ? variant : model;
-  for (const field of source.fields) {
-    const key = field.name;
-    if (!(key in base) || !(key in example)) continue;
-    if (model.discriminator && key === model.discriminator.property) continue;
-    base[key] = normalizeDateTimeExample(field, conformExample(field.type, example[key], modelMap, enumMap));
-  }
-  return base;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** The first `[value, variantModelName]` of a discriminated union's mapping, if any. */

@@ -7,6 +7,7 @@ import {
   unwrapListModel,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
+import { conformExample } from '../shared/fixture-examples.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -172,7 +173,10 @@ export function generateModelFixture(
   for (const field of deduplicatedFields) {
     const wireName = field.name;
     if (field.example !== undefined) {
-      fixture[wireName] = field.example;
+      fixture[wireName] = conformExample(field.type, field.example, {
+        modelMap,
+        buildModel: (nested) => generateModelFixture(nested, modelMap, enumMap),
+      });
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
