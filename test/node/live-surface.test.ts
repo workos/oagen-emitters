@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { initTempRepo } from '../shared/git.js';
 import type { ApiSpec, EmitterContext, Operation, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
@@ -116,8 +116,7 @@ beforeAll(() => {
     ["import { Organizations } from './organizations.js';", "describe('x', () => { it('y', () => {}) })"].join('\n'),
   );
 
-  execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+  initTempRepo(tmpRoot);
   fs.mkdirSync(path.join(src, 'connect'), { recursive: true });
   fs.writeFileSync(path.join(src, 'connect', 'connect.ts'), 'export class Connect {}');
 });
@@ -331,8 +330,7 @@ function createApiKeysSdkRoot(): string {
   fs.writeFileSync(path.join(root, 'src', 'workos.ts'), '// @oagen-ignore-file\nexport class WorkOS {}\n');
   fs.writeFileSync(path.join(root, 'src', 'index.ts'), '// @oagen-ignore-file\n');
   fs.writeFileSync(path.join(root, 'src', 'api-keys', 'api-keys.ts'), EXISTING_API_KEYS_CLASS);
-  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: root, stdio: 'ignore' });
+  initTempRepo(root);
   return root;
 }
 
@@ -624,8 +622,7 @@ function createOwnerSdkRoot(form: 'alias' | 'materialized'): string {
       '',
     ].join('\n'),
   );
-  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: root, stdio: 'ignore' });
+  initTempRepo(root);
   return root;
 }
 
@@ -838,8 +835,7 @@ function createAuditSdkRoot(): string {
   fs.writeFileSync(path.join(ifaceDir, 'audit-log-actor.interface.ts'), HAND_WRITTEN_ACTOR_FILE);
   fs.writeFileSync(path.join(ifaceDir, 'audit-log-event-actor.interface.ts'), badAutogenFile());
   fs.writeFileSync(path.join(ifaceDir, 'audit-log-event-target.interface.ts'), badAutogenFile());
-  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: root, stdio: 'ignore' });
+  initTempRepo(root);
   return root;
 }
 
