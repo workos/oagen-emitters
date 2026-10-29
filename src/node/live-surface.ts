@@ -204,11 +204,35 @@ function toPosix(p: string): string {
   return p.split(path.sep).join('/');
 }
 
+// Repository-locating variables from `git rev-parse --local-env-vars` (git 2.56).
+// An inherited GIT_DIR (e.g. when run from a git hook) overrides `-C rootDir`,
+// so strip them to always read the repo at rootDir. No-op when none are set.
+const GIT_LOCAL_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_PREFIX',
+  'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR',
+];
+
 function loadGitTrackedFiles(rootDir: string): Set<string> {
+  const env = { ...process.env };
+  for (const name of GIT_LOCAL_ENV_VARS) delete env[name];
   try {
     const stdout = execFileSync('git', ['-C', rootDir, 'ls-files', '--', 'src'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env,
     });
     return new Set(
       stdout
