@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.3](https://github.com/workos/oagen-emitters/compare/v0.25.2...v0.25.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **fixtures:** conform whole-object examples across every emitter ([#290](https://github.com/workos/oagen-emitters/issues/290)) ([a98c7f7](https://github.com/workos/oagen-emitters/commit/a98c7f7122c534606a2c95ebeb032048235c6948))
+
 ## [0.25.2](https://github.com/workos/oagen-emitters/compare/v0.25.1...v0.25.2) (2026-10-29)
 
 
