@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.2](https://github.com/workos/oagen-emitters/compare/v0.25.1...v0.25.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **python,rust:** generate cleanly from a baseline API surface ([#288](https://github.com/workos/oagen-emitters/issues/288)) ([eb49842](https://github.com/workos/oagen-emitters/commit/eb49842a1cc211cba0ef13b07cf14379dd2ebc54))
+
 ## [0.25.1](https://github.com/workos/oagen-emitters/compare/v0.25.0...v0.25.1) (2026-10-28)
 
 
