@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateEnums } from '../../src/python/enums.js';
+import { generateEnums, collectCompatEnumAliases } from '../../src/python/enums.js';
 import type { EmitterContext, ApiSpec, Enum, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 
@@ -332,5 +332,99 @@ describe('generateEnums', () => {
     expect(files.length).toBe(1);
     expect(files[0].content).toContain('    VALUE_1_MONTH = "1_MONTH"');
     expect(files[0].content).toContain('    VALUE_10_YEARS = "10_YEARS"');
+  });
+});
+
+describe('compat enum aliases', () => {
+  const authValues = [
+    { name: 'CLIENT_SECRET_POST', value: 'client_secret_post' },
+    { name: 'CLIENT_SECRET_BASIC', value: 'client_secret_basic' },
+  ];
+  const stateValues = [
+    { name: 'ACTIVE', value: 'active' },
+    { name: 'INACTIVE', value: 'inactive' },
+  ];
+  const enums: Enum[] = [
+    { name: 'CreateConnectionOidcOptionsTokenAuthenticationMethod', values: authValues },
+    { name: 'ConnectionState', values: stateValues },
+  ];
+
+  /** A baseline surface whose enums carry the given member values. */
+  const withBaseline = (baseline: Record<string, { value: string }[]>, specEnums: Enum[] = enums): EmitterContext =>
+    ({
+      ...ctx,
+      spec: { ...emptySpec, enums: specEnums },
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        exports: {},
+        enums: Object.fromEntries(
+          Object.entries(baseline).map(([name, values]) => [
+            name,
+            { name, members: Object.fromEntries(values.map((v) => [v.value.toUpperCase(), v.value])) },
+          ]),
+        ),
+      },
+    }) as unknown as EmitterContext;
+
+  it('ignores baseline symbols the enum emitter already produces, compared by rendered Python name', () => {
+    const aliases = collectCompatEnumAliases(
+      enums,
+      withBaseline({
+        // IR `Oidc` renders as the `OIDC` acronym: this is the same enum, not a rename.
+        CreateConnectionOIDCOptionsTokenAuthenticationMethod: authValues,
+        CreateConnectionOIDCOptionsTokenAuthenticationMethodLiteral: authValues,
+        ConnectionState: stateValues,
+        ConnectionStateLiteral: stateValues,
+      }),
+    );
+    expect(aliases.size).toBe(0);
+  });
+
+  it('aliases a genuinely renamed baseline enum without a second file for its Literal', () => {
+    const aliases = collectCompatEnumAliases(
+      enums,
+      withBaseline({
+        LegacyConnectionState: stateValues,
+        LegacyConnectionStateLiteral: stateValues,
+      }),
+    );
+    expect([...aliases.entries()]).toEqual([['ConnectionState', ['LegacyConnectionState']]]);
+  });
+
+  it('keeps a lone baseline Literal alias when no class alias covers it', () => {
+    const aliases = collectCompatEnumAliases(enums, withBaseline({ LegacyConnectionStateLiteral: stateValues }));
+    expect(aliases.get('ConnectionState')).toEqual(['LegacyConnectionStateLiteral']);
+  });
+
+  it("defines and exports the Literal companion in a renamed enum's compat alias file", () => {
+    const connectionState = [enums[1]];
+    const files = generateEnums(
+      connectionState,
+      withBaseline({ LegacyConnectionState: stateValues, LegacyConnectionStateLiteral: stateValues }, connectionState),
+    );
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('src/workos/common/models/legacy_connection_state.py');
+    // The companion lives in the alias file; no second alias file for it.
+    expect(paths).not.toContain('src/workos/common/models/legacy_connection_state_literal.py');
+
+    const alias = files.find((f) => f.path.endsWith('legacy_connection_state.py'))!.content;
+    expect(alias).toContain('from typing import Literal, TypeAlias');
+    expect(alias).toContain('LegacyConnectionState: TypeAlias = ConnectionState');
+    expect(alias).toContain('LegacyConnectionStateLiteral: TypeAlias = Literal["active", "inactive"]');
+    expect(alias).toContain('__all__ = ["LegacyConnectionState", "LegacyConnectionStateLiteral"]');
+  });
+
+  it('leaves a lone baseline Literal alias without a Literal-of-Literal companion', () => {
+    const connectionState = [enums[1]];
+    const files = generateEnums(
+      connectionState,
+      withBaseline({ LegacyConnectionStateLiteral: stateValues }, connectionState),
+    );
+    const alias = files.find((f) => f.path.endsWith('legacy_connection_state_literal.py'))!.content;
+    expect(alias).toContain('LegacyConnectionStateLiteral: TypeAlias = ConnectionState');
+    expect(alias).not.toContain('LegacyConnectionStateLiteralLiteral');
+    expect(alias).toContain('__all__ = ["LegacyConnectionStateLiteral"]');
   });
 });

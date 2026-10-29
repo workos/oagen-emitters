@@ -291,3 +291,47 @@ describe('rust/models', () => {
     expect(barrel.content).toContain('pub use alpha::*;');
   });
 });
+
+describe('rust/models overlay file hints', () => {
+  it('keeps every model at its own module path even when the overlay points it at another file', () => {
+    const field = (name: string): Model['fields'][number] => ({
+      name,
+      type: { kind: 'primitive', type: 'string' },
+      required: true,
+    });
+    const fields = ['object', 'access_token', 'expires_at'].map(field);
+    const models: Model[] = [
+      { name: 'DataIntegrationAccessTokenResponseWithAccessTokenAccessToken', fields },
+      { name: 'DataIntegrationAccessTokenResponseAccessToken', fields },
+    ];
+
+    const files = generateModels(
+      models,
+      {
+        ...ctx,
+        spec: { ...emptySpec, models },
+        // A baseline surface matched the look-alike onto the existing struct's file.
+        overlayLookup: {
+          methodByOperation: new Map(),
+          fileBySymbol: new Map([
+            [
+              'DataIntegrationAccessTokenResponseWithAccessTokenAccessToken',
+              'src/models/data_integration_access_token_response_access_token.rs',
+            ],
+          ]),
+        } as unknown as EmitterContext['overlayLookup'],
+      },
+      new UnionRegistry(),
+    );
+
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('src/models/data_integration_access_token_response_with_access_token_access_token.rs');
+    expect(paths).toContain('src/models/data_integration_access_token_response_access_token.rs');
+
+    // Every module the barrel declares has a file behind it.
+    const barrel = files.find((f) => f.path === 'src/models/mod.rs')!.content;
+    const declared = [...barrel.matchAll(/^mod (\w+);$/gm)].map((m) => m[1]).filter((m) => m !== '_unions');
+    expect(declared).toContain('data_integration_access_token_response_with_access_token_access_token');
+    for (const mod of declared) expect(paths).toContain(`src/models/${mod}.rs`);
+  });
+});
