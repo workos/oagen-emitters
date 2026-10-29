@@ -97,31 +97,15 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
       // Also generate compat alias files for dedup aliases (they may have compat aliases too)
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
-        let compatContent: string;
-        if (canonicalDir === dirName) {
-          compatContent = [
-            'from typing import TypeAlias',
-            `from .${fileName(canonicalName)} import ${canonicalCls}`,
-            '',
-            `${aliasName}: TypeAlias = ${canonicalCls}`,
-            `__all__ = ["${aliasName}"]`,
-          ].join('\n');
-        } else {
-          const modPath = `${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)}`;
-          compatContent = [
-            'from typing import TYPE_CHECKING',
-            '',
-            'if TYPE_CHECKING:',
-            `    from ${modPath} import ${canonicalCls} as ${aliasName}`,
-            'else:',
-            '    def __getattr__(name: str):',
-            `        if name == "${aliasName}":`,
-            `            from ${modPath} import ${canonicalCls}`,
-            `            return ${canonicalCls}`,
-            '        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")',
-            `__all__ = ["${aliasName}"]`,
-          ].join('\n');
-        }
+        const compatContent =
+          canonicalDir === dirName
+            ? renderCompatAliasFile(aliasName, canonicalCls, { file: fileName(canonicalName) }, enumDef)
+            : renderCompatAliasFile(
+                aliasName,
+                canonicalCls,
+                { modPath: `${ctx.namespace}.${dirToModule(canonicalDir)}.models.${fileName(canonicalName)}` },
+                enumDef,
+              );
         if (enumInScope) {
           files.push({
             path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
@@ -273,13 +257,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
         files.push({
           path: `src/${ctx.namespace}/${dirName}/models/${fileName(aliasName)}.py`,
-          content: [
-            'from typing import TypeAlias',
-            `from .${fileName(enumDef.name)} import ${cls}`,
-            '',
-            `${aliasName}: TypeAlias = ${cls}`,
-            `__all__ = ["${aliasName}"]`,
-          ].join('\n'),
+          content: renderCompatAliasFile(aliasName, cls, { file: fileName(enumDef.name) }, enumDef),
           integrateTarget: true,
           overwriteExisting: true,
         });
@@ -357,10 +335,87 @@ export function collectGeneratedEnumSymbolsByDir(enums: Enum[], ctx: EmitterCont
     }
     for (const aliasName of compatAliases.get(enumDef.name) ?? []) {
       symbolsByDir.get(dirName)!.push(aliasName);
+      const literal = compatAliasLiteralName(aliasName, enumDef);
+      if (literal) symbolsByDir.get(dirName)!.push(literal);
     }
   }
 
   return symbolsByDir;
+}
+
+/**
+ * The `Literal` companion a compat alias file defines beside its class alias,
+ * or undefined when there is nothing to define: the enum has no values, or the
+ * baseline name is itself a `*Literal` TypeAlias and so already plays that
+ * role for its own class alias.
+ */
+export function compatAliasLiteralName(aliasName: string, enumDef: Enum): string | undefined {
+  if (enumDef.values.length === 0 || aliasName.endsWith('Literal')) return undefined;
+  return `${aliasName}Literal`;
+}
+
+/**
+ * A compat alias file: `<Alias>: TypeAlias = <Canonical>` for a baseline name
+ * the spec no longer produces, imported directly (`file`) or lazily across
+ * services (`modPath`), plus the `<Alias>Literal` companion the baseline also
+ * carried, so `from ... import <Alias>Literal` keeps resolving after a rename.
+ */
+function renderCompatAliasFile(
+  aliasName: string,
+  canonicalCls: string,
+  source: { file: string } | { modPath: string },
+  enumDef: Enum,
+): string {
+  const literal = compatAliasLiteralName(aliasName, enumDef);
+  const literalLines = literal ? [literalTypeAlias(literal, enumDef)] : [];
+  const exported = [aliasName, ...(literal ? [literal] : [])].map((name) => `"${name}"`).join(', ');
+  if ('file' in source) {
+    return [
+      `from typing import ${literal ? 'Literal, ' : ''}TypeAlias`,
+      `from .${source.file} import ${canonicalCls}`,
+      '',
+      `${aliasName}: TypeAlias = ${canonicalCls}`,
+      ...literalLines,
+      `__all__ = [${exported}]`,
+    ].join('\n');
+  }
+  // Cross-service: TYPE_CHECKING + __getattr__ avoids the circular import a
+  // service barrel's eager re-exports would otherwise trigger.
+  return [
+    `from typing import TYPE_CHECKING${literal ? ', Literal, TypeAlias' : ''}`,
+    '',
+    'if TYPE_CHECKING:',
+    `    from ${source.modPath} import ${canonicalCls} as ${aliasName}`,
+    'else:',
+    '    def __getattr__(name: str):',
+    `        if name == "${aliasName}":`,
+    `            from ${source.modPath} import ${canonicalCls}`,
+    `            return ${canonicalCls}`,
+    '        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")',
+    ...literalLines,
+    `__all__ = [${exported}]`,
+  ].join('\n');
+}
+
+/** `<name>: TypeAlias = Literal[...]` over the enum's distinct wire values. */
+function literalTypeAlias(name: string, enumDef: Enum): string {
+  const seen = new Set<string>();
+  const literals: string[] = [];
+  for (const v of enumDef.values) {
+    const key = String(v.value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    literals.push(
+      typeof v.value === 'string'
+        ? pythonStringLiteral(v.value)
+        : typeof v.value === 'boolean'
+          ? v.value
+            ? 'True'
+            : 'False'
+          : key,
+    );
+  }
+  return `${name}: TypeAlias = Literal[${literals.join(', ')}]`;
 }
 
 function enumValueHash(enumDef: Enum): string {

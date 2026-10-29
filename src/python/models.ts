@@ -3,7 +3,7 @@ import type { Model, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { collectFieldDependencies } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
-import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases } from './enums.js';
+import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases, compatAliasLiteralName } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
 import {
   isModelInScope,
@@ -555,8 +555,19 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       if (placement.enumAliases.has(enumDef.name)) aliasLiterals.add(literal);
     }
   }
+  const enumsByName = new Map(emittedEnums.map((enumDef) => [enumDef.name, enumDef]));
   for (const [canonical, aliasNames] of collectCompatEnumAliases(emittedEnums, ctx)) {
-    for (const aliasName of aliasNames) aliasToCanonicalEnum.set(aliasName, canonical);
+    for (const aliasName of aliasNames) {
+      aliasToCanonicalEnum.set(aliasName, canonical);
+      // The alias file also defines `<Alias>Literal` (see generateEnums). Files
+      // written by older emitters lack it, so gate it like dedup-alias Literals.
+      const literal = compatAliasLiteralName(aliasName, enumsByName.get(canonical)!);
+      if (literal) {
+        symbolToFile.set(literal, fileName(aliasName));
+        aliasToCanonicalEnum.set(literal, canonical);
+        aliasLiterals.add(literal);
+      }
+    }
   }
   for (const [dirName, names] of enumSymbolsByDir) {
     const key = `src/${ctx.namespace}/${dirName}/models`;

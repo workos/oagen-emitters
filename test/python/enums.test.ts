@@ -335,7 +335,7 @@ describe('generateEnums', () => {
   });
 });
 
-describe('collectCompatEnumAliases', () => {
+describe('compat enum aliases', () => {
   const authValues = [
     { name: 'CLIENT_SECRET_POST', value: 'client_secret_post' },
     { name: 'CLIENT_SECRET_BASIC', value: 'client_secret_basic' },
@@ -350,10 +350,10 @@ describe('collectCompatEnumAliases', () => {
   ];
 
   /** A baseline surface whose enums carry the given member values. */
-  const withBaseline = (baseline: Record<string, { value: string }[]>): EmitterContext =>
+  const withBaseline = (baseline: Record<string, { value: string }[]>, specEnums: Enum[] = enums): EmitterContext =>
     ({
       ...ctx,
-      spec: { ...emptySpec, enums },
+      spec: { ...emptySpec, enums: specEnums },
       apiSurface: {
         classes: {},
         interfaces: {},
@@ -396,5 +396,35 @@ describe('collectCompatEnumAliases', () => {
   it('keeps a lone baseline Literal alias when no class alias covers it', () => {
     const aliases = collectCompatEnumAliases(enums, withBaseline({ LegacyConnectionStateLiteral: stateValues }));
     expect(aliases.get('ConnectionState')).toEqual(['LegacyConnectionStateLiteral']);
+  });
+
+  it("defines and exports the Literal companion in a renamed enum's compat alias file", () => {
+    const connectionState = [enums[1]];
+    const files = generateEnums(
+      connectionState,
+      withBaseline({ LegacyConnectionState: stateValues, LegacyConnectionStateLiteral: stateValues }, connectionState),
+    );
+    const paths = files.map((f) => f.path);
+    expect(paths).toContain('src/workos/common/models/legacy_connection_state.py');
+    // The companion lives in the alias file; no second alias file for it.
+    expect(paths).not.toContain('src/workos/common/models/legacy_connection_state_literal.py');
+
+    const alias = files.find((f) => f.path.endsWith('legacy_connection_state.py'))!.content;
+    expect(alias).toContain('from typing import Literal, TypeAlias');
+    expect(alias).toContain('LegacyConnectionState: TypeAlias = ConnectionState');
+    expect(alias).toContain('LegacyConnectionStateLiteral: TypeAlias = Literal["active", "inactive"]');
+    expect(alias).toContain('__all__ = ["LegacyConnectionState", "LegacyConnectionStateLiteral"]');
+  });
+
+  it('leaves a lone baseline Literal alias without a Literal-of-Literal companion', () => {
+    const connectionState = [enums[1]];
+    const files = generateEnums(
+      connectionState,
+      withBaseline({ LegacyConnectionStateLiteral: stateValues }, connectionState),
+    );
+    const alias = files.find((f) => f.path.endsWith('legacy_connection_state_literal.py'))!.content;
+    expect(alias).toContain('LegacyConnectionStateLiteral: TypeAlias = ConnectionState');
+    expect(alias).not.toContain('LegacyConnectionStateLiteralLiteral');
+    expect(alias).toContain('__all__ = ["LegacyConnectionStateLiteral"]');
   });
 });

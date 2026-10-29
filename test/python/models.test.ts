@@ -1146,3 +1146,43 @@ describe('generateModels', () => {
     expect(files.some((f) => f.path.endsWith('authorization_permission_list_list_metadata.py'))).toBe(false);
   });
 });
+
+describe('generateModels compat enum aliases', () => {
+  it('exports a renamed enum alias and its Literal companion from the alias module', () => {
+    const stateValues = [
+      { name: 'ACTIVE', value: 'active' },
+      { name: 'INACTIVE', value: 'inactive' },
+    ];
+    const members = Object.fromEntries(stateValues.map((v) => [v.name, v.value]));
+    // generateModels emits nothing at all without models; one is enough to get the barrel.
+    const models: Model[] = [
+      { name: 'Connection', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ];
+    const files = generateModels(models, {
+      ...ctx,
+      spec: { ...emptySpec, models, enums: [{ name: 'ConnectionState', values: stateValues }] },
+      apiSurface: {
+        classes: {},
+        interfaces: {},
+        typeAliases: {},
+        exports: {},
+        enums: {
+          LegacyConnectionState: { name: 'LegacyConnectionState', members },
+          LegacyConnectionStateLiteral: { name: 'LegacyConnectionStateLiteral', members },
+        },
+      },
+    } as unknown as EmitterContext);
+
+    const barrel = files.find((f) => f.path === 'src/workos/common/models/__init__.py');
+    expect(barrel).toBeDefined();
+    expect(barrel!.content).toContain(
+      'from .legacy_connection_state import LegacyConnectionState as LegacyConnectionState',
+    );
+    expect(barrel!.content).toContain(
+      'from .legacy_connection_state import LegacyConnectionStateLiteral as LegacyConnectionStateLiteral',
+    );
+    // Exactly once, and never from a spurious `*_literal` alias module.
+    expect(barrel!.content.match(/LegacyConnectionStateLiteral as LegacyConnectionStateLiteral/g)).toHaveLength(1);
+    expect(barrel!.content).not.toContain('legacy_connection_state_literal');
+  });
+});
