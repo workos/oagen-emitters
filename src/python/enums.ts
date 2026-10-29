@@ -292,7 +292,21 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
 export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Map<string, string[]> {
   const aliases = new Map<string, string[]>();
-  const irEnumNames = new Set(enums.map((enumDef) => enumDef.name));
+  // Every name the enum emitter itself produces for these enums, as Python
+  // renders them: the raw IR name, the `str, Enum` class and its `*Literal`
+  // TypeAlias (see generateEnums). A baseline symbol under one of those names
+  // IS the enum about to be emitted, not a renamed predecessor that needs an
+  // alias file. Comparing rendered names matters: an IR name that differs from
+  // the class only by acronym casing (`...OidcOptions...` vs `...OIDCOptions...`)
+  // used to slip through, and its `*Literal` then reached the barrel twice —
+  // once from the enum module, once from a spurious alias module (ruff F811).
+  const generatedNames = new Set<string>();
+  for (const enumDef of enums) {
+    const cls = className(enumDef.name);
+    generatedNames.add(enumDef.name);
+    generatedNames.add(cls);
+    generatedNames.add(`${cls}Literal`);
+  }
   const normalizedHashToEnum = new Map<string, string>();
 
   for (const enumDef of enums) {
@@ -300,7 +314,7 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
   }
 
   for (const baselineEnum of Object.values(ctx.apiSurface?.enums ?? {})) {
-    if (irEnumNames.has(baselineEnum.name)) continue;
+    if (generatedNames.has(baselineEnum.name)) continue;
     const hash = Object.values(baselineEnum.members)
       .map((value) => String(value))
       .sort()
@@ -309,6 +323,16 @@ export function collectCompatEnumAliases(enums: Enum[], ctx: EmitterContext): Ma
     if (!target) continue;
     if (!aliases.has(target)) aliases.set(target, []);
     aliases.get(target)!.push(baselineEnum.name);
+  }
+
+  // An alias file already defines `<Alias>Literal` beside the alias class
+  // (generateEnums), so a baseline `<Alias>Literal` symbol is covered by the
+  // alias it belongs to and must not become an alias file of its own.
+  for (const [target, names] of aliases) {
+    const covered = new Set(names.map((name) => `${name}Literal`));
+    const kept = names.filter((name) => !covered.has(name));
+    if (kept.length > 0) aliases.set(target, kept);
+    else aliases.delete(target);
   }
 
   return aliases;
