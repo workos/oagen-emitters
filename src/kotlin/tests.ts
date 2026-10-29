@@ -43,6 +43,8 @@ import {
 } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
 import { orderedVariantParameters } from './resources.js';
+import { resolveRequestBodyModel } from './request-body.js';
+import { V74_METHOD_SLOTS } from './v74-compat.js';
 import { resolveKotlinWrapperParams } from './wrappers.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
@@ -183,6 +185,7 @@ function generateServiceTestClass(
   imports.add('org.junit.jupiter.api.Test');
 
   const opTests: OpTest[] = [];
+  const apiCls = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
 
   for (const op of operations) {
     if (isHandwrittenOverride(op)) continue;
@@ -197,7 +200,7 @@ function generateServiceTestClass(
       continue;
     }
 
-    const test = buildOperationTest(op, resolved, ctx);
+    const test = buildOperationTest(op, resolved, ctx, apiCls);
     if (test) opTests.push(test);
   }
 
@@ -259,7 +262,6 @@ function generateServiceTestClass(
   }
 
   const pkg = packageSegment(mountName);
-  const apiCls = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
 
   // If any operation would emit a disabled placeholder test, preregister
   // the `Disabled` import before we serialize the header.
@@ -303,6 +305,7 @@ function buildOperationTest(
   op: Operation,
   resolved: ResolvedOperation | undefined,
   ctx: EmitterContext,
+  apiCls: string,
 ): OpTest | null {
   const svc = findService(ctx, op);
   if (!svc) return null;
@@ -316,17 +319,23 @@ function buildOperationTest(
   //   pathParams ++ requiredQuery ++ requiredGroups ++ requiredBodyFields ++ optionalGroups
   const imports = new Set<string>();
   const argParts: string[] = [];
+  // Kotlin parameter name per positional arg; v7.4.0-pinned signatures
+  // reorder parameters, so their tests pass every argument by name.
+  const argNames: string[] = [];
   const requiredBodyPaths: string[] = [];
   const requiredQueryAssertions: { name: string; valueRegex: string }[] = [];
 
-  for (const _pp of op.pathParams) argParts.push(ktStringLiteral('sample-arg'));
+  for (const pp of op.pathParams) {
+    argParts.push(ktStringLiteral('sample-arg'));
+    argNames.push(propertyName(pp.name));
+  }
 
   const groupedParamNames = collectGroupedParamNames(op);
 
   const queryFields = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   const sharedQueryBodyParams = new Set<string>();
-  const bodyModel = resolveBodyModel(op, ctx);
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
   for (const qp of queryFields) {
     const matchingBodyField = bodyModel?.fields.find((field) => field.name === qp.name);
     if (matchingBodyField && mapTypeRef(qp.type) === mapTypeRef(matchingBodyField.type)) {
@@ -339,6 +348,7 @@ function buildOperationTest(
     const val = synthValue(promotedType, ctx, imports);
     if (val === null) return null;
     argParts.push(val);
+    argNames.push(propertyName(qp.name));
     // Best-effort wire assertion: for primitives/strings we know the synthesized
     // value so we can assert equality; otherwise just assert presence.
     const regex = queryValueRegexFor(promotedType);
@@ -366,6 +376,7 @@ function buildOperationTest(
     const variantArgs = variantValues.join(', ');
     imports.add(`com.workos.${mountPackage}.${sealedName}`);
     argParts.push(`${groupParamNames.get(group.name)!} = ${sealedName}.${variantName}(${variantArgs})`);
+    argNames.push('');
     return true;
   };
   for (const group of op.parameterGroups ?? []) {
@@ -385,6 +396,9 @@ function buildOperationTest(
       const val = synthValue(promotedType, ctx, imports);
       if (val === null) return null;
       argParts.push(val);
+      const natural = propertyName(bf.name);
+      const collides = argNames.includes(natural) || queryFields.some((qp) => propertyName(qp.name) === natural);
+      argNames.push(collides ? `body${natural.charAt(0).toUpperCase()}${natural.slice(1)}` : natural);
       // matchingJsonPath on an array/map body field fails on empty
       // synthesized collections because JsonPath returns an empty result
       // set.  Scalar fields always materialize with a concrete value, so
@@ -437,7 +451,10 @@ function buildOperationTest(
     method,
     httpMethod: op.httpMethod.toLowerCase(),
     pathForWireMock: op.path.replace(/\{[^}]+\}/g, 'sample-arg'),
-    callArgs: argParts.join(', '),
+    callArgs: (V74_METHOD_SLOTS[`${apiCls}.${method}`]
+      ? argParts.map((arg, i) => (argNames[i] ? `${argNames[i]} = ${arg}` : arg))
+      : argParts
+    ).join(', '),
     responseClass,
     minimalResponseBody: minimalBody ?? '{}',
     canEmitHappyPath,
@@ -677,13 +694,6 @@ function renderTypeForSynthesis(type: TypeRef, ctx: EmitterContext, imports: Set
   // For everything else (primitives, arrays, maps, literals) the IR mapping
   // produces a self-contained Kotlin type expression.
   return mapTypeRef(type);
-}
-
-function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
-  const body = op.requestBody;
-  if (!body) return null;
-  if (body.kind !== 'model') return null;
-  return ctx.spec.models.find((m) => m.name === body.name) ?? null;
 }
 
 /**
