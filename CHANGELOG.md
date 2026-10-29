@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.4](https://github.com/workos/oagen-emitters/compare/v0.25.3...v0.25.4) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ios,php,kotlin:** serialize date-time values as UTC ISO 8601 with a Z suffix ([#295](https://github.com/workos/oagen-emitters/issues/295)) ([6d086f7](https://github.com/workos/oagen-emitters/commit/6d086f73b21d49118c8e78729aaf6d44898cdc35))
+
 ## [0.25.3](https://github.com/workos/oagen-emitters/compare/v0.25.2...v0.25.3) (2026-10-29)
 
 
