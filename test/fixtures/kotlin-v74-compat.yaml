@@ -1,0 +1,319 @@
+# Trimmed from the WorkOS spec (openapi-spec 4d0cf5f) to the operations whose
+# workos-kotlin v7.4.0 signatures the Kotlin emitter keeps compatible.
+openapi: 3.1.0
+info: { title: Kotlin v7.4.0 compat, version: 1.0.0 }
+servers: [{ url: https://api.workos.com }]
+paths:
+  /data-integrations/{slug}/authorize:
+    post:
+      operationId: authorizeDataIntegration
+      tags: [Pipes]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [user_id]
+                  properties: &authorize
+                    account_display_name: { type: [string, 'null'] }
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    return_to: { type: string, format: uri }
+                    config: { type: object, additionalProperties: { type: string } }
+                - type: object
+                  required: [user_id, connection_intent]
+                  properties:
+                    <<: *authorize
+                    connection_intent: { type: string, const: add }
+                - type: object
+                  required: [user_id, connection_intent, connected_account_id]
+                  properties:
+                    <<: *authorize
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataIntegrationAuthorizeUrlResponse' }
+  /data-integrations/{slug}/api-key:
+    put:
+      operationId: updateDataIntegrationApiKey
+      tags: [Pipes]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [user_id, secret]
+                  properties: &apiKey
+                    account_display_name: { type: [string, 'null'] }
+                    account_identifier: { type: [string, 'null'] }
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    secret: { type: string }
+                - type: object
+                  required: [user_id, secret, connection_intent, connected_account_id]
+                  properties:
+                    <<: *apiKey
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+                - type: object
+                  required: [user_id, secret, connected_account_id]
+                  properties:
+                    <<: *apiKey
+                    connected_account_id: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectedAccountWriteResponse' }
+  /data-integrations/{slug}/client-credentials:
+    put:
+      operationId: updateDataIntegrationClientCredentials
+      tags: [Pipes]
+      parameters: [{ $ref: '#/components/parameters/Slug' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [user_id, client_id, client_secret]
+                  properties: &clientCredentials
+                    account_display_name: { type: [string, 'null'] }
+                    account_identifier: { type: [string, 'null'] }
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                - type: object
+                  required: [user_id, client_id, client_secret, connection_intent, connected_account_id]
+                  properties:
+                    <<: *clientCredentials
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectedAccountWriteResponse' }
+  /user_management/users/{user_id}/connected_accounts/{slug}:
+    put:
+      operationId: updateUserConnectedAccount
+      tags: [Pipes]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/Slug' }
+        - { name: organization_id, in: query, schema: { type: string } }
+        - { name: supports_multiple_connections, in: query, schema: { type: boolean } }
+        - { name: connected_account_id, in: query, schema: { type: string } }
+        - { name: connection_intent, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: &connectedAccount
+                account_display_name: { type: [string, 'null'] }
+                account_identifier: { type: [string, 'null'] }
+                access_token: { type: string }
+                refresh_token: { type: string }
+                expires_at: { type: string, format: date-time }
+                scopes: { type: array, items: { type: string } }
+                state: { type: string, enum: [connected, needs_reauthorization] }
+      responses: &writeResponse
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectedAccountWriteResponse' }
+    post:
+      operationId: createUserConnectedAccount
+      tags: [Pipes]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/Slug' }
+        - { name: organization_id, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                <<: *connectedAccount
+                connection_intent: { type: string, const: add }
+      responses: *writeResponse
+  /organizations/{organization_id}/connected_accounts/{slug}:
+    post:
+      operationId: createOrganizationConnectedAccount
+      tags: [Pipes]
+      parameters:
+        - { name: organization_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/Slug' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                <<: *connectedAccount
+                user_id: { type: string }
+                connection_intent: { type: string, const: add }
+      responses: *writeResponse
+    put:
+      operationId: updateOrganizationConnectedAccount
+      tags: [Pipes]
+      parameters:
+        - { name: organization_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/Slug' }
+        - { name: supports_multiple_connections, in: query, schema: { type: boolean } }
+        - { name: connected_account_id, in: query, schema: { type: string } }
+        - { name: connection_intent, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                <<: *connectedAccount
+                user_id: { type: string }
+      responses: *writeResponse
+  /sso/token:
+    post:
+      operationId: getProfileAndToken
+      tags: [SSO]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                code_verifier: { type: string }
+                subject_token: { type: string }
+                subject_token_type: { type: string }
+                organization_id: { type: string }
+      responses:
+        '200':
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/SSOTokenResponse' } } }
+  /portal/generate_link:
+    post:
+      operationId: generateLink
+      tags: [AdminPortal]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization]
+              properties:
+                return_url: { type: string }
+                success_url: { type: string }
+                organization: { type: string }
+                external_user_id: { type: string }
+                intent: { type: string, enum: [sso, dsync] }
+                it_contact_emails: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: Created
+          content: { application/json: { schema: { $ref: '#/components/schemas/PortalLinkResponse' } } }
+  /agents/blueprints:
+    post:
+      operationId: createBlueprint
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: &blueprint
+                name: { type: string }
+                description: { type: string }
+                permissions: { type: array, items: { type: string } }
+                invocable_by: { type: object, properties: { role_slugs: { type: array, items: { type: string } } } }
+                invocable_as: { type: object, properties: { mode: { type: string } } }
+                session_settings: { type: object, properties: { max_age_seconds: { type: integer } } }
+      responses: &blueprintResponse
+        '200':
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/AgentBlueprint' } } }
+  /agents/blueprints/{agent_blueprint_id}:
+    patch:
+      operationId: updateBlueprint
+      tags: [Agents]
+      parameters:
+        - { name: agent_blueprint_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: *blueprint
+      responses: *blueprintResponse
+components:
+  parameters:
+    Slug: { name: slug, in: path, required: true, schema: { type: string } }
+  schemas:
+    DataIntegrationAuthorizeUrlResponse:
+      type: object
+      required: [url]
+      properties: { url: { type: string } }
+    ConnectedAccount:
+      type: object
+      required: [id, connection_role, user_id]
+      properties: &connectedAccountResponse
+        id: { type: string }
+        connection_role: { type: string, enum: [compatibility, standard] }
+        user_id: { type: [string, 'null'] }
+    ConnectedAccountWriteResponse:
+      type: object
+      required: [id, connection_role, user_id]
+      properties:
+        <<: *connectedAccountResponse
+        warnings: { type: array, items: { $ref: '#/components/schemas/ConnectedAccountWriteResponseWarning' } }
+    ConnectedAccountWriteResponseWarning:
+      type: object
+      required: [code]
+      properties: { code: { type: string } }
+    DataIntegrationVendedCredential:
+      type: object
+      properties: { value: { type: string } }
+    SSOTokenResponse:
+      type: object
+      required: [access_token]
+      properties: { access_token: { type: string } }
+    PortalLinkResponse:
+      type: object
+      required: [link]
+      properties: { link: { type: string } }
+    AgentBlueprint:
+      type: object
+      required: [id]
+      properties: { id: { type: string } }
