@@ -1,4 +1,5 @@
 import type { Enum, Model, TypeRef } from '@workos/oagen';
+import { loadRawSpec } from '../shared/model-utils.js';
 
 /**
  * Go-only compatibility table for workos-go v10.5.0 symbols that later specs
@@ -22,6 +23,16 @@ const MODEL_ALIASES: { alias: string; target: string }[] = [
   // v10.5.0: DataIntegrationCredentialsResponse.Credential was
   // *DataIntegrationCredentialsResponseCredential.
   { alias: 'DataIntegrationCredentialsResponseCredential', target: 'DataIntegrationVendedCredential' },
+];
+
+/**
+ * Fields kept as values (not pointers) on a model the parser merged from a
+ * discriminated `oneOf`, which marks every field optional. Applied only while
+ * every variant still requires the field.
+ */
+const REQUIRED_VARIANT_FIELDS: { model: string; fields: string[] }[] = [
+  // v10.5.0: DataIntegrationCredentialsResponseCredential.Object/AuthMethod/Value were strings.
+  { model: 'DataIntegrationVendedCredential', fields: ['object', 'auth_method', 'value'] },
 ];
 
 /** Enums that keep their own typed constants even when deduplicated into an alias. */
@@ -57,6 +68,24 @@ export function foldCompatModels(models: Model[], enums: Enum[]): { models: Mode
     aliases.set(model, into);
   }
   return { models: models.map((m) => replaced.get(m.name) ?? m), aliases };
+}
+
+/** Apply REQUIRED_VARIANT_FIELDS, checking each field against the raw spec's variants. */
+export function restoreRequiredVariantFields(models: Model[]): Model[] {
+  const schemas = loadRawSpec()?.components?.schemas;
+  if (!schemas) return models;
+  const resolve = (s: any) => (typeof s?.$ref === 'string' ? schemas[s.$ref.replace('#/components/schemas/', '')] : s);
+  return models.map((model) => {
+    const entry = REQUIRED_VARIANT_FIELDS.find((e) => e.model === model.name);
+    const schema = entry && resolve(schemas[model.name]);
+    if (!schema?.discriminator || !schema.oneOf?.length) return model;
+    const variants = schema.oneOf.map(resolve);
+    const restore = new Set(
+      entry!.fields.filter((name) => variants.every((v: any) => v?.type === 'object' && v.required?.includes(name))),
+    );
+    if (restore.size === 0) return model;
+    return { ...model, fields: model.fields.map((f) => (restore.has(f.name) ? { ...f, required: true } : f)) };
+  });
 }
 
 /** MODEL_ALIASES whose target exists and whose alias name is still free. */

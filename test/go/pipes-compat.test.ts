@@ -264,8 +264,9 @@ describe('Go Pipes compatibility', () => {
         auth_method: { type: 'string', const: method },
         value: { type: 'string' },
         expires_at: { type: ['string', 'null'] },
+        config: { type: 'object', additionalProperties: { type: 'string' } },
       },
-      required: ['object', 'auth_method', 'value', ...extraRequired],
+      required: ['object', 'auth_method', 'value', 'config', ...extraRequired],
     });
     const spec = {
       openapi: '3.1.0',
@@ -278,6 +279,14 @@ describe('Go Pipes compatibility', () => {
             oneOf: [variant('oauth', ['expires_at']), { $ref: '#/components/schemas/ApiKeyCredential' }],
           },
           ApiKeyCredential: variant('api_key'),
+          // Another discriminated oneOf: not in the compat table, so left as v10.6.0 emitted it.
+          OtherDiscriminated: {
+            discriminator: { propertyName: 'kind' },
+            oneOf: [
+              { type: 'object', properties: { kind: { const: 'a' } }, required: ['kind'] },
+              { type: 'object', properties: { kind: { const: 'b' } }, required: ['kind'] },
+            ],
+          },
           // Undiscriminated oneOf: v10.5.0 already exposed `Active *bool`.
           DataIntegrationCredentialsResponse: {
             oneOf: [
@@ -299,7 +308,7 @@ describe('Go Pipes compatibility', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('keeps fields every discriminated variant requires as values and restores the old name', () => {
+    it('restores the v10.5.0 value fields on the credential only, and the old name', () => {
       // The parser merges the variants into one model with every field optional.
       const models: Model[] = [
         {
@@ -309,8 +318,10 @@ describe('Go Pipes compatibility', () => {
             { name: 'auth_method', type: { kind: 'literal', value: 'oauth' }, required: false },
             field('value'),
             { name: 'expires_at', type: { kind: 'nullable', inner: string }, required: false },
+            { name: 'config', type: { kind: 'map', valueType: string }, required: false },
           ],
         },
+        { name: 'OtherDiscriminated', fields: [field('kind')] },
         {
           name: 'DataIntegrationCredentialsResponse',
           fields: [
@@ -327,6 +338,9 @@ describe('Go Pipes compatibility', () => {
       expect(struct).toContain('\tValue string `json:"value"`\n');
       // Required by only one variant: still optional.
       expect(struct).toContain('\tExpiresAt *string `json:"expires_at,omitempty"`\n');
+      // Required by every variant but not a v10.5.0 value field: unchanged.
+      expect(struct).toContain('\tConfig map[string]string `json:"config,omitempty"`\n');
+      expect(block(content, 'type OtherDiscriminated struct')).toContain('\tKind *string `json:"kind,omitempty"`\n');
       expect(content).toContain(
         '// DataIntegrationCredentialsResponseCredential is an alias for DataIntegrationVendedCredential.\n' +
           'type DataIntegrationCredentialsResponseCredential = DataIntegrationVendedCredential\n',
