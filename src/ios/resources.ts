@@ -52,6 +52,24 @@ function rendersAsString(ref: TypeRef): boolean {
   return mapTypeRef(unwrapNullableRef(ref)) === 'String';
 }
 
+/**
+ * The Swift expression that renders a `Date` parameter as the wire string the
+ * API accepts, or null for a parameter that is not a date. A `date-time` goes
+ * through `Coding.iso8601Fractional` — the formatter the SDK's JSON encoder
+ * already uses, so a query value and a body field spell the same instant the
+ * same way: UTC, fractional seconds, a literal `Z`. A `date` goes through
+ * `Coding.dateOnly` (`yyyy-MM-dd`). Interpolating the `Date` itself
+ * (`"\(rangeStart)"`) renders Foundation's description,
+ * `2026-10-29 12:34:56 +0000`, which the API rejects (oagen-emitters#293).
+ */
+function dateWireExpr(ref: TypeRef, accessor: string): string | null {
+  const base = unwrapNullableRef(ref);
+  if (base.kind !== 'primitive' || base.type !== 'string') return null;
+  if (base.format === 'date-time') return `Coding.iso8601Fractional.string(from: ${accessor})`;
+  if (base.format === 'date') return `Coding.dateOnly.string(from: ${accessor})`;
+  return null;
+}
+
 // --- rendering --------------------------------------------------------------
 
 function docComment(description: string | undefined, indent: string): string {
@@ -509,7 +527,7 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
     } else {
       const p = byWire.get(seg.name);
       const name = p ? p.name : propertyName(seg.name);
-      const accessor = p && isEnumTypeRef(p.ref) ? `${name}.rawValue` : name;
+      const accessor = p && isEnumTypeRef(p.ref) ? `${name}.rawValue` : p ? (dateWireExpr(p.ref, name) ?? name) : name;
       expr += `\\(PathEncoding.segment(${accessor}))`;
     }
   }
@@ -520,7 +538,7 @@ function renderPathExpr(op: Operation, params: RenderedParam[]): string {
 function queryValueExpr(name: string, ref: TypeRef): string {
   if (isEnumTypeRef(ref)) return `${name}.rawValue`;
   if (rendersAsString(ref)) return name;
-  return `"\\(${name})"`;
+  return dateWireExpr(ref, name) ?? `"\\(${name})"`;
 }
 
 function renderQueryAppend(q: RenderedParam): string[] {
@@ -528,7 +546,11 @@ function renderQueryAppend(q: RenderedParam): string[] {
   const out: string[] = [];
   if (base.kind === 'array') {
     const elem = base.items;
-    const elemExpr = isEnumTypeRef(elem) ? 'value.rawValue' : rendersAsString(elem) ? 'value' : '"\\(value)"';
+    const elemExpr = isEnumTypeRef(elem)
+      ? 'value.rawValue'
+      : rendersAsString(elem)
+        ? 'value'
+        : (dateWireExpr(elem, 'value') ?? '"\\(value)"');
     if (q.optional) {
       out.push(`        if let ${q.name} {`);
       out.push(`            for value in ${q.name} {`);

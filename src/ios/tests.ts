@@ -410,8 +410,15 @@ class SuiteGenerator {
       case 'primitive':
         switch (ref.type) {
           case 'string': {
-            if (ref.format === 'date-time' || ref.format === 'date') {
-              return { expr: 'Date(timeIntervalSince1970: 1_672_531_200)' };
+            // 2023-01-01T00:00:00Z. The query value is what the generated
+            // resource renders through `Coding.iso8601Fractional` /
+            // `Coding.dateOnly` (resources.ts `dateWireExpr`), so the test
+            // pins the wire form the API accepts, not Foundation's description.
+            if (ref.format === 'date-time') {
+              return { expr: 'Date(timeIntervalSince1970: 1_672_531_200)', queryValue: '2023-01-01T00:00:00.000Z' };
+            }
+            if (ref.format === 'date') {
+              return { expr: 'Date(timeIntervalSince1970: 1_672_531_200)', queryValue: '2023-01-01' };
             }
             if (ref.format === 'byte' || ref.format === 'binary') {
               return { expr: 'Data("test".utf8)' };

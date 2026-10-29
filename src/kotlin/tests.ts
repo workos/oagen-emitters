@@ -527,7 +527,9 @@ function isScalarBodyField(type: TypeRef): boolean {
 function queryValueRegexFor(type: TypeRef): string | null {
   const inner = type.kind === 'nullable' ? type.inner : type;
   if (inner.kind === 'primitive') {
-    if (inner.format === 'date-time') return null; // OffsetDateTime.now() — not reproducible
+    // The fixed instant `synthValue` passes, as the resource renders it
+    // (`toInstant().toString()`): UTC, `Z`, seconds present.
+    if (inner.format === 'date-time') return '2024-01-01T00:00:00Z';
     switch (inner.type) {
       case 'string':
         return 'sample-arg';
@@ -608,8 +610,10 @@ function synthValue(type: TypeRef, ctx: EmitterContext, imports: Set<string>): s
   if (type.kind === 'primitive') {
     if (type.format === 'binary') return 'ByteArray(0)';
     if (type.format === 'date-time') {
+      // A fixed instant, so the wire assertion (`queryValueRegexFor`) can pin
+      // the exact serialized form; `now()` would not be reproducible.
       imports.add('java.time.OffsetDateTime');
-      return 'OffsetDateTime.now()';
+      return 'OffsetDateTime.parse("2024-01-01T00:00:00Z")';
     }
     switch (type.type) {
       case 'string':

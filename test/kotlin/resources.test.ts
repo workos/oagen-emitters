@@ -541,3 +541,42 @@ describe('kotlin/resources', () => {
     );
   });
 });
+
+describe('kotlin/resources date-time wire format', () => {
+  // oagen-emitters#293: `OffsetDateTime.toString()` keeps the value's own
+  // offset (`+02:00`) and drops zero seconds (`2025-01-01T00:00Z`); the API
+  // accepts only `…T00:00:00Z`. Query values are rendered as UTC instants.
+  const service: Service = {
+    name: 'Events',
+    operations: [
+      {
+        name: 'listEvents',
+        httpMethod: 'get',
+        path: '/events',
+        pathParams: [],
+        queryParams: [
+          { name: 'range_start', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'range_end', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: true },
+          {
+            name: 'stamps',
+            type: { kind: 'array', items: { kind: 'primitive', type: 'string', format: 'date-time' } },
+            required: false,
+          },
+        ],
+        headerParams: [],
+        response: { kind: 'model', name: 'AuthenticateResponse' },
+        errors: [],
+        injectIdempotencyKey: false,
+      },
+    ],
+  };
+
+  it('renders date-time query params as ISO instants', () => {
+    const content = generateResources([service], ctxFor([service]))[0].content;
+    expect(content).toContain('rangeStart?.let { params += "range_start" to it.toInstant().toString() }');
+    expect(content).toContain('params += "range_end" to rangeEnd.toInstant().toString()');
+    expect(content).toContain('it.map { it.toInstant().toString() }');
+    expect(content).not.toContain('rangeEnd.toString()');
+    expect(content).not.toContain('"range_start" to it.toString()');
+  });
+});

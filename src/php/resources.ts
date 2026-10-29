@@ -34,6 +34,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
+import { dateTimeWireExpr } from './runtime.js';
 import { buildPhpPathExpression } from './path-expression.js';
 
 /**
@@ -431,7 +432,10 @@ function generateMethod(
 
   if (isRedirect) {
     // Redirect endpoint: construct URL client-side instead of making HTTP request
-    const queryLines = buildQueryArray(op, hiddenParams, { materializeQueryDefaults });
+    const queryLines = buildQueryArray(op, hiddenParams, {
+      materializeQueryDefaults,
+      namespace: ctx.namespacePascal,
+    });
     const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
     const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
@@ -472,7 +476,7 @@ function generateMethod(
       lines.push(`        return $this->client->buildUrl(path: ${path}, query: [], options: $options);`);
     }
   } else if (plan.isPaginated) {
-    const queryLines = buildQueryArray(op);
+    const queryLines = buildQueryArray(op, undefined, { namespace: ctx.namespacePascal });
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
     const needsQuery = queryLines.length > 0 || hasGroups;
     if (needsQuery) {
@@ -529,7 +533,7 @@ function generateMethod(
         const valueExpr = isEnumType(field.type)
           ? `$${phpName}${nullsafe}->value`
           : isDateTimeType(field.type)
-            ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+            ? dateTimeWireExpr(ctx.namespacePascal, `$${phpName}`)
             : `$${phpName}`;
         lines.push(`            ${phpStringLiteral(field.name)} => ${valueExpr},`);
       }
@@ -552,7 +556,7 @@ function generateMethod(
       }
     }
     // Build query params if present
-    const deleteQueryLines = buildQueryArray(op, undefined, { bodyModel });
+    const deleteQueryLines = buildQueryArray(op, undefined, { bodyModel, namespace: ctx.namespacePascal });
     if (deleteQueryLines.length > 0) {
       lines.push('        $query = array_filter([');
       for (const q of deleteQueryLines) {
@@ -589,7 +593,7 @@ function generateMethod(
       const valueExpr = isEnumType(field.type)
         ? `$${phpName}${nullsafe}->value`
         : isDateTimeType(field.type)
-          ? `$${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+          ? dateTimeWireExpr(ctx.namespacePascal, `$${phpName}`)
           : `$${phpName}`;
       lines.push(`            ${phpStringLiteral(field.name)} => ${valueExpr},`);
     }
@@ -611,7 +615,7 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
-    const queryLines = buildQueryArray(op, hiddenParams, { bodyModel });
+    const queryLines = buildQueryArray(op, hiddenParams, { bodyModel, namespace: ctx.namespacePascal });
     if (queryLines.length > 0) {
       lines.push('        $query = array_filter([');
       for (const q of queryLines) lines.push(`            ${q}`);
@@ -636,7 +640,7 @@ function generateMethod(
       lines.push('        return $response;');
     }
   } else {
-    const queryLines = buildQueryArray(op, hiddenParams);
+    const queryLines = buildQueryArray(op, hiddenParams, { namespace: ctx.namespacePascal });
     const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
     const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
@@ -886,7 +890,7 @@ export function buildParamNames(
 function buildQueryArray(
   op: Operation,
   hiddenParams?: Set<string>,
-  opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null },
+  opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null; namespace?: string },
 ): string[] {
   const queryParamMap = buildParamNames(op, opts?.bodyModel ?? null, hiddenParams ?? new Set()).query;
   return op.queryParams
@@ -901,8 +905,8 @@ function buildQueryArray(
         return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->value,`;
       }
       if (isDateTimeType(q.type)) {
-        const nullsafe = q.required ? '' : '?';
-        return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->format(\\DateTimeInterface::RFC3339_EXTENDED),`;
+        // The helper passes `null` through; `array_filter` then drops the key.
+        return `${phpStringLiteral(q.name)} => ${dateTimeWireExpr(opts?.namespace ?? 'WorkOS', `$${phpName}`)},`;
       }
       return `${phpStringLiteral(q.name)} => $${phpName},`;
     });

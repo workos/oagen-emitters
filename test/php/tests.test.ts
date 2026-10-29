@@ -378,7 +378,7 @@ describe('generateTests', () => {
     });
   });
 
-  it('asserts date-time request-body fields against the RFC3339 wire value', () => {
+  it('asserts date-time request-body fields against the UTC Z wire value', () => {
     const dtModels: Model[] = [
       {
         name: 'ExportCreation',
@@ -413,9 +413,11 @@ describe('generateTests', () => {
       (f) => f.path === 'tests/Service/AuditLogsTest.php',
     )!.content;
 
-    // Call passes a DateTimeImmutable; the body assertion expects its RFC3339 form.
+    // Call passes a DateTimeImmutable; the body assertion expects the UTC `Z`
+    // form `DateTimeFormat::iso8601` renders, never an offset (oagen-emitters#293).
     expect(content).toContain("new \\DateTimeImmutable('2023-01-01T00:00:00Z')");
-    expect(content).toContain("assertSame('2023-01-01T00:00:00.000+00:00', $body['range_start'])");
+    expect(content).toContain("assertSame('2023-01-01T00:00:00.000Z', $body['range_start'])");
+    expect(content).not.toContain('+00:00');
     // The plain-string placeholder must NOT be used for a date-time field.
     expect(content).not.toContain("assertSame('test_value', $body['range_start'])");
   });
