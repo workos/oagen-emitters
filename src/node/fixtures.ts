@@ -1,5 +1,6 @@
 import type { Model, TypeRef, Enum, EmitterContext } from '@workos/oagen';
 import { wireFieldName, fileName, resolveServiceDir } from './naming.js';
+import { conformExample, type ExampleConformer } from '../shared/fixture-examples.js';
 import { resolveResourceClassName, resolveResourceDir } from './resources.js';
 import {
   createServiceDirResolver,
@@ -144,11 +145,16 @@ export function generateModelFixture(
   enumMap: Map<string, Enum>,
 ): Record<string, any> {
   const fixture: Record<string, any> = {};
+  const conformer: ExampleConformer = {
+    modelMap,
+    wireKey: wireFieldName,
+    buildModel: (nested) => generateModelFixture(nested, modelMap, enumMap),
+  };
 
   for (const field of model.fields) {
     const wireName = wireFieldName(field.name);
     if (field.example !== undefined) {
-      fixture[wireName] = field.example;
+      fixture[wireName] = conformExample(field.type, field.example, conformer);
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
@@ -164,7 +170,7 @@ export function generateModelFixture(
         if (!(wireName in fixture)) {
           fixture[wireName] =
             field.example !== undefined
-              ? field.example
+              ? conformExample(field.type, field.example, conformer)
               : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
         }
       }

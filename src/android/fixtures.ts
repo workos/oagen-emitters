@@ -1,5 +1,6 @@
 import type { Model, TypeRef, Enum } from '@workos/oagen';
 import { propertyName } from './naming.js';
+import { conformExample, type ExampleConformer } from '../shared/fixture-examples.js';
 
 /**
  * JSON fixture generation for the generated Kotlin test suites. Fixtures are
@@ -34,6 +35,10 @@ export function generateModelFixture(
   depth = 0,
 ): Record<string, unknown> {
   const fixture: Record<string, unknown> = {};
+  const conformer: ExampleConformer = {
+    modelMap,
+    buildModel: (nested) => generateModelFixture(nested, modelMap, enumMap, depth + 1),
+  };
 
   // Dedup by the Kotlin property name to mirror the emitted data class
   // (flattened discriminated unions can repeat fields).
@@ -44,7 +49,7 @@ export function generateModelFixture(
     seenProps.add(prop);
     fixture[field.name] =
       field.example !== undefined
-        ? field.example
+        ? conformExample(field.type, field.example, conformer)
         : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap, depth);
   }
 
@@ -59,7 +64,7 @@ export function generateModelFixture(
           if (!(field.name in fixture)) {
             fixture[field.name] =
               field.example !== undefined
-                ? field.example
+                ? conformExample(field.type, field.example, conformer)
                 : generateFieldValue(field.type, field.name, model.name, modelMap, enumMap, depth);
           }
         }

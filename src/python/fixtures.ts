@@ -8,6 +8,7 @@ import {
   unwrapListModel,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
+import { conformExample, type ExampleConformer } from '../shared/fixture-examples.js';
 
 /**
  * Prefix mapping for generating realistic ID fixture values.
@@ -135,6 +136,11 @@ export function generateModelFixture(
   if (variantFixture) return variantFixture;
 
   const fixture: Record<string, any> = {};
+  const conformer: ExampleConformer = {
+    modelMap,
+    buildModel: (nested) => generateModelFixture(nested, modelMap, enumMap),
+    normalize: normalizeDateTimeExample,
+  };
 
   // Deduplicate fields by DOMAIN identifier (matching model generation in
   // models.ts, which honors `domainName`); the wire key below stays `field.name`.
@@ -150,7 +156,7 @@ export function generateModelFixture(
     // Use the original field name as the wire key (matches from_dict access patterns)
     const wireName = field.name;
     if (field.example !== undefined) {
-      fixture[wireName] = normalizeDateTimeExample(field, field.example);
+      fixture[wireName] = normalizeDateTimeExample(field, conformExample(field.type, field.example, conformer));
     } else {
       fixture[wireName] = generateFieldValue(field.type, field.name, model.name, modelMap, enumMap);
     }
