@@ -120,3 +120,19 @@ describe('python/fixtures: whole-object examples', () => {
     expect(fixture.credential).toEqual({ auth_method: 'oauth', scopes: ['repo'] });
   });
 });
+
+describe('python/fixtures: self-referential examples', () => {
+  it('terminates when a recursive field carries an object example', () => {
+    const tree: Model = {
+      name: 'Tree',
+      fields: [
+        field('label', str),
+        field('child', nullable(model('Tree')), { required: false, example: { label: 'leaf', child: null } }),
+      ],
+    };
+
+    const fixture = generateModelFixture(tree, modelMap(tree), enumMap);
+
+    expect(fixture.child).toEqual({ label: 'leaf', child: null });
+  });
+});

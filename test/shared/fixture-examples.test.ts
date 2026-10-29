@@ -88,6 +88,43 @@ describe('shared/fixture-examples', () => {
     expect(result).toEqual({ id: 'X', created_at: 'Y' });
   });
 
+  it('ends recursion where a self-referential example ends instead of rebuilding the model forever', () => {
+    // `Tree.child` is a `Tree` again and carries an object example. The
+    // builder re-enters the conformer for every field with an example, so
+    // without a guard: overlay → build → the same example → overlay → …
+    const tree: Model = {
+      name: 'Tree',
+      fields: [
+        field('label'),
+        {
+          name: 'child',
+          type: { kind: 'nullable', inner: { kind: 'model', name: 'Tree' } },
+          required: false,
+          example: { label: 'leaf', child: null },
+        },
+      ],
+    };
+    const treeMap = new Map([[tree.name, tree]]);
+    const reentrant: ExampleConformer = {
+      modelMap: treeMap,
+      buildModel: (m) =>
+        Object.fromEntries(
+          m.fields.map((f) => [
+            f.name,
+            f.example !== undefined ? conformExample(f.type, f.example, reentrant) : `gen_${f.name}`,
+          ]),
+        ),
+    };
+
+    const result = conformExample(
+      { kind: 'model', name: 'Tree' },
+      { label: 'root', child: { label: 'leaf', child: null } },
+      reentrant,
+    );
+
+    expect(result).toEqual({ label: 'root', child: { label: 'leaf', child: null } });
+  });
+
   it('never touches the pinned discriminator and overlays variant fields only where the builder kept them', () => {
     const oauth: Model = {
       name: 'OauthCredential',
