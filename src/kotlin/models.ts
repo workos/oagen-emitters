@@ -22,6 +22,7 @@ import {
   preferLiveCanonical,
   forcedModelNames,
 } from '../shared/resolved-ops.js';
+import { applySlots, V74_CONSTRUCTOR_SLOTS, V74_TYPEALIASES } from './v74-compat.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 const MODELS_PACKAGE = 'com.workos.models';
@@ -77,9 +78,10 @@ function promoteFieldType(f: Field): Field {
  * List wrappers (`{ data, list_metadata }`) and the shared `ListMetadata`
  * model are skipped — the hand-maintained runtime provides [Page]/[ListMetadata].
  */
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+export function generateModels(allModels: Model[], ctx: EmitterContext): GeneratedFile[] {
   primeReservedTypeNames(ctx.spec);
-  if (models.length === 0) return [];
+  if (allModels.length === 0) return [];
+  const { models, aliases, pinned } = applyV74ModelCompat(allModels);
 
   // First pass: call mapTypeRef on every model field so discriminator info is
   // registered before we start emitting parents.
@@ -191,7 +193,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     if (modelInScope) {
-      files.push(emitDataClass(model));
+      files.push(emitDataClass(model, pinned.has(model.name)));
     }
   }
 
@@ -223,7 +225,73 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     files.push(emitWorkOSEvent(eventMapping));
   }
 
+  for (const [alias, target] of aliases) {
+    if (!isModelInScope(alias, ctx) && !isModelInScope(target, ctx)) continue;
+    files.push({
+      path: modelFilePath(alias),
+      content: typealiasFile(MODELS_PACKAGE, className(alias), className(target)),
+      overwriteExisting: true,
+    });
+  }
+
   return files;
+}
+
+/**
+ * Apply the v7.4.0 model entries from {@link V74_TYPEALIASES} and
+ * {@link V74_CONSTRUCTOR_SLOTS}: fold compatible aliases into their target
+ * (returned separately so they become typealias files) and pin constructor
+ * slots. Entries whose shape no longer matches are skipped.
+ */
+export function applyV74ModelCompat(input: Model[]): {
+  models: Model[];
+  aliases: Map<string, string>;
+  pinned: Set<string>;
+} {
+  let models = input;
+  const aliases = new Map<string, string>();
+  for (const { alias, target } of V74_TYPEALIASES) {
+    const targetModel = models.find((m) => m.name === target);
+    const aliasModel = models.find((m) => m.name === alias);
+    if (!targetModel) continue;
+    if (!aliasModel) {
+      aliases.set(alias, target);
+      continue;
+    }
+    const sameShape = targetModel.fields.every((tf) => {
+      const af = aliasModel.fields.find((f) => f.name === tf.name);
+      return af !== undefined && af.required === tf.required && wireTypeKey(af.type) === wireTypeKey(tf.type);
+    });
+    const extras = aliasModel.fields.filter((af) => !targetModel.fields.some((tf) => tf.name === af.name));
+    if (!sameShape || extras.some((f) => f.required)) continue;
+    aliases.set(alias, target);
+    models = models
+      .filter((m) => m !== aliasModel)
+      .map((m) => (m === targetModel ? { ...m, fields: [...m.fields, ...extras] } : m));
+  }
+  const pinned = new Set<string>();
+  models = models.map((m) => {
+    const fields = applySlots(
+      V74_CONSTRUCTOR_SLOTS[className(m.name)],
+      m.fields.map((field) => ({ field, name: domainPropertyName(field), optional: hasDefault(field) })),
+    );
+    if (!fields) return m;
+    pinned.add(m.name);
+    return { ...m, fields: fields.map((f) => f.field) };
+  });
+  return { models, aliases, pinned };
+}
+
+/** Wire-type identity; identical inline enums can carry different generated names. */
+function wireTypeKey(type: TypeRef): string {
+  return JSON.stringify(type, (_key, value) =>
+    value?.kind === 'enum' && value.values ? { kind: 'enum', values: value.values } : value,
+  );
+}
+
+/** Literal-typed fields always receive a default, like optional ones. */
+function hasDefault(f: Field): boolean {
+  return !f.required || f.type.kind === 'literal';
 }
 
 /**
@@ -235,7 +303,7 @@ function isEventEnvelopeModel(model: Model): boolean {
   return fieldNames.has('id') && fieldNames.has('event') && fieldNames.has('created_at') && fieldNames.has('data');
 }
 
-function emitDataClass(model: Model): GeneratedFile {
+function emitDataClass(model: Model, preserveFieldOrder = false): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
   const implementsEvent = isEventEnvelopeModel(model);
@@ -259,9 +327,10 @@ function emitDataClass(model: Model): GeneratedFile {
 
     // Emit non-defaulted params first, then defaulted — Kotlin requires
     // non-defaulted params before defaulted ones. Literal-typed fields always
-    // receive a default, so they sort after plain required fields.
-    const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
+    // receive a default, so they sort after plain required fields. A model
+    // with pinned v7.4.0 constructor slots keeps its order instead.
     const ordered = [...model.fields].sort((a, b) => {
+      if (preserveFieldOrder) return 0;
       const aDef = hasDefault(a);
       const bDef = hasDefault(b);
       if (aDef === bDef) return 0;
