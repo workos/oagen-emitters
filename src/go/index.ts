@@ -10,6 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
+import { emittableModelPredicate, generateUnions, hasUnionWrapper, prepareGoUnions } from './unions.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { generateEnums } from './enums.js';
@@ -53,11 +54,15 @@ export const goEmitter: Emitter = {
       }
       return m;
     });
-    // Go has no sum types: a discriminated-union field (e.g. ApiKey.owner)
-    // renders as its first variant, dropping fields that only exist on later
-    // variants (organization_id on the user owner). Flatten such unions into a
-    // single superset struct so every variant field survives.
-    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(goModels), ctx));
+    // Resolve the discriminated-union wrappers before anything maps a TypeRef:
+    // the flatten opt-out below and the type map both read that registry, so
+    // they can never disagree about which unions have a wrapper type.
+    const unions = prepareGoUnions(goModels, ctx.spec.enums, emittableModelPredicate(goModels, ctx));
+    // A wrapped union (e.g. ApiKey.owner) keeps its union TypeRef so unions.go
+    // can see the variants. Anything left still flattens into a superset struct
+    // — without that, fields present only on a later variant would be dropped.
+    const flatModels = flattenDiscriminatedUnionFields(goModels, { skipUnion: hasUnionWrapper });
+    return ensureTrailingNewlines([...generateModels(flatModels, ctx), ...generateUnions(unions, ctx)]);
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

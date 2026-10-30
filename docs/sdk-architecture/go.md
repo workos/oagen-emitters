@@ -51,7 +51,8 @@ Go convention preserves full-caps for common acronyms: `ID`, `URL`, `SSO`, `API`
 | `model`                      | `*ModelName` (pointer for nested) |
 | `enum`                       | `EnumType`                        |
 | `nullable`                   | `*T` (pointer)                    |
-| `union`                      | `interface{}`                     |
+| `union` (discriminated)      | `*NameUnion` (see below)          |
+| `union` (untagged)           | `interface{}`                     |
 | `map`                        | `map[string]T`                    |
 | `literal:string`             | `string`                          |
 | `literal:null`               | `interface{}`                     |
@@ -74,6 +75,45 @@ type Organization struct {
 - Optional fields: pointer types with `omitempty`
 - Nested models: always pointers
 - JSON tags: snake_case matching the API wire format
+
+## Discriminated Union Pattern
+
+Go has no sum types, so a discriminated `oneOf` on a model field becomes a
+sealed wrapper in `unions.go`: the discriminator plus one nil-able pointer per
+variant. Each arm decodes into its own struct, so a payload never lands in the
+wrong variant and no variant loses a field the others don't have.
+
+```go
+// APIKeyOwnerUnion is a discriminated union: exactly one variant pointer is set,
+// and Type says which. Use the As* accessors to read a variant safely.
+type APIKeyOwnerUnion struct {
+    Type         APIKeyOwnerUnionType `json:"type"`
+    Organization *APIKeyOwner         `json:"-"`
+    User         *UserAPIKeyOwner     `json:"-"`
+
+    raw json.RawMessage
+}
+
+type APIKeyOwnerUnionType string
+
+const (
+    APIKeyOwnerUnionTypeOrganization APIKeyOwnerUnionType = "organization"
+    APIKeyOwnerUnionTypeUser         APIKeyOwnerUnionType = "user"
+)
+
+if user, ok := key.Owner.AsUser(); ok {
+    fmt.Println(user.OrganizationID)
+}
+```
+
+- Named `{FirstVariant}Union`; the discriminator type is `{Wrapper}{Field}`
+- `UnmarshalJSON` switches on the discriminator; `MarshalJSON` encodes the set variant
+- Unexported `raw` replays an unrecognized discriminator value, so a variant this
+  SDK version predates round-trips instead of being dropped
+- Single-variant unions get a wrapper too, so adding a variant later is additive
+- **Model fields only.** Per-operation error unions are discriminated as well, but
+  the parser names every leading variant after the status code (dozens of unrelated
+  unions all want `Error400`), so those keep collapsing to their first variant
 
 ## Enum Pattern
 
@@ -331,6 +371,7 @@ workos-go/
 +-- client.go              // Client struct, HTTP request execution, retry logic
 +-- errors.go              // Error types
 +-- pagination.go          // Iterator[T]
++-- unions.go              // Sealed wrappers for discriminated unions
 +-- {service}.go           // Models, enums, params, service client for each service
 +-- {service}_test.go      // Tests for each service
 +-- testdata/
