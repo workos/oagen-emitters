@@ -511,6 +511,8 @@ function generateParamsStruct(
 
   // Body fields (if body is a model, or an object union that flattens)
   const flatFields = hasBody ? flatUnionBodyFields(op, ctx, resolvedOp) : null;
+  // Go names of the typed body fields, which Body must not be combined with.
+  let bodyGoFields: string[] = [];
   if (hasBody && (op.requestBody?.kind === 'model' || flatFields)) {
     const bodyModel = flatFields
       ? { fields: flatFields }
@@ -548,6 +550,7 @@ function generateParamsStruct(
       }
     }
     if (flatFields) {
+      bodyGoFields = [...emittedFields];
       lines.push('\t// Body is sent as-is instead of the fields above. Do not combine with them.');
       lines.push('\tBody interface{} `json:"-"`');
     }
@@ -631,16 +634,18 @@ function generateParamsStruct(
     lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
     lines.push(`func (p ${structName}) MarshalJSON() ([]byte, error) {`);
     if (flatFields) {
-      // Body replaces the typed fields; setting both is ambiguous, so reject it.
+      // Body replaces the typed body fields; setting both is ambiguous, so reject
+      // it. Query params live on the same struct and may accompany Body.
       lines.push('\tif p.Body != nil {');
-      lines.push('\t\tbody := p.Body');
-      lines.push('\t\tp.Body = nil');
-      lines.push('\t\tif !reflect.ValueOf(p).IsZero() {');
+      lines.push('\t\tv := reflect.ValueOf(p)');
+      lines.push(`\t\tfor _, name := range []string{${bodyGoFields.map((n) => goStringLiteral(n)).join(', ')}} {`);
+      lines.push('\t\t\tif !v.FieldByName(name).IsZero() {');
       lines.push(
-        `\t\t\treturn nil, fmt.Errorf("${structName}: set either Body or the individual body fields, not both")`,
+        `\t\t\t\treturn nil, fmt.Errorf("${structName}: set either Body or the individual body fields, not both")`,
       );
+      lines.push('\t\t\t}');
       lines.push('\t\t}');
-      lines.push('\t\treturn json.Marshal(body)');
+      lines.push('\t\treturn json.Marshal(p.Body)');
       lines.push('\t}');
     }
     lines.push(`\ttype Alias ${structName}`);

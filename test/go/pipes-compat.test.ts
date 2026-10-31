@@ -133,12 +133,13 @@ describe('Go Pipes compatibility', () => {
       expect(marshal).toContain(
         [
           '\tif p.Body != nil {',
-          '\t\tbody := p.Body',
-          '\t\tp.Body = nil',
-          '\t\tif !reflect.ValueOf(p).IsZero() {',
-          '\t\t\treturn nil, fmt.Errorf("PipesAuthorizeDataIntegrationParams: set either Body or the individual body fields, not both")',
+          '\t\tv := reflect.ValueOf(p)',
+          '\t\tfor _, name := range []string{"AccountDisplayName", "UserID", "OrganizationID", "ReturnTo", "ConnectionOwner", "ConnectionIntent", "ConnectedAccountID"} {',
+          '\t\t\tif !v.FieldByName(name).IsZero() {',
+          '\t\t\t\treturn nil, fmt.Errorf("PipesAuthorizeDataIntegrationParams: set either Body or the individual body fields, not both")',
+          '\t\t\t}',
           '\t\t}',
-          '\t\treturn json.Marshal(body)',
+          '\t\treturn json.Marshal(p.Body)',
           '\t}',
           '\ttype Alias PipesAuthorizeDataIntegrationParams',
           '\treturn json.Marshal(Alias(p))',
@@ -175,8 +176,83 @@ describe('Go Pipes compatibility', () => {
       // Clearing a label goes through Body, which is marshaled untouched, so
       // Body: map[string]any{"account_display_name": nil} still sends JSON null.
       const marshal = block(content, 'func (p PipesUpdateDataIntegrationAPIKeyParams) MarshalJSON()');
-      expect(marshal).toContain('\t\tbody := p.Body\n\t\tp.Body = nil\n');
-      expect(marshal).toContain('\t\treturn json.Marshal(body)\n');
+      expect(marshal).toContain('\t\treturn json.Marshal(p.Body)\n');
+    });
+
+    it('restores the client-credentials fields, including the Config map, and sends them as the body', () => {
+      const config: Field = { name: 'config', type: { kind: 'map', valueType: string }, required: false };
+      const base = [
+        label,
+        { ...label, name: 'account_identifier' },
+        field('user_id', true),
+        field('organization_id'),
+        owner('UpsertClientCredentialsRequestConnectionOwner'),
+        field('client_id', true),
+        field('client_secret', true),
+        config,
+      ];
+      const ctx = context(
+        [
+          { name: 'UpsertClientCredentialsRequest', fields: base },
+          {
+            name: 'ReauthorizeUpsertClientCredentialsRequest',
+            fields: [...base, intent('reauthorize'), field('connected_account_id', true)],
+          },
+        ],
+        [
+          {
+            ...unionOp('updateDataIntegrationClientCredentials', [
+              'UpsertClientCredentialsRequest',
+              'ReauthorizeUpsertClientCredentialsRequest',
+            ]),
+            httpMethod: 'put',
+          },
+        ],
+      );
+      const content = generateResources(ctx.spec.services, ctx)[0].content;
+      const fields = block(content, 'type PipesUpdateDataIntegrationClientCredentialsParams struct')
+        .split('\n')
+        .filter((l) => l.startsWith('\t') && !l.trim().startsWith('//'))
+        .map((l) => l.trim());
+      expect(fields).toEqual([
+        'AccountDisplayName *string `json:"account_display_name,omitempty" url:"-"`',
+        'AccountIdentifier *string `json:"account_identifier,omitempty" url:"-"`',
+        'UserID string `json:"user_id" url:"-"`',
+        'OrganizationID *string `json:"organization_id,omitempty" url:"-"`',
+        'ConnectionOwner *UpsertClientCredentialsRequestConnectionOwner `json:"connection_owner,omitempty" url:"-"`',
+        'ClientID string `json:"client_id" url:"-"`',
+        'ClientSecret string `json:"client_secret" url:"-"`',
+        // A populated Config is marshaled with the other typed fields, as in v10.5.0.
+        'Config map[string]string `json:"config,omitempty" url:"-"`',
+        'ConnectionIntent *string `json:"connection_intent,omitempty" url:"-"`',
+        'ConnectedAccountID *string `json:"connected_account_id,omitempty" url:"-"`',
+        'Body interface{} `json:"-"`',
+      ]);
+      const marshal = block(content, 'func (p PipesUpdateDataIntegrationClientCredentialsParams) MarshalJSON()');
+      expect(marshal).toContain('"ClientSecret", "Config", "ConnectionIntent"');
+      expect(marshal).toMatch(
+        /\ttype Alias PipesUpdateDataIntegrationClientCredentialsParams\n\treturn json.Marshal\(Alias\(p\)\)\n}$/,
+      );
+      const method = block(content, 'func (s *PipeService) UpdateDataIntegrationClientCredentials(');
+      expect(method).toContain('"PUT", fmt.Sprintf("/data-integrations/%s/updateDataIntegrationClientCredentials"');
+      expect(method).toContain(', nil, params, &result, opts)');
+    });
+
+    it('lets query params accompany Body: only the typed body fields count as a mix', () => {
+      const ctx = context(
+        [
+          { name: 'A', fields: [field('user_id', true)] },
+          { name: 'B', fields: [field('user_id', true), field('secret')] },
+        ],
+        [{ ...unionOp('updateApiKey', ['A', 'B']), queryParams: [{ name: 'dry_run', type: string, required: false }] }],
+      );
+      const content = generateResources(ctx.spec.services, ctx)[0].content;
+      expect(block(content, 'type PipesUpdateAPIKeyParams struct')).toContain(
+        '\tDryRun *string `url:"dry_run,omitempty" json:"-"`\n',
+      );
+      const marshal = block(content, 'func (p PipesUpdateAPIKeyParams) MarshalJSON()');
+      expect(marshal).toContain('\t\tfor _, name := range []string{"UserID", "Secret"} {\n');
+      expect(marshal).not.toContain('DryRun');
     });
 
     it('keeps the Body-only struct for unions that do not flatten unambiguously', () => {
@@ -388,6 +464,31 @@ describe('Go Pipes compatibility', () => {
       // Other aliases stay constant-free.
       expect(content).toContain('type DataIntegrationOwnership = AddAuthorizeRequestConnectionOwner\n\n//');
       expect(content).not.toMatch(/\tDataIntegrationOwnershipUser/);
+    });
+
+    it('keeps the restored constants when a scoped run freezes the alias from disk', () => {
+      const outputDir = mkdtempSync(join(tmpdir(), 'go-pipes-compat-scoped-'));
+      try {
+        writeFileSync(join(outputDir, 'enums.go'), content);
+        // A run scoped to another service freezes every out-of-scope enum block to its on-disk text.
+        const scoped: EmitterContext = {
+          ...context([], [], enums),
+          outputDir,
+          scopedServices: new Set(['Other']),
+          scopedEnumNames: new Set<string>(),
+          priorTargetManifestPaths: new Set(['enums.go']),
+        };
+        const rerun = generateEnums(enums, scoped)[0].content;
+        expect(rerun).toContain(
+          '\tCreateDataIntegrationOwnershipOrganization CreateDataIntegrationOwnership = "organization"\n',
+        );
+        expect(rerun).toContain(
+          '\tAgentInstanceCreatedDataTypeAutonomous AgentInstanceCreatedDataType = "autonomous"\n',
+        );
+        expect(rerun).toBe(content);
+      } finally {
+        rmSync(outputDir, { recursive: true, force: true });
+      }
     });
   });
 });
