@@ -11,6 +11,7 @@ import type {
 
 import { generateModels } from './models.js';
 import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { restoreRequiredVariantFields } from './compat.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
@@ -57,7 +58,9 @@ export const goEmitter: Emitter = {
     // renders as its first variant, dropping fields that only exist on later
     // variants (organization_id on the user owner). Flatten such unions into a
     // single superset struct so every variant field survives.
-    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(goModels), ctx));
+    return ensureTrailingNewlines(
+      generateModels(flattenDiscriminatedUnionFields(restoreRequiredVariantFields(goModels)), ctx),
+    );
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {

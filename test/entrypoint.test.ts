@@ -1,20 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import * as mod from '../src/index.js';
 
 /**
  * Verify the public entrypoint exports the plugin bundle
  * and all intended direct symbols (emitters + extractors).
  */
 describe('public entrypoint (@workos/oagen-emitters)', () => {
-  it('exports workosEmittersPlugin', async () => {
-    const mod = await import('../src/index.js');
+  it('exports workosEmittersPlugin', () => {
     expect(mod.workosEmittersPlugin).toBeDefined();
     expect(mod.workosEmittersPlugin.emitters).toBeDefined();
     expect(mod.workosEmittersPlugin.extractors).toBeDefined();
     expect(mod.workosEmittersPlugin.smokeRunners).toBeDefined();
   });
 
-  it('exports all individual emitters', async () => {
-    const mod = await import('../src/index.js');
+  it('exports all individual emitters', () => {
     const expectedEmitters = [
       'nodeEmitter',
       'pythonEmitter',
@@ -34,8 +33,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
     }
   });
 
-  it('exports all individual extractors', async () => {
-    const mod = await import('../src/index.js');
+  it('exports all individual extractors', () => {
     const expectedExtractors = [
       'nodeExtractor',
       'rubyExtractor',
@@ -54,8 +52,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
     }
   });
 
-  it('plugin bundle emitters match individual emitter exports', async () => {
-    const mod = await import('../src/index.js');
+  it('plugin bundle emitters match individual emitter exports', () => {
     const pluginLanguages = mod.workosEmittersPlugin.emitters!.map((e) => e.language);
     const directEmitters = [
       mod.nodeEmitter,
@@ -76,8 +73,7 @@ describe('public entrypoint (@workos/oagen-emitters)', () => {
     expect(pluginLanguages).toHaveLength(directEmitters.length);
   });
 
-  it('plugin bundle extractors match individual extractor exports', async () => {
-    const mod = await import('../src/index.js');
+  it('plugin bundle extractors match individual extractor exports', () => {
     const pluginLanguages = mod.workosEmittersPlugin.extractors!.map((e) => e.language);
     const directExtractors = [
       mod.nodeExtractor,

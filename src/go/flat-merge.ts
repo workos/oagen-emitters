@@ -69,7 +69,7 @@ export function readPriorFile(relPath: string, ctx: EmitterContext): string | nu
  * comment). Used to recover the per-type "present before" signal a scoped run
  * needs. Recognizes the exact shapes the Go emitter produces:
  *   - `type Name struct { ... }`        (brace-balanced)
- *   - `type Name = Other`               (single-line alias)
+ *   - `type Name = Other`               (single-line alias, optionally + `const ( ... )`)
  *   - `type Name string` + `const ( ... )`  (string enum)
  *   - `type ( A = X\n B = X )`          (batched alias block — declares many)
  * The leading `package` clause and any standalone trailing `const (...)` block
@@ -144,9 +144,17 @@ export function parseFlatGoBlocks(content: string): {
       }
       blocks.push({ names: [name], text: lines.slice(start, i).join('\n') });
     } else if (/^type\s+(\w+)\s*=/.test(trimmed)) {
-      // Single-line alias: `type Name = Other`.
+      // Single-line alias: `type Name = Other`, possibly followed by the
+      // `const ( ... )` block a compat alias enum keeps (see compat.ts).
       const name = trimmed.match(/^type\s+(\w+)/)![1];
       i++;
+      let j = i;
+      while (j < lines.length && lines[j].trim() === '') j++;
+      if (j < lines.length && lines[j].trim() === 'const (') {
+        i = j;
+        while (i < lines.length && lines[i].trim() !== ')') i++;
+        i++; // consume ')'
+      }
       blocks.push({ names: [name], text: lines.slice(start, i).join('\n') });
     } else {
       // Unrecognized top-level construct (e.g. a standalone `const (...)`).

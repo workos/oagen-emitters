@@ -34,6 +34,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { lowerFirstForDoc, fieldDocComment, avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { unionBodyFields } from './request-body.js';
 
 /**
  * Return path params sorted by their first occurrence in the URL template.
@@ -89,8 +90,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   const resolvedLookup = buildResolvedLookup(ctx);
 
   // Determine which imports are needed
+  const hasFlatUnionBody = (op: Operation) => flatUnionBodyFields(op, ctx, lookupResolved(op, resolvedLookup)) !== null;
   const needsFmt = operations.some(
-    (op) => op.pathParams.length > 0 || opHasClearableBodyField(op, ctx, resolvedLookup),
+    (op) => op.pathParams.length > 0 || opHasClearableBodyField(op, ctx, resolvedLookup) || hasFlatUnionBody(op),
   );
   const needsNetUrl = operations.some((op) => {
     if (op.pathParams.length > 0) return true;
@@ -101,7 +103,10 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
     return false;
   });
   const needsStrings = needsStringsImport(operations, resolvedLookup);
-  const needsJson = operations.some((op) => hasBodyGroups(op) || opHasClearableBodyField(op, ctx, resolvedLookup));
+  const needsJson = operations.some(
+    (op) => hasBodyGroups(op) || opHasClearableBodyField(op, ctx, resolvedLookup) || hasFlatUnionBody(op),
+  );
+  const needsReflect = operations.some(hasFlatUnionBody);
   // context is needed only for methods that make HTTP calls. URL-builder ops
   // don't take ctx, so a file that contains *only* URL builders would have
   // an unused import.
@@ -124,6 +129,9 @@ function generateServiceFile(mountName: string, operations: Operation[], ctx: Em
   }
   if (needsNetUrl) {
     lines.push('\t"net/url"');
+  }
+  if (needsReflect) {
+    lines.push('\t"reflect"');
   }
   if (needsStrings) {
     lines.push('\t"strings"');
@@ -212,6 +220,11 @@ export function paramsStructName(mountName: string, method: string): string {
  */
 function hiddenParamsBodyStructName(method: string): string {
   return `${unexportedName(method)}Body`;
+}
+
+/** Flat params fields for an object-union body, unless hidden params take over the body. */
+function flatUnionBodyFields(op: Operation, ctx: EmitterContext, resolvedOp?: ResolvedOperation) {
+  return resolvedOp?.wrappers?.length || hasHiddenParams(resolvedOp) ? null : unionBodyFields(op, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -496,9 +509,14 @@ function generateParamsStruct(
   // cleared (sent as JSON `null`) by listing them in the struct's NullFields.
   const clearableBodyFieldNames: string[] = [];
 
-  // Body fields (if body is a model)
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
+  // Body fields (if body is a model, or an object union that flattens)
+  const flatFields = hasBody ? flatUnionBodyFields(op, ctx, resolvedOp) : null;
+  // Go names of the typed body fields, which Body must not be combined with.
+  let bodyGoFields: string[] = [];
+  if (hasBody && (op.requestBody?.kind === 'model' || flatFields)) {
+    const bodyModel = flatFields
+      ? { fields: flatFields }
+      : ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
     if (bodyModel) {
       for (const field of bodyModel.fields) {
         if (hidden.has(field.name)) continue;
@@ -507,7 +525,9 @@ function generateParamsStruct(
         const goField = domainFieldName(field);
         if (emittedFields.has(goField)) continue;
         emittedFields.add(goField);
-        if (!field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
+        // Flattened unions clear fields through Body instead: a NullFields slice
+        // would make the restored params struct non-comparable.
+        if (!flatFields && !field.required && field.type.kind === 'nullable') clearableBodyFieldNames.push(field.name);
         const isOptional = !field.required;
         const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
         const jsonTag = field.name + (field.required ? '' : ',omitempty');
@@ -528,6 +548,11 @@ function generateParamsStruct(
         }
         lines.push(`\t${goField} ${goType} ${goStructTag({ json: jsonTag, url: '-' })}`);
       }
+    }
+    if (flatFields) {
+      bodyGoFields = [...emittedFields];
+      lines.push('\t// Body is sent as-is instead of the fields above. Do not combine with them.');
+      lines.push('\tBody interface{} `json:"-"`');
     }
   } else if (hasBody) {
     // Non-model body (generic)
@@ -604,11 +629,31 @@ function generateParamsStruct(
   // explicitly cleared via NullFields.
   const bodyGroupList = (op.parameterGroups ?? []).filter((g) => isBodyGroup(g, op));
   const hasNullFields = clearableBodyFieldNames.length > 0;
-  if (bodyGroupList.length > 0 || hasNullFields) {
+  if (bodyGroupList.length > 0 || hasNullFields || flatFields) {
     lines.push('');
     lines.push(`// MarshalJSON implements json.Marshaler for ${structName}.`);
     lines.push(`func (p ${structName}) MarshalJSON() ([]byte, error) {`);
+    if (flatFields) {
+      // Body replaces the typed body fields; setting both is ambiguous, so reject
+      // it. Query params live on the same struct and may accompany Body.
+      lines.push('\tif p.Body != nil {');
+      lines.push('\t\tv := reflect.ValueOf(p)');
+      lines.push(`\t\tfor _, name := range []string{${bodyGoFields.map((n) => goStringLiteral(n)).join(', ')}} {`);
+      lines.push('\t\t\tif !v.FieldByName(name).IsZero() {');
+      lines.push(
+        `\t\t\t\treturn nil, fmt.Errorf("${structName}: set either Body or the individual body fields, not both")`,
+      );
+      lines.push('\t\t\t}');
+      lines.push('\t\t}');
+      lines.push('\t\treturn json.Marshal(p.Body)');
+      lines.push('\t}');
+    }
     lines.push(`\ttype Alias ${structName}`);
+    if (bodyGroupList.length === 0 && !hasNullFields) {
+      lines.push('\treturn json.Marshal(Alias(p))');
+      lines.push('}');
+      return lines.join('\n');
+    }
     lines.push('\tdata, err := json.Marshal(Alias(p))');
     lines.push('\tif err != nil {');
     lines.push('\t\treturn nil, err');
@@ -678,7 +723,9 @@ function generateMethod(
 
   const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
   const paramsType = hasParams ? `*${paramsStructName(mountName, method)}` : null;
-  const bodyArg = hasBody && hasParams ? bodyArgument(op) : 'nil';
+  // Flattened union params marshal themselves, choosing between Body and the typed fields.
+  const bodyArg =
+    hasBody && hasParams ? (flatUnionBodyFields(op, _ctx, resolvedOp) ? 'params' : bodyArgument(op)) : 'nil';
   const hasHidden = hasHiddenParams(resolvedOp);
   const isGet = op.httpMethod.toLowerCase() === 'get';
   const isUrlBuilder = resolvedOp?.urlBuilder ?? false;

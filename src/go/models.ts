@@ -13,6 +13,7 @@ import {
   preferLiveCanonical,
 } from '../shared/resolved-ops.js';
 import { reconcileFlatBlocks, readPriorFile, parseFlatGoBlocks, type NamedBlock } from './flat-merge.js';
+import { compatModelAliases, foldCompatModels } from './compat.js';
 
 // Import and re-export shared model detection utilities
 import {
@@ -88,8 +89,9 @@ function collectRequestBodyOnlyModelNames(services: Service[], models: Model[]):
  * Generate Go struct definitions from IR Models.
  * All models go into a single models.go file for the flat package.
  */
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-  if (models.length === 0) return [];
+export function generateModels(specModels: Model[], ctx: EmitterContext): GeneratedFile[] {
+  if (specModels.length === 0) return [];
+  const { models, aliases: compatAliases } = foldCompatModels(specModels, ctx.spec.enums);
 
   const files: GeneratedFile[] = [];
   const lines: string[] = [];
@@ -146,6 +148,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (let i = 1; i < sorted.length; i++) {
       aliasOf.set(sorted[i], canonical);
     }
+  }
+  for (const [alias, into] of compatAliases) {
+    if (modelHashMap.has(alias) && modelHashMap.has(into) && !aliasOf.has(alias)) aliasOf.set(alias, into);
   }
 
   // The structural-dedup canonical is chosen alphabetically, independent of
@@ -276,6 +281,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       names: [structName],
       text: blockLines.join('\n'),
       inScope: isModelInScope(model.name, ctx) || forcedCanonicals.has(model.name),
+    });
+  }
+
+  for (const { alias, target } of compatModelAliases(models)) {
+    if (!modelHashMap.has(target)) continue;
+    const aliasType = className(alias);
+    modelBlocks.push({
+      names: [aliasType],
+      text: [`// ${aliasType} is an alias for ${className(target)}.`, `type ${aliasType} = ${className(target)}`].join(
+        '\n',
+      ),
+      inScope: isModelInScope(target, ctx),
     });
   }
 
