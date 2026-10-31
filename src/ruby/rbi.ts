@@ -336,7 +336,12 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       defParams.push('request_options: {}');
 
       // Return type
-      const retType = mapSorbetReturnType(op.response, listWrapperModels, modelNames);
+      // Paginated endpoints whose IR response is a bare array still return a
+      // ListStruct at runtime (see emitResponseHandling in ruby/resources.ts).
+      const retType =
+        op.response.kind === 'array' && op.pagination
+          ? 'WorkOS::Types::ListStruct'
+          : mapSorbetReturnType(op.response, listWrapperModels, modelNames);
 
       lines.push('    sig do');
       lines.push('      params(');
