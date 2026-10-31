@@ -14,6 +14,7 @@ const OLD_METHOD_NAMES: Record<string, string> = {
   dataIntegrationsControllerCreateDataIntegration: 'createDataIntegration',
   dataIntegrationsControllerUpsertApiKey: 'updateDataIntegrationApiKey',
   dataIntegrationsControllerGetDataIntegrationAuthorizeUrl: 'authorizeDataIntegration',
+  dataIntegrationsControllerUpsertClientCredentials: 'updateDataIntegrationClientCredentials',
 };
 beforeAll(async () => {
   spec = await parseSpec(resolve('test/fixtures/dotnet-pipes-compat.yaml'));
@@ -55,6 +56,16 @@ describe('dotnet union request bodies', () => {
       OrganizationId: 'public string? OrganizationId { get; set; }',
       ConnectionOwner: 'public CreateDataIntegrationOwnership? ConnectionOwner { get; set; }',
       Secret: 'public string Secret { get; set; } = default!;',
+      ConnectionIntent: 'public string? ConnectionIntent { get; set; }',
+      ConnectedAccountId: 'public string? ConnectedAccountId { get; set; }',
+    });
+    expect(properties(options, 'PipesUpdateDataIntegrationClientCredentialsOptions')).toEqual({
+      UserId: 'public string UserId { get; set; } = default!;',
+      OrganizationId: 'public string? OrganizationId { get; set; }',
+      ConnectionOwner: 'public CreateDataIntegrationOwnership? ConnectionOwner { get; set; }',
+      ClientId: 'public string ClientId { get; set; } = default!;',
+      ClientSecret: 'public string ClientSecret { get; set; } = default!;',
+      Config: 'public Dictionary<string, string>? Config { get; set; }',
       ConnectionIntent: 'public string? ConnectionIntent { get; set; }',
       ConnectedAccountId: 'public string? ConnectedAccountId { get; set; }',
     });
@@ -157,6 +168,35 @@ describe('dotnet 6.4.0 enum names', () => {
     expect(resolveEnumName('AgentBlueprintCreatedDataInvocableAsInstanceTypes', enums)).toBe(
       'AgentInstanceCreatedDataType',
     );
+  });
+
+  it('writes the preserved canonical when a scoped run only covers one of its aliases', () => {
+    const instanceTypes: Enum[] = [
+      { name: 'AgentBlueprintCreatedDataInvocableAsInstanceTypes', values: values('delegated', 'autonomous') },
+      { name: 'AgentInstanceCreatedDataType', values: values('delegated', 'autonomous') },
+    ];
+    const models: Model[] = [
+      {
+        name: 'AgentBlueprintCreatedDataInvocableAs',
+        fields: [
+          {
+            name: 'instance_types',
+            type: { kind: 'array', items: { kind: 'enum', name: instanceTypes[0].name } },
+            required: true,
+          },
+        ],
+      },
+    ];
+    const s: ApiSpec = { ...spec, services: [], models, enums: instanceTypes };
+    const paths = dotnetEmitter
+      .generateEnums(instanceTypes, {
+        ...context(s),
+        scopedServices: new Set(['Agents']),
+        scopedModelNames: new Set([models[0].name]),
+        scopedEnumNames: new Set([instanceTypes[0].name]),
+      })
+      .map((f) => f.path);
+    expect(paths).toEqual(['src/WorkOS.net/Enums/AgentInstanceCreatedDataType.cs']);
   });
 
   it('falls back to the alphabetical canonical once the preserved enum changes shape', () => {
