@@ -153,8 +153,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     // FR-1.4: write the per-enum FILE only when in scope. .NET uses a flat
     // Enums/ directory with C# namespaces (no barrel/index), so an
-    // out-of-scope enum left untouched on disk stays referenceable.
-    if (isEnumInScope(enumDef.name, ctx)) {
+    // out-of-scope enum left untouched on disk stays referenceable. An in-scope
+    // alias's references are rewritten to this canonical, so write it then too.
+    const canonicalInScope =
+      isEnumInScope(enumDef.name, ctx) ||
+      [...aliasOf].some(([alias, canonical]) => canonical === enumDef.name && isEnumInScope(alias, ctx));
+    if (canonicalInScope) {
       files.push({
         path: `Enums/${typeName}.cs`,
         content: lines.join('\n'),

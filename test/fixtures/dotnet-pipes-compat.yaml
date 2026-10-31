@@ -66,6 +66,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectedAccount'
+  /data-integrations/{slug}/client-credentials:
+    put:
+      operationId: DataIntegrationsController_upsertClientCredentials
+      tags: [pipes]
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                  required: [user_id, client_id, client_secret]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+                  required: [user_id, client_id, client_secret, connection_intent, connected_account_id]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                    connected_account_id: { type: string }
+                  required: [user_id, client_id, client_secret, connected_account_id]
+                  additionalProperties: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectedAccount'
   /data-integrations/{slug}/authorize:
     post:
       operationId: DataIntegrationsController_getDataIntegrationAuthorizeUrl
