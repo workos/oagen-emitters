@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: .NET Pipes compatibility fixture
+  version: 1.0.0
+paths:
+  /data-integrations:
+    post:
+      operationId: DataIntegrationsController_createDataIntegration
+      tags: [pipes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDataIntegration'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataIntegration'
+  /data-integrations/{slug}/api-key:
+    put:
+      operationId: DataIntegrationsController_upsertApiKey
+      tags: [pipes]
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    secret: { type: string }
+                  required: [user_id, secret]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    secret: { type: string }
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+                  required: [user_id, secret, connection_intent, connected_account_id]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    secret: { type: string }
+                    connected_account_id: { type: string }
+                  required: [user_id, secret, connected_account_id]
+                  additionalProperties: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectedAccount'
+  /data-integrations/{slug}/client-credentials:
+    put:
+      operationId: DataIntegrationsController_upsertClientCredentials
+      tags: [pipes]
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                  required: [user_id, client_id, client_secret]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+                  required: [user_id, client_id, client_secret, connection_intent, connected_account_id]
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    organization_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    client_id: { type: string }
+                    client_secret: { type: string }
+                    config: { type: object, additionalProperties: { type: string } }
+                    connected_account_id: { type: string }
+                  required: [user_id, client_id, client_secret, connected_account_id]
+                  additionalProperties: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectedAccount'
+  /data-integrations/{slug}/authorize:
+    post:
+      operationId: DataIntegrationsController_getDataIntegrationAuthorizeUrl
+      tags: [pipes]
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    return_to: { type: string }
+                  required: [user_id]
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    return_to: { type: string }
+                    connection_intent: { type: string, const: add }
+                  required: [user_id, connection_intent]
+                - type: object
+                  properties:
+                    user_id: { type: string }
+                    connection_owner: { type: string, enum: [user, organization] }
+                    return_to: { type: string }
+                    connection_intent: { type: string, const: reauthorize }
+                    connected_account_id: { type: string }
+                  required: [user_id, connection_intent, connected_account_id]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string }
+                required: [url]
+components:
+  schemas:
+    CreateDataIntegration:
+      type: object
+      properties:
+        provider: { type: string }
+        ownership: { type: string, enum: [user, organization] }
+      required: [provider]
+    DataIntegration:
+      type: object
+      properties:
+        id: { type: string }
+        ownership: { type: string, enum: [user, organization] }
+      required: [id, ownership]
+    ConnectedAccount:
+      type: object
+      properties:
+        id: { type: string }
+      required: [id]

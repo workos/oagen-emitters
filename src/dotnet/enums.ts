@@ -13,11 +13,13 @@ import {
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
+import { preferredEnumCanonical } from './compat.js';
 
 /**
  * Generate C# enum definitions from IR Enum definitions.
  * Each enum becomes a separate .cs file. Structurally-identical enums are
- * deduplicated: only the canonical (alphabetically-first) name is emitted,
+ * deduplicated: only the canonical (alphabetically-first, unless compat.ts
+ * preserves a 6.4.0 name) name is emitted,
  * and every reference to a duplicate enum is rewritten to the canonical one
  * by `mapTypeRef` via `setEnumAliases`.
  */
@@ -151,8 +153,12 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     // FR-1.4: write the per-enum FILE only when in scope. .NET uses a flat
     // Enums/ directory with C# namespaces (no barrel/index), so an
-    // out-of-scope enum left untouched on disk stays referenceable.
-    if (isEnumInScope(enumDef.name, ctx)) {
+    // out-of-scope enum left untouched on disk stays referenceable. An in-scope
+    // alias's references are rewritten to this canonical, so write it then too.
+    const canonicalInScope =
+      isEnumInScope(enumDef.name, ctx) ||
+      [...aliasOf].some(([alias, canonical]) => canonical === enumDef.name && isEnumInScope(alias, ctx));
+    if (canonicalInScope) {
       files.push({
         path: `Enums/${typeName}.cs`,
         content: lines.join('\n'),
@@ -289,12 +295,12 @@ function collectEnumAliasOf(enums: Enum[]): Map<string, string> {
   }
 
   const aliasOf = new Map<string, string>();
-  for (const [, names] of hashGroups) {
+  for (const [hash, names] of hashGroups) {
     if (names.length <= 1) continue;
     const sorted = [...names].sort();
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i], canonical);
+    const canonical = preferredEnumCanonical(names, hash.split('|')) ?? sorted[0];
+    for (const name of sorted) {
+      if (name !== canonical) aliasOf.set(name, canonical);
     }
   }
   return aliasOf;
