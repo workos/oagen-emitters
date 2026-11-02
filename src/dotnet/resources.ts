@@ -47,7 +47,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
-import { resolveRequestBodyModel } from './request-body.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { bearerOverrideScheme } from '../shared/security.js';
 
 /**
@@ -616,7 +616,7 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     // Body fields
     if (hasBody) {
-      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
+      const bodyModel = resolveRequestBodyModel(op, ctx.spec.models, '.NET');
       if (bodyModel) {
         for (const field of bodyModel.fields) {
           if (hidden.has(field.name)) continue;

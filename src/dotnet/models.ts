@@ -108,9 +108,8 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
   // Variant models skip inherited fields and use `new` for type-divergent ones.
   const baseFieldLookup = new Map<string, Map<string, string>>();
   if (discCtx) {
-    const bases = new Set([...discCtx.discriminatorBases, ...discCtx.variantToBase.values()]);
     for (const model of models) {
-      if (bases.has(model.name)) {
+      if (discCtx.discriminatorBases.has(model.name)) {
         const baseClassName = modelClassName(model.name);
         const fieldMap = new Map<string, string>();
         for (const field of model.fields) {
