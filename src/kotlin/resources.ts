@@ -47,8 +47,9 @@ import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
 import { buildKotlinPathExpression, KOTLIN_PATH_ENCODE_IMPORT } from './path-expression.js';
 import { emitSuspendVariant, SUSPEND_IMPORTS, type SuspendParam } from './suspend.js';
-import { resolveRequestBodyModel } from './request-body.js';
-import { applySlots, V74_METHOD_SLOTS } from './v74-compat.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/baseline-params.js';
+import type { ApiParam } from '@workos/oagen/compat';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -301,6 +302,15 @@ function resolveServiceDescription(ctx: EmitterContext, _mountName: string, oper
 }
 
 /**
+ * The shipped signature of `apiClass.method` from the api-surface baseline,
+ * when the run was given one. Resources order parameters from it and tests
+ * call such methods by name.
+ */
+export function methodBaselineParams(ctx: EmitterContext, apiClass: string, method: string): ApiParam[] | undefined {
+  return ctx.apiSurface?.classes[apiClass]?.methods[method]?.[0]?.params;
+}
+
+/**
  * Render a single SDK method for an operation.
  */
 function renderMethod(
@@ -323,7 +333,7 @@ function renderMethod(
   const queryParams = op.queryParams
     .filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name))
     .map(promoteParameterType);
-  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models, 'Kotlin');
   const bodyFields = bodyModel
     ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name)).map(promoteFieldType)
     : [];
@@ -430,13 +440,24 @@ function renderMethod(
   // Per-request options trailer (always optional)
   pushParam('    requestOptions: RequestOptions? = null', 'requestOptions');
 
-  // Keep v7.4.0 positional slots; every newer parameter goes after them.
+  // Keep the shipped signature's positional slots (the api-surface baseline
+  // sdk-generate.sh passes for a live checkout); every newer parameter goes
+  // after them, so a positional call written against the previous release
+  // keeps its meaning or fails to compile.
   const apiClass = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
-  const preserved = applySlots(
-    V74_METHOD_SLOTS[`${apiClass}.${method}`],
+  suspendParams = preserveParameterOrder(
     suspendParams.map((p) => ({ ...p, optional: p.decl.includes(' = ') })),
-  );
-  if (preserved) suspendParams = preserved.map(({ decl, name }) => ({ decl, name }));
+    methodBaselineParams(ctx, apiClass, method),
+    {
+      language: 'kotlin',
+      label: `${apiClass}.${method}`,
+      // Keep previously-required arguments required: a new default must not move their slots.
+      makeRequired: (p) => ({ ...p, optional: false, decl: p.decl.replace(/ = .*$/, '') }),
+      // Kotlin accepts a required parameter after defaulted ones: callers name
+      // it or pass every argument, and `@JvmOverloads` is dropped below.
+      allowRequiredAfterOptional: true,
+    },
+  ).params.map(({ decl, name }) => ({ decl, name }));
   const params = suspendParams.map((p) => p.decl);
   // `@JvmOverloads` drops trailing defaults one by one, so a required
   // parameter after a defaulted one would let Java bind an old trailing

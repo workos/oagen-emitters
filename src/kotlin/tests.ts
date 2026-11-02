@@ -42,9 +42,8 @@ import {
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
-import { orderedVariantParameters } from './resources.js';
-import { resolveRequestBodyModel } from './request-body.js';
-import { V74_METHOD_SLOTS } from './v74-compat.js';
+import { methodBaselineParams, orderedVariantParameters } from './resources.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { resolveKotlinWrapperParams } from './wrappers.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
@@ -319,8 +318,9 @@ function buildOperationTest(
   //   pathParams ++ requiredQuery ++ requiredGroups ++ requiredBodyFields ++ optionalGroups
   const imports = new Set<string>();
   const argParts: string[] = [];
-  // Kotlin parameter name per positional arg; v7.4.0-pinned signatures
-  // reorder parameters, so their tests pass every argument by name.
+  // Kotlin parameter name per positional arg; a signature ordered from the
+  // api-surface baseline may differ from the schema order, so its test passes
+  // every argument by name.
   const argNames: string[] = [];
   const requiredBodyPaths: string[] = [];
   const requiredQueryAssertions: { name: string; valueRegex: string }[] = [];
@@ -335,7 +335,7 @@ function buildOperationTest(
   const queryFields = op.queryParams.filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name));
   const sortedQuery = [...queryFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   const sharedQueryBodyParams = new Set<string>();
-  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models);
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models, 'Kotlin');
   for (const qp of queryFields) {
     const matchingBodyField = bodyModel?.fields.find((field) => field.name === qp.name);
     if (matchingBodyField && mapTypeRef(qp.type) === mapTypeRef(matchingBodyField.type)) {
@@ -451,7 +451,7 @@ function buildOperationTest(
     method,
     httpMethod: op.httpMethod.toLowerCase(),
     pathForWireMock: op.path.replace(/\{[^}]+\}/g, 'sample-arg'),
-    callArgs: (V74_METHOD_SLOTS[`${apiCls}.${method}`]
+    callArgs: (methodBaselineParams(ctx, apiCls, method)
       ? argParts.map((arg, i) => (argNames[i] ? `${argNames[i]} = ${arg}` : arg))
       : argParts
     ).join(', '),
