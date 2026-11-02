@@ -4,7 +4,7 @@ import { parseSpec, type ApiSpec, type EmitterContext } from '@workos/oagen';
 import type { ApiSurface } from '@workos/oagen/compat';
 import { generateResources } from '../../src/kotlin/resources.js';
 import { generateEnums } from '../../src/kotlin/enums.js';
-import { generateTests } from '../../src/kotlin/tests.js';
+import { baselineReordersArgs, generateTests } from '../../src/kotlin/tests.js';
 
 const MOUNTS: Record<string, string> = {
   DataIntegrations: 'Pipes',
@@ -367,6 +367,21 @@ describe('kotlin request contracts', () => {
     op.pathParams.reverse(); // spec order (slug, user_id); the path is /users/{user_id}/connected_accounts/{slug}
     const pipesTest = generateTests(input, context(input)).find((f) => f.path.endsWith('/PipesTest.kt'))!.content;
     expect(pipesTest).toContain('api().createUserConnectedAccount("sample-arg", "sample-arg")');
+  });
+
+  it('names every test argument when a parameter group is passed under a baseline', () => {
+    const baseline = (...names: string[]) =>
+      names.map((n) => ({ name: n.replace(/\?$/, ''), optional: n.endsWith('?'), type: 'Any' }));
+    // A group the schema now requires is built ahead of the positional body argument, but the
+    // baseline keeps it in a later slot: `create(createUserPassword = ..., "sample-arg")` would not compile.
+    expect(baselineReordersArgs(baseline('email', 'createUserPassword?', 'requestOptions?'), ['', 'email'])).toBe(true);
+    // Positional leading slots that match the baseline stay positional; a trailing named group is fine
+    // on its own, but any group under a baseline names everything to stay valid.
+    expect(baselineReordersArgs(baseline('slug', 'userId', 'requestOptions?'), ['slug', 'userId'])).toBe(false);
+    expect(baselineReordersArgs(baseline('slug', 'userId', 'requestOptions?'), ['slug', 'userId', ''])).toBe(true);
+    expect(baselineReordersArgs(baseline('userId', 'slug', 'requestOptions?'), ['slug', 'userId'])).toBe(true);
+    expect(baselineReordersArgs(baseline('slug', 'requestOptions?'), ['slug', 'userId'])).toBe(true);
+    expect(baselineReordersArgs(undefined, ['', 'email'])).toBe(false);
   });
 
   it('refuses a request body it cannot represent instead of sending {}', () => {

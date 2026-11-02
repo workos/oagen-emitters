@@ -303,15 +303,19 @@ function generateServiceTestClass(
 
 /**
  * Whether a positional call passing `argNames` (the schema-order names a
- * generated test supplies, `''` for an argument already passed by name) would
- * bind differently under the baseline signature: the names must be exactly
- * its leading parameters. A passed name the baseline lacks sits after
- * `requestOptions`, and a different relative order binds the wrong slots, so
- * such a test passes every argument by name.
+ * generated test supplies, `''` for a parameter-group argument it already
+ * passes by name) would bind differently under the baseline signature. The
+ * positional names must be exactly the baseline's leading parameters: a name
+ * the baseline lacks sits after `requestOptions`, and a different relative
+ * order binds the wrong slots. A named group argument is only valid ahead of
+ * positional ones when it sits in its own slot, which the baseline may have
+ * moved, so any group makes the test name every argument. Such a test passes
+ * every argument by name.
  */
-function baselineReordersArgs(baseline: ApiParam[] | undefined, argNames: string[]): boolean {
+export function baselineReordersArgs(baseline: ApiParam[] | undefined, argNames: string[]): boolean {
   if (!baseline) return false;
-  return argNames.filter(Boolean).some((name, i) => baseline[i]?.name !== name);
+  if (argNames.includes('')) return true;
+  return argNames.some((name, i) => baseline[i]?.name !== name);
 }
 
 function buildOperationTest(
