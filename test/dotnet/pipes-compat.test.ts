@@ -132,7 +132,12 @@ describe('dotnet union request bodies', () => {
         ],
       },
     };
-    expect(() => dotnetEmitter.generateResources([{ name: 'Pipes', operations: [operation] }], context({ ...spec, models: conflicting }))).toThrow(
+    expect(() =>
+      dotnetEmitter.generateResources(
+        [{ name: 'Pipes', operations: [operation] }],
+        context({ ...spec, models: conflicting }),
+      ),
+    ).toThrow(
       /^\.NET PUT \/data-integrations\/\{slug\}\/api-key: unsupported request body \(conflicting types for x\)/,
     );
   });
