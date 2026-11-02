@@ -1,9 +1,22 @@
 import type { Field, Model, Operation, TypeRef } from '@workos/oagen';
 
-/** Project object alternatives onto PHP's named inputs without changing response models. */
-export function resolveRequestBodyModel(op: Operation, models: readonly Model[]): Model | null {
+/**
+ * Resolve an operation's request body to the model whose fields become the
+ * method's named inputs (PHP and Kotlin parameters, .NET options properties).
+ *
+ * A `oneOf`/`anyOf` of object alternatives is projected onto one synthetic
+ * model: every field of every alternative is kept, a field is required only
+ * when every alternative requires it, and differing literal selectors
+ * (`add` / `reauthorize`) widen to a union of those literals. Response models
+ * are never touched.
+ *
+ * A body shape this cannot represent stops generation with an error naming
+ * the operation, instead of silently emitting a method that always sends `{}`.
+ * `language` prefixes that error (`PHP`, `Kotlin`, `.NET`).
+ */
+export function resolveRequestBodyModel(op: Operation, models: readonly Model[], language: string): Model | null {
   function unsupported(reason: string): never {
-    throw new Error(`PHP ${op.httpMethod.toUpperCase()} ${op.path}: unsupported request body (${reason})`);
+    throw new Error(`${language} ${op.httpMethod.toUpperCase()} ${op.path}: unsupported request body (${reason})`);
   }
 
   function resolve(ref: TypeRef): Model {
