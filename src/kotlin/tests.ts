@@ -42,8 +42,9 @@ import {
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
 import { isHandwrittenOverride } from './overrides.js';
-import { methodBaselineParams, orderedVariantParameters } from './resources.js';
+import { methodBaselineParams, orderedVariantParameters, sortPathParamsByTemplateOrder } from './resources.js';
 import { resolveRequestBodyModel } from '../shared/request-body.js';
+import type { ApiParam } from '@workos/oagen/compat';
 import { resolveKotlinWrapperParams } from './wrappers.js';
 
 const TEST_PREFIX = 'src/test/kotlin/';
@@ -300,6 +301,19 @@ function generateServiceTestClass(
   return lines.join('\n');
 }
 
+/**
+ * Whether a positional call passing `argNames` (the schema-order names a
+ * generated test supplies, `''` for an argument already passed by name) would
+ * bind differently under the baseline signature: the names must be exactly
+ * its leading parameters. A passed name the baseline lacks sits after
+ * `requestOptions`, and a different relative order binds the wrong slots, so
+ * such a test passes every argument by name.
+ */
+function baselineReordersArgs(baseline: ApiParam[] | undefined, argNames: string[]): boolean {
+  if (!baseline) return false;
+  return argNames.filter(Boolean).some((name, i) => baseline[i]?.name !== name);
+}
+
 function buildOperationTest(
   op: Operation,
   resolved: ResolvedOperation | undefined,
@@ -325,7 +339,9 @@ function buildOperationTest(
   const requiredBodyPaths: string[] = [];
   const requiredQueryAssertions: { name: string; valueRegex: string }[] = [];
 
-  for (const pp of op.pathParams) {
+  // Path arguments in the order the method declares them: URL template order
+  // (see renderMethod), which the spec's parameter list need not follow.
+  for (const pp of sortPathParamsByTemplateOrder(op)) {
     argParts.push(ktStringLiteral('sample-arg'));
     argNames.push(propertyName(pp.name));
   }
@@ -451,7 +467,7 @@ function buildOperationTest(
     method,
     httpMethod: op.httpMethod.toLowerCase(),
     pathForWireMock: op.path.replace(/\{[^}]+\}/g, 'sample-arg'),
-    callArgs: (methodBaselineParams(ctx, apiCls, method)
+    callArgs: (baselineReordersArgs(methodBaselineParams(ctx, apiCls, method), argNames)
       ? argParts.map((arg, i) => (argNames[i] ? `${argNames[i]} = ${arg}` : arg))
       : argParts
     ).join(', '),

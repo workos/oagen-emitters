@@ -296,11 +296,30 @@ describe('kotlin request contracts', () => {
     expect(link).not.toContain('@JvmOverloads');
   });
 
-  it('keeps a baseline-required parameter required when the schema made it optional', () => {
+  it('keeps the slot of a baseline-required parameter the schema made optional, with its new default', () => {
     const optional = withField(spec, 'GenerateLinkRequest', 'organization', { required: false });
     const link = declaration(source('AdminPortal', context(optional)), 'generateLink');
-    expect(slots(link, 'generateLink').slice(0, 2)).toEqual(['organization', 'returnUrl?']);
-    expect(link).toMatch(/fun generateLink\(\n {4}organization: String\?,\n/);
+    expect(slots(link, 'generateLink').slice(0, 2)).toEqual(['organization?', 'returnUrl?']);
+    expect(link).toContain('@JvmOverloads');
+  });
+
+  it('keeps @JvmOverloads for a required-after-defaulted order the baseline itself shipped', () => {
+    // v7.4.0 shipped `generateLink(returnUrl?, organization, ...)` with Java overloads; restoring that order
+    // keeps them, since no parameter became required or moved behind a new one.
+    const shipped = surface({
+      ...V74_SLOTS,
+      'AdminPortal.generateLink': [
+        'returnUrl?',
+        'organization',
+        'successUrl?',
+        'intent?',
+        'itContactEmails?',
+        'requestOptions?',
+      ],
+    });
+    const link = declaration(source('AdminPortal', context(spec, shipped)), 'generateLink');
+    expect(slots(link, 'generateLink').slice(0, 3)).toEqual(['returnUrl?', 'organization', 'successUrl?']);
+    expect(link).toContain('@JvmOverloads');
   });
 
   it('emits the schema signature and warns when a baseline parameter was removed', () => {
@@ -321,17 +340,33 @@ describe('kotlin request contracts', () => {
     }
   });
 
-  it('calls baseline-ordered methods by name in generated tests and asserts the projected body fields', () => {
+  it('names arguments in generated tests only where the baseline order would bind them differently', () => {
     const ctx = context();
     const pipesTest = generateTests(spec, ctx).find((f) => f.path.endsWith('/PipesTest.kt'))!.content;
-    expect(pipesTest).toContain('api().authorizeDataIntegration(slug = "sample-arg", userId = "sample-arg")');
+    // userId sits after requestOptions, so a positional call cannot reach it.
     expect(pipesTest).toContain(
       'api().createOrganizationConnectedAccount(organizationId = "sample-arg", slug = "sample-arg", userId = "sample-arg")',
     );
+    // The leading slots still match the schema order: positional, as without a baseline.
+    expect(pipesTest).toContain('api().authorizeDataIntegration("sample-arg", "sample-arg")');
+    expect(pipesTest).toContain('api().updateDataIntegrationApiKey("sample-arg", "sample-arg", "sample-arg")');
     expect(pipesTest).toMatch(/matchingJsonPath\("\\\$\.secret"\)/);
-    // Without a baseline, tests keep calling positionally.
-    const fresh = generateTests(spec, context(spec, null)).find((f) => f.path.endsWith('/PipesTest.kt'))!.content;
-    expect(fresh).toContain('api().authorizeDataIntegration("sample-arg", "sample-arg")');
+    // A baseline that leads with a parameter the schema orders later: every argument by name.
+    const reordered = context(
+      spec,
+      surface({ ...V74_SLOTS, 'Pipes.authorizeDataIntegration': ['userId', 'slug', 'requestOptions?'] }),
+    );
+    expect(generateTests(spec, reordered).find((f) => f.path.endsWith('/PipesTest.kt'))!.content).toContain(
+      'api().authorizeDataIntegration(slug = "sample-arg", userId = "sample-arg")',
+    );
+  });
+
+  it('passes path arguments in URL template order, so a spec that lists them differently stays positional', () => {
+    const input = structuredClone(spec);
+    const op = input.services.flatMap((s) => s.operations).find((o) => o.name === 'createUserConnectedAccount')!;
+    op.pathParams.reverse(); // spec order (slug, user_id); the path is /users/{user_id}/connected_accounts/{slug}
+    const pipesTest = generateTests(input, context(input)).find((f) => f.path.endsWith('/PipesTest.kt'))!.content;
+    expect(pipesTest).toContain('api().createUserConnectedAccount("sample-arg", "sample-arg")');
   });
 
   it('refuses a request body it cannot represent instead of sending {}', () => {

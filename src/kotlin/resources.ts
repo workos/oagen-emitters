@@ -445,25 +445,31 @@ function renderMethod(
   // after them, so a positional call written against the previous release
   // keeps its meaning or fails to compile.
   const apiClass = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
-  suspendParams = preserveParameterOrder(
+  const baseline = methodBaselineParams(ctx, apiClass, method);
+  const ordered = preserveParameterOrder(
     suspendParams.map((p) => ({ ...p, optional: p.decl.includes(' = ') })),
-    methodBaselineParams(ctx, apiClass, method),
+    baseline,
     {
       language: 'kotlin',
       label: `${apiClass}.${method}`,
-      // Keep previously-required arguments required: a new default must not move their slots.
-      makeRequired: (p) => ({ ...p, optional: false, decl: p.decl.replace(/ = .*$/, '') }),
-      // Kotlin accepts a required parameter after defaulted ones: callers name
-      // it or pass every argument, and `@JvmOverloads` is dropped below.
+      // Only the order is pinned: a parameter the schema relaxed keeps its slot
+      // and its new default, since Kotlin binds positional arguments by slot
+      // whether or not later parameters are defaulted. Kotlin also accepts a
+      // required parameter after defaulted ones: callers name it or pass every
+      // argument, and `@JvmOverloads` is dropped below.
       allowRequiredAfterOptional: true,
     },
-  ).params.map(({ decl, name }) => ({ decl, name }));
+  );
+  suspendParams = ordered.params.map(({ decl, name }) => ({ decl, name }));
   const params = suspendParams.map((p) => p.decl);
-  // `@JvmOverloads` drops trailing defaults one by one, so a required
-  // parameter after a defaulted one would let Java bind an old trailing
-  // positional argument to it. Java callers then pass every argument.
-  const firstDefaulted = params.findIndex((p) => p.includes(' = '));
-  const jvmOverloads = firstDefaulted === -1 || params.slice(firstDefaulted).every((p) => p.includes(' = '));
+  // `@JvmOverloads` drops trailing defaults one by one, so a parameter that
+  // is required now but was defaulted or absent in the baseline would let
+  // Java bind an old trailing positional argument to it: such methods make
+  // Java callers pass every argument. A required-after-defaulted order the
+  // baseline itself shipped keeps the overloads it shipped with.
+  const baselineOptional = new Map((ordered.pinned ? (baseline ?? []) : []).map((p) => [p.name, p.optional]));
+  const jvmOverloads =
+    !ordered.pinned || !ordered.params.some((p) => !p.optional && (baselineOptional.get(p.name) ?? true));
 
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
