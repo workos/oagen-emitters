@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.25.5](https://github.com/workos/oagen-emitters/compare/v0.25.4...v0.25.5) (2026-11-02)
+
+
+### Bug Fixes
+
+* **dotnet:** preserve WorkOS.net 6.4.0 Pipes compatibility ([#298](https://github.com/workos/oagen-emitters/issues/298)) ([cef482a](https://github.com/workos/oagen-emitters/commit/cef482ab18974ec66efa701f7a6b4f11ca29281c))
+* **kotlin:** keep workos-kotlin v7.4.0 call signatures compiling with their old meaning ([#297](https://github.com/workos/oagen-emitters/issues/297)) ([912ab3b](https://github.com/workos/oagen-emitters/commit/912ab3b04a79e56b61003fd56993b57580e71651))
+* **ruby:** return ListStruct in RBI sigs for paginated array endpoints ([#300](https://github.com/workos/oagen-emitters/issues/300)) ([8cefd0d](https://github.com/workos/oagen-emitters/commit/8cefd0df3c8e57245af1a76b755d4daffc7c1241))
+
 ## [0.25.4](https://github.com/workos/oagen-emitters/compare/v0.25.3...v0.25.4) (2026-10-29)
 
 
