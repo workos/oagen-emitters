@@ -30,7 +30,7 @@ import {
   readPriorFile,
   reconcileScopedBlocks,
 } from '../shared/scoped-aggregate-merge.js';
-import { isListWrapperModel, buildListScaffoldingSkip } from '../shared/model-utils.js';
+import { isListWrapperModel, buildListScaffoldingSkip, isPaginatedBareArray } from '../shared/model-utils.js';
 import { classifyUnassignedModel } from './models.js';
 import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { buildGroupOwnerMap, pickVariantParamType } from './parameter-groups.js';
@@ -101,7 +101,7 @@ export function generateTests(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
           modelByName.get(op.response.name) &&
           (isListWrapperModel(modelByName.get(op.response.name)!) || false)) ||
         // Also detect paginated endpoints whose IR response is typed as array
-        (op.response.kind === 'array' && !!op.pagination);
+        isPaginatedBareArray(op);
 
       const _isDelete = op.httpMethod.toLowerCase() === 'delete';
       const httpMethodSym = `:${op.httpMethod.toLowerCase()}`;

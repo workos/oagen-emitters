@@ -1,4 +1,4 @@
-import type { Model, Field, TypeRef, Enum, Service } from '@workos/oagen';
+import type { Model, Field, TypeRef, Enum, Operation, Service } from '@workos/oagen';
 import { collectFieldDependencies, toSnakeCase, toUpperSnakeCase, walkTypeRef } from '@workos/oagen';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -54,6 +54,20 @@ export function isListWrapperModel(model: Model): boolean {
   }
 
   return true;
+}
+
+/**
+ * Detect a paginated operation whose IR response is a bare array: the parser
+ * dropped the `{ data, list_metadata }` envelope, but `op.pagination` says the
+ * wire response still carries it. Every emitter path that chooses between
+ * "list wrapper" and "plain array" handling (runtime body, return-type docs,
+ * type signatures, generated tests) must agree on this, so keep the predicate
+ * in one place.
+ */
+export function isPaginatedBareArray(
+  op: Operation,
+): op is Operation & { response: Extract<TypeRef, { kind: 'array' }> } {
+  return op.response.kind === 'array' && !!op.pagination;
 }
 
 /**
