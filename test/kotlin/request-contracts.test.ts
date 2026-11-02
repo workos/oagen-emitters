@@ -322,6 +322,26 @@ describe('kotlin request contracts', () => {
     expect(link).toContain('@JvmOverloads');
   });
 
+  it('drops @JvmOverloads when the schema relaxes a baseline-required parameter behind a defaulted one', () => {
+    // v7.4.0 shipped `generateLink(returnUrl?, organization, ...)`, so Java's one-argument overload took
+    // organization. With organization optional that overload would take returnUrl, so Java callers name arguments.
+    const shipped = surface({
+      ...V74_SLOTS,
+      'AdminPortal.generateLink': [
+        'returnUrl?',
+        'organization',
+        'successUrl?',
+        'intent?',
+        'itContactEmails?',
+        'requestOptions?',
+      ],
+    });
+    const optional = withField(spec, 'GenerateLinkRequest', 'organization', { required: false });
+    const link = declaration(source('AdminPortal', context(optional, shipped)), 'generateLink');
+    expect(slots(link, 'generateLink').slice(0, 2)).toEqual(['returnUrl?', 'organization?']);
+    expect(link).not.toContain('@JvmOverloads');
+  });
+
   it('emits the schema signature and warns when a baseline parameter was removed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

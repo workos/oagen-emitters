@@ -462,14 +462,20 @@ function renderMethod(
   );
   suspendParams = ordered.params.map(({ decl, name }) => ({ decl, name }));
   const params = suspendParams.map((p) => p.decl);
-  // `@JvmOverloads` drops trailing defaults one by one, so a parameter that
-  // is required now but was defaulted or absent in the baseline would let
-  // Java bind an old trailing positional argument to it: such methods make
-  // Java callers pass every argument. A required-after-defaulted order the
-  // baseline itself shipped keeps the overloads it shipped with.
+  // `@JvmOverloads` emits one overload per defaulted parameter, omitting it
+  // and every defaulted parameter after it. Two baseline changes make an old
+  // Java call bind a different slot through those overloads: a parameter that
+  // is required now but was defaulted or absent in the baseline (a short call
+  // reaches it), and a baseline-required parameter the schema relaxed behind
+  // an earlier defaulted one (the short call that omitted the earlier one now
+  // keeps it instead). Such methods make Java callers pass every argument. A
+  // required-after-defaulted order the baseline itself shipped keeps the
+  // overloads it shipped with.
   const baselineOptional = new Map((ordered.pinned ? (baseline ?? []) : []).map((p) => [p.name, p.optional]));
-  const jvmOverloads =
-    !ordered.pinned || !ordered.params.some((p) => !p.optional && (baselineOptional.get(p.name) ?? true));
+  const nowRequired = (p: { name: string; optional: boolean }) => !p.optional && (baselineOptional.get(p.name) ?? true);
+  const relaxedBehindDefault = (p: { name: string; optional: boolean }, i: number) =>
+    p.optional && baselineOptional.get(p.name) === false && ordered.params.slice(0, i).some((q) => q.optional);
+  const jvmOverloads = !ordered.pinned || !ordered.params.some((p, i) => nowRequired(p) || relaxedBehindDefault(p, i));
 
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
