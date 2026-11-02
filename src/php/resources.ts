@@ -1,5 +1,6 @@
 import { phpStringLiteral } from './strings.js';
-import { resolveRequestBodyModel } from './request-body.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/baseline-params.js';
 import type { ApiParam } from '@workos/oagen/compat';
 import type {
   Service,
@@ -312,7 +313,7 @@ function generateMethod(
 
   const isRedirect = isRedirectEndpoint(op, resolvedOp);
   const materializeQueryDefaults = !isRedirect;
-  const bodyModel = plan.hasBody ? resolveRequestBodyModel(op, [...modelMap.values()]) : null;
+  const bodyModel = plan.hasBody ? resolveRequestBodyModel(op, [...modelMap.values()], 'PHP') : null;
   const resourceName = className(resolveServiceTarget(service.name, buildExportedClassNameSet(ctx)));
   const baseline = ctx.apiSurface?.classes[resourceName]?.methods[method]?.[0]?.params;
   const params = preserveMethodParameters(
@@ -703,34 +704,20 @@ function generateMethod(
 
 /**
  * Keep the baseline's parameter names and positions and append new optional
- * parameters after them. A method whose baseline the current contract can no
- * longer honor — a parameter removed, made required, or newly required — is
- * emitted from the schema instead: a signature the API rejects is not worth
- * preserving, so the correct one wins and the warning names the break.
+ * parameters after them (see `preserveParameterOrder`). PHP deprecates a
+ * required parameter after an optional one, so a method whose baseline the
+ * current contract can no longer honor is emitted from the schema instead.
  */
 function preserveMethodParameters(params: string[], baseline: ApiParam[] | undefined, method: string): string[] {
-  if (!baseline) return params;
-  const regenerate = (reason: string): string[] => {
-    console.warn(`[oagen] php: ${method}: ${reason}; emitting the schema signature instead of the baseline`);
-    return params;
-  };
-  const byName = new Map(params.map((param) => [param.match(/\$(\w+)/)![1], param]));
-  const ordered: string[] = [];
-  for (const previous of baseline) {
-    const declaration = byName.get(previous.name);
-    if (!declaration) return regenerate(`baseline parameter $${previous.name} was removed`);
-    if (previous.optional && !declaration.includes(' = ')) {
-      return regenerate(`baseline parameter $${previous.name} became required`);
-    }
+  const declared = params.map((decl) => ({ name: decl.match(/\$(\w+)/)![1], optional: decl.includes(' = '), decl }));
+  return preserveParameterOrder(declared, baseline, {
+    language: 'php',
+    label: method,
+    displayName: (name) => `$${name}`,
     // Keep previously-required arguments required: a new default must not move their slots.
-    ordered.push(previous.optional ? declaration : declaration.replace(/ = .*$/, ''));
-    byName.delete(previous.name);
-  }
-  for (const [name, declaration] of byName) {
-    if (!declaration.includes(' = ')) return regenerate(`new parameter $${name} is required`);
-    ordered.push(declaration);
-  }
-  return ordered;
+    makeRequired: (param) => ({ ...param, optional: false, decl: param.decl.replace(/ = .*$/, '') }),
+    allowRequiredAfterOptional: false,
+  }).params.map((param) => param.decl);
 }
 
 function buildMethodParams(

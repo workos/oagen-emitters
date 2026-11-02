@@ -9,7 +9,7 @@ import type {
   TypeRef,
 } from '@workos/oagen';
 import type { ApiParam } from '@workos/oagen/compat';
-import { resolveRequestBodyModel } from './request-body.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { phpStringLiteral } from './strings.js';
 import { planOperation, toCamelCase, toPascalCase } from '@workos/oagen';
 import {
@@ -359,10 +359,10 @@ function testRequestBodyModel(
   baseline?: ApiParam[],
   hidden: Set<string> = new Set(),
 ): Model | null {
-  const names = buildParamNames(op, resolveRequestBodyModel(op, ctx.spec.models), hidden);
+  const names = buildParamNames(op, resolveRequestBodyModel(op, ctx.spec.models, 'PHP'), hidden);
   const leaves = (ref: TypeRef): TypeRef[] => (ref.kind === 'union' ? ref.variants.flatMap(leaves) : [ref]);
   const branches = (op.requestBody ? leaves(op.requestBody) : []).map((requestBody) =>
-    resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models),
+    resolveRequestBodyModel({ ...op, requestBody }, ctx.spec.models, 'PHP'),
   );
   if (branches.length === 0) return null;
   const required = baseline?.filter((p) => !p.optional).map((p) => p.name) ?? [];
@@ -398,7 +398,7 @@ function buildTestArgs(
   }
 
   // Required body fields
-  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models);
+  const mergedBody = resolveRequestBodyModel(op, ctx.spec.models, 'PHP');
   const names = buildParamNames(op, mergedBody, hidden);
   const bodyModel = testRequestBodyModel(op, ctx, opts?.baseline, hidden);
   if (bodyModel) {
