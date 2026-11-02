@@ -5,7 +5,6 @@ import type {
   EmitterContext,
   GeneratedFile,
   ResolvedOperation,
-  Model,
   TypeRef,
   Field,
 } from '@workos/oagen';
@@ -48,6 +47,9 @@ import { resolveWrapperParams } from '../shared/wrapper-utils.js';
 import { isHandwrittenOverride } from './overrides.js';
 import { buildKotlinPathExpression, KOTLIN_PATH_ENCODE_IMPORT } from './path-expression.js';
 import { emitSuspendVariant, SUSPEND_IMPORTS, type SuspendParam } from './suspend.js';
+import { resolveRequestBodyModel } from '../shared/request-body.js';
+import { preserveParameterOrder } from '../shared/baseline-params.js';
+import type { ApiParam } from '@workos/oagen/compat';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -300,10 +302,19 @@ function resolveServiceDescription(ctx: EmitterContext, _mountName: string, oper
 }
 
 /**
+ * The shipped signature of `apiClass.method` from the api-surface baseline,
+ * when the run was given one. Resources order parameters from it and tests
+ * call such methods by name.
+ */
+export function methodBaselineParams(ctx: EmitterContext, apiClass: string, method: string): ApiParam[] | undefined {
+  return ctx.apiSurface?.classes[apiClass]?.methods[method]?.[0]?.params;
+}
+
+/**
  * Render a single SDK method for an operation.
  */
 function renderMethod(
-  _mountName: string,
+  mountName: string,
   method: string,
   op: Operation,
   ctx: EmitterContext,
@@ -322,7 +333,7 @@ function renderMethod(
   const queryParams = op.queryParams
     .filter((p) => !hidden.has(p.name) && !groupedParamNames.has(p.name))
     .map(promoteParameterType);
-  const bodyModel = resolveBodyModel(op, ctx);
+  const bodyModel = resolveRequestBodyModel(op, ctx.spec.models, 'Kotlin');
   const bodyFields = bodyModel
     ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name)).map(promoteFieldType)
     : [];
@@ -375,12 +386,10 @@ function renderMethod(
 
   const groupParamNames = assignGroupParameterNames(op, paramNames);
 
-  const params: string[] = [];
-  // Mirrors `params` but tracks the bare Kotlin parameter name so the suspend
+  // Tracks each declaration with its bare Kotlin parameter name so the suspend
   // overload (emitted alongside the blocking version) can forward arguments.
-  const suspendParams: SuspendParam[] = [];
+  let suspendParams: SuspendParam[] = [];
   const pushParam = (decl: string, name: string) => {
-    params.push(decl);
     suspendParams.push({ decl, name });
   };
   for (const pp of pathParams) pushParam(`    ${propertyName(pp.name)}: String`, propertyName(pp.name));
@@ -431,6 +440,43 @@ function renderMethod(
   // Per-request options trailer (always optional)
   pushParam('    requestOptions: RequestOptions? = null', 'requestOptions');
 
+  // Keep the shipped signature's positional slots (the api-surface baseline
+  // sdk-generate.sh passes for a live checkout); every newer parameter goes
+  // after them, so a positional call written against the previous release
+  // keeps its meaning or fails to compile.
+  const apiClass = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
+  const baseline = methodBaselineParams(ctx, apiClass, method);
+  const ordered = preserveParameterOrder(
+    suspendParams.map((p) => ({ ...p, optional: p.decl.includes(' = ') })),
+    baseline,
+    {
+      language: 'kotlin',
+      label: `${apiClass}.${method}`,
+      // Only the order is pinned: a parameter the schema relaxed keeps its slot
+      // and its new default, since Kotlin binds positional arguments by slot
+      // whether or not later parameters are defaulted. Kotlin also accepts a
+      // required parameter after defaulted ones: callers name it or pass every
+      // argument, and `@JvmOverloads` is dropped below.
+      allowRequiredAfterOptional: true,
+    },
+  );
+  suspendParams = ordered.params.map(({ decl, name }) => ({ decl, name }));
+  const params = suspendParams.map((p) => p.decl);
+  // `@JvmOverloads` emits one overload per defaulted parameter, omitting it
+  // and every defaulted parameter after it. Two baseline changes make an old
+  // Java call bind a different slot through those overloads: a parameter that
+  // is required now but was defaulted or absent in the baseline (a short call
+  // reaches it), and a baseline-required parameter the schema relaxed behind
+  // an earlier defaulted one (the short call that omitted the earlier one now
+  // keeps it instead). Such methods make Java callers pass every argument. A
+  // required-after-defaulted order the baseline itself shipped keeps the
+  // overloads it shipped with.
+  const baselineOptional = new Map((ordered.pinned ? (baseline ?? []) : []).map((p) => [p.name, p.optional]));
+  const nowRequired = (p: { name: string; optional: boolean }) => !p.optional && (baselineOptional.get(p.name) ?? true);
+  const relaxedBehindDefault = (p: { name: string; optional: boolean }, i: number) =>
+    p.optional && baselineOptional.get(p.name) === false && ordered.params.slice(0, i).some((q) => q.optional);
+  const jvmOverloads = !ordered.pinned || !ordered.params.some((p, i) => nowRequired(p) || relaxedBehindDefault(p, i));
+
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
 
@@ -438,7 +484,7 @@ function renderMethod(
   const kdocLines = buildMethodKdoc(op, pathParams, sortedQuery, sortedBodyFields, bodyParamNames, plan);
   for (const ln of kdocLines) lines.push(ln);
   if (op.deprecated) lines.push('  @Deprecated("Deprecated operation")');
-  lines.push('  @JvmOverloads');
+  if (jvmOverloads) lines.push('  @JvmOverloads');
   // Omit explicit `: Unit` to keep ktlint happy.
   const returnClause = returnType === 'Unit' ? '' : `: ${returnType}`;
   if (params.length === 1) {
@@ -1150,13 +1196,6 @@ function generateAuthenticateHelper(): string[] {
     '    return workos.baseClient.request(config, AuthenticateResponse::class.java)',
     '  }',
   ];
-}
-
-function resolveBodyModel(op: Operation, ctx: EmitterContext): Model | null {
-  const body = op.requestBody;
-  if (!body) return null;
-  if (body.kind !== 'model') return null;
-  return ctx.spec.models.find((m) => m.name === body.name) ?? null;
 }
 
 function registerTypeImports(ref: TypeRef, imports: Set<string>, ctx: EmitterContext): void {
