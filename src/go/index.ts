@@ -10,7 +10,7 @@ import type {
 } from '@workos/oagen';
 
 import { generateModels } from './models.js';
-import { enrichModelsFromSpec, getSyntheticEnums } from '../shared/model-utils.js';
+import { enrichModelsFromSpec, getSyntheticEnums, restoreRequiredVariantFields } from '../shared/model-utils.js';
 import { flattenDiscriminatedUnionFields } from '../shared/union-flatten.js';
 import { generateEnums } from './enums.js';
 import { generateResources } from './resources.js';
@@ -53,11 +53,15 @@ export const goEmitter: Emitter = {
       }
       return m;
     });
+    // A discriminated oneOf schema (e.g. the vended credential) is merged into
+    // one flat model with every field optional; a field every variant requires
+    // is required on the struct, not a pointer.
+    const withRequired = restoreRequiredVariantFields(goModels);
     // Go has no sum types: a discriminated-union field (e.g. ApiKey.owner)
     // renders as its first variant, dropping fields that only exist on later
     // variants (organization_id on the user owner). Flatten such unions into a
     // single superset struct so every variant field survives.
-    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(goModels), ctx));
+    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(withRequired), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
