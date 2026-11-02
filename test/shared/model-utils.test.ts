@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { Model } from '@workos/oagen';
+import type { Model, Operation } from '@workos/oagen';
 import {
   collectReferencedListMetadataModels,
   isListMetadataModel,
   isListWrapperModel,
+  isPaginatedBareArray,
 } from '../../src/shared/model-utils.js';
 
 const listMetadataModel: Model = {
@@ -93,5 +94,28 @@ describe('isListWrapperModel + isListMetadataModel — sanity', () => {
     };
     expect(isListWrapperModel(wrapper)).toBe(true);
     expect(isListMetadataModel(wrapper)).toBe(false);
+  });
+});
+
+describe('isPaginatedBareArray', () => {
+  const base: Operation = {
+    name: 'list',
+    httpMethod: 'GET',
+    path: '/things',
+    parameters: [],
+    response: { kind: 'array', items: { kind: 'model', name: 'Thing' } },
+  } as unknown as Operation;
+  const pagination = { strategy: 'cursor', param: 'after', dataPath: 'data' } as unknown as Operation['pagination'];
+
+  it('is true for a paginated op whose IR response is a bare array', () => {
+    expect(isPaginatedBareArray({ ...base, pagination })).toBe(true);
+  });
+
+  it('is false for a non-paginated bare array', () => {
+    expect(isPaginatedBareArray(base)).toBe(false);
+  });
+
+  it('is false for a paginated op whose response is a model', () => {
+    expect(isPaginatedBareArray({ ...base, pagination, response: { kind: 'model', name: 'ThingList' } })).toBe(false);
   });
 });

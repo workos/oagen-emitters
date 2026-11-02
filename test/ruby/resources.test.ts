@@ -497,6 +497,11 @@ describe('ruby/resources', () => {
     expect(content).toContain('ListStruct.from_response(');
     // Should NOT be treating response as bare array
     expect(content).not.toContain('(parsed || []).map');
+
+    // The RBI must agree with the runtime: a ListStruct, not T::Array.
+    const rbi = generateRbiFiles(spec, makeCtx(spec)).find((f) => f.path === 'rbi/workos/user_management.rbi')!.content;
+    expect(rbi).toContain('.returns(WorkOS::Types::ListStruct)');
+    expect(rbi).not.toContain('T::Array[WorkOS::Session]');
   });
 
   it('preserves bare array handling for non-paginated array endpoints', () => {
@@ -524,6 +529,10 @@ describe('ruby/resources', () => {
     // Should be bare array mapping (no pagination)
     expect(content).toContain('(parsed || []).map');
     expect(content).not.toContain('ListStruct');
+
+    const rbi = generateRbiFiles(spec, makeCtx(spec)).find((f) => f.path === 'rbi/workos/user_management.rbi')!.content;
+    expect(rbi).toContain('.returns(T::Array[WorkOS::Identity])');
+    expect(rbi).not.toContain('ListStruct');
   });
 
   // ── P0-4: DELETE with body ─────────────────────────────────────────────

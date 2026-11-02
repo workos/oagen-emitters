@@ -24,7 +24,7 @@ import {
   collectGroupedParamNames,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
-import { isListWrapperModel, buildListScaffoldingSkip } from '../shared/model-utils.js';
+import { isListWrapperModel, buildListScaffoldingSkip, isPaginatedBareArray } from '../shared/model-utils.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
 import { getRequestBodyFields } from './resources.js';
 
@@ -336,7 +336,11 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       defParams.push('request_options: {}');
 
       // Return type
-      const retType = mapSorbetReturnType(op.response, listWrapperModels, modelNames);
+      // Paginated endpoints whose IR response is a bare array still return a
+      // ListStruct at runtime (see emitResponseHandling in ruby/resources.ts).
+      const retType = isPaginatedBareArray(op)
+        ? 'WorkOS::Types::ListStruct'
+        : mapSorbetReturnType(op.response, listWrapperModels, modelNames);
 
       lines.push('    sig do');
       lines.push('      params(');

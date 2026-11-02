@@ -32,7 +32,7 @@ import {
   collectGroupedParamNames,
   groupTypeBaseName,
 } from '../shared/resolved-ops.js';
-import { isListWrapperModel } from '../shared/model-utils.js';
+import { isListWrapperModel, isPaginatedBareArray } from '../shared/model-utils.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantClass } from './parameter-groups.js';
 
@@ -813,9 +813,9 @@ function emitResponseHandling(
   // Paginated endpoint whose IR response is typed as array (the IR lost the
   // wrapper envelope). When op.pagination exists, the real HTTP response is
   // { data: [...], list_metadata: {...} } — generate ListStruct handling.
-  if (ref.kind === 'array' && op.pagination) {
-    const itemCls =
-      ref.items.kind === 'model' && modelNames.has(ref.items.name) ? `WorkOS::${className(ref.items.name)}` : null;
+  if (isPaginatedBareArray(op)) {
+    const items = op.response.items;
+    const itemCls = items.kind === 'model' && modelNames.has(items.name) ? `WorkOS::${className(items.name)}` : null;
 
     const cursorLocal = safeParamName('after');
     const hasCursorInSignature = forwardableParams.includes(cursorLocal);
@@ -1078,8 +1078,9 @@ function buildYardDoc(
         : null;
     const suffix = elementType ? `<${elementType}>` : '';
     lines.push(`# @return [WorkOS::Types::ListStruct${suffix}]`);
-  } else if (ref.kind === 'array' && op.pagination) {
-    const elementType = ref.items.kind === 'model' ? `WorkOS::${className(ref.items.name)}` : null;
+  } else if (isPaginatedBareArray(op)) {
+    const items = op.response.items;
+    const elementType = items.kind === 'model' ? `WorkOS::${className(items.name)}` : null;
     const suffix = elementType ? `<${elementType}>` : '';
     lines.push(`# @return [WorkOS::Types::ListStruct${suffix}]`);
   } else {
