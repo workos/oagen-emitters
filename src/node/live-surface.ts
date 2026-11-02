@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { withoutGitLocalEnv } from '../shared/git-env.js';
 
 /**
  * Snapshot of the live target SDK gathered by walking `--output` once.
@@ -205,10 +206,15 @@ function toPosix(p: string): string {
 }
 
 function loadGitTrackedFiles(rootDir: string): Set<string> {
+  // An inherited GIT_DIR (e.g. when run from a git hook) overrides `-C rootDir`,
+  // so strip the repository-locating variables to always read the repo at
+  // rootDir. No-op when none are set.
+  const env = withoutGitLocalEnv();
   try {
     const stdout = execFileSync('git', ['-C', rootDir, 'ls-files', '--', 'src'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env,
     });
     return new Set(
       stdout

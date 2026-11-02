@@ -7,7 +7,7 @@ import { emptyLiveSurface, setActiveLiveSurface } from '../../src/node/live-surf
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { initTempRepo } from '../shared/git.js';
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -522,8 +522,7 @@ describe('owned-service enum emission under the live-surface skip', () => {
           '}',
         ].join('\n'),
       );
-      execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
-      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+      initTempRepo(tmpRoot);
 
       const spec = ownedDomainSpec([stateEnum], [domainModel]);
       const runCtx = {

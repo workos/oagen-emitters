@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { gitQuiet, initTempRepo } from '../shared/git.js';
 import type { ApiSpec, EmitterContext, Service, Model } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { nodeEmitter } from '../../src/node/index.js';
@@ -60,8 +60,7 @@ function createTrackedSdkRoot(withHandTests = false): string {
     fs.writeFileSync(path.join(tmpRoot, 'src', 'groups', 'groups.spec.ts'), "describe('old', () => {});\n");
     fs.writeFileSync(path.join(tmpRoot, 'src', 'groups', 'fixtures', 'group.json'), '{"id":"old"}\n');
   }
-  execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
-  execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+  initTempRepo(tmpRoot);
   return tmpRoot;
 }
 
@@ -316,7 +315,7 @@ describe('node test generation ownership', () => {
     const tmpRoot = createTrackedSdkRoot();
     try {
       fs.mkdirSync(path.join(tmpRoot, 'src', 'secrets', 'fixtures'), { recursive: true });
-      execFileSync('git', ['add', 'src'], { cwd: tmpRoot, stdio: 'ignore' });
+      gitQuiet(tmpRoot, 'add', 'src');
 
       const result = nodeEmitter.generateTests!(secretSpec, {
         ...ctx,
