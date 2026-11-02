@@ -830,3 +830,37 @@ export function enrichModelsFromSpec(models: Model[], enums: Enum[] = []): Model
   const filteredSynthetic = collector.models.filter((m) => !existingSnakeNames.has(toSnakeCase(m.name)));
   return [...enriched2, ...filteredSynthetic];
 }
+
+// ---------------------------------------------------------------------------
+// Discriminated oneOf: fields every variant requires
+// ---------------------------------------------------------------------------
+
+/**
+ * Keep a field required when every variant of a discriminated `oneOf` schema
+ * requires it. The parser merges such variants into one flat model with every
+ * field optional, which turns a `value` that each credential variant requires
+ * into a pointer or nullable in the flat-emit languages. Applies to every model
+ * whose raw component schema is a discriminated `oneOf` of object variants
+ * (`$ref` variants are resolved against components); any other model, and
+ * every model when the raw spec is unavailable, is returned unchanged.
+ */
+export function restoreRequiredVariantFields(models: Model[]): Model[] {
+  const schemas = loadRawSpec()?.components?.schemas;
+  if (!schemas) return models;
+  const resolve = (schema: any): any =>
+    typeof schema?.$ref === 'string' ? schemas[schema.$ref.replace('#/components/schemas/', '')] : schema;
+  return models.map((model) => {
+    const schema = resolve(schemas[model.name]);
+    if (!schema?.discriminator || !Array.isArray(schema.oneOf) || schema.oneOf.length === 0) return model;
+    const variants = schema.oneOf.map(resolve);
+    if (!variants.every((v: any) => v?.type === 'object' && v.properties)) return model;
+    const requiredByAll = new Set(
+      (variants[0].required ?? []).filter((name: string) => variants.every((v: any) => v.required?.includes(name))),
+    );
+    if (requiredByAll.size === 0) return model;
+    return {
+      ...model,
+      fields: model.fields.map((f) => (requiredByAll.has(f.name) && !f.required ? { ...f, required: true } : f)),
+    };
+  });
+}
