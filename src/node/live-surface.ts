@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { withoutGitLocalEnv } from '../shared/git-env.js';
 
 /**
  * Snapshot of the live target SDK gathered by walking `--output` once.
@@ -204,30 +205,11 @@ function toPosix(p: string): string {
   return p.split(path.sep).join('/');
 }
 
-// Repository-locating variables from `git rev-parse --local-env-vars` (git 2.56).
-// An inherited GIT_DIR (e.g. when run from a git hook) overrides `-C rootDir`,
-// so strip them to always read the repo at rootDir. No-op when none are set.
-const GIT_LOCAL_ENV_VARS = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CONFIG',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_CONFIG_COUNT',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_IMPLICIT_WORK_TREE',
-  'GIT_GRAFT_FILE',
-  'GIT_INDEX_FILE',
-  'GIT_NO_REPLACE_OBJECTS',
-  'GIT_REPLACE_REF_BASE',
-  'GIT_PREFIX',
-  'GIT_SHALLOW_FILE',
-  'GIT_COMMON_DIR',
-];
-
 function loadGitTrackedFiles(rootDir: string): Set<string> {
-  const env = { ...process.env };
-  for (const name of GIT_LOCAL_ENV_VARS) delete env[name];
+  // An inherited GIT_DIR (e.g. when run from a git hook) overrides `-C rootDir`,
+  // so strip the repository-locating variables to always read the repo at
+  // rootDir. No-op when none are set.
+  const env = withoutGitLocalEnv();
   try {
     const stdout = execFileSync('git', ['-C', rootDir, 'ls-files', '--', 'src'], {
       encoding: 'utf8',
