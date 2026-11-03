@@ -1,4 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@workos/oagen';
+import { isPreservedModelField } from '../shared/model-field-compat.js';
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
@@ -58,7 +59,7 @@ export function generateModels(models: Model[], ctx: EmitterContext, registry: U
     const path = `src/models/${mod}.rs`;
     if (!fileExistsAfterRun(path, inScope, ctx)) continue;
 
-    const content = renderModel(model, registry, taggedVariantFields.get(model.name));
+    const content = renderModel(model, ctx, registry, taggedVariantFields.get(model.name));
     if (inScope) {
       files.push({
         path,
@@ -137,7 +138,7 @@ function variantModelName(ref: TypeRef): string | null {
   return null;
 }
 
-function renderModel(model: Model, registry: UnionRegistry, tagField?: string): string {
+function renderModel(model: Model, ctx: EmitterContext, registry: UnionRegistry, tagField?: string): string {
   const lines: string[] = [];
   lines.push(HEADER_PLACEHOLDER);
   // Match rustfmt's canonical grouping: keyword-rooted paths (`super`,
@@ -156,7 +157,7 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
 
   const resolvedNames = resolveFieldNames(model.fields);
   const fieldLines = model.fields.map((f, i) =>
-    renderField(f, resolvedNames[i]!, model.name, registry, model.fields, tagField),
+    renderField(f, resolvedNames[i]!, model.name, ctx, registry, model.fields, tagField),
   );
 
   // rustfmt collapses zero-field structs to `pub struct Foo {}` on a single
@@ -202,6 +203,7 @@ function renderField(
   field: Field,
   rustField: string,
   modelName: string,
+  ctx: EmitterContext,
   registry: UnionRegistry,
   siblings: Field[],
   tagField?: string,
@@ -223,7 +225,8 @@ function renderField(
     registry,
   });
   const isOptional = !field.required || field.type.kind === 'nullable';
-  if (isOptional && !baseType.startsWith('Option<')) {
+  const preserveString = !field.required && baseType === 'String' && isPreservedModelField(modelName, field.name, ctx);
+  if (isOptional && !preserveString && !baseType.startsWith('Option<')) {
     baseType = makeOptional(baseType);
   }
   // Spec markers and semantic fallbacks redact secrets without changing the wire format.
@@ -240,7 +243,9 @@ function renderField(
     lines.push(`    #[serde(${args})]`);
   } else {
     if (rename) lines.push(`    #[serde(rename = ${JSON.stringify(rename)})]`);
-    if (baseType.startsWith('Option<')) {
+    if (preserveString) {
+      lines.push('    #[serde(skip_serializing_if = "String::is_empty", default)]');
+    } else if (baseType.startsWith('Option<')) {
       lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
     }
   }

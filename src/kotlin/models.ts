@@ -9,6 +9,7 @@ import {
   typealiasFile,
 } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
+import { orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
 import {
   isListWrapperModel,
   isListMetadataModel,
@@ -191,7 +192,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     if (modelInScope) {
-      files.push(emitDataClass(model));
+      files.push(emitDataClass(model, ctx));
     }
   }
 
@@ -235,7 +236,7 @@ function isEventEnvelopeModel(model: Model): boolean {
   return fieldNames.has('id') && fieldNames.has('event') && fieldNames.has('created_at') && fieldNames.has('data');
 }
 
-function emitDataClass(model: Model): GeneratedFile {
+function emitDataClass(model: Model, ctx: EmitterContext): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
   const implementsEvent = isEventEnvelopeModel(model);
@@ -257,16 +258,16 @@ function emitDataClass(model: Model): GeneratedFile {
     const implClause = implementsEvent ? ' : WorkOSEvent' : '';
     lines.push(`data class ${typeName}(`);
 
-    // Emit non-defaulted params first, then defaulted — Kotlin requires
-    // non-defaulted params before defaulted ones. Literal-typed fields always
-    // receive a default, so they sort after plain required fields.
+    // Defaulted fields normally follow required fields; compatibility pins retain shipped slots.
     const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
-    const ordered = [...model.fields].sort((a, b) => {
-      const aDef = hasDefault(a);
-      const bDef = hasDefault(b);
-      if (aDef === bDef) return 0;
-      return aDef ? 1 : -1;
-    });
+    const ordered = preservedModelFields(model.name, ctx).length
+      ? orderModelFields(model.name, model.fields, ctx)
+      : [...model.fields].sort((a, b) => {
+          const aDef = hasDefault(a);
+          const bDef = hasDefault(b);
+          if (aDef === bDef) return 0;
+          return aDef ? 1 : -1;
+        });
     // When implementing WorkOSEvent, matching fields need `override`.
     const overrideFields = implementsEvent ? new Set(['id', 'event', 'createdAt']) : new Set<string>();
     const rendered = renderFields(ordered, overrideFields);

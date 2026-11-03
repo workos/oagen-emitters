@@ -1,4 +1,5 @@
 import { goStructTag } from './strings.js';
+import { isPreservedModelField } from '../shared/model-field-compat.js';
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -252,7 +253,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       seenFieldNames.add(goFieldName);
 
       const isOptional = !field.required;
-      const goType = isOptional ? makeOptional(mapTypeRef(field.type)) : mapTypeRef(field.type);
+      const baseType = mapTypeRef(field.type);
+      const preserveString = isOptional && baseType === 'string' && isPreservedModelField(model.name, field.name, ctx);
+      const goType = isOptional && !preserveString ? makeOptional(baseType) : baseType;
 
       const jsonTag = goStructTag({ json: field.name + (field.required ? '' : ',omitempty') });
 

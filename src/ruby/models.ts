@@ -1,4 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
+import { isPreservedModelField } from '../shared/model-field-compat.js';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
 import { buildListScaffoldingSkip } from '../shared/model-utils.js';
@@ -230,6 +231,18 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       lines.push(`      ${deserializeAssignment(fname, rawKey, field.type, field.required, enumNames, modelNames)}`);
     }
     lines.push('    end');
+
+    const omittedFields = fields.filter(
+      (field) =>
+        !field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx),
+    );
+    if (omittedFields.length > 0) {
+      const keys = omittedFields.map((field) => `:"${rubyDoubleQuotedInner(field.name)}"`).join(', ');
+      lines.push('');
+      lines.push('    def to_h');
+      lines.push(`      super.reject { |key, value| value.nil? && [${keys}].include?(key) }`);
+      lines.push('    end');
+    }
 
     lines.push('  end');
     lines.push('end');

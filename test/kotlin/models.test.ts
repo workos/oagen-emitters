@@ -22,6 +22,29 @@ const ctx: EmitterContext = {
 };
 
 describe('kotlin/models', () => {
+  it('preserves configured constructor slots when a required field becomes optional', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    generateEnums([], compatCtx);
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/AuditLogEvent.kt'))!.content;
+    expect(content).toContain('val occurredAt: OffsetDateTime? = null,');
+    expect(content.indexOf('val occurredAt:')).toBeLessThan(content.indexOf('val actor:'));
+    expect(content).toContain('val actor: String');
+  });
+
   it('returns empty for no models', () => {
     generateEnums([], ctx);
     expect(generateModels([], ctx)).toEqual([]);

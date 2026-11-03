@@ -22,6 +22,22 @@ const ctx: EmitterContext = {
 };
 
 describe('rust/models', () => {
+  it('keeps a shipped string field and uses serde omission for its default value', () => {
+    const model: Model = {
+      name: 'AuditLogEvent',
+      fields: [
+        { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+      ],
+    };
+    const compatible = { ...ctx, emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['occurred_at'] } } };
+    const content = generateModels([model], compatible, new UnionRegistry()).find(
+      (file) => file.path === 'src/models/audit_log_event.rs',
+    )!.content;
+    expect(content).toContain('#[serde(skip_serializing_if = "String::is_empty", default)]');
+    expect(content).toContain('pub occurred_at: String,');
+    expect(content).not.toContain('pub occurred_at: Option<String>');
+  });
+
   it('passes sensitivity markers and sibling descriptions through model rendering', () => {
     const model: Model = {
       name: 'SensitivePayload',

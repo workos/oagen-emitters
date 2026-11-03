@@ -3,6 +3,7 @@ import { toCamelCase } from '@workos/oagen';
 import { typeName, fileName, propertyName, escapeReserved, moduleName, primeReservedTypeNames } from './naming.js';
 import { fieldSwiftType } from './type-map.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
+import { orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
 
 /**
  * Generate one Swift `Codable` struct file per IR model.
@@ -23,7 +24,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     .filter((model) => isModelInScope(model.name, ctx))
     .map((model) => ({
       path: `Sources/${module}/Models/${fileName(model.name)}.swift`,
-      content: renderModel(model),
+      content: renderModel(model, ctx),
     }));
 }
 
@@ -50,7 +51,7 @@ function renderedField(field: Field): RenderedField {
   return { prop, type, optional: type.endsWith('?'), field };
 }
 
-function renderModel(model: Model): string {
+function renderModel(model: Model, ctx: EmitterContext): string {
   const name = typeName(model.name);
   const lines: string[] = [];
   lines.push('import Foundation');
@@ -89,8 +90,14 @@ function renderModel(model: Model): string {
   }
   lines.push('');
 
-  // Public memberwise initializer: required first, then optionals (= nil).
-  const initParams = [...fields].sort((a, b) => Number(a.optional) - Number(b.optional));
+  // Defaulted fields normally follow required fields; compatibility pins retain shipped slots.
+  const initParams = preservedModelFields(model.name, ctx).length
+    ? orderModelFields(
+        model.name,
+        fields.map((f) => f.field),
+        ctx,
+      ).map(renderedField)
+    : [...fields].sort((a, b) => Number(a.optional) - Number(b.optional));
   lines.push('    public init(');
   const paramLines = initParams.map((f) => `        ${f.prop}: ${f.type}${f.optional ? ' = nil' : ''}`);
   lines.push(paramLines.join(',\n'));

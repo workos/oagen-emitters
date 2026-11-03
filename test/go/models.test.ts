@@ -20,6 +20,19 @@ const ctx: EmitterContext = {
 };
 
 describe('go/models', () => {
+  it('keeps a shipped string field when it becomes optional and omits its zero value', () => {
+    const model: Model = {
+      name: 'AuditLogEvent',
+      fields: [
+        { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+      ],
+    };
+    const compatible = { ...ctx, emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['occurred_at'] } } };
+    const content = generateModels([model], compatible)[0]!.content;
+    expect(content).toContain('OccurredAt string `json:"occurred_at,omitempty"`');
+    expect(content).not.toContain('OccurredAt *string');
+  });
+
   it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });

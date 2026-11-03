@@ -29,6 +29,89 @@ function findModel(result: ReturnType<typeof generateModels>, name: string) {
 }
 
 describe('generateModels', () => {
+  it('preserves configured constructor slots when a required field becomes optional', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    const content = findModel(generateModels(models, compatCtx), 'AuditLogEvent')!.content;
+    expect(content).toContain('public ?\\DateTimeImmutable $occurredAt,');
+    expect(content.indexOf('$occurredAt,')).toBeLessThan(content.indexOf('$actor,'));
+    expect(content).toContain("isset($data['occurred_at']) ? new \\DateTimeImmutable($data['occurred_at']) : null");
+    expect(content).toContain("...($this->occurredAt !== null ? ['occurred_at' =>");
+  });
+
+  it('retains explicit nulls for nullable fields while omitting optional non-nullable fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Settings',
+        fields: [
+          { name: 'label', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+          { name: 'enabled', type: { kind: 'primitive', type: 'boolean' }, required: false },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Settings: ['label', 'enabled'] } },
+    };
+    const content = findModel(generateModels(models, compatCtx), 'Settings')!.content;
+    expect(content).toContain("'label' => $this->label,");
+    expect(content).not.toContain('...($this->label');
+    expect(content).toContain("...($this->enabled !== null ? ['enabled' => $this->enabled] : []),");
+  });
+
+  it.skipIf(!hasPhp)('preserves positional constructors and omits absent timestamps through fromArray in PHP', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'note', type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } }, required: false },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    const program = `<?php
+${generateRuntime(compatCtx)
+  .map((f) => f.content)
+  .join('\n')}
+${generateModels(models, compatCtx)
+  .map((f) => f.content)
+  .join('\n')}
+namespace WorkOS;
+$omitted = \\WorkOS\\Resource\\AuditLogEvent::fromArray(['action' => 'signed_in', 'actor' => 'user']);
+$explicit = new \\WorkOS\\Resource\\AuditLogEvent('signed_in', new \\DateTimeImmutable('2026-11-03T12:34:56.789Z'), 'user');
+$placeholder = new \\WorkOS\\Resource\\AuditLogEvent('signed_in', null, 'user');
+echo json_encode([$omitted->toArray(), $explicit->toArray(), $placeholder->toArray()], JSON_THROW_ON_ERROR);
+`;
+    const run = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
+    expect(run.status, run.stderr || run.stdout).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([
+      { action: 'signed_in', actor: 'user', note: null },
+      { action: 'signed_in', actor: 'user', occurred_at: '2026-11-03T12:34:56.789Z', note: null },
+      { action: 'signed_in', actor: 'user', note: null },
+    ]);
+  });
+
   it('returns empty array for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });
