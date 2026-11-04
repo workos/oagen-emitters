@@ -21,6 +21,29 @@ const ctx: EmitterContext = {
 };
 
 describe('ios/models', () => {
+  it('preserves configured constructor slots when a required field becomes optional', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    const content = generateModels(models, compatCtx)[0].content;
+    const initializer = content.slice(content.indexOf('public init('), content.indexOf(') {'));
+    expect(initializer).toContain('occurredAt: Date? = nil,');
+    expect(initializer.indexOf('occurredAt:')).toBeLessThan(initializer.indexOf('actor:'));
+    expect(initializer).toContain('actor: String');
+  });
+
   it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });

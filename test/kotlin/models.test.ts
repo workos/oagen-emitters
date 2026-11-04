@@ -22,6 +22,71 @@ const ctx: EmitterContext = {
 };
 
 describe('kotlin/models', () => {
+  it('does not alias models whose compatibility policy differs', () => {
+    const fields: Model['fields'] = [
+      { name: 'occurred_at', type: { kind: 'primitive', type: 'string' }, required: false },
+    ];
+    const models: Model[] = ['Alpha', 'Beta', 'Gamma'].map((name) => ({ name, fields }));
+    const compatible: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Beta: ['occurred_at'], Gamma: ['occurred_at'] } },
+    };
+    const files = generateModels(models, compatible);
+    expect(files.find((f) => f.path.endsWith('/Alpha.kt'))!.content).toContain('data class Alpha');
+    expect(files.find((f) => f.path.endsWith('/Beta.kt'))!.content).toContain('data class Beta');
+    expect(files.find((f) => f.path.endsWith('/Beta.kt'))!.content).toContain('@get:JsonInclude');
+    expect(files.find((f) => f.path.endsWith('/Gamma.kt'))!.content).toContain('typealias Gamma = Beta');
+  });
+
+  it('preserves configured constructor slots when a required field becomes optional', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    generateEnums([], compatCtx);
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/AuditLogEvent.kt'))!.content;
+    expect(content).toContain('val occurredAt: OffsetDateTime? = null,');
+    expect(content).toContain('@get:JsonInclude(JsonInclude.Include.NON_NULL)');
+    expect(content.indexOf('val occurredAt:')).toBeLessThan(content.indexOf('val actor:'));
+    expect(content).toContain('val actor: String');
+  });
+
+  it('retains null behavior for explicitly nullable and unconfigured fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Record',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'nullable_value',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          { name: 'ordinary_value', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Record: ['action', 'nullable_value'] } },
+    };
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/Record.kt'))!.content;
+    expect(content).not.toContain('JsonInclude');
+  });
+
   it('returns empty for no models', () => {
     generateEnums([], ctx);
     expect(generateModels([], ctx)).toEqual([]);

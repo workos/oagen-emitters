@@ -5,6 +5,7 @@ import { mapTypeRef } from './type-map.js';
 import { className, domainFieldName, fileName, buildMountDirMap, dirToModule } from './naming.js';
 import { collectGeneratedEnumSymbolsByDir, collectCompatEnumAliases, compatAliasLiteralName } from './enums.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
+import { isPreservedModelField, orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
 import {
   isModelInScope,
   isEnumInScope,
@@ -369,9 +370,16 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
     lines.push('');
 
-    // Sort fields: required first, then optional
-    const requiredFields = deduplicatedFields.filter((f) => !isOptionalField(model.name, f, ctx));
-    const optionalFields = deduplicatedFields.filter((f) => isOptionalField(model.name, f, ctx));
+    // Keep shipped positional slots required; factories can still omit their wire fields.
+    const constructorFields = preservedModelFields(model.name, ctx).length
+      ? orderModelFields(model.name, deduplicatedFields, ctx)
+      : deduplicatedFields;
+    const requiredFields = constructorFields.filter(
+      (f) => !isOptionalField(model.name, f, ctx) || isPreservedModelField(model.name, f.name, ctx),
+    );
+    const optionalFields = constructorFields.filter(
+      (f) => isOptionalField(model.name, f, ctx) && !isPreservedModelField(model.name, f.name, ctx),
+    );
 
     // Rewrite discriminator model references to their Variant union type.
     // E.g. `"ConnectApplication"` → `"ConnectApplicationVariant"`
@@ -388,7 +396,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     for (const field of requiredFields) {
       // DOMAIN identifier: the dataclass attribute name (honors `domainName`).
       const pyFieldName = domainFieldName(field);
-      const pyType = rewriteDiscriminatorType(resolveModelFieldType(field.type));
+      const innerType = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      const pyType = isOptionalField(model.name, field, ctx)
+        ? `Optional[${rewriteDiscriminatorType(resolveModelFieldType(innerType))}]`
+        : rewriteDiscriminatorType(resolveModelFieldType(field.type));
       if (field.description || field.deprecated) {
         const parts: string[] = [];
         if (field.description) parts.push(field.description);

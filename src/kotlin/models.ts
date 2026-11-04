@@ -10,6 +10,12 @@ import {
 } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
 import {
+  isPreservedModelField,
+  modelFieldCompatibilityHash,
+  orderModelFields,
+  preservedModelFields,
+} from '../shared/model-field-compat.js';
+import {
   isListWrapperModel,
   isListMetadataModel,
   collectNonPaginatedResponseModelNames,
@@ -107,7 +113,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
-    const hash = structuralHash(model);
+    const hash = structuralHash(model, ctx);
     if (!hashGroupsPass1.has(hash)) hashGroupsPass1.set(hash, []);
     hashGroupsPass1.get(hash)!.push(model.name);
   }
@@ -135,7 +141,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     if (aliasOf.has(model.name)) continue; // already aliased in pass 1
-    const hash = structuralHash(model);
+    const hash = structuralHash(model, ctx);
     if (!hashGroupsPass2.has(hash)) hashGroupsPass2.set(hash, []);
     hashGroupsPass2.get(hash)!.push(model.name);
   }
@@ -191,7 +197,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     }
 
     if (modelInScope) {
-      files.push(emitDataClass(model));
+      files.push(emitDataClass(model, ctx));
     }
   }
 
@@ -235,9 +241,18 @@ function isEventEnvelopeModel(model: Model): boolean {
   return fieldNames.has('id') && fieldNames.has('event') && fieldNames.has('created_at') && fieldNames.has('data');
 }
 
-function emitDataClass(model: Model): GeneratedFile {
+function emitDataClass(model: Model, ctx: EmitterContext): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
+  const omitNullFields = new Set(
+    model.fields
+      .filter(
+        (field) =>
+          !field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx),
+      )
+      .map((field) => field.name),
+  );
+  if (omitNullFields.size) imports.add('com.fasterxml.jackson.annotation.JsonInclude');
   const implementsEvent = isEventEnvelopeModel(model);
   // WorkOSEvent sealed interface is generated in the same package — no import needed.
   const lines: string[] = [];
@@ -257,19 +272,19 @@ function emitDataClass(model: Model): GeneratedFile {
     const implClause = implementsEvent ? ' : WorkOSEvent' : '';
     lines.push(`data class ${typeName}(`);
 
-    // Emit non-defaulted params first, then defaulted — Kotlin requires
-    // non-defaulted params before defaulted ones. Literal-typed fields always
-    // receive a default, so they sort after plain required fields.
+    // Defaulted fields normally follow required fields; compatibility pins retain shipped slots.
     const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
-    const ordered = [...model.fields].sort((a, b) => {
-      const aDef = hasDefault(a);
-      const bDef = hasDefault(b);
-      if (aDef === bDef) return 0;
-      return aDef ? 1 : -1;
-    });
+    const ordered = preservedModelFields(model.name, ctx).length
+      ? orderModelFields(model.name, model.fields, ctx)
+      : [...model.fields].sort((a, b) => {
+          const aDef = hasDefault(a);
+          const bDef = hasDefault(b);
+          if (aDef === bDef) return 0;
+          return aDef ? 1 : -1;
+        });
     // When implementing WorkOSEvent, matching fields need `override`.
     const overrideFields = implementsEvent ? new Set(['id', 'event', 'createdAt']) : new Set<string>();
-    const rendered = renderFields(ordered, overrideFields);
+    const rendered = renderFields(ordered, overrideFields, omitNullFields);
     for (let i = 0; i < rendered.length; i++) {
       const suffix = i === rendered.length - 1 ? '' : ',';
       lines.push(`${rendered[i]}${suffix}`);
@@ -429,7 +444,11 @@ function emitWorkOSEvent(eventMapping: Array<{ wireValue: string; modelName: str
   };
 }
 
-function renderFields(fields: Field[], overrideFields: Set<string> = new Set()): string[] {
+function renderFields(
+  fields: Field[],
+  overrideFields: Set<string> = new Set(),
+  omitNullFields: Set<string> = new Set(),
+): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
 
@@ -471,6 +490,7 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
     // isEmailVerified(), etc.) for Java callers — matching the accessor
     // convention used by Stripe, AWS SDK v2, and Twilio.
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
+    if (omitNullFields.has(field.name)) annotations.push('@get:JsonInclude(JsonInclude.Include.NON_NULL)');
     if (field.deprecated) annotations.push(buildDeprecatedAnnotation(field.description));
 
     const paramParts: string[] = [];
@@ -655,9 +675,11 @@ function normalizeTypeForHash(ref: TypeRef): unknown {
   return ref;
 }
 
-function structuralHash(model: Model): string {
-  return model.fields
-    .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type))}:${f.required}`)
-    .sort()
-    .join('|');
+function structuralHash(model: Model, ctx: EmitterContext): string {
+  return (
+    model.fields
+      .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type))}:${f.required}`)
+      .sort()
+      .join('|') + modelFieldCompatibilityHash(model, ctx)
+  );
 }

@@ -21,6 +21,42 @@ const config: OagenConfig = {
 
 The plugin bundle registers all emitters, extractors, and smoke runners provided by this package.
 
+## Preserving model fields that become optional
+
+The Go, Rust, Swift (`ios`), Kotlin, PHP, Python, and Ruby emitters accept an opt-in
+`modelRequiredFieldOrder` option. Set it under each language's `emitterOptions` to
+record the required field names and their order in an already shipped model:
+
+```ts
+emitterOptions: {
+  python: {
+    modelRequiredFieldOrder: {
+      AuditLogEvent: ["action", "occurred_at", "actor", "targets", "context"],
+    },
+  },
+}
+```
+
+When a configured field becomes optional in the spec, Swift and Kotlin retain
+its constructor position with a nullable default. PHP and Python retain the old
+positional argument as required but nullable; callers can omit its wire field
+through `fromArray` and `from_dict`, respectively. This option does not make
+those legacy positional constructor arguments omittable.
+
+Go and Rust retain a shipped string field's public type. An empty string means
+wire omission (`omitempty` / Serde `String::is_empty`), and deserialization accepts
+a missing field. Explicit nonempty timestamps are preserved. Kotlin, PHP, and Ruby omit
+an absent configured non-nullable field when serializing a model; explicitly
+nullable fields keep their existing null behavior. The option never supplies a
+client-side timestamp, and models without configuration retain existing behavior.
+
+PHP also accepts `modelDateTimeFormats` for fields whose existing literal wire
+format must survive regeneration. For example,
+`{ AuditLogEvent: { occurred_at: "rfc3339-extended" } }` under PHP's
+`emitterOptions` retains `DateTimeInterface::RFC3339_EXTENDED`, including the
+original UTC `+00:00` or non-UTC offset. Only this fixed format name is supported;
+unconfigured fields keep the UTC `DateTimeFormat::iso8601` helper.
+
 ## Snippet emitters
 
 Snippet emitters render one short, runnable call-site sample per resolved SDK operation. They are intentionally a separate runtime from the full SDK emitters: snippet emitters do not generate models, clients, or tests, and they are not invoked by `oagen generate`. Consumers import them directly and write the results wherever they need.

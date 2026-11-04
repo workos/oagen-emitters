@@ -13,6 +13,7 @@ import {
   collectReferencedListMetadataModels,
 } from '../shared/model-utils.js';
 import { isModelInScope } from '../shared/resolved-ops.js';
+import { isPreservedModelField, orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
 export { isListMetadataModel, isListWrapperModel };
 
 /**
@@ -69,7 +70,10 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     const optionalFields = model.fields.filter((f) => !f.required);
     // Deduplicate fields that map to the same PHP name
     const seenNames = new Set<string>();
-    const allFields = [...requiredFields, ...optionalFields].filter((f) => {
+    const constructorFields = preservedModelFields(model.name, ctx).length
+      ? orderModelFields(model.name, model.fields, ctx)
+      : [...requiredFields, ...optionalFields];
+    const allFields = constructorFields.filter((f) => {
       // DOMAIN identifier: the PHP property name (honors a `domainName` override).
       const phpName = domainFieldName(f);
       if (seenNames.has(phpName)) return false;
@@ -98,7 +102,9 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
 
       if (isOptional) {
         const nullableType = phpType.startsWith('?') ? phpType : `?${phpType}`;
-        lines.push(`        public ${nullableType} $${phpName} = null${comma}`);
+        // A formerly required positional slot stays required; fromArray supplies null when absent.
+        const defaultValue = isPreservedModelField(model.name, field.name, ctx) ? '' : ' = null';
+        lines.push(`        public ${nullableType} $${phpName}${defaultValue}${comma}`);
       } else {
         lines.push(`        public ${phpType} $${phpName}${comma}`);
       }
@@ -135,8 +141,24 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpName = domainFieldName(field);
       // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
-      const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
-      lines.push(`            ${phpStringLiteral(wireName)} => ${serialized},`);
+      const omitsAbsent =
+        !field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx);
+      const formats = ctx.emitterOptions?.modelDateTimeFormats as Record<string, Record<string, string>> | undefined;
+      const dateType = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      const legacyDateTime =
+        formats?.[model.name]?.[field.name] === 'rfc3339-extended' &&
+        dateType.kind === 'primitive' &&
+        dateType.format === 'date-time';
+      const nullSafe = (!field.required || field.type.kind === 'nullable') && !omitsAbsent ? '?' : '';
+      const serialized = legacyDateTime
+        ? `$this->${phpName}${nullSafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+        : generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
+      const entry = `${phpStringLiteral(wireName)} => ${serialized}`;
+      if (omitsAbsent) {
+        lines.push(`            ...($this->${phpName} !== null ? [${entry}] : []),`);
+      } else {
+        lines.push(`            ${entry},`);
+      }
     }
     lines.push('        ];');
     lines.push('    }');

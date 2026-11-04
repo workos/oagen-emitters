@@ -20,6 +20,37 @@ const ctx: EmitterContext = {
 };
 
 describe('go/models', () => {
+  it('does not alias models whose compatibility policy differs', () => {
+    const fields: Model['fields'] = [
+      { name: 'occurred_at', type: { kind: 'primitive', type: 'string' }, required: false },
+    ];
+    const models: Model[] = ['Alpha', 'Beta', 'Gamma'].map((name) => ({ name, fields }));
+    const compatible: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Beta: ['occurred_at'], Gamma: ['occurred_at'] } },
+    };
+    const content = generateModels(models, compatible)[0]!.content;
+    expect(content).toContain('type Alpha struct');
+    expect(content).toContain('type Beta struct');
+    expect(content).toContain('type Gamma = Beta');
+    expect(content).toContain('OccurredAt string');
+    expect(content).toContain('OccurredAt *string');
+  });
+
+  it('keeps a shipped string field when it becomes optional and omits its zero value', () => {
+    const model: Model = {
+      name: 'AuditLogEvent',
+      fields: [
+        { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+      ],
+    };
+    const compatible = { ...ctx, emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['occurred_at'] } } };
+    const content = generateModels([model], compatible)[0]!.content;
+    expect(content).toContain('OccurredAt string `json:"occurred_at,omitempty"`');
+    expect(content).not.toContain('OccurredAt *string');
+  });
+
   it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });

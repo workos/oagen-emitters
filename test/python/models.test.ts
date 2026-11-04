@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { generateModels } from '../../src/python/models.js';
 import type { EmitterContext, ApiSpec, Model, Service } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
+import { spawnSync } from 'node:child_process';
+
+const hasPython =
+  spawnSync('python3', ['-c', 'import sys; assert sys.version_info >= (3, 10)'], { timeout: 5000 }).status === 0;
 
 const emptySpec: ApiSpec = {
   name: 'Test',
@@ -20,6 +24,76 @@ const ctx: EmitterContext = {
 };
 
 describe('generateModels', () => {
+  it('preserves configured constructor slots when a required field becomes optional', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/audit_log_event.py'))!.content;
+    expect(content).toContain('    occurred_at: Optional[datetime]\n');
+    expect(content.indexOf('    occurred_at:')).toBeLessThan(content.indexOf('    actor:'));
+    expect(content).toContain('data.get("occurred_at")');
+    expect(content).toContain('if self.occurred_at is not None:');
+  });
+
+  it.skipIf(!hasPython)('preserves positional construction and supports omission through from_dict in Python', () => {
+    const models: Model[] = [
+      {
+        name: 'AuditLogEvent',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+          { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/audit_log_event.py'))!.content;
+    const program = `
+import sys, types
+from datetime import datetime
+runtime = types.ModuleType('workos._types')
+runtime._parse_datetime = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00'))
+runtime._format_datetime = lambda value: value.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+def deserialize_error(model, error):
+    raise ValueError(model) from error
+runtime._raise_deserialize_error = deserialize_error
+sys.modules['workos'] = types.ModuleType('workos')
+sys.modules['workos._types'] = runtime
+module = types.ModuleType('generated')
+sys.modules['generated'] = module
+exec(${JSON.stringify(content)}, module.__dict__)
+Event = module.AuditLogEvent
+stamp = runtime._parse_datetime('2026-11-03T12:34:56.789Z')
+explicit = Event('signed_in', stamp, 'user')
+assert explicit.to_dict() == {'action': 'signed_in', 'occurred_at': '2026-11-03T12:34:56.789Z', 'actor': 'user'}
+assert Event.from_dict({'action': 'signed_in', 'actor': 'user'}).to_dict() == {'action': 'signed_in', 'actor': 'user'}
+assert Event('signed_in', None, 'user').to_dict() == {'action': 'signed_in', 'actor': 'user'}
+try:
+    Event('signed_in')
+    raise AssertionError('required constructor arguments accepted omission')
+except TypeError:
+    pass
+`;
+    const run = spawnSync('python3', ['-c', program], { encoding: 'utf8', timeout: 15000 });
+    expect(run.status, run.stderr || run.stdout).toBe(0);
+  });
+
   it('returns empty for no models', () => {
     expect(generateModels([], ctx)).toEqual([]);
   });
