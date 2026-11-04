@@ -1,5 +1,5 @@
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
-import { isPreservedModelField } from '../shared/model-field-compat.js';
+import { isPreservedModelField, modelFieldCompatibilityHash } from '../shared/model-field-compat.js';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
 import { buildListScaffoldingSkip } from '../shared/model-utils.js';
@@ -94,7 +94,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const skipScaffolding = buildListScaffoldingSkip(models, ctx.spec.services);
 
   // Dedup identical models (by recursive structural hash).
-  const recursiveHashes = buildRecursiveHashMap(models, enumNames);
+  const recursiveHashes = buildRecursiveHashMap(models, enumNames, ctx);
   const hashGroups = new Map<string, string[]>();
   for (const m of models) {
     if (skipScaffolding(m)) continue;
@@ -228,7 +228,13 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       // DOMAIN ivar name (honors fieldHints); rawKey is the WIRE key read from the hash.
       const fname = domainFieldName(field);
       const rawKey = field.name;
-      lines.push(`      ${deserializeAssignment(fname, rawKey, field.type, field.required, enumNames, modelNames)}`);
+      const preserveAbsent =
+        !field.required &&
+        (field.type.kind === 'array' || field.type.kind === 'map') &&
+        isPreservedModelField(model.name, field.name, ctx);
+      lines.push(
+        `      ${deserializeAssignment(fname, rawKey, field.type, field.required, enumNames, modelNames, preserveAbsent)}`,
+      );
     }
     lines.push('    end');
 
@@ -274,10 +280,11 @@ function deserializeAssignment(
   required: boolean,
   enumNames: Set<string>,
   modelNames: Set<string>,
+  preserveAbsent: boolean,
 ): string {
   const accessor = rubyHashAccessor('hash', rawKey);
   const expr = deserializeExpression(accessor, ref, required, enumNames, modelNames);
-  return `@${rubyFieldName} = ${expr}`;
+  return `@${rubyFieldName} = ${preserveAbsent ? `${accessor}.nil? ? nil : ${expr}` : expr}`;
 }
 
 /** Build an expression that deserializes a TypeRef from the given accessor. */
@@ -382,7 +389,7 @@ function rubyHashLiteralKey(name: string): string {
 }
 
 /** Build a recursive structural hash map for model deduplication. */
-function buildRecursiveHashMap(models: Model[], enumNames: Set<string>): Map<string, string> {
+function buildRecursiveHashMap(models: Model[], enumNames: Set<string>, ctx: EmitterContext): Map<string, string> {
   const modelByName = new Map(models.map((m) => [m.name, m]));
   const memo = new Map<string, string>();
 
@@ -420,7 +427,7 @@ function buildRecursiveHashMap(models: Model[], enumNames: Set<string>): Map<str
     if (!m) return `?:${name}`;
     visiting.add(name);
     const fieldsSorted = [...m.fields].sort((a, b) => a.name.localeCompare(b.name));
-    const h = fieldsSorted.map((f) => hashField(f, visiting)).join('|');
+    const h = fieldsSorted.map((f) => hashField(f, visiting)).join('|') + modelFieldCompatibilityHash(m, ctx);
     visiting.delete(name);
     memo.set(name, h);
     return h;

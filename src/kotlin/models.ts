@@ -9,7 +9,12 @@ import {
   typealiasFile,
 } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
-import { isPreservedModelField, orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
+import {
+  isPreservedModelField,
+  modelFieldCompatibilityHash,
+  orderModelFields,
+  preservedModelFields,
+} from '../shared/model-field-compat.js';
 import {
   isListWrapperModel,
   isListMetadataModel,
@@ -108,7 +113,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
-    const hash = structuralHash(model);
+    const hash = structuralHash(model, ctx);
     if (!hashGroupsPass1.has(hash)) hashGroupsPass1.set(hash, []);
     hashGroupsPass1.get(hash)!.push(model.name);
   }
@@ -136,7 +141,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (model.fields.length === 0 && discriminatedUnions.has(className(model.name))) continue;
     if (aliasOf.has(model.name)) continue; // already aliased in pass 1
-    const hash = structuralHash(model);
+    const hash = structuralHash(model, ctx);
     if (!hashGroupsPass2.has(hash)) hashGroupsPass2.set(hash, []);
     hashGroupsPass2.get(hash)!.push(model.name);
   }
@@ -670,9 +675,11 @@ function normalizeTypeForHash(ref: TypeRef): unknown {
   return ref;
 }
 
-function structuralHash(model: Model): string {
-  return model.fields
-    .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type))}:${f.required}`)
-    .sort()
-    .join('|');
+function structuralHash(model: Model, ctx: EmitterContext): string {
+  return (
+    model.fields
+      .map((f) => `${f.name}:${JSON.stringify(normalizeTypeForHash(f.type))}:${f.required}`)
+      .sort()
+      .join('|') + modelFieldCompatibilityHash(model, ctx)
+  );
 }

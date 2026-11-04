@@ -22,6 +22,23 @@ const ctx: EmitterContext = {
 };
 
 describe('kotlin/models', () => {
+  it('does not alias models whose compatibility policy differs', () => {
+    const fields: Model['fields'] = [
+      { name: 'occurred_at', type: { kind: 'primitive', type: 'string' }, required: false },
+    ];
+    const models: Model[] = ['Alpha', 'Beta', 'Gamma'].map((name) => ({ name, fields }));
+    const compatible: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Beta: ['occurred_at'], Gamma: ['occurred_at'] } },
+    };
+    const files = generateModels(models, compatible);
+    expect(files.find((f) => f.path.endsWith('/Alpha.kt'))!.content).toContain('data class Alpha');
+    expect(files.find((f) => f.path.endsWith('/Beta.kt'))!.content).toContain('data class Beta');
+    expect(files.find((f) => f.path.endsWith('/Beta.kt'))!.content).toContain('@get:JsonInclude');
+    expect(files.find((f) => f.path.endsWith('/Gamma.kt'))!.content).toContain('typealias Gamma = Beta');
+  });
+
   it('preserves configured constructor slots when a required field becomes optional', () => {
     const models: Model[] = [
       {

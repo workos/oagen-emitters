@@ -1,5 +1,5 @@
 import { goStructTag } from './strings.js';
-import { isPreservedModelField } from '../shared/model-field-compat.js';
+import { isPreservedModelField, modelFieldCompatibilityHash } from '../shared/model-field-compat.js';
 import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import { mapTypeRef } from './type-map.js';
@@ -116,7 +116,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   for (const model of models) {
     if (skipAsListWrapper(model) || skipAsListMetadata(model)) continue;
     if (requestBodyOnly.has(model.name)) continue;
-    const hash = structuralHash(model);
+    const hash = structuralHash(model, ctx);
     modelHashMap.set(model.name, hash);
     if (!hashGroups.has(hash)) hashGroups.set(hash, []);
     hashGroups.get(hash)!.push(model.name);
@@ -335,11 +335,12 @@ function makeOptional(goType: string): string {
   return `*${goType}`;
 }
 
-function structuralHash(model: Model): string {
-  const fieldHash = model.fields
-    .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
-    .sort()
-    .join('|');
+function structuralHash(model: Model, ctx: EmitterContext): string {
+  const fieldHash =
+    model.fields
+      .map((f) => `${f.name}:${JSON.stringify(f.type)}:${f.required}`)
+      .sort()
+      .join('|') + modelFieldCompatibilityHash(model, ctx);
   // Include entity domain for CRUD-prefixed models to prevent cross-domain
   // aliasing (e.g. UpdateGroup vs UpdateAuthorizationPermission have identical
   // fields but belong to different API domains and should stay separate types).
