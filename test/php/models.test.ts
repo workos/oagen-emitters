@@ -723,3 +723,71 @@ echo json_encode([$session->toArray(), $roundTrip->toArray()], JSON_THROW_ON_ERR
     ]);
   });
 });
+
+describe('configured model date-time wire formats', () => {
+  const models: Model[] = [
+    {
+      name: 'AuditLogEvent',
+      fields: [
+        { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'occurred_at', type: { kind: 'primitive', type: 'string', format: 'date-time' }, required: false },
+        { name: 'actor', type: { kind: 'primitive', type: 'string' }, required: true },
+      ],
+    },
+  ];
+  const compatible: EmitterContext = {
+    ...ctx,
+    spec: { ...emptySpec, models },
+    emitterOptions: {
+      modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] },
+      modelDateTimeFormats: { AuditLogEvent: { occurred_at: 'rfc3339-extended' } },
+    },
+  };
+
+  it('pins only configured date-time fields to their shipped RFC3339 formatter', () => {
+    const content = findModel(generateModels(models, compatible), 'AuditLogEvent')!.content;
+    expect(content).toContain('$this->occurredAt->format(\\DateTimeInterface::RFC3339_EXTENDED)');
+    expect(content).not.toContain('DateTimeFormat::iso8601($this->occurredAt)');
+    const nullableModels: Model[] = [
+      {
+        ...models[0],
+        fields: models[0].fields.map((field) =>
+          field.name === 'occurred_at' ? { ...field, type: { kind: 'nullable', inner: field.type } } : field,
+        ),
+      },
+    ];
+    const nullable = findModel(generateModels(nullableModels, compatible), 'AuditLogEvent')!.content;
+    expect(nullable).toContain('$this->occurredAt?->format(\\DateTimeInterface::RFC3339_EXTENDED)');
+    expect(nullable).not.toContain('...($this->occurredAt !== null');
+    const unconfigured = {
+      ...compatible,
+      emitterOptions: { modelRequiredFieldOrder: { AuditLogEvent: ['action', 'occurred_at', 'actor'] } },
+    };
+    expect(findModel(generateModels(models, unconfigured), 'AuditLogEvent')!.content).toContain(
+      'DateTimeFormat::iso8601($this->occurredAt)',
+    );
+  });
+
+  it.skipIf(!hasPhp)('keeps literal UTC and non-UTC wire strings while omitting absent values in PHP', () => {
+    const program = `<?php
+${generateRuntime(compatible)
+  .map((f) => f.content)
+  .join('\n')}
+${generateModels(models, compatible)
+  .map((f) => f.content)
+  .join('\n')}
+namespace WorkOS;
+$omitted = \\WorkOS\\Resource\\AuditLogEvent::fromArray(['action' => 'signed_in', 'actor' => 'user']);
+$utc = new \\WorkOS\\Resource\\AuditLogEvent('signed_in', new \\DateTimeImmutable('2026-11-03T12:34:56.789Z'), 'user');
+$offset = new \\WorkOS\\Resource\\AuditLogEvent('signed_in', new \\DateTimeImmutable('2026-11-03T14:34:56.789+02:00'), 'user');
+echo json_encode([$omitted->toArray(), $utc->toArray(), $offset->toArray()], JSON_THROW_ON_ERROR);
+`;
+    const run = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
+    expect(run.status, run.stderr || run.stdout).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([
+      { action: 'signed_in', actor: 'user' },
+      { action: 'signed_in', actor: 'user', occurred_at: '2026-11-03T12:34:56.789+00:00' },
+      { action: 'signed_in', actor: 'user', occurred_at: '2026-11-03T14:34:56.789+02:00' },
+    ]);
+  });
+});

@@ -141,9 +141,20 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       const phpName = domainFieldName(field);
       // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
-      const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
+      const omitsAbsent =
+        !field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx);
+      const formats = ctx.emitterOptions?.modelDateTimeFormats as Record<string, Record<string, string>> | undefined;
+      const dateType = field.type.kind === 'nullable' ? field.type.inner : field.type;
+      const legacyDateTime =
+        formats?.[model.name]?.[field.name] === 'rfc3339-extended' &&
+        dateType.kind === 'primitive' &&
+        dateType.format === 'date-time';
+      const nullSafe = (!field.required || field.type.kind === 'nullable') && !omitsAbsent ? '?' : '';
+      const serialized = legacyDateTime
+        ? `$this->${phpName}${nullSafe}->format(\\DateTimeInterface::RFC3339_EXTENDED)`
+        : generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
       const entry = `${phpStringLiteral(wireName)} => ${serialized}`;
-      if (!field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx)) {
+      if (omitsAbsent) {
         lines.push(`            ...($this->${phpName} !== null ? [${entry}] : []),`);
       } else {
         lines.push(`            ${entry},`);

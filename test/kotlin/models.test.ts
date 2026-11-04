@@ -41,8 +41,33 @@ describe('kotlin/models', () => {
     generateEnums([], compatCtx);
     const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/AuditLogEvent.kt'))!.content;
     expect(content).toContain('val occurredAt: OffsetDateTime? = null,');
+    expect(content).toContain('@get:JsonInclude(JsonInclude.Include.NON_NULL)');
     expect(content.indexOf('val occurredAt:')).toBeLessThan(content.indexOf('val actor:'));
     expect(content).toContain('val actor: String');
+  });
+
+  it('retains null behavior for explicitly nullable and unconfigured fields', () => {
+    const models: Model[] = [
+      {
+        name: 'Record',
+        fields: [
+          { name: 'action', type: { kind: 'primitive', type: 'string' }, required: true },
+          {
+            name: 'nullable_value',
+            type: { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } },
+            required: false,
+          },
+          { name: 'ordinary_value', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+    ];
+    const compatCtx: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, models },
+      emitterOptions: { modelRequiredFieldOrder: { Record: ['action', 'nullable_value'] } },
+    };
+    const content = generateModels(models, compatCtx).find((f) => f.path.endsWith('/Record.kt'))!.content;
+    expect(content).not.toContain('JsonInclude');
   });
 
   it('returns empty for no models', () => {

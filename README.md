@@ -45,10 +45,17 @@ those legacy positional constructor arguments omittable.
 
 Go and Rust retain a shipped string field's public type. An empty string means
 wire omission (`omitempty` / Serde `String::is_empty`), and deserialization accepts
-a missing field. Explicit nonempty timestamps are preserved. PHP and Ruby omit
+a missing field. Explicit nonempty timestamps are preserved. Kotlin, PHP, and Ruby omit
 an absent configured non-nullable field when serializing a model; explicitly
 nullable fields keep their existing null behavior. The option never supplies a
 client-side timestamp, and models without configuration retain existing behavior.
+
+PHP also accepts `modelDateTimeFormats` for fields whose existing literal wire
+format must survive regeneration. For example,
+`{ AuditLogEvent: { occurred_at: "rfc3339-extended" } }` under PHP's
+`emitterOptions` retains `DateTimeInterface::RFC3339_EXTENDED`, including the
+original UTC `+00:00` or non-UTC offset. Only this fixed format name is supported;
+unconfigured fields keep the UTC `DateTimeFormat::iso8601` helper.
 
 ## Snippet emitters
 

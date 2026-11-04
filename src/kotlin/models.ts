@@ -9,7 +9,7 @@ import {
   typealiasFile,
 } from './naming.js';
 import { enumCanonicalMap } from './enums.js';
-import { orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
+import { isPreservedModelField, orderModelFields, preservedModelFields } from '../shared/model-field-compat.js';
 import {
   isListWrapperModel,
   isListMetadataModel,
@@ -239,6 +239,15 @@ function isEventEnvelopeModel(model: Model): boolean {
 function emitDataClass(model: Model, ctx: EmitterContext): GeneratedFile {
   const typeName = className(model.name);
   const imports = collectImports(model.fields);
+  const omitNullFields = new Set(
+    model.fields
+      .filter(
+        (field) =>
+          !field.required && field.type.kind !== 'nullable' && isPreservedModelField(model.name, field.name, ctx),
+      )
+      .map((field) => field.name),
+  );
+  if (omitNullFields.size) imports.add('com.fasterxml.jackson.annotation.JsonInclude');
   const implementsEvent = isEventEnvelopeModel(model);
   // WorkOSEvent sealed interface is generated in the same package — no import needed.
   const lines: string[] = [];
@@ -270,7 +279,7 @@ function emitDataClass(model: Model, ctx: EmitterContext): GeneratedFile {
         });
     // When implementing WorkOSEvent, matching fields need `override`.
     const overrideFields = implementsEvent ? new Set(['id', 'event', 'createdAt']) : new Set<string>();
-    const rendered = renderFields(ordered, overrideFields);
+    const rendered = renderFields(ordered, overrideFields, omitNullFields);
     for (let i = 0; i < rendered.length; i++) {
       const suffix = i === rendered.length - 1 ? '' : ',';
       lines.push(`${rendered[i]}${suffix}`);
@@ -430,7 +439,11 @@ function emitWorkOSEvent(eventMapping: Array<{ wireValue: string; modelName: str
   };
 }
 
-function renderFields(fields: Field[], overrideFields: Set<string> = new Set()): string[] {
+function renderFields(
+  fields: Field[],
+  overrideFields: Set<string> = new Set(),
+  omitNullFields: Set<string> = new Set(),
+): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
 
@@ -472,6 +485,7 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
     // isEmailVerified(), etc.) for Java callers — matching the accessor
     // convention used by Stripe, AWS SDK v2, and Twilio.
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
+    if (omitNullFields.has(field.name)) annotations.push('@get:JsonInclude(JsonInclude.Include.NON_NULL)');
     if (field.deprecated) annotations.push(buildDeprecatedAnnotation(field.description));
 
     const paramParts: string[] = [];
