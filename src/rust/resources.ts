@@ -13,7 +13,7 @@ import { planOperation } from '@workos/oagen';
 import { fieldName, domainFieldName, methodName, typeName, moduleName, variantName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
-import { docCommentLines } from './doc-comments.js';
+import { deprecatedAttr, docCommentLines } from './doc-comments.js';
 import { parsePathTemplate } from '../shared/path-template.js';
 import {
   groupByMount,
@@ -501,7 +501,7 @@ function renderParamsStruct(
     if (fname !== p.name) {
       fieldLines.push(`    #[serde(rename = ${JSON.stringify(p.name)})]`);
     }
-    if (p.deprecated) fieldLines.push('    #[deprecated]');
+    if (p.deprecated) fieldLines.push(`    ${deprecatedAttr(p.description, 'parameter')}`);
     fieldLines.push(`    pub ${fname}: ${rust},`);
     fields.push({
       fname,
@@ -820,7 +820,9 @@ function bearerOverrideToken(op: Operation): string | null {
  * the inner call even though the caller is deprecated itself, and the SDK's
  * `cargo clippy -D warnings` turns that lint into a build failure.
  */
-const DEPRECATED_DELEGATOR_ATTRS = ['    #[deprecated]', '    #[allow(deprecated)]'];
+function deprecatedDelegatorAttrs(op: Operation): string[] {
+  return [`    ${deprecatedAttr(op.description, 'operation')}`, '    #[allow(deprecated)]'];
+}
 
 function renderMethod(
   op: Operation,
@@ -842,7 +844,7 @@ function renderMethod(
 
   // Convenience method — no per-request options. Delegates to `_with_options`.
   for (const line of methodDocLines(op)) sig.push(`    ${line}`);
-  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
+  if (op.deprecated) sig.push(...deprecatedDelegatorAttrs(op));
   const argsConvenience = [
     '&self',
     ...pathArgList,
@@ -869,7 +871,7 @@ function renderMethod(
 
   // `_with_options` variant — per-request idempotency keys, custom headers, etc.
   sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
   const argsOpts = [
     '&self',
     ...pathArgList,
@@ -963,7 +965,7 @@ function renderUrlBuilderMethod(
 
   const sig: string[] = [];
   for (const line of methodDocLines(op)) sig.push(`    ${line}`);
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
   const args = ['&self', ...pathArgList, ...(emptyParams ? [] : [`params: ${paramsType}`])];
   const headSig = `    pub fn ${method}(${args.join(', ')}) -> Result<String, Error> {`;
   if (headSig.length <= 100) {
@@ -1106,7 +1108,7 @@ function renderAutoPagingMethod(
   sig.push('    ///     .try_collect()');
   sig.push('    ///     .await?;');
   sig.push('    /// ```');
-  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
+  if (op.deprecated) sig.push(...deprecatedDelegatorAttrs(op));
 
   const argsAll = ['&self', ...pathArgList, `params: ${paramsType}`];
   const optsSig = `    pub fn ${method}_auto_paging(${argsAll.join(', ')}) -> impl futures_util::Stream<Item = Result<${itemType}, Error>> + '_ {`;
@@ -1281,7 +1283,7 @@ function renderWrapperMethod(
 
   // Convenience method — delegates to `_with_options`.
   sig.push(...docLines);
-  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
+  if (op.deprecated) sig.push(...deprecatedDelegatorAttrs(op));
   const argsConvenience = ['&self', ...pathArgList, `params: ${paramsType}`];
   const convenienceSig = `    pub async fn ${method}(${argsConvenience.join(', ')}) -> Result<${returnType}, Error> {`;
   if (convenienceSig.length <= 100) {
@@ -1298,7 +1300,7 @@ function renderWrapperMethod(
 
   // `_with_options` variant.
   sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
   const argsOpts = ['&self', ...pathArgList, `params: ${paramsType}`, 'options: Option<&crate::RequestOptions>'];
   const optsSig = `    pub async fn ${method}_with_options(${argsOpts.join(', ')}) -> Result<${returnType}, Error> {`;
   if (optsSig.length <= 100) {

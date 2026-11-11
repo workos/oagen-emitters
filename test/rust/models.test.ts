@@ -65,6 +65,29 @@ describe('rust/models', () => {
     expect(file.content).toContain('pub verification_uri: String');
   });
 
+  it('derives the #[deprecated] note for a deprecated field from its description', () => {
+    const model: Model = {
+      name: 'Org',
+      fields: [
+        {
+          name: 'domains',
+          type: { kind: 'primitive', type: 'string' },
+          required: false,
+          deprecated: true,
+          description: 'Deprecated. Use `domain_data` instead.',
+        },
+        { name: 'legacy', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+      ],
+    };
+    const file = generateModels([model], ctx, new UnionRegistry()).find((f) => f.path === 'src/models/org.rs')!;
+    expect(file.content).toContain(
+      '    #[deprecated(note = "Deprecated. Use `domain_data` instead.")]\n    pub domains: Option<String>,',
+    );
+    expect(file.content).toContain(
+      '    #[deprecated(note = "This field is deprecated.")]\n    pub legacy: Option<String>,',
+    );
+  });
+
   it('emits only an empty barrel when no models', () => {
     const files = generateModels([], ctx, new UnionRegistry());
     expect(files).toHaveLength(1);

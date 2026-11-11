@@ -328,38 +328,6 @@ export function escapeXml(s: string): string {
 }
 
 /**
- * Distill a deprecation message from a spec description. Looks for common
- * WorkOS patterns ("Deprecated. Use X.", "Use X instead.", etc.) and falls
- * back to a generic message scoped to the item kind.
- *
- * Output is suitable for inlining into `[System.Obsolete("...")]`.
- */
-export function deprecationMessage(
-  description: string | undefined | null,
-  kind: 'field' | 'parameter' | 'operation' | 'value',
-): string {
-  const generic = `This ${kind} is deprecated.`;
-  if (!description) return generic;
-
-  const text = description.replace(/\s+/g, ' ').trim();
-  if (!text) return generic;
-
-  // Match: "Deprecated. Use `foo` instead." / "Deprecated: use Foo."
-  const deprecatedClause = text.match(/Deprecated[.:][\s]*(.*?)(?:\.|$)/i);
-  if (deprecatedClause?.[1]?.trim()) {
-    return `Deprecated. ${deprecatedClause[1].trim().replace(/\.$/, '')}.`;
-  }
-
-  // Match: "Use `foo` instead." anywhere in the description
-  const useInstead = text.match(/Use\s+`?([^`.\s]+)`?\s+instead/i);
-  if (useInstead) {
-    return `${generic.replace(/\.$/, '')} Use \`${useInstead[1]}\` instead.`;
-  }
-
-  return generic;
-}
-
-/**
  * Escape a C# string literal for use inside `[System.Obsolete("...")]`.
  * Doubles embedded quotes and escapes backslashes.
  */

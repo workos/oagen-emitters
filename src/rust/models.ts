@@ -2,7 +2,7 @@ import type { Model, EmitterContext, GeneratedFile, Field, TypeRef } from '@work
 import { typeName, domainFieldName, moduleName } from './naming.js';
 import { mapTypeRef, makeOptional, UnionRegistry } from './type-map.js';
 import { applySecretRedaction } from './secret.js';
-import { docCommentLines } from './doc-comments.js';
+import { deprecatedAttr, docCommentLines } from './doc-comments.js';
 import { isModelInScope, fileExistsAfterRun, priorManifestBasenames } from '../shared/resolved-ops.js';
 
 const HEADER_PLACEHOLDER = ''; // engine prepends fileHeader()
@@ -244,7 +244,7 @@ function renderField(
       lines.push('    #[serde(skip_serializing_if = "Option::is_none", default)]');
     }
   }
-  if (field.deprecated) lines.push('    #[deprecated]');
+  if (field.deprecated) lines.push(`    ${deprecatedAttr(field.description, 'field')}`);
   lines.push(`    pub ${rustField}: ${baseType},`);
   return lines.join('\n');
 }

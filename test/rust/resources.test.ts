@@ -836,10 +836,20 @@ describe('rust/resources', () => {
           {
             name: 'listWidgets',
             deprecated: true,
+            description: 'List widgets. Deprecated: use `GET /v2/widgets` instead.',
             httpMethod: 'get',
             path: '/widgets',
             pathParams: [],
-            queryParams: [{ name: 'after', type: { kind: 'primitive', type: 'string' }, required: false }],
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'before',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                deprecated: true,
+                description: 'Deprecated. Use `after` instead.',
+              },
+            ],
             headerParams: [],
             response: { kind: 'model', name: 'WidgetList' },
             errors: [],
@@ -901,12 +911,21 @@ describe('rust/resources', () => {
       ),
     };
     const f = generateResources(services, ctx, new UnionRegistry()).find((x) => x.path === 'src/resources/widgets.rs')!;
-    const delegator = '    #[deprecated]\n    #[allow(deprecated)]\n';
+    // The note is distilled from the description the same way dotnet fills `[System.Obsolete]`.
+    const marker = '    #[deprecated(note = "Deprecated. use `GET /v2/widgets` instead.")]\n';
+    const delegator = `${marker}    #[allow(deprecated)]\n`;
     expect(f.content).toContain(`${delegator}    pub async fn list_widgets(`);
     expect(f.content).toContain(`${delegator}    pub fn list_widgets_auto_paging(`);
-    expect(f.content).toContain(`${delegator}    pub async fn create_named_widget(`);
     // The `_with_options` issuer makes no deprecated call, so it only carries the marker.
-    expect(f.content).toContain('    #[deprecated]\n    pub async fn list_widgets_with_options(');
+    expect(f.content).toContain(`${marker}    pub async fn list_widgets_with_options(`);
+    // No description falls back to the generic note.
+    expect(f.content).toContain(
+      '    #[deprecated(note = "This operation is deprecated.")]\n    #[allow(deprecated)]\n    pub async fn create_named_widget(',
+    );
+    // Deprecated query params get a note too.
+    expect(f.content).toContain(
+      '    #[deprecated(note = "Deprecated. Use `after` instead.")]\n    pub before: Option<String>,',
+    );
   });
 
   it('skips auto-paging when the IR cursor field is missing from the response metadata', () => {

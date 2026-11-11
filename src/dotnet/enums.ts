@@ -4,12 +4,12 @@ import {
   className,
   csLiteral,
   csTypeName,
-  deprecationMessage,
   escapeCsAttributeString,
   escapeXml,
   humanize,
   primeReservedTypeNames,
 } from './naming.js';
+import { deprecationMessage } from '../shared/deprecation.js';
 import { setEnumAliases, setSingleValueEnumNames } from './type-map.js';
 import { enrichModelsFromSpec } from '../shared/model-utils.js';
 import { isEnumInScope, declaredParams } from '../shared/resolved-ops.js';
