@@ -16,16 +16,18 @@ export function deprecationMessage(
   const text = description.replace(/\s+/g, ' ').trim();
   if (!text) return generic;
 
-  // Match: "Deprecated. Use `foo` instead." / "Deprecated: use Foo."
-  const deprecatedClause = text.match(/Deprecated[.:][\s]*(.*?)(?:\.|$)/i);
+  // Match: "Deprecated. Use `foo` instead." / "Deprecated: use Foo." — the
+  // clause runs to the end of the sentence, where a period inside backticks
+  // or inside a token (`https://api.workos.com/v2`, `v1.2`) does not end it.
+  const deprecatedClause = text.match(/Deprecated[.:]\s*((?:`[^`]*`|\.(?!\s|$)|[^.])*)/i);
   if (deprecatedClause?.[1]?.trim()) {
-    return `Deprecated. ${deprecatedClause[1].trim().replace(/\.$/, '')}.`;
+    return `Deprecated. ${deprecatedClause[1].trim()}.`;
   }
 
   // Match: "Use `foo` instead." anywhere in the description
-  const useInstead = text.match(/Use\s+`?([^`.\s]+)`?\s+instead/i);
+  const useInstead = text.match(/Use\s+(`[^`]+`|[^`.\s]+)\s+instead/i);
   if (useInstead) {
-    return `${generic} Use \`${useInstead[1]}\` instead.`;
+    return `${generic} Use \`${useInstead[1].replace(/^`|`$/g, '')}\` instead.`;
   }
 
   return generic;

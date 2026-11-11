@@ -11,6 +11,18 @@ describe('shared/deprecation', () => {
     );
   });
 
+  it('keeps periods inside replacement targets', () => {
+    expect(deprecationMessage('Deprecated. Use `https://api.workos.com/v2` instead.', 'operation')).toBe(
+      'Deprecated. Use `https://api.workos.com/v2` instead.',
+    );
+    expect(deprecationMessage('Deprecated. Use v1.2 instead. Removed in v2.', 'field')).toBe(
+      'Deprecated. Use v1.2 instead.',
+    );
+    expect(deprecationMessage('Old. Use `v1.2` instead.', 'field')).toBe(
+      'This field is deprecated. Use `v1.2` instead.',
+    );
+  });
+
   it('keeps the generic sentence intact before a "Use X instead" hint', () => {
     expect(deprecationMessage('Last update time. Use `updated_at` instead.', 'field')).toBe(
       'This field is deprecated. Use `updated_at` instead.',
