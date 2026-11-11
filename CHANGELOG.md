@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.6](https://github.com/workos/oagen-emitters/compare/v0.25.5...v0.25.6) (2026-11-11)
+
+
+### Bug Fixes
+
+* **php:** omit unset optional non-nullable fields from model toArray() ([#305](https://github.com/workos/oagen-emitters/issues/305)) ([ecbb79f](https://github.com/workos/oagen-emitters/commit/ecbb79f77fae1286eca83704528229a69c527807))
+* **rust:** allow deprecated sibling calls in deprecated wrappers ([#307](https://github.com/workos/oagen-emitters/issues/307)) ([3e7898b](https://github.com/workos/oagen-emitters/commit/3e7898bb105ae8d89448efb2d7b2b0120ff9468f))
+
 ## [0.25.5](https://github.com/workos/oagen-emitters/compare/v0.25.4...v0.25.5) (2026-11-02)
 
 
