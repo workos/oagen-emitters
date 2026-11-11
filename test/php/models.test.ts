@@ -74,7 +74,7 @@ describe('generateModels', () => {
     const trait = result.find((f) => f.path === 'lib/Resource/JsonSerializableTrait.php');
     expect(trait).toBeDefined();
     expect(trait!.content).toContain('trait JsonSerializableTrait');
-    expect(trait!.content).toContain('return $this->toArray();');
+    expect(trait!.content).toContain('return array_is_list($data) ? (object) $data : $data;');
   });
 
   it('handles required date-time fields without fallback', () => {
@@ -386,9 +386,9 @@ describe('generateModels', () => {
     expect(file!.content).toContain(
       "isset($data['emails']) ? array_map(fn ($item) => DirectoryUserEmail::fromArray($item), $data['emails']) : null",
     );
-    // toArray should call ->toArray() on each item
+    // toArray should call ->jsonSerialize() on each item
     expect(file!.content).toContain(
-      '$this->emails !== null ? array_map(fn ($item) => $item->toArray(), $this->emails) : null',
+      '$this->emails !== null ? array_map(fn ($item) => $item->jsonSerialize(), $this->emails) : null',
     );
   });
 
@@ -500,7 +500,7 @@ describe('generateModels', () => {
     expect(file!.content).not.toContain('|null|null');
   });
 
-  it('emits ->toArray() for polymorphic union of model variants', () => {
+  it('emits ->jsonSerialize() for polymorphic union of model variants', () => {
     const models: Model[] = [
       {
         name: 'ApiKey',
@@ -539,7 +539,7 @@ describe('generateModels', () => {
     const file = findModel(result, 'ApiKey');
     expect(file).toBeDefined();
     // toArray must dispatch to the concrete instance, not emit the bare object.
-    expect(file!.content).toContain("'owner' => $this->owner->toArray()");
+    expect(file!.content).toContain("'owner' => $this->owner->jsonSerialize()");
     expect(file!.content).not.toMatch(/'owner' => \$this->owner,/);
     // fromArray match on discriminator must throw on unknown values, not pass through raw.
     expect(file!.content).toContain("match ($data['owner']['type'] ?? null)");
@@ -703,9 +703,11 @@ describe('generateModels omits unset optional fields that do not accept null', (
     expect(filtered).not.toContain('acs_url');
   });
 
-  it('keeps writing every field of a model that could otherwise encode as a JSON array, or has nothing to omit', () => {
-    expect(findModel(result, 'Context')!.content).not.toContain('array_filter');
-    expect(findModel(result, 'Indexed')!.content).not.toContain('array_filter');
+  it('filters an all-optional model whole, and leaves a model with nothing to omit unchanged', () => {
+    const context = findModel(result, 'Context')!.content;
+    expect(context).toContain('        return array_filter([');
+    expect(context).not.toContain('] + array_filter([');
+    expect(findModel(result, 'Indexed')!.content).toContain('] + array_filter([');
     expect(findModel(result, 'Flag')!.content).not.toContain('array_filter');
   });
 
@@ -723,17 +725,21 @@ $event = new \\WorkOS\\Resource\\Event(
 );
 $set = new \\WorkOS\\Resource\\Actor(id: 'user_02', deletedAt: null, metadata: [], acsUrl: null, code: 'x');
 $roundTrip = \\WorkOS\\Resource\\Event::fromArray(json_decode(json_encode($event), true));
-echo json_encode([$event, $set->toArray(), $roundTrip], JSON_THROW_ON_ERROR);
+$indexed = new \\WorkOS\\Resource\\Indexed(first: 'a');
+echo json_encode([$event, $set->toArray(), $roundTrip, $indexed], JSON_THROW_ON_ERROR);
 `;
     const run = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
     expect(run.stderr).toBe('');
     expect(run.status, run.stdout || run.stderr).toBe(0);
-    const [event, set, roundTrip] = JSON.parse(run.stdout);
+    const [event, set, roundTrip, indexed] = JSON.parse(run.stdout);
+    // An all-optional nested model with nothing set is `{}`, not `[]`.
     expect(event).toEqual({
       actor: { id: 'user_01', acs_url: null, deleted_at: null, label: null },
-      context: { user_agent: null },
+      context: {},
     });
     expect(set).toEqual({ id: 'user_02', acs_url: null, deleted_at: null, label: null, metadata: [], '123': 'x' });
     expect(roundTrip).toEqual(event);
+    // Only a sequential int key left: still an object on the wire.
+    expect(indexed).toEqual({ '0': 'a' });
   });
 });
