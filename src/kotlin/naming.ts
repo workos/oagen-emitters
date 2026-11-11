@@ -4,6 +4,7 @@ import {
   resolveServiceTarget as resolveServiceTargetShared,
 } from '../shared/service-name-collision.js';
 import { toPascalCase, toCamelCase, toSnakeCase } from '@workos/oagen';
+import { deprecationMessage } from '../shared/deprecation.js';
 import { buildResolvedLookup, lookupMethodName, getMountTarget } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, trimMountedResourceFromMethod as trimMountedResource } from '../shared/naming-utils.js';
 
@@ -326,6 +327,14 @@ export function ktStringLiteral(value: string): string {
     .replace(/"/g, '\\"')
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '\\r')}"`;
+}
+
+/** `@Deprecated("...")` with the message distilled from the spec description, as dotnet and rust do. */
+export function deprecatedAnnotation(
+  description: string | undefined | null,
+  kind: 'field' | 'parameter' | 'operation' | 'value',
+): string {
+  return `@Deprecated(${ktStringLiteral(deprecationMessage(description, kind))})`;
 }
 
 /** Escape any scalar as a Kotlin literal expression. */

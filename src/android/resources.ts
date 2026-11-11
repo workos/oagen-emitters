@@ -19,6 +19,7 @@ import {
   withResolvedOps,
   mainSourcePath,
   subPackage,
+  deprecatedAnnotation,
   ktStringLiteral,
   ktLiteral,
   ktTemplatePart,
@@ -275,7 +276,7 @@ function renderMethod(
       '    ',
     ),
   );
-  if (op.deprecated) lines.push('    @Deprecated("This operation is deprecated.")');
+  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(op.description, 'operation')}`);
 
   lines.push(`    public suspend fun ${method}(`);
   for (const p of ordered) {
@@ -345,7 +346,7 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
       '    ',
     ),
   );
-  if (op.deprecated) lines.push('    @Deprecated("This operation is deprecated.")');
+  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(op.description, 'operation')}`);
 
   if (ordered.length === 0) {
     lines.push(`    public fun ${method}(): String {`);
@@ -467,7 +468,9 @@ function renderAutoPagingMethod(
       '    ',
     ),
   );
-  if (resolved.operation.deprecated) lines.push('    @Deprecated("This operation is deprecated.")');
+  if (resolved.operation.deprecated) {
+    lines.push(`    ${deprecatedAnnotation(resolved.operation.description, 'operation')}`);
+  }
   lines.push(`    public fun ${name}(`);
   for (const p of passthrough) {
     lines.push(`        ${p.name}: ${p.type}${p.optional ? ' = null' : ''},`);

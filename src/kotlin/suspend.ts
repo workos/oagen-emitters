@@ -41,9 +41,10 @@ export function emitSuspendVariant(opts: {
   methodName: string;
   params: SuspendParam[];
   returnType: string;
-  deprecated?: boolean;
+  /** The rendered `@Deprecated(...)` annotation when the operation is deprecated. */
+  deprecation?: string;
 }): string[] {
-  const { methodName, params, returnType, deprecated } = opts;
+  const { methodName, params, returnType, deprecation } = opts;
   const suspendName = `${methodName}Suspend`;
   const lines: string[] = [];
 
@@ -55,7 +56,7 @@ export function emitSuspendVariant(opts: {
   lines.push('   * `withContext(Dispatchers.IO)`, so this is safe to call from any');
   lines.push('   * coroutine dispatcher (including `Dispatchers.Main`).');
   lines.push('   */');
-  if (deprecated) lines.push('  @Deprecated("Deprecated operation")');
+  if (deprecation) lines.push(`  ${deprecation}`);
   lines.push(`  @JvmName(${jvmNameLiteral(suspendName)})`);
 
   const returnClause = returnType === 'Unit' ? '' : `: ${returnType}`;

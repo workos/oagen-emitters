@@ -99,6 +99,29 @@ describe('android/resources', () => {
     expect(content).toContain('method = "POST",');
   });
 
+  it('derives the @Deprecated message for a deprecated operation', () => {
+    const legacy: Service = {
+      name: 'Legacy',
+      operations: [
+        {
+          name: 'get_legacy',
+          deprecated: true,
+          description: 'Get a legacy record. Deprecated: use `getRecord` instead.',
+          httpMethod: 'get',
+          path: '/legacy/{id}',
+          pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+          queryParams: [],
+          headerParams: [],
+          response: { kind: 'model', name: 'Organization' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const content = generateResources([legacy], makeCtx([legacy]))[0].content;
+    expect(content).toContain('    @Deprecated("Deprecated. use `getRecord` instead.")\n    public suspend fun get(');
+  });
+
   it('wraps path params in PathEncoding to prevent path traversal', () => {
     const ctx = makeCtx([organizationsService]);
     const content = generateResources([organizationsService], ctx)[0].content;

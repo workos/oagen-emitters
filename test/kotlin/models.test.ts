@@ -266,4 +266,34 @@ describe('kotlin/models', () => {
     expect(naming.trimMountedResourceFromMethod('getList', 'List')).toBe('get');
     expect(naming.trimMountedResourceFromMethod('getListModel', 'List')).toBe('getModel');
   });
+
+  it('derives the @Deprecated message for deprecated fields and enum values', () => {
+    const enums = generateEnums(
+      [
+        {
+          name: 'Status',
+          values: [{ name: 'old', value: 'old', deprecated: true, description: 'Deprecated. Use `archived` instead.' }],
+        },
+      ],
+      ctx,
+    );
+    expect(enums.some((f) => f.content.includes('@Deprecated("Deprecated. Use `archived` instead.")'))).toBe(true);
+
+    const model: Model = {
+      name: 'Org',
+      fields: [
+        {
+          name: 'domains',
+          type: { kind: 'primitive', type: 'string' },
+          required: false,
+          deprecated: true,
+          description: 'Deprecated. Use `domain_data` instead.',
+        },
+        { name: 'legacy', type: { kind: 'primitive', type: 'string' }, required: false, deprecated: true },
+      ],
+    };
+    const content = generateModels([model], ctx)[0].content;
+    expect(content).toContain('@Deprecated("Deprecated. Use `domain_data` instead.")');
+    expect(content).toContain('@Deprecated("This field is deprecated.")');
+  });
 });

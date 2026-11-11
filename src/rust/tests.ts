@@ -93,6 +93,9 @@ function renderMountTest(
   const accessor = moduleName(mountName);
   const crate = crateName(ctx);
   const lines: string[] = [];
+  // These tests call deprecated operations on purpose; without the allow the
+  // SDK's `cargo clippy --all-targets -D warnings` fails on every such call.
+  if (resolvedOps.some((r) => r.operation.deprecated)) lines.push('#![allow(deprecated)]');
   lines.push('mod common;');
   lines.push('');
   lines.push('use wiremock::matchers::{method, path as path_matcher};');

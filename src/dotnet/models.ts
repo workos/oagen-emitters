@@ -17,11 +17,11 @@ import {
   domainFieldName,
   humanize,
   emitXmlDoc,
-  deprecationMessage,
   escapeCsAttributeString,
   modelClassName,
   primeReservedTypeNames,
 } from './naming.js';
+import { deprecationMessage } from '../shared/deprecation.js';
 
 // Import and re-export shared model detection utilities
 import {

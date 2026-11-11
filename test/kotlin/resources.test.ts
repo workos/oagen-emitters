@@ -315,6 +315,38 @@ describe('kotlin/resources', () => {
     expect(file.content).toMatch(/suspend fun getSuspend\([\s\S]*?withContext\(Dispatchers\.IO\)/);
   });
 
+  it('derives the @Deprecated message for a deprecated operation and its suspend variant', () => {
+    const services: Service[] = [
+      {
+        name: 'Users',
+        operations: [
+          {
+            name: 'getUser',
+            deprecated: true,
+            description: 'Get a user. Deprecated: use `getUserV2` instead.',
+            httpMethod: 'get',
+            path: '/users/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const file = generateResources(services, ctxFor(services)).find((f) => f.path.endsWith('/Users.kt'))!;
+    // The annotation sits directly above the blocking method and its suspend variant.
+    expect(file.content).toMatch(
+      /@Deprecated\("Deprecated\. use `getUserV2` instead\."\)\n(?: {2}@.*\n)* {2}fun get\(/,
+    );
+    expect(file.content).toMatch(
+      /@Deprecated\("Deprecated\. use `getUserV2` instead\."\)\n(?: {2}@.*\n)* {2}suspend fun getSuspend\(/,
+    );
+    expect(file.content).not.toContain('Deprecated operation');
+  });
+
   it('emits Java-friendly per-variant overloads for sealed-class parameter groups', () => {
     const services: Service[] = [
       {

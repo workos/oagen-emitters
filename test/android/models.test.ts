@@ -123,14 +123,25 @@ describe('android/models', () => {
     expect(content).not.toContain('data class');
   });
 
-  it('marks deprecated fields with @Deprecated', () => {
+  it('marks deprecated fields with @Deprecated and a message derived from the description', () => {
     const models: Model[] = [
       {
         name: 'Thing',
-        fields: [{ name: 'old', type: { kind: 'primitive', type: 'string' }, required: true, deprecated: true }],
+        fields: [
+          { name: 'old', type: { kind: 'primitive', type: 'string' }, required: true, deprecated: true },
+          {
+            name: 'domains',
+            type: { kind: 'primitive', type: 'string' },
+            required: true,
+            deprecated: true,
+            description: 'Deprecated. Use `domain_data` instead.',
+          },
+        ],
       },
     ];
-    expect(generateModels(models, ctx)[0].content).toContain('@Deprecated(');
+    const content = generateModels(models, ctx)[0].content;
+    expect(content).toContain('@Deprecated("This field is deprecated.")');
+    expect(content).toContain('@Deprecated("Deprecated. Use `domain_data` instead.")');
   });
 
   it('honors domainName for the property while keeping the wire key', () => {

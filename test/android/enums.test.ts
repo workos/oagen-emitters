@@ -115,8 +115,18 @@ describe('android/enums', () => {
     expect(content).not.toContain('when (rawValue) {');
   });
 
-  it('marks deprecated values with @Deprecated', () => {
-    const enums: Enum[] = [{ name: 'Status', values: [{ name: 'old', value: 'old', deprecated: true }] }];
-    expect(generateEnums(enums, ctx)[0].content).toContain('@Deprecated(');
+  it('marks deprecated values with @Deprecated and a message derived from the description', () => {
+    const enums: Enum[] = [
+      {
+        name: 'Status',
+        values: [
+          { name: 'old', value: 'old', deprecated: true },
+          { name: 'stale', value: 'stale', deprecated: true, description: 'Deprecated. Use `archived` instead.' },
+        ],
+      },
+    ];
+    const content = generateEnums(enums, ctx)[0].content;
+    expect(content).toContain('@Deprecated("This value is deprecated.")');
+    expect(content).toContain('@Deprecated("Deprecated. Use `archived` instead.")');
   });
 });

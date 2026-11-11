@@ -825,6 +825,109 @@ describe('rust/resources', () => {
     expect(f.content).toContain('page.list_metadata.before');
   });
 
+  it('allows the deprecated sibling call inside deprecated delegating methods', () => {
+    // `list_widgets` calls `list_widgets_with_options` and `list_widgets_auto_paging`
+    // calls `list_widgets`. rustc lints those calls even inside a `#[deprecated]`
+    // fn, and the SDK's `cargo clippy -D warnings` fails the build on them.
+    const services: Service[] = [
+      {
+        name: 'Widgets',
+        operations: [
+          {
+            name: 'listWidgets',
+            deprecated: true,
+            description: 'List widgets. Deprecated: use `GET /v2/widgets` instead.',
+            httpMethod: 'get',
+            path: '/widgets',
+            pathParams: [],
+            queryParams: [
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+              {
+                name: 'before',
+                type: { kind: 'primitive', type: 'string' },
+                required: false,
+                deprecated: true,
+                description: 'Deprecated. Use `after` instead.',
+              },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'WidgetList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            pagination: { strategy: 'cursor', param: 'after', itemType: { kind: 'model', name: 'WidgetList' } },
+          },
+          {
+            name: 'createWidget',
+            deprecated: true,
+            httpMethod: 'post',
+            path: '/widgets',
+            pathParams: [],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'Widget' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      spec: {
+        ...baseCtx.spec,
+        models: [
+          {
+            name: 'WidgetList',
+            fields: [
+              { name: 'data', type: { kind: 'array', items: { kind: 'model', name: 'Widget' } }, required: true },
+              { name: 'list_metadata', type: { kind: 'model', name: 'WidgetListListMetadata' }, required: true },
+            ],
+          },
+          {
+            name: 'WidgetListListMetadata',
+            fields: [{ name: 'after', type: { kind: 'primitive', type: 'string' }, required: false }],
+          },
+          { name: 'Widget', fields: [] },
+        ],
+      },
+      resolvedOperations: baseCtx.resolvedOperations!.map((r) =>
+        r.operation.name === 'createWidget'
+          ? {
+              ...r,
+              wrappers: [
+                {
+                  name: 'create_named_widget',
+                  targetVariant: 'NamedWidgetRequest',
+                  defaults: {},
+                  inferFromClient: [],
+                  exposedParams: ['name'],
+                  optionalParams: [],
+                  responseModelName: null,
+                },
+              ],
+            }
+          : r,
+      ),
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find((x) => x.path === 'src/resources/widgets.rs')!;
+    // The note is distilled from the description the same way dotnet fills `[System.Obsolete]`.
+    const marker = '    #[deprecated(note = "Deprecated. use `GET /v2/widgets` instead.")]\n';
+    const delegator = `${marker}    #[allow(deprecated)]\n`;
+    expect(f.content).toContain(`${delegator}    pub async fn list_widgets(`);
+    expect(f.content).toContain(`${delegator}    pub fn list_widgets_auto_paging(`);
+    // The `_with_options` issuer makes no deprecated call, so it only carries the marker.
+    expect(f.content).toContain(`${marker}    pub async fn list_widgets_with_options(`);
+    // No description falls back to the generic note.
+    expect(f.content).toContain(
+      '    #[deprecated(note = "This operation is deprecated.")]\n    #[allow(deprecated)]\n    pub async fn create_named_widget(',
+    );
+    // Deprecated query params get a note too.
+    expect(f.content).toContain(
+      '    #[deprecated(note = "Deprecated. Use `after` instead.")]\n    pub before: Option<String>,',
+    );
+  });
+
   it('skips auto-paging when the IR cursor field is missing from the response metadata', () => {
     // If the spec/IR is internally inconsistent (request says cursor is
     // `weird_cursor` but the list-metadata model has no such field) we'd emit

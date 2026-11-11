@@ -2,6 +2,7 @@ import type { EmitterContext, Operation } from '@workos/oagen';
 import { toPascalCase, toCamelCase, resolveOperations } from '@workos/oagen';
 import { buildResolvedLookup, lookupResolved } from '../shared/resolved-ops.js';
 import { stripUrnPrefix, trimMountedResourceFromMethod } from '../shared/naming-utils.js';
+import { deprecationMessage } from '../shared/deprecation.js';
 
 /**
  * Kotlin identifier naming, reserved-word escaping, package resolution, and
@@ -174,6 +175,14 @@ export function ktStringLiteral(value: string): string {
     .replace(/\r/g, '\\r')
     .replace(/\t/g, '\\t');
   return `"${escaped}"`;
+}
+
+/** `@Deprecated("...")` with the message distilled from the spec description, as dotnet and rust do. */
+export function deprecatedAnnotation(
+  description: string | undefined | null,
+  kind: 'field' | 'parameter' | 'operation' | 'value',
+): string {
+  return `@Deprecated(${ktStringLiteral(deprecationMessage(description, kind))})`;
 }
 
 /**

@@ -27,12 +27,12 @@ import {
   httpMethodHelperName,
   escapeXml,
   emitXmlDoc,
-  deprecationMessage,
   escapeCsAttributeString,
   humanize,
   modelClassName,
   csTypeName,
 } from './naming.js';
+import { deprecationMessage } from '../shared/deprecation.js';
 import {
   buildResolvedLookup,
   lookupResolved,
