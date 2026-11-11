@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { EmitterContext, ApiSpec, Model } from '@workos/oagen';
+import type { EmitterContext, ApiSpec, Model, TypeRef } from '@workos/oagen';
 import { defaultSdkBehavior } from '@workos/oagen';
 import { spawnSync } from 'node:child_process';
 import { generateModels } from '../../src/php/models.js';
@@ -610,7 +610,7 @@ describe('generateModels date-time serialization', () => {
     expect(content).not.toContain('RFC3339_EXTENDED');
   });
 
-  it.skipIf(!hasPhp)('serializes the model to UTC Z strings, null and arrays alike, in PHP', () => {
+  it.skipIf(!hasPhp)('serializes the model to UTC Z strings and arrays alike, omitting unset ones, in PHP', () => {
     const program = `<?php
 declare(strict_types=1);
 ${generateRuntime({ ...ctx, spec: specWithModels })
@@ -633,10 +633,107 @@ echo json_encode([$session->toArray(), $roundTrip->toArray()], JSON_THROW_ON_ERR
       {
         id: 'session_01',
         created_at: '2025-01-01T00:00:00.000Z',
-        ended_at: null,
         seen_at: ['2023-01-01T00:00:00.123Z', '2024-06-01T17:30:00.000Z'],
       },
-      { id: 'session_02', created_at: '2025-01-01T00:00:00.000Z', ended_at: null, seen_at: null },
+      { id: 'session_02', created_at: '2025-01-01T00:00:00.000Z' },
     ]);
+  });
+});
+
+describe('generateModels omits unset optional fields that do not accept null', () => {
+  // POST /audit_logs/events answers 400 invalid_audit_log ("/actor/metadata
+  // must be object") when an unset optional `metadata` is sent as `null`.
+  const metadata: TypeRef = { kind: 'map', valueType: { kind: 'primitive', type: 'string' } };
+  const nullableString: TypeRef = { kind: 'nullable', inner: { kind: 'primitive', type: 'string' } };
+  const models: Model[] = [
+    {
+      name: 'Actor',
+      fields: [
+        { name: 'id', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'name', type: { kind: 'primitive', type: 'string' }, required: false },
+        { name: 'metadata', type: metadata, required: false },
+        { name: 'acs_url', type: nullableString, required: false },
+        { name: 'deleted_at', type: nullableString, required: true },
+        {
+          name: 'label',
+          type: { kind: 'union', variants: [{ kind: 'primitive', type: 'string' }, nullableString] },
+          required: false,
+        },
+        { name: '123', domainName: 'code', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+    },
+    {
+      name: 'Context',
+      fields: [{ name: 'user_agent', type: { kind: 'primitive', type: 'string' }, required: false }],
+    },
+    {
+      name: 'Event',
+      fields: [
+        { name: 'actor', type: { kind: 'model', name: 'Actor' }, required: true },
+        { name: 'context', type: { kind: 'model', name: 'Context' }, required: true },
+        { name: 'version', type: { kind: 'primitive', type: 'integer' }, required: false },
+      ],
+    },
+    {
+      name: 'Flag',
+      fields: [{ name: 'enabled', type: { kind: 'primitive', type: 'boolean' }, required: true }],
+    },
+    {
+      name: 'Indexed',
+      fields: [
+        { name: '0', domainName: 'first', type: { kind: 'primitive', type: 'string' }, required: true },
+        { name: 'label', type: { kind: 'primitive', type: 'string' }, required: false },
+      ],
+    },
+  ];
+  const specWithModels = { ...emptySpec, models };
+  const result = generateModels(models, { ...ctx, spec: specWithModels });
+
+  it('filters only optional fields whose type has no null, and keeps the rest in the literal', () => {
+    const toArray = findModel(result, 'Actor')!.content.split('public function toArray(): array')[1];
+    const [literal, filtered] = toArray.split('] + array_filter([');
+    expect(literal).toContain("'id' => $this->id,");
+    expect(literal).toContain("'acs_url' => $this->acsUrl,");
+    expect(literal).toContain("'deleted_at' => $this->deletedAt,");
+    expect(literal).toContain("'label' => $this->label,");
+    expect(filtered).toContain("'name' => $this->name,");
+    expect(filtered).toContain("'metadata' => $this->metadata,");
+    expect(filtered).toContain("'123' => $this->code,");
+    expect(filtered).toContain('], fn ($v) => $v !== null);');
+    expect(filtered).not.toContain('acs_url');
+  });
+
+  it('keeps writing every field of a model that could otherwise encode as a JSON array, or has nothing to omit', () => {
+    expect(findModel(result, 'Context')!.content).not.toContain('array_filter');
+    expect(findModel(result, 'Indexed')!.content).not.toContain('array_filter');
+    expect(findModel(result, 'Flag')!.content).not.toContain('array_filter');
+  });
+
+  it.skipIf(!hasPhp)('sends no key for an unset optional field, keeps explicit nulls, and round-trips in PHP', () => {
+    const program = `<?php
+declare(strict_types=1);
+${generateRuntime({ ...ctx, spec: specWithModels })
+  .map((f) => f.content)
+  .join('\n')}
+${result.map((f) => f.content).join('\n')}
+namespace WorkOS;
+$event = new \\WorkOS\\Resource\\Event(
+    actor: new \\WorkOS\\Resource\\Actor(id: 'user_01', deletedAt: null),
+    context: new \\WorkOS\\Resource\\Context(),
+);
+$set = new \\WorkOS\\Resource\\Actor(id: 'user_02', deletedAt: null, metadata: [], acsUrl: null, code: 'x');
+$roundTrip = \\WorkOS\\Resource\\Event::fromArray(json_decode(json_encode($event), true));
+echo json_encode([$event, $set->toArray(), $roundTrip], JSON_THROW_ON_ERROR);
+`;
+    const run = spawnSync('php', ['-n'], { input: program, encoding: 'utf8', timeout: 15000 });
+    expect(run.stderr).toBe('');
+    expect(run.status, run.stdout || run.stderr).toBe(0);
+    const [event, set, roundTrip] = JSON.parse(run.stdout);
+    expect(event).toEqual({
+      actor: { id: 'user_01', acs_url: null, deleted_at: null, label: null },
+      context: { user_agent: null },
+    });
+    expect(set).toEqual({ id: 'user_02', acs_url: null, deleted_at: null, label: null, metadata: [], '123': 'x' });
+    expect(roundTrip).toEqual(event);
   });
 });
