@@ -2,6 +2,7 @@ import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@work
 import { mapTypeRef, discriminatedUnions } from './type-map.js';
 import {
   className,
+  deprecatedAnnotation,
   domainPropertyName,
   ktStringLiteral,
   humanize,
@@ -471,7 +472,7 @@ function renderFields(fields: Field[], overrideFields: Set<string> = new Set()):
     // isEmailVerified(), etc.) for Java callers — matching the accessor
     // convention used by Stripe, AWS SDK v2, and Twilio.
     annotations.push(`@JsonProperty(${ktStringLiteral(field.name)})`);
-    if (field.deprecated) annotations.push(buildDeprecatedAnnotation(field.description));
+    if (field.deprecated) annotations.push(deprecatedAnnotation(field.description, 'field'));
 
     const paramParts: string[] = [];
     if (field.description?.trim()) {
@@ -512,38 +513,6 @@ function collapseFieldEntries(rawLines: string[]): string[] {
   }
   if (current.length > 0) entries.push(current.join('\n'));
   return entries;
-}
-
-/**
- * Pull the most useful free-form deprecation hint out of a field description
- * and lift it into the `@Deprecated(...)` message argument. Most WorkOS
- * deprecations are written as a description that begins with "Deprecated"
- * (e.g. "Deprecated. Use `domain_data` instead."). When the description
- * doesn't carry a hint we fall back to a short, self-explanatory message
- * rather than the generic "Deprecated field" placeholder.
- */
-function deprecationMessageFromDescription(description: string | undefined): string {
-  if (!description) return 'Deprecated.';
-  const firstLine = description
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (!firstLine) return 'Deprecated.';
-  // Trim trailing whitespace and collapse internal whitespace runs so the
-  // annotation argument stays on one line.
-  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
-  if (collapsed.length === 0) return 'Deprecated.';
-  // Only lift the description when it actually carries a deprecation hint
-  // (e.g. "Deprecated. Use `domain_data` instead.") — many fields keep their
-  // forward-looking description verbatim, which would be misleading inside
-  // an `@Deprecated(...)` argument.
-  if (/\bdeprecat/i.test(collapsed)) return collapsed;
-  return 'Deprecated.';
-}
-
-function buildDeprecatedAnnotation(description: string | undefined): string {
-  const message = deprecationMessageFromDescription(description);
-  return `@Deprecated(${ktStringLiteral(message)})`;
 }
 
 /**

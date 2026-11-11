@@ -1,7 +1,7 @@
 import type { Enum, EnumValue, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toPascalCase } from '@workos/oagen';
 import { isEnumInScope } from '../shared/resolved-ops.js';
-import { typeName, fileName, mainSourcePath, subPackage, ktStringLiteral } from './naming.js';
+import { typeName, fileName, mainSourcePath, subPackage, deprecatedAnnotation, ktStringLiteral } from './naming.js';
 import { renderImportBlock } from './imports.js';
 import { renderDocComment } from './doc-comments.js';
 
@@ -91,7 +91,7 @@ function renderEnum(e: Enum, ctx: EmitterContext): string {
 
   for (const c of cases) {
     lines.push(...renderDocComment(c.description, '    '));
-    if (c.deprecated) lines.push('    @Deprecated("This value is deprecated.")');
+    if (c.deprecated) lines.push(`    ${deprecatedAnnotation(c.description, 'value')}`);
     lines.push(`    public data object ${c.id} : ${name}(${literal(c.value)})`);
   }
 

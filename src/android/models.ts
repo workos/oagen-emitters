@@ -1,7 +1,15 @@
 import type { Model, Field, EmitterContext, GeneratedFile } from '@workos/oagen';
 import { toCamelCase } from '@workos/oagen';
 import { isModelInScope } from '../shared/resolved-ops.js';
-import { typeName, fileName, propertyName, mainSourcePath, subPackage, ktStringLiteral } from './naming.js';
+import {
+  typeName,
+  fileName,
+  propertyName,
+  mainSourcePath,
+  subPackage,
+  deprecatedAnnotation,
+  ktStringLiteral,
+} from './naming.js';
 import { fieldKotlinType, implicitImportsFor } from './type-map.js';
 import { resolveTypeImports, renderImportBlock } from './imports.js';
 import { renderDocComment } from './doc-comments.js';
@@ -92,7 +100,7 @@ function renderModel(model: Model, ctx: EmitterContext): string {
   lines.push(`public data class ${name}(`);
   for (const f of ordered) {
     lines.push(...renderDocComment(f.field.description, '    '));
-    if (f.field.deprecated) lines.push('    @Deprecated("This field is deprecated.")');
+    if (f.field.deprecated) lines.push(`    ${deprecatedAnnotation(f.field.description, 'field')}`);
     lines.push(`    @SerialName(${ktStringLiteral(f.field.name)})`);
     const suffix = f.optional ? ' = null' : '';
     lines.push(`    public val ${f.prop}: ${f.type}${suffix},`);

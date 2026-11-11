@@ -1,5 +1,12 @@
 import type { Enum, EmitterContext, GeneratedFile } from '@workos/oagen';
-import { className, ktStringLiteral, pascalName, primeReservedTypeNames, typealiasFile } from './naming.js';
+import {
+  className,
+  deprecatedAnnotation,
+  ktStringLiteral,
+  pascalName,
+  primeReservedTypeNames,
+  typealiasFile,
+} from './naming.js';
 import { isEnumInScope, forcedEnumNamesWithCanonicals } from '../shared/resolved-ops.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
@@ -147,7 +154,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
         members.push(`  /** ${escapeKdoc(v.description.split('\n')[0].trim())} */`);
       }
       if (v.deprecated) {
-        members.push('  @Deprecated("Deprecated enum value")');
+        members.push(`  ${deprecatedAnnotation(v.description, 'value')}`);
       }
       members.push(`  ${memberName}(${ktStringLiteral(wire)})`);
     }

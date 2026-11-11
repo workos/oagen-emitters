@@ -26,6 +26,7 @@ import {
   resolveMethodName,
   ktLiteral,
   clientFieldExpression,
+  deprecatedAnnotation,
   escapeReserved,
   humanize,
   maybeShortenEnumParamDescription,
@@ -483,7 +484,8 @@ function renderMethod(
   const lines: string[] = [];
   const kdocLines = buildMethodKdoc(op, pathParams, sortedQuery, sortedBodyFields, bodyParamNames, plan);
   for (const ln of kdocLines) lines.push(ln);
-  if (op.deprecated) lines.push('  @Deprecated("Deprecated operation")');
+  const deprecation = op.deprecated ? deprecatedAnnotation(op.description, 'operation') : undefined;
+  if (deprecation) lines.push(`  ${deprecation}`);
   if (jvmOverloads) lines.push('  @JvmOverloads');
   // Omit explicit `: Unit` to keep ktlint happy.
   const returnClause = returnType === 'Unit' ? '' : `: ${returnType}`;
@@ -539,7 +541,7 @@ function renderMethod(
     }
     lines.push(`    )`);
     lines.push('  }');
-    appendSuspendVariantLines(lines, method, suspendParams, returnType, op.deprecated);
+    appendSuspendVariantLines(lines, method, suspendParams, returnType, deprecation);
     return lines.join('\n');
   }
 
@@ -675,7 +677,7 @@ function renderMethod(
   }
 
   lines.push('  }');
-  appendSuspendVariantLines(lines, method, suspendParams, returnType, op.deprecated);
+  appendSuspendVariantLines(lines, method, suspendParams, returnType, deprecation);
 
   // Java-friendly overloads: for each variant of every sealed-class parameter
   // group, emit an additional overload that accepts the variant's flat fields
@@ -686,7 +688,7 @@ function renderMethod(
     canonicalParams: suspendParams,
     groupParamNames,
     returnType,
-    deprecated: op.deprecated,
+    deprecation,
   });
 
   return lines.join('\n');
@@ -704,7 +706,8 @@ interface JavaOverloadCtx {
   canonicalParams: SuspendParam[];
   groupParamNames: Map<string, string>;
   returnType: string;
-  deprecated: boolean | undefined;
+  /** The rendered `@Deprecated(...)` annotation when the operation is deprecated. */
+  deprecation: string | undefined;
 }
 
 /**
@@ -853,7 +856,7 @@ function emitOneJavaOverload(
   lines.push(`   * Accepts the discriminating fields directly so Java callers don't`);
   lines.push(`   * need to construct \`${sealedName}.${variantClass}\` explicitly.`);
   lines.push('   */');
-  if (ctx.deprecated) lines.push('  @Deprecated("Deprecated operation")');
+  if (ctx.deprecation) lines.push(`  ${ctx.deprecation}`);
   // Note: no `@JvmOverloads` here. The synthetic Java overloads `@JvmOverloads`
   // generates (one per trailing optional, with the optional dropped) collide
   // with the canonical method's `@JvmOverloads` permutations whenever the
@@ -886,7 +889,7 @@ function emitOneJavaOverload(
     overloadMethodName,
     decls.map((d) => ({ decl: d.decl, name: d.name })),
     ctx.returnType,
-    ctx.deprecated,
+    ctx.deprecation,
   );
 }
 
@@ -895,10 +898,10 @@ function appendSuspendVariantLines(
   method: string,
   suspendParams: SuspendParam[],
   returnType: string,
-  deprecated: boolean | undefined,
+  deprecation: string | undefined,
 ): void {
   lines.push('');
-  for (const ln of emitSuspendVariant({ methodName: method, params: suspendParams, returnType, deprecated })) {
+  for (const ln of emitSuspendVariant({ methodName: method, params: suspendParams, returnType, deprecation })) {
     lines.push(ln);
   }
 }
