@@ -31,9 +31,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       '',
       'trait JsonSerializableTrait',
       '{',
-      '    public function jsonSerialize(): array',
+      '    public function jsonSerialize(): array|\\stdClass',
       '    {',
-      '        return $this->toArray();',
+      '        $data = $this->toArray();',
+      '        // json_encode writes a list (`[]` or sequential int keys) as a JSON array; the API expects an object.',
+      '        return array_is_list($data) ? (object) $data : $data;',
       '    }',
       '}',
     ].join('\n'),
@@ -129,16 +131,28 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
     lines.push('');
     lines.push('    public function toArray(): array');
     lines.push('    {');
-    lines.push('        return [');
-    for (const field of allFields) {
+    const entry = (field: (typeof allFields)[number]): string => {
       // DOMAIN identifier: the `$this->...` property being serialized.
       const phpName = domainFieldName(field);
       // WIRE key: the JSON key emitted into the array (stays `field.name`).
       const wireName = field.name;
       const serialized = generateToArrayValue(field.type, `$this->${phpName}`, !field.required, ctx.namespacePascal);
-      lines.push(`            ${phpStringLiteral(wireName)} => ${serialized},`);
+      return `            ${phpStringLiteral(wireName)} => ${serialized},`;
+    };
+    const kept = allFields.filter((f) => !isOmittedWhenNull(f));
+    const omittable = allFields.filter(isOmittedWhenNull);
+    if (kept.length > 0 || omittable.length === 0) {
+      lines.push('        return [');
+      for (const field of kept) lines.push(entry(field));
     }
-    lines.push('        ];');
+    if (omittable.length === 0) {
+      lines.push('        ];');
+    } else {
+      // `+` keeps keys as written; spreading would renumber integer-like keys.
+      lines.push(kept.length > 0 ? '        ] + array_filter([' : '        return array_filter([');
+      for (const field of omittable) lines.push(entry(field));
+      lines.push('        ], fn ($v) => $v !== null);');
+    }
     lines.push('    }');
 
     lines.push('}');
@@ -306,6 +320,37 @@ function isComplexType(ref: TypeRef): boolean {
 }
 
 /**
+ * An optional field whose type has no `null` on the wire is left out of
+ * `toArray()` when unset, as the Python emitter's to_dict does; sending `null`
+ * for it is a schema violation the API can reject. Required fields and fields
+ * that accept null are always written, so an explicit null still reaches the API.
+ * A model left with no written field encodes as `{}` through jsonSerialize().
+ */
+function isOmittedWhenNull(field: { required: boolean; type: TypeRef }): boolean {
+  return !field.required && !acceptsNull(field.type);
+}
+
+/**
+ * True when `null` is a value the type admits on the wire. Nullability can sit
+ * inside a union (`anyOf: [string, string | null]`) or be a `null` literal, not
+ * only on a top-level `nullable` wrapper. `unknown` admits anything, null included.
+ */
+function acceptsNull(ref: TypeRef): boolean {
+  switch (ref.kind) {
+    case 'nullable':
+      return true;
+    case 'literal':
+      return ref.value === null;
+    case 'union':
+      return ref.variants.some(acceptsNull);
+    case 'primitive':
+      return ref.type === 'unknown';
+    default:
+      return false;
+  }
+}
+
+/**
  * Generate the toArray serialization expression for a field value.
  */
 function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false, namespace = 'WorkOS'): string {
@@ -318,14 +363,15 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false, 
       }
       return accessor;
     case 'model':
-      return `${accessor}${ns}->toArray()`;
+      // jsonSerialize(), not toArray(): a nested model with nothing written must still encode as `{}`.
+      return `${accessor}${ns}->jsonSerialize()`;
     case 'enum':
       return nullable ? `${accessor}?->value` : `${accessor}->value`;
     case 'array':
       if (ref.items.kind === 'model') {
         return nullable
-          ? `${accessor} !== null ? array_map(fn ($item) => $item->toArray(), ${accessor}) : null`
-          : `array_map(fn ($item) => $item->toArray(), ${accessor})`;
+          ? `${accessor} !== null ? array_map(fn ($item) => $item->jsonSerialize(), ${accessor}) : null`
+          : `array_map(fn ($item) => $item->jsonSerialize(), ${accessor})`;
       }
       if (ref.items.kind === 'enum') {
         return nullable
@@ -347,10 +393,10 @@ function generateToArrayValue(ref: TypeRef, accessor: string, nullable = false, 
       const resolved = resolveDegenerateUnion(ref);
       if (resolved) return generateToArrayValue(resolved, accessor, nullable, namespace);
       // Polymorphic union of model variants: PHP dispatches to the concrete
-      // instance's toArray() at runtime, so a single ->toArray() call serializes
+      // instance's jsonSerialize() at runtime, so a single call serializes
       // any branch correctly without a match here.
       if (ref.variants.every((v) => v.kind === 'model')) {
-        return `${accessor}${ns}->toArray()`;
+        return `${accessor}${ns}->jsonSerialize()`;
       }
       // Heterogeneous unions involving models or enums have no uniform
       // serialization strategy (->toArray() vs ->value vs raw scalar), so fail
