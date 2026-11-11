@@ -119,6 +119,35 @@ describe('rust/tests', () => {
     expect(content).toContain('assert_eq!(api.status, 401);');
   });
 
+  it('allows deprecated calls in a mount test file that exercises a deprecated operation', () => {
+    // The tests call the deprecated method on purpose; without the file-level
+    // allow the SDK's `cargo clippy --all-targets -D warnings` fails on them.
+    const op = (name: string, deprecated: boolean) => ({
+      name,
+      deprecated,
+      httpMethod: 'get' as const,
+      path: `/${name}/{id}`,
+      pathParams: [{ name: 'id', type: { kind: 'primitive' as const, type: 'string' as const }, required: true }],
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model' as const, name: 'Organization' },
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    const services: Service[] = [
+      { name: 'Legacy', operations: [op('getLegacy', true)] },
+      { name: 'Organizations', operations: [op('getOrganization', false)] },
+    ];
+    const files = generateTests(
+      { ...baseSpec, services },
+      ctxWithResolved(services, [
+        { name: 'Organization', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+      ]),
+    );
+    expect(getMountTestFile(files, 'legacy').startsWith('#![allow(deprecated)]\nmod common;\n')).toBe(true);
+    expect(getMountTestFile(files, 'organizations').startsWith('mod common;\n')).toBe(true);
+  });
+
   it('adds bad_request and unprocessable tests for write methods', () => {
     const services: Service[] = [
       {

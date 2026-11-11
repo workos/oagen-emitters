@@ -814,6 +814,14 @@ function bearerOverrideToken(op: Operation): string | null {
   return fieldName(override);
 }
 
+/**
+ * Attributes for a deprecated method that delegates to a deprecated sibling
+ * (`foo` → `foo_with_options`, `foo_auto_paging` → `foo`). rustc still lints
+ * the inner call even though the caller is deprecated itself, and the SDK's
+ * `cargo clippy -D warnings` turns that lint into a build failure.
+ */
+const DEPRECATED_DELEGATOR_ATTRS = ['    #[deprecated]', '    #[allow(deprecated)]'];
+
 function renderMethod(
   op: Operation,
   resolved: ResolvedOperation,
@@ -834,7 +842,7 @@ function renderMethod(
 
   // Convenience method — no per-request options. Delegates to `_with_options`.
   for (const line of methodDocLines(op)) sig.push(`    ${line}`);
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
   const argsConvenience = [
     '&self',
     ...pathArgList,
@@ -1098,7 +1106,7 @@ function renderAutoPagingMethod(
   sig.push('    ///     .try_collect()');
   sig.push('    ///     .await?;');
   sig.push('    /// ```');
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
 
   const argsAll = ['&self', ...pathArgList, `params: ${paramsType}`];
   const optsSig = `    pub fn ${method}_auto_paging(${argsAll.join(', ')}) -> impl futures_util::Stream<Item = Result<${itemType}, Error>> + '_ {`;
@@ -1273,7 +1281,7 @@ function renderWrapperMethod(
 
   // Convenience method — delegates to `_with_options`.
   sig.push(...docLines);
-  if (op.deprecated) sig.push('    #[deprecated]');
+  if (op.deprecated) sig.push(...DEPRECATED_DELEGATOR_ATTRS);
   const argsConvenience = ['&self', ...pathArgList, `params: ${paramsType}`];
   const convenienceSig = `    pub async fn ${method}(${argsConvenience.join(', ')}) -> Result<${returnType}, Error> {`;
   if (convenienceSig.length <= 100) {
