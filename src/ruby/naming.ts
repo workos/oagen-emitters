@@ -126,6 +126,31 @@ export function safeParamName(name: string): string {
   return RUBY_RESERVED_WORDS.has(snake) ? `${snake}_` : snake;
 }
 
+/**
+ * Keyword-argument renames for the request-body fields of one operation,
+ * keyed by wire name. A body field whose snake_case name is also a path
+ * parameter's is exposed as `body_<name>`, so the method takes both.
+ *
+ * The runtime method (resources.ts), its Sorbet signature (rbi.ts) and the
+ * generated test (tests.ts) all describe the same keyword list, so all three
+ * take the renames from here. A signature that drops the renamed keyword
+ * describes a method that cannot be called.
+ */
+export function bodyFieldKwargRenames(
+  pathParams: readonly { name: string }[],
+  bodyFields: readonly { name: string }[],
+  hiddenParams: ReadonlySet<string>,
+): Map<string, string> {
+  const pathParamNames = new Set(pathParams.map((p) => safeParamName(p.name)));
+  const renames = new Map<string, string>();
+  for (const f of bodyFields) {
+    if (hiddenParams.has(f.name)) continue;
+    const n = fieldName(f.name);
+    if (pathParamNames.has(n)) renames.set(f.name, `body_${n}`);
+  }
+  return renames;
+}
+
 /** snake_case module/directory name. */
 export function moduleName(name: string): string {
   return toSnakeCase(name);

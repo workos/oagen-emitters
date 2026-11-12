@@ -1,7 +1,7 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
+import type { Model, Enum, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
 import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
-import { buildListScaffoldingSkip } from '../shared/model-utils.js';
+import { buildListScaffoldingSkip, enrichModelsFromSpec } from '../shared/model-utils.js';
 import {
   isModelInScope,
   collectErrorOnlyModelNames,
@@ -55,6 +55,64 @@ export function classifyUnassignedModel(modelName: string): string {
 }
 
 /**
+ * Flatten oneOf / allOf+oneOf variant fields onto each base model and pick
+ * up the synthetic models / enums `enrichModelsFromSpec` produces for inline
+ * variant shapes. Ruby emits flat hash-backed models, not sum types, so a
+ * discriminated base whose IR fields were stripped (the new EventSchema-
+ * style behaviour after the parser learned to walk allOf-wrapped variants)
+ * has its original fields restored — otherwise `ConnectApplication`-style
+ * bases would silently lose every variant field they had previously.
+ */
+export function enrichModelsForRuby(models: Model[], enums: Enum[]): Model[] {
+  const enriched = enrichModelsFromSpec(models, enums);
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  return enriched.map((m) => {
+    if ((m as { discriminator?: unknown }).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+}
+
+/**
+ * Structurally identical models, as alias name → canonical name. An alias is
+ * written as `Alias = Canonical` in lib/, and its .rbi has to say the same
+ * thing: a full `class Alias` there contradicts the constant assignment and
+ * Sorbet rejects it. Both passes take the map from here.
+ *
+ * `models` are the enriched models (see {@link enrichModelsForRuby}), the
+ * ones `generateModels` receives; hashing the unenriched ones can pair
+ * different models.
+ */
+export function buildModelAliasMap(models: Model[], ctx: EmitterContext): Map<string, string> {
+  const enumNames = new Set(ctx.spec.enums.map((e) => e.name));
+  const skipScaffolding = buildListScaffoldingSkip(models, ctx.spec.services);
+
+  // Dedup identical models (by recursive structural hash).
+  const recursiveHashes = buildRecursiveHashMap(models, enumNames);
+  const hashGroups = new Map<string, string[]>();
+  for (const m of models) {
+    if (skipScaffolding(m)) continue;
+    const h = recursiveHashes.get(m.name) ?? '';
+    if (!hashGroups.has(h)) hashGroups.set(h, []);
+    hashGroups.get(h)!.push(m.name);
+  }
+  // A model only error responses reach never takes a domain model's name.
+  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
+  const aliasOf = new Map<string, string>();
+  for (const names of hashGroups.values()) {
+    if (names.length <= 1) continue;
+    const sorted = [...names].sort(preferLiveCanonical(errorOnly));
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
+  }
+  return aliasOf;
+}
+
+/**
  * Generate Ruby model classes from IR Model definitions.
  *
  * Each model becomes a file at `lib/workos/{snake_name}.rb` containing
@@ -93,23 +151,7 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const skipScaffolding = buildListScaffoldingSkip(models, ctx.spec.services);
 
   // Dedup identical models (by recursive structural hash).
-  const recursiveHashes = buildRecursiveHashMap(models, enumNames);
-  const hashGroups = new Map<string, string[]>();
-  for (const m of models) {
-    if (skipScaffolding(m)) continue;
-    const h = recursiveHashes.get(m.name) ?? '';
-    if (!hashGroups.has(h)) hashGroups.set(h, []);
-    hashGroups.get(h)!.push(m.name);
-  }
-  // A model only error responses reach never takes a domain model's name.
-  const errorOnly = collectErrorOnlyModelNames({ services: ctx.spec.services, models });
-  const aliasOf = new Map<string, string>();
-  for (const names of hashGroups.values()) {
-    if (names.length <= 1) continue;
-    const sorted = [...names].sort(preferLiveCanonical(errorOnly));
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) aliasOf.set(sorted[i], canonical);
-  }
+  const aliasOf = buildModelAliasMap(models, ctx);
 
   // A canonical an in-scope alias points at must exist after the run even
   // when it is itself out of scope and brand-new (it would be dropped) or on

@@ -3,6 +3,7 @@ import { mapTypeRef as irMapTypeRef } from '@workos/oagen';
 import {
   className,
   fieldName,
+  bodyFieldKwargRenames,
   domainFieldName,
   fileName,
   safeParamName,
@@ -18,6 +19,7 @@ import {
   getMountTarget,
   isMountInScope,
   isModelInScope,
+  forcedModelNames,
   lookupResolved,
   buildHiddenParams,
   getUrlBuilderClientOverrides,
@@ -27,6 +29,7 @@ import {
 import { isListWrapperModel, buildListScaffoldingSkip, isPaginatedBareArray } from '../shared/model-utils.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantRbi } from './parameter-groups.js';
 import { getRequestBodyFields } from './resources.js';
+import { buildModelAliasMap, enrichModelsForRuby } from './models.js';
 
 /**
  * Map an IR TypeRef to a Sorbet type string for RBI files.
@@ -84,12 +87,39 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
   const models = (spec.models as Model[]).filter((m) => !skipScaffolding(m));
 
+  // The same alias map and force-emit set the model pass computes, from the
+  // same enriched models, so each .rbi is written exactly when its .rb is and
+  // declares the same kind of constant.
+  const enrichedModels = enrichModelsForRuby(spec.models as Model[], ctx.spec.enums);
+  const aliasOf = buildModelAliasMap(enrichedModels, ctx);
+  const forcedModels = forcedModelNames(enrichedModels, aliasOf, ctx);
+
   for (const model of models) {
     const cls = className(model.name);
+    const modelInScope = isModelInScope(model.name, ctx) || forcedModels.has(model.name);
     const lines: string[] = [];
     lines.push('# typed: strong');
     lines.push('');
     lines.push('module WorkOS');
+
+    // A duplicate model is a constant alias in lib/ (`Alias = Canonical`), so
+    // it is one here too. Declaring `class Alias` would contradict the
+    // assignment (Sorbet error 4022) and give the alias a type of its own.
+    const canonical = aliasOf.get(model.name);
+    if (canonical) {
+      lines.push(`  ${cls} = ${className(canonical)}`);
+      lines.push('end');
+      if (modelInScope) {
+        files.push({
+          path: `rbi/workos/${fileName(model.name)}.rbi`,
+          content: lines.join('\n'),
+          integrateTarget: true,
+          overwriteExisting: true,
+        });
+      }
+      continue;
+    }
+
     lines.push(`  class ${cls}`);
 
     // Constructor
@@ -123,10 +153,11 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
     lines.push('  end');
     lines.push('end');
 
-    // FR-1.4: write the per-model .rbi only when in scope. The client.rbi
-    // aggregate (section 3) stays on the full set so sigs for out-of-scope
-    // services whose .rb/.rbi still exist keep resolving.
-    if (isModelInScope(model.name, ctx)) {
+    // FR-1.4: write the per-model .rbi only when in scope (or force-emitted,
+    // like its .rb). The client.rbi aggregate (section 3) stays on the full
+    // set so sigs for out-of-scope services whose .rb/.rbi still exist keep
+    // resolving.
+    if (modelInScope) {
       files.push({
         path: `rbi/workos/${fileName(model.name)}.rbi`,
         content: lines.join('\n'),
@@ -252,6 +283,11 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName).filter(
         (f) => !groupedParamNames.has(f.name),
       );
+      // A body field that shares its name with a path param is the keyword
+      // `body_<name>` on the method. Without the rename the `seen` check below
+      // drops it, and the signature is one required keyword short.
+      const bodyFieldRenames = bodyFieldKwargRenames(op.pathParams ?? [], bodyFields, hiddenParams);
+      const bodyKwargName = (wireName: string): string => bodyFieldRenames.get(wireName) ?? fieldName(wireName);
       const parameterGroups = op.parameterGroups ?? [];
       const groupSorbetType = (group: (typeof parameterGroups)[number]): string => {
         const owner = groupOwners.get(group.name);
@@ -283,7 +319,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       for (const f of bodyFields) {
         if (hiddenParams.has(f.name)) continue;
         if (!f.required) continue;
-        const n = fieldName(f.name);
+        const n = bodyKwargName(f.name);
         if (seen.has(n)) continue;
         seen.add(n);
         sigParams.push(`${n}: ${mapSorbetType(f.type)}`);
@@ -309,7 +345,7 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
       for (const f of bodyFields) {
         if (hiddenParams.has(f.name)) continue;
         if (f.required) continue;
-        const n = fieldName(f.name);
+        const n = bodyKwargName(f.name);
         if (seen.has(n)) continue;
         seen.add(n);
         sigParams.push(`${n}: ${wrapNilable(mapSorbetType(f.type))}`);

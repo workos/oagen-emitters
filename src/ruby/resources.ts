@@ -12,6 +12,7 @@ import { planOperation } from '@workos/oagen';
 import {
   className,
   fieldName,
+  bodyFieldKwargRenames,
   fileName,
   methodName,
   safeParamName,
@@ -396,18 +397,9 @@ function emitMethod(args: {
   // and cause `String#[Symbol]` TypeErrors when the dispatcher reads `:type`.
   const bodyFields = getRequestBodyFields(op, hiddenParams, modelByName).filter((f) => !groupedParamNames.has(f.name));
 
-  // Detect path/body name collisions and build a rename map for body fields.
-  // When a body field's snake_case name matches a path param, prefix with "body_"
-  // so the Ruby method exposes distinct keyword args.
-  const pathParamNames = new Set(pathParams.map((p) => safeParamName(p.name)));
-  const bodyFieldRenames = new Map<string, string>();
-  for (const f of bodyFields) {
-    if (hiddenParams.has(f.name)) continue;
-    const n = fieldName(f.name);
-    if (pathParamNames.has(n)) {
-      bodyFieldRenames.set(f.name, `body_${n}`);
-    }
-  }
+  // A body field whose snake_case name matches a path param is exposed as
+  // `body_<name>`, so the Ruby method has distinct keyword args.
+  const bodyFieldRenames = bodyFieldKwargRenames(pathParams, bodyFields, hiddenParams);
 
   /** Resolve the Ruby kwarg name for a body field, applying renames if needed. */
   const bodyKwargName = (wireName: string): string => {
