@@ -8,7 +8,7 @@ import type {
   ParameterGroup,
   TypeRef,
 } from '@workos/oagen';
-import { toPascalCase, walkTypeRef } from '@workos/oagen';
+import { collectModelRefs, collectResponseHeaders, toPascalCase, walkTypeRef } from '@workos/oagen';
 import { getSyntheticParent } from './model-utils.js';
 
 /**
@@ -372,6 +372,77 @@ export function declaredParams(op: Operation): Parameter[] {
     ...op.headerParams,
     ...(op.cookieParams ?? []),
   ];
+}
+
+/**
+ * Natural model-to-service assignment over each operation's primary surface:
+ * its request body, primary response, declared parameters, pagination item
+ * and envelope, and response headers, followed through model fields. The
+ * first service (in spec order) to reach a model owns it; a `modelHints` pin
+ * overrides that.
+ *
+ * Deliberately narrower than oagen's `assignModelsToServices`, which also
+ * follows error bodies, secondary response and request bodies, callbacks and
+ * a named union's variants. A model reached only one of those ways has no
+ * natural service here, so an emitter that groups model files by service
+ * keeps it in its shared directory (Python's `common/`, Ruby's `shared/`) —
+ * the layout the shipped SDKs already have on disk. Following the wider reach
+ * would move those files into service directories, and a scoped run cannot
+ * finish that move for a service outside its selection: Python's barrels stop
+ * naming the model (and everything it pulled into `common/` with it) while
+ * out-of-scope code still imports it, and Ruby writes a second file for a
+ * constant whose first file is still on disk.
+ */
+export function assignModelsByPrimarySurface(
+  models: Model[],
+  services: Service[],
+  hints?: Record<string, string>,
+): Map<string, string> {
+  const modelsByName = new Map(models.map((m) => [m.name, m]));
+  const modelToService = new Map<string, string>();
+
+  for (const service of services) {
+    const reached = new Set<string>();
+    const collect = (ref: TypeRef): void => {
+      for (const name of collectModelRefs(ref)) reached.add(name);
+    };
+
+    for (const op of service.operations) {
+      if (op.requestBody) collect(op.requestBody);
+      collect(op.response);
+      for (const param of declaredParams(op)) collect(param.type);
+      if (op.pagination) {
+        collect(op.pagination.itemType);
+        for (const field of op.pagination.envelopeFields ?? []) collect(field.type);
+      }
+      for (const header of collectResponseHeaders(op)) collect(header.type);
+    }
+
+    const toVisit = [...reached];
+    while (toVisit.length > 0) {
+      const model = modelsByName.get(toVisit.pop()!);
+      if (!model) continue;
+      for (const field of model.fields) {
+        for (const name of collectModelRefs(field.type)) {
+          if (reached.has(name) || !modelsByName.has(name)) continue;
+          reached.add(name);
+          toVisit.push(name);
+        }
+      }
+    }
+
+    for (const name of reached) {
+      if (!modelToService.has(name)) modelToService.set(name, service.name);
+    }
+  }
+
+  // Only pin models present in this slice; the target service resolves by
+  // name downstream, so it need not appear in `services`.
+  for (const [modelName, serviceName] of Object.entries(hints ?? {})) {
+    if (modelsByName.has(modelName)) modelToService.set(modelName, serviceName);
+  }
+
+  return modelToService;
 }
 
 /**

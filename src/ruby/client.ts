@@ -1,7 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ApiSpec, EmitterContext, GeneratedFile, Service, Model, Enum } from '@workos/oagen';
-import { assignModelsToServices } from '@workos/oagen';
 import {
   servicePropertyName,
   resolveClassName,
@@ -12,7 +11,7 @@ import {
   resolveServiceTarget,
 } from './naming.js';
 import { classifyUnassignedModel } from './models.js';
-import { getMountTarget, isScopedRun } from '../shared/resolved-ops.js';
+import { assignModelsByPrimarySurface, getMountTarget, isScopedRun } from '../shared/resolved-ops.js';
 import { buildListScaffoldingSkip } from '../shared/model-utils.js';
 import { NON_SPEC_SERVICES } from '../shared/non-spec-services.js';
 
@@ -255,7 +254,7 @@ function generateMainEntryFile(spec: ApiSpec, ctx: EmitterContext): GeneratedFil
  * keep the generated namespace flat while the filesystem is grouped.
  */
 function collectModelSubdirs(spec: ApiSpec, ctx: EmitterContext): string[] {
-  const modelToService = assignModelsToServices(spec.models as Model[], spec.services, ctx.modelHints);
+  const modelToService = assignModelsByPrimarySurface(spec.models as Model[], spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const subdirs = new Set<string>();
   const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
