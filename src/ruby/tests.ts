@@ -4,6 +4,7 @@ import {
   className,
   fileName,
   fieldName,
+  bodyFieldKwargRenames,
   domainFieldName,
   safeParamName,
   scopedGroupVariantClassName,
@@ -553,28 +554,25 @@ function buildCallArgsStub(
   const seen = new Set<string>();
 
   // Path params (required).
-  const pathParamNames = new Set<string>();
   for (const p of op.pathParams ?? []) {
     const name = safeParamName(p.name);
-    pathParamNames.add(name);
     if (seen.has(name)) continue;
     seen.add(name);
     parts.push(`${name}: ${stubValueFor(p.type)}`);
   }
 
-  // Required body fields — expand from model if present.
-  // Apply path/body collision rename (body_ prefix) matching resources.ts.
+  // Required body fields — expand from model if present. A field that
+  // collides with a path param is passed as `body_<name>`, as the method
+  // declares it.
   const body = op.requestBody;
   if (body) {
     const bodyModel = resolveBodyModel(body, modelByName);
     if (bodyModel) {
+      const renames = bodyFieldKwargRenames(op.pathParams ?? [], bodyModel.fields, hiddenParams);
       for (const f of bodyModel.fields) {
         if (!f.required) continue;
         if (hiddenParams.has(f.name)) continue;
-        let name = fieldName(f.name);
-        if (pathParamNames.has(name)) {
-          name = `body_${name}`;
-        }
+        const name = renames.get(f.name) ?? fieldName(f.name);
         if (seen.has(name)) continue;
         seen.add(name);
         parts.push(`${name}: ${stubValueFor(f.type)}`);

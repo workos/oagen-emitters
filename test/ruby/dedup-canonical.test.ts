@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateModels } from '../../src/ruby/models.js';
-import type { EmitterContext, ApiSpec, Model, Service, Enum } from '@workos/oagen';
+import { generateRbiFiles } from '../../src/ruby/rbi.js';
+import type { EmitterContext, ApiSpec, GeneratedFile, Model, Service, Enum } from '@workos/oagen';
 import { forcedModelNames } from '../../src/shared/resolved-ops.js';
 import { generateEnums } from '../../src/ruby/enums.js';
 import { defaultSdkBehavior } from '@workos/oagen';
@@ -109,5 +110,58 @@ describe('ruby/models canonical election', () => {
 
     const files = generateEnums(enums, enumCtx);
     expect(files.some((f) => f.path.endsWith('/live_status.rb'))).toBe(true);
+  });
+});
+
+// lib/ and rbi/ describe the same constants. An alias model is
+// `Alias = Canonical` in lib/; a full `class Alias` in rbi/ contradicts that
+// assignment (Sorbet error 4022) and gives the alias a type of its own.
+describe('ruby/rbi model files match the model files', () => {
+  /**
+   * What each model file declares, keyed by file name: `class X` or `X = Y`.
+   * lib/ names the superclass on the class line; rbi/ leaves it out.
+   */
+  const declarations = (files: GeneratedFile[], extension: string): Map<string, string> => {
+    const byFile = new Map<string, string>();
+    for (const f of files) {
+      if (!f.path.endsWith(extension)) continue;
+      const declaration = /^ {2}(class \w+|\w+ = \w+)(?: < [\w:]+)?$/m.exec(f.content);
+      if (declaration) byFile.set(f.path.split('/').pop()!.slice(0, -extension.length), declaration[1]);
+    }
+    return byFile;
+  };
+
+  it('declares an alias model as the constant assignment lib/ has', () => {
+    const rbi = generateRbiFiles(spec, ctx);
+    const content = (suffix: string) => rbi.find((f) => f.path.endsWith(suffix))!.content;
+
+    expect(content('/err.rbi')).toContain('  Err = AuthenticationFailedDataError');
+    expect(content('/err.rbi')).not.toContain('class Err');
+    expect(content('/err.rbi')).not.toContain('sig {');
+    expect(content('/detail_info.rbi')).toContain('  DetailInfo = Detail');
+    expect(content('/authentication_failed_data_error.rbi')).toContain('  class AuthenticationFailedDataError');
+    expect(content('/detail.rbi')).toContain('  class Detail');
+  });
+
+  it('declares the same kind of constant as lib/ for every model', () => {
+    const rb = declarations(generateModels(models, ctx), '.rb');
+    const rbi = declarations(generateRbiFiles(spec, ctx), '.rbi');
+
+    expect(rb.size).toBe(models.length);
+    for (const [file, declaration] of rb) expect(rbi.get(file), file).toBe(declaration);
+  });
+
+  it('scoped run: writes a .rbi for exactly the models whose .rb it writes', () => {
+    const rb = declarations(generateModels(models, scopedCtx), '.rb');
+    const rbi = declarations(generateRbiFiles(spec, scopedCtx), '.rbi');
+
+    // The forced canonical and what it reaches get their .rbi too, so an
+    // older `Canonical = Alias` signature on disk cannot survive next to the
+    // new `Alias = Canonical` one.
+    expect(rbi.get('authentication_failed_data_error')).toBe('class AuthenticationFailedDataError');
+    for (const [file, declaration] of rb) expect(rbi.get(file), file).toBe(declaration);
+    for (const file of rbi.keys()) {
+      if (!rb.has(file)) expect(['events', 'client'], file).toContain(file);
+    }
   });
 });

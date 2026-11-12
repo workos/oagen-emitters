@@ -638,6 +638,59 @@ describe('ruby/resources', () => {
     expect(content).toContain('@param body_slug');
   });
 
+  it('declares a colliding body field under its body_ name in the .rbi', () => {
+    // The shape of add_organization_role_permission: the role's `slug` is in
+    // the path and the permission's `slug` is in the body. The signature used
+    // to drop the body field as a duplicate name, so Sorbet saw a method one
+    // required keyword short of the real one.
+    const services: Service[] = [
+      {
+        name: 'Authorization',
+        operations: [
+          makeOp({
+            name: 'addOrganizationRolePermission',
+            httpMethod: 'post',
+            path: '/authorization/organizations/{organization_id}/roles/{slug}/permissions',
+            pathParams: [
+              { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: true },
+              { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
+            ],
+            requestBody: { kind: 'model', name: 'AddRolePermission' },
+            response: { kind: 'model', name: 'Role' },
+          }),
+        ],
+      },
+    ];
+    const spec = makeSpec(services, [
+      {
+        name: 'AddRolePermission',
+        fields: [
+          { name: 'slug', type: { kind: 'primitive', type: 'string' }, required: true },
+          // An optional field can collide too, and is renamed the same way.
+          { name: 'organization_id', type: { kind: 'primitive', type: 'string' }, required: false },
+        ],
+      },
+      { name: 'Role', fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }] },
+    ]);
+    const ctx = makeCtx(spec);
+    const runtime = generateResources(services, ctx)[0].content;
+    const rbi = generateRbiFiles(spec, ctx).find((f) => f.path === 'rbi/workos/authorization.rbi')!.content;
+
+    expect(rbi).toContain('body_slug: String');
+    expect(rbi).toContain('body_organization_id: T.nilable(String)');
+    expect(rbi).toContain(
+      'def add_organization_role_permission(organization_id:, slug:, body_slug:, body_organization_id: nil, request_options: {}); end',
+    );
+
+    // The signature and the method take the same keywords, in the same order.
+    const keywords = (source: string): string[] =>
+      /def add_organization_role_permission\(([^)]*)\)/
+        .exec(source)![1]
+        .split(',')
+        .map((param) => param.trim().split(':')[0]);
+    expect(keywords(rbi)).toEqual(keywords(runtime));
+  });
+
   it('does not rename body fields that do not collide with path params', () => {
     const services: Service[] = [
       {
