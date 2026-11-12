@@ -84,13 +84,19 @@ export function generateRbiFiles(spec: ApiSpec, ctx: EmitterContext): GeneratedF
   const _enumNames = new Set(spec.enums.map((e) => e.name));
 
   // 1. Generate model RBI files
-  const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
-  const models = (spec.models as Model[]).filter((m) => !skipScaffolding(m));
+  //
+  // From the enriched models, the ones the model pass receives. Enrichment
+  // adds the variant fields of a oneOf schema and mints a model for an inline
+  // object, and lib/ has an accessor or a class for each of them. Looping over
+  // `spec.models` would leave a minted model without a .rbi, even where a
+  // declared model is an alias of it and so has no signatures of its own.
+  const enrichedModels = enrichModelsForRuby(spec.models as Model[], ctx.spec.enums);
+  const skipScaffolding = buildListScaffoldingSkip(enrichedModels, spec.services);
+  const models = enrichedModels.filter((m) => !skipScaffolding(m));
 
   // The same alias map and force-emit set the model pass computes, from the
-  // same enriched models, so each .rbi is written exactly when its .rb is and
-  // declares the same kind of constant.
-  const enrichedModels = enrichModelsForRuby(spec.models as Model[], ctx.spec.enums);
+  // same models, so each .rbi is written exactly when its .rb is and declares
+  // the same kind of constant.
   const aliasOf = buildModelAliasMap(enrichedModels, ctx);
   const forcedModels = forcedModelNames(enrichedModels, aliasOf, ctx);
 
