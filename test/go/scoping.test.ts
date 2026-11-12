@@ -251,6 +251,60 @@ describe('go scoped flat-file reconciliation (models.go)', () => {
     expect(content).toContain('Error *AliasA `json:"error"`');
   });
 
+  it('never redeclares a departing member whose in-scope struct lands AFTER the frozen alias block', () => {
+    // Two members leave the on-disk batch: ErrorBodyWithCode is regenerated
+    // before the alias block, LaterError after it. The frozen block must omit
+    // both, not just the one already emitted, or LaterError is declared twice.
+    writePrior(
+      'models.go',
+      [
+        'package workos',
+        '',
+        '// AaaCanonical represents an aaa canonical.',
+        'type AaaCanonical struct {',
+        '\tCode string `json:"code"`',
+        '}',
+        '',
+        '// The following types are structurally identical to AaaCanonical.',
+        'type (',
+        '\tErrorBodyWithCode = AaaCanonical',
+        '\tAliasA            = AaaCanonical',
+        '\tAliasB            = AaaCanonical',
+        '\tAliasC            = AaaCanonical',
+        '\tAliasD            = AaaCanonical',
+        '\tAliasE            = AaaCanonical',
+        '\tLaterError        = AaaCanonical',
+        ')',
+        '',
+      ].join('\n'),
+    );
+
+    const fields = [strField('code')];
+    const models: Model[] = [
+      { name: 'ErrorBodyWithCode', fields: [strField('code'), strField('message')] },
+      { name: 'AaaCanonical', fields },
+      { name: 'AliasA', fields },
+      { name: 'AliasB', fields },
+      { name: 'AliasC', fields },
+      { name: 'AliasD', fields },
+      { name: 'AliasE', fields },
+      { name: 'LaterError', fields: [strField('code'), strField('detail')] },
+    ];
+    const ctx = scopedCtx({
+      scopedServices: ['InScope'],
+      scopedModelNames: ['ErrorBodyWithCode', 'LaterError'],
+      priorManifestPaths: ['models.go'],
+    });
+
+    const content = generateModels(models, ctx)[0].content;
+    expect(content.match(/^type ErrorBodyWithCode struct \{$/gm)).toHaveLength(1);
+    expect(content.match(/^type LaterError struct \{$/gm)).toHaveLength(1);
+    expect(content).not.toMatch(/^\t(ErrorBodyWithCode|LaterError)\s+= AaaCanonical$/m);
+    for (const alias of ['AliasA', 'AliasB', 'AliasC', 'AliasD', 'AliasE']) {
+      expect(content).toMatch(new RegExp(`^\\t${alias}\\s+= AaaCanonical$`, 'm'));
+    }
+  });
+
   it('full run (no scoping) emits every model unchanged', () => {
     const models: Model[] = [
       { name: 'InScopeThing', fields: [strField('id')] },

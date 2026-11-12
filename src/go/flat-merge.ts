@@ -225,7 +225,10 @@ export function reconcileFlatBlocks(
   const priorParsed = prior ? parseFlatGoBlocks(prior) : { blocks: [], byName: new Map<string, NamedBlock>() };
 
   const out: string[] = [];
-  const emittedNames = new Set<string>();
+  // Seeded with every name a fresh in-scope block declares, wherever it falls
+  // in emit order: a frozen prior block must never redeclare a member that a
+  // LATER in-scope block regenerates as its own type.
+  const emittedNames = new Set(newBlocks.filter((b) => b.inScope).flatMap((b) => b.names));
 
   for (const block of newBlocks) {
     if (block.inScope) {
