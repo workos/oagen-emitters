@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.7](https://github.com/workos/oagen-emitters/compare/v0.25.6...v0.25.7) (2026-11-12)
+
+
+### Bug Fixes
+
+* **go:** keep on-disk batched aliases when a member leaves the group ([#310](https://github.com/workos/oagen-emitters/issues/310)) ([07fbbc1](https://github.com/workos/oagen-emitters/commit/07fbbc165dbb188973d2746f3106f8bbb2c80e07))
+* **ruby:** make the RBI signatures match the generated Ruby ([#309](https://github.com/workos/oagen-emitters/issues/309)) ([edfb481](https://github.com/workos/oagen-emitters/commit/edfb481aa98c53cdf81ef0fccfda0ef92fe582a1))
+
 ## [0.25.6](https://github.com/workos/oagen-emitters/compare/v0.25.5...v0.25.6) (2026-11-11)
 
 
