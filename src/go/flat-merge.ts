@@ -164,6 +164,29 @@ export function parseFlatGoBlocks(content: string): {
 }
 
 /**
+ * A prior block minus the declarations of names already emitted this run, or
+ * null when none remain. Only a batched `type (...)` alias block can partially
+ * overlap: a member stops being structurally identical and is regenerated as
+ * its own in-scope struct, while its siblings still exist only on disk and are
+ * still referenced by frozen structs. Dropping the whole block for that one
+ * overlap left the siblings `undefined` (workos-go `go build` failure on a
+ * DirectorySync-scoped preview). gofmt realigns the trimmed block afterwards.
+ */
+function priorMinusEmitted(pb: NamedBlock, emitted: Set<string>): NamedBlock | null {
+  const names = pb.names.filter((n) => !emitted.has(n));
+  if (names.length === 0) return null;
+  if (names.length === pb.names.length) return pb;
+  const text = pb.text
+    .split('\n')
+    .filter((line) => {
+      const m = line.trim().match(/^(\w+)\s*=/);
+      return !m || !emitted.has(m[1]);
+    })
+    .join('\n');
+  return { names, text };
+}
+
+/**
  * Reconcile freshly generated named blocks against the prior on-disk file for a
  * scoped run. Returns the ordered list of block texts to emit. See file-level
  * docs for the keep/carry-over rules. In a scoped run a block is emitted as:
@@ -210,32 +233,22 @@ export function reconcileFlatBlocks(
       for (const n of block.names) emittedNames.add(n);
       continue;
     }
-    // Out of scope: freeze to the prior on-disk text when this block maps 1:1
-    // to a single prior block; that keeps an out-of-scope type byte-identical to
-    // disk even if the new spec changed it. A brand-new out-of-scope block has
-    // no prior block → it is dropped.
+    // Out of scope: freeze to the prior on-disk text so an out-of-scope type
+    // stays byte-identical to disk even if the new spec changed it. A
+    // regrouping may spread this block's names across several prior blocks;
+    // NEVER regenerate out-of-scope content (the fresh text could re-point an
+    // alias at a renamed canonical the scoped run didn't emit) — freeze every
+    // distinct prior block instead, minus any member another block already
+    // emitted. All names are on-disk here (the generator only puts in-scope ∪
+    // on-disk names in an out-of-scope block), so this fully retains them. A
+    // brand-new out-of-scope block has no prior block → it is dropped.
     const priorBlocks = block.names.map((n) => priorParsed.byName.get(n)).filter((b): b is NamedBlock => !!b);
-    const uniquePrior = new Set(priorBlocks);
-    if (uniquePrior.size === 1) {
-      const pb = priorBlocks[0];
-      if (!pb.names.some((n) => emittedNames.has(n))) {
-        out.push(pb.text);
-        for (const n of pb.names) emittedNames.add(n);
-      }
-    } else if (uniquePrior.size > 1) {
-      // A regrouping spread this out-of-scope block's names across several prior
-      // blocks. NEVER regenerate out-of-scope content (the fresh text could
-      // re-point an alias at a renamed canonical the scoped run didn't emit);
-      // instead freeze every distinct prior block verbatim. All names are
-      // on-disk here (the generator only puts in-scope ∪ on-disk names in an
-      // out-of-scope block), so this fully retains them.
-      for (const pb of uniquePrior) {
-        if (pb.names.some((n) => emittedNames.has(n))) continue;
-        out.push(pb.text);
-        for (const n of pb.names) emittedNames.add(n);
-      }
+    for (const pb of new Set(priorBlocks)) {
+      const rest = priorMinusEmitted(pb, emittedNames);
+      if (!rest) continue;
+      out.push(rest.text);
+      for (const n of rest.names) emittedNames.add(n);
     }
-    // uniquePrior.size === 0 → brand-new out-of-scope → drop.
   }
 
   // Carry over prior blocks the new spec no longer produces at all (renamed /
@@ -243,10 +256,10 @@ export function reconcileFlatBlocks(
   // excluding any name this file emits elsewhere (e.g. PaginationParams).
   for (const block of priorParsed.blocks) {
     if (block.names.some((n) => alsoEmitted.has(n))) continue;
-    if (block.names.every((n) => !emittedNames.has(n))) {
-      out.push(block.text);
-      for (const n of block.names) emittedNames.add(n);
-    }
+    const rest = priorMinusEmitted(block, emittedNames);
+    if (!rest) continue;
+    out.push(rest.text);
+    for (const n of rest.names) emittedNames.add(n);
   }
 
   return out;
