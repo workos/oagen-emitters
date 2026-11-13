@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.8](https://github.com/workos/oagen-emitters/compare/v0.25.7...v0.25.8) (2026-11-13)
+
+
+### Bug Fixes
+
+* **python,ruby:** keep error-only models in the shared directory ([#312](https://github.com/workos/oagen-emitters/issues/312)) ([5b26da0](https://github.com/workos/oagen-emitters/commit/5b26da080c18e2473211089105a95fc07a749427))
+
 ## [0.25.7](https://github.com/workos/oagen-emitters/compare/v0.25.6...v0.25.7) (2026-11-12)
 
 
