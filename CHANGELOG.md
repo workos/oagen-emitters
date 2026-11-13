@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.9](https://github.com/workos/oagen-emitters/compare/v0.25.8...v0.25.9) (2026-11-13)
+
+
+### Bug Fixes
+
+* restore rust, dotnet and php SDK builds ([#314](https://github.com/workos/oagen-emitters/issues/314)) ([c76e269](https://github.com/workos/oagen-emitters/commit/c76e26902e2d155198b1c0434a1b32e54859f414))
+
 ## [0.25.8](https://github.com/workos/oagen-emitters/compare/v0.25.7...v0.25.8) (2026-11-13)
 
 
