@@ -49,6 +49,7 @@ import { avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { bearerOverrideScheme } from '../shared/security.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Return path params sorted by their first occurrence in the URL template.
@@ -605,7 +606,10 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
     const baseClass = isPaginated ? 'ListOptions' : 'BaseOptions';
 
     optionsLines.push('');
-    const opSummary = op.description?.split('\n').find((l) => l.trim()) ?? `${method} on ${mountName}`;
+    const opSummary =
+      operationDoc(op)
+        ?.split('\n')
+        .find((l) => l.trim()) ?? `${method} on ${mountName}`;
     optionsLines.push(
       `    /// <summary>Request options for <see cref="${className(mountName)}Service.${method}"/>: ${escapeXml(opSummary.trim())}</summary>`,
     );
@@ -816,7 +820,7 @@ function generateMethod(
   }
 
   // XML doc comment (full multi-line description from the spec)
-  lines.push(...emitXmlDoc(op.description, '        '));
+  lines.push(...emitXmlDoc(operationDoc(op), '        '));
   for (const p of sortPathParamsByTemplateOrder(op)) {
     const paramDesc = p.description ? escapeXml(p.description) : `The ${humanize(p.name)}.`;
     lines.push(`        /// <param name="${localName(p.name)}">${paramDesc}</param>`);
@@ -841,7 +845,7 @@ function generateMethod(
     lines.push(`        /// <returns>The <see cref="${respType}"/> result.</returns>`);
   }
   if (op.deprecated) {
-    const msg = escapeCsAttributeString(deprecationMessage(op.description, 'operation'));
+    const msg = escapeCsAttributeString(deprecationMessage(operationDoc(op), 'operation'));
     lines.push(`        [System.Obsolete("${msg}")]`);
   }
 

@@ -13,6 +13,7 @@ import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapp
 import { sortPathParamsByTemplateOrder } from './resources.js';
 import { buildKotlinPathExpression } from './path-expression.js';
 import { emitSuspendVariant, type SuspendParam } from './suspend.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Resolve wrapper params with required params sorted before optional ones
@@ -61,7 +62,7 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
   // descriptions are preferred; the fallback is templated from the parameter
   // name so the SDK still compiles cleanly under failOnWarning.
   const kdocLines: string[] = [];
-  const opDesc = (op.description ?? '').trim();
+  const opDesc = (operationDoc(op) ?? '').trim();
   const wrapperHumanName = method.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
   if (opDesc) {
     kdocLines.push(opDesc.split('\n')[0]);

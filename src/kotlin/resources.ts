@@ -51,6 +51,7 @@ import { emitSuspendVariant, SUSPEND_IMPORTS, type SuspendParam } from './suspen
 import { resolveRequestBodyModel } from '../shared/request-body.js';
 import { preserveParameterOrder } from '../shared/baseline-params.js';
 import type { ApiParam } from '@workos/oagen/compat';
+import { operationDoc } from '../shared/operation-doc.js';
 
 const KOTLIN_SRC_PREFIX = 'src/main/kotlin/';
 
@@ -484,7 +485,7 @@ function renderMethod(
   const lines: string[] = [];
   const kdocLines = buildMethodKdoc(op, pathParams, sortedQuery, sortedBodyFields, bodyParamNames, plan);
   for (const ln of kdocLines) lines.push(ln);
-  const deprecation = op.deprecated ? deprecatedAnnotation(op.description, 'operation') : undefined;
+  const deprecation = op.deprecated ? deprecatedAnnotation(operationDoc(op), 'operation') : undefined;
   if (deprecation) lines.push(`  ${deprecation}`);
   if (jvmOverloads) lines.push('  @JvmOverloads');
   // Omit explicit `: Unit` to keep ktlint happy.
@@ -967,7 +968,7 @@ function buildMethodKdoc(
 ): string[] {
   // Use the operation's description as the KDoc body, split by newline.
   // Escape `*/` sequences to keep KDoc valid.
-  const descriptionRaw = (op.description ?? '').trim();
+  const descriptionRaw = (operationDoc(op) ?? '').trim();
   const textLines: string[] = [];
   if (descriptionRaw) {
     for (const l of descriptionRaw.split('\n')) textLines.push(escapeKdoc(l));

@@ -37,6 +37,7 @@ import { generateWrapperMethods } from './wrappers.js';
 import { phpDocComment } from './utils.js';
 import { dateTimeWireExpr } from './runtime.js';
 import { buildPhpPathExpression } from './path-expression.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Resolve the resource class name for a service (used by client.ts).
@@ -325,7 +326,8 @@ function generateMethod(
 
   // PHPDoc block
   const docParts: string[] = [];
-  if (op.description) docParts.push(op.description);
+  const doc = operationDoc(op);
+  if (doc) docParts.push(doc);
   const seenDocParams = new Set<string>();
 
   // @param for path params

@@ -34,6 +34,7 @@ import { buildExportedClassNameSet, resolveServiceTarget } from '../shared/servi
 import { parsePathTemplate } from '../shared/path-template.js';
 import { getSyntheticEnums, resolvePaginationItemType } from '../shared/model-utils.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Generate one resource module per mount group. Functions take the client as
@@ -281,7 +282,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
 
   // Documentation
   lines.push('  @doc """');
-  const summary = op.description?.trim() || humanize(resolved.methodName);
+  const summary = operationDoc(op)?.trim() || humanize(resolved.methodName);
   lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);
   for (const docLine of injectionDocLines(defaults, inferred)) {
     lines.push('');
@@ -377,7 +378,7 @@ function renderUrlBuilder(resolved: ResolvedOperation, fname: string, ctx: Emitt
 
   const lines: string[] = [];
   lines.push('  @doc """');
-  const summary = op.description?.trim() || humanize(resolved.methodName);
+  const summary = operationDoc(op)?.trim() || humanize(resolved.methodName);
   lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);
   lines.push('');
   lines.push('  Returns the fully-qualified redirect URL — no HTTP request is made.');
@@ -444,7 +445,7 @@ function renderWrapper(
   const lines: string[] = [];
   lines.push('  @doc """');
   lines.push(`  ${escapeDoc(formatWrapperDescription(wrapper.name))}`);
-  const summary = op.description?.trim();
+  const summary = operationDoc(op)?.trim();
   if (summary) {
     lines.push('');
     lines.push(`  ${escapeDoc(summary).split('\n').join('\n  ')}`);

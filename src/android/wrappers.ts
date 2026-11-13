@@ -16,6 +16,7 @@ import { resolveTypeImports } from './imports.js';
 import { renderMethodDoc } from './doc-comments.js';
 import type { RenderedMethod } from './resources.js';
 import { clientFieldExpr } from './resources.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Render one `suspend fun` per wrapper of a union-split operation (e.g.
@@ -115,7 +116,7 @@ function renderWrapper(op: Operation, wrapper: ResolvedWrapper, ctx: EmitterCont
   const lines: string[] = [];
   lines.push(
     ...renderMethodDoc(
-      wrapperDoc(wrapper.name, op.description),
+      wrapperDoc(wrapper.name, operationDoc(op)),
       [
         ...pathParams.map((param) => ({
           name: param.name,

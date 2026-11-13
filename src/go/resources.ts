@@ -34,6 +34,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { lowerFirstForDoc, fieldDocComment, avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Return path params sorted by their first occurrence in the URL template.
@@ -715,8 +716,9 @@ function generateMethod(
   }
 
   // Build godoc -- wrap multi-line descriptions in // comments
-  if (op.description) {
-    const descLines = op.description.split('\n').filter((l) => l.trim());
+  const doc = operationDoc(op);
+  if (doc) {
+    const descLines = doc.split('\n').filter((l) => l.trim());
     lines.push(`// ${godocSummary(method, descLines[0])}`);
     for (let i = 1; i < descLines.length; i++) {
       lines.push(`// ${descLines[i].trim()}`);

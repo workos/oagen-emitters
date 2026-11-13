@@ -21,6 +21,7 @@ import {
   liveSurfaceHasAutogenFile,
   liveSurfaceInterfacePath,
 } from './live-surface.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Render the request-body argument for an HTTP call.
@@ -1500,7 +1501,8 @@ function renderMethod(
   // mechanisms instead.
   {
     const docParts: string[] = [];
-    if (op.description) docParts.push(op.description);
+    const doc = operationDoc(op);
+    if (doc) docParts.push(doc);
     for (const param of op.pathParams) {
       const paramName = fieldName(param.name);
       // When the overlay folds a path param into the options object,
@@ -2417,7 +2419,8 @@ function renderUrlBuilderMethod(
   // Concise JSDoc — url builders return a string, not a Promise.
   {
     const docParts: string[] = [];
-    if (op.description) docParts.push(op.description);
+    const doc = operationDoc(op);
+    if (doc) docParts.push(doc);
     docParts.push('@returns {string} The constructed URL.');
     if (op.deprecated) docParts.push('@deprecated');
     const allLines = docParts.flatMap((p) => p.split('\n'));

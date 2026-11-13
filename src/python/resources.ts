@@ -10,6 +10,7 @@ import type {
   Parameter,
   Model,
 } from '@workos/oagen';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /** Extend Parameter with `explode` until @workos/oagen publishes the field. */
 type ParameterExt = Parameter & { explode?: boolean };
@@ -450,8 +451,9 @@ function emitMethodDocstring(
   for (const field of clientOverrides) hiddenParams.delete(field);
 
   // Description — indent continuation lines to align with the opening `"""`
-  if (op.description) {
-    const descLines = pythonDocstring(op.description).split('\n');
+  const doc = operationDoc(op);
+  if (doc) {
+    const descLines = pythonDocstring(doc).split('\n');
     const indentedDesc = descLines
       .map((line, i) => (i === 0 ? line : line.trim() === '' ? '' : `        ${line}`))
       .join('\n');
