@@ -1,5 +1,4 @@
 import type { ApiSpec, EmitterContext, GeneratedFile, Model, Operation, ResolvedWrapper, TypeRef } from '@workos/oagen';
-import { assignModelsToServices } from '@workos/oagen';
 import {
   className,
   fileName,
@@ -21,6 +20,7 @@ import {
   buildHiddenParams,
   collectBodyFieldTypes,
   groupTypeBaseName,
+  assignModelsByPrimarySurface,
   isModelInScope,
   isScopedRun,
   fileExistsAfterRun,
@@ -266,7 +266,7 @@ function generateModelRoundTripTests(spec: ApiSpec, ctx: EmitterContext): Genera
   const skipScaffolding = buildListScaffoldingSkip(spec.models as Model[], spec.services);
   const models = (spec.models as Model[]).filter((m) => !skipScaffolding(m));
   const enumNames = new Set(spec.enums.map((e) => e.name));
-  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
+  const modelToService = assignModelsByPrimarySurface(models, ctx.spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const dirFor = (modelName: string): string => {
     const service = modelToService.get(modelName);

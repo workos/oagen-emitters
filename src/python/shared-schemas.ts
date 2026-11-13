@@ -1,8 +1,8 @@
 import type { ApiSpec, EmitterContext, Enum, Model, Service } from '@workos/oagen';
-import { assignModelsToServices, collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
+import { collectFieldDependencies, planOperation, walkTypeRef } from '@workos/oagen';
 import { fileName } from './naming.js';
 import { buildListScaffoldingSkip, detectDiscriminators } from '../shared/model-utils.js';
-import { declaredParams, collectErrorOnlyModelNames } from '../shared/resolved-ops.js';
+import { assignModelsByPrimarySurface, declaredParams, collectErrorOnlyModelNames } from '../shared/resolved-ops.js';
 
 /**
  * Walk every operation across all services and tally, per schema, the set of
@@ -133,7 +133,7 @@ export function computeSchemaPlacement(spec: ApiSpec, ctx: EmitterContext): Sche
   const modelsByName = new Map(spec.models.map((m) => [m.name, m]));
   const hintedModels = new Set(Object.keys(ctx.modelHints ?? {}));
 
-  const originalModelToService = assignModelsToServices(spec.models, spec.services, ctx.modelHints);
+  const originalModelToService = assignModelsByPrimarySurface(spec.models, spec.services, ctx.modelHints);
   const originalEnumToService = assignEnumsToServicesNatural(spec.enums, spec.services);
 
   // Precompute Python-specific structural alias maps so the closure can

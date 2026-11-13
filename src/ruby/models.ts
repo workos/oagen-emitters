@@ -1,8 +1,9 @@
 import type { Model, Enum, EmitterContext, GeneratedFile, TypeRef, Field } from '@workos/oagen';
-import { walkTypeRef, assignModelsToServices } from '@workos/oagen';
+import { walkTypeRef } from '@workos/oagen';
 import { className, domainFieldName, fileName, buildMountDirMap } from './naming.js';
 import { buildListScaffoldingSkip, enrichModelsFromSpec } from '../shared/model-utils.js';
 import {
+  assignModelsByPrimarySurface,
   isModelInScope,
   collectErrorOnlyModelNames,
   preferLiveCanonical,
@@ -13,9 +14,9 @@ import {
 export const SHARED_MODEL_DIR = 'shared';
 
 /**
- * Prefix → mount-target-dir map for models that `assignModelsToServices` can't
- * place (mostly webhook event payloads whose types aren't directly returned by
- * any API operation). The prefix is the PascalCase model-name prefix.
+ * Prefix → mount-target-dir map for models that `assignModelsByPrimarySurface`
+ * can't place (mostly webhook event payloads whose types aren't directly
+ * returned by any API operation). The prefix is the PascalCase model-name prefix.
  *
  * Order matters: longest prefix wins (checked first). Prefixes not in this map
  * land in `shared/`.
@@ -129,9 +130,11 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
   const modelNames = new Set(models.map((m) => m.name));
 
   // Model → mount target directory. Each model is assigned to the first service
-  // that references it (transitively). Orphans land in `shared/`. Zeitwerk is
+  // whose primary surface references it (transitively); one reached only
+  // through an error body or a union's variants is an orphan. Orphans land in
+  // `shared/`. Zeitwerk is
   // told to collapse each subfolder (in client.ts) so the namespace stays flat.
-  const modelToService = assignModelsToServices(models, ctx.spec.services, ctx.modelHints);
+  const modelToService = assignModelsByPrimarySurface(models, ctx.spec.services, ctx.modelHints);
   const mountDirMap = buildMountDirMap(ctx);
   const dirFor = (modelName: string): string => {
     const service = modelToService.get(modelName);
