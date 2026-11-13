@@ -267,6 +267,166 @@ describe('generateResources', () => {
     expect(content).not.toContain('UserManagementAuthenticationScreenHint::SignIn');
   });
 
+  // PHPStan rejects `fn ($v) => $v !== null` over values that can never be
+  // null ("will always evaluate to true"), which fails the SDK's typecheck.
+  describe('query null filter', () => {
+    const ownershipEnum = {
+      name: 'PipesOwnership',
+      values: [
+        { name: 'user', value: 'user' },
+        { name: 'organization', value: 'organization' },
+      ],
+    };
+    const ownership = {
+      name: 'ownership',
+      type: { kind: 'enum' as const, name: 'PipesOwnership' },
+      required: false,
+      default: 'user',
+    };
+    const slug = { name: 'slug', type: { kind: 'primitive' as const, type: 'string' as const }, required: false };
+    const tenant = { name: 'tenant', type: { kind: 'primitive' as const, type: 'string' as const }, required: true };
+    const nullableTenant = {
+      name: 'tenant',
+      type: { kind: 'nullable' as const, inner: { kind: 'primitive' as const, type: 'string' as const } },
+      required: true,
+    };
+    const configurationModels: Model[] = [
+      {
+        name: 'Configuration',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'UpdateConfiguration',
+        fields: [{ name: 'enabled', type: { kind: 'primitive', type: 'boolean' }, required: false }],
+      },
+    ];
+    type QueryParams = Service['operations'][number]['queryParams'];
+    const shapes: Record<string, (queryParams: QueryParams) => Service['operations'][number]> = {
+      get: (queryParams) => ({
+        name: 'getConfiguration',
+        httpMethod: 'get',
+        path: '/configurations/{id}',
+        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        queryParams,
+        headerParams: [],
+        response: { kind: 'model', name: 'Configuration' },
+        errors: [],
+        injectIdempotencyKey: false,
+      }),
+      body: (queryParams) => ({
+        name: 'updateConfiguration',
+        httpMethod: 'put',
+        path: '/configurations/{id}',
+        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        queryParams,
+        headerParams: [],
+        requestBody: { kind: 'model', name: 'UpdateConfiguration' },
+        response: { kind: 'model', name: 'Configuration' },
+        errors: [],
+        injectIdempotencyKey: false,
+      }),
+      delete: (queryParams) => ({
+        name: 'deleteConfiguration',
+        httpMethod: 'delete',
+        path: '/configurations/{id}',
+        pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+        queryParams,
+        headerParams: [],
+        response: { kind: 'primitive', type: 'unknown' },
+        errors: [],
+        injectIdempotencyKey: false,
+      }),
+      paginated: (queryParams) => ({
+        name: 'listConfigurations',
+        httpMethod: 'get',
+        path: '/configurations',
+        pathParams: [],
+        queryParams,
+        headerParams: [],
+        response: { kind: 'model', name: 'Configuration' },
+        errors: [],
+        pagination: {
+          strategy: 'cursor',
+          param: 'after',
+          dataPath: 'data',
+          itemType: { kind: 'model', name: 'Configuration' },
+        },
+        injectIdempotencyKey: false,
+      }),
+    };
+    const render = (shape: string, queryParams: QueryParams): string => {
+      const service: Service = { name: 'Configurations', operations: [shapes[shape](queryParams)] };
+      const spec: ApiSpec = { ...emptySpec, enums: [ownershipEnum], models: configurationModels, services: [service] };
+      return generateResources([service], { ...ctx, spec })[0].content;
+    };
+    const everyShape = Object.keys(shapes);
+
+    it.each(everyShape)('writes a plain array when no %s query value can be null', (shape) => {
+      const content = render(shape, [ownership, tenant]);
+      expect(content).toContain(
+        [
+          '        $query = [',
+          "            'ownership' => $ownership->value,",
+          "            'tenant' => $tenant,",
+          '        ];',
+        ].join('\n'),
+      );
+      expect(content).not.toContain('$query = array_filter([');
+    });
+
+    it.each(everyShape)('filters nulls when an optional %s query value can be null', (shape) => {
+      const content = render(shape, [ownership, slug]);
+      expect(content).toContain(
+        [
+          '        $query = array_filter([',
+          "            'ownership' => $ownership->value,",
+          "            'slug' => $slug,",
+          '        ], fn ($v) => $v !== null);',
+        ].join('\n'),
+      );
+    });
+
+    it.each(everyShape)('filters nulls when a required %s query value is nullable', (shape) => {
+      const content = render(shape, [nullableTenant]);
+      expect(content).toContain(
+        [
+          '        $query = array_filter([',
+          "            'tenant' => $tenant,",
+          '        ], fn ($v) => $v !== null);',
+        ].join('\n'),
+      );
+    });
+
+    it('keeps the null filter for a URL builder, whose enum defaults stay nullable', () => {
+      const op = shapes.get([ownership]);
+      const service: Service = { name: 'Configurations', operations: [op] };
+      const spec: ApiSpec = { ...emptySpec, enums: [ownershipEnum], models: configurationModels, services: [service] };
+      const content = generateResources([service], {
+        ...ctx,
+        spec,
+        resolvedOperations: [
+          {
+            operation: op,
+            service,
+            methodName: 'get_configuration_url',
+            mountOn: 'Configurations',
+            defaults: {},
+            inferFromClient: [],
+            urlBuilder: true,
+          },
+        ],
+      })[0].content;
+
+      expect(content).toContain(
+        [
+          '        $query = array_filter([',
+          "            'ownership' => $ownership?->value,",
+          '        ], fn ($v) => $v !== null);',
+        ].join('\n'),
+      );
+    });
+  });
+
   it('generates paginated list method', () => {
     const result = generateResources(services, ctx);
 

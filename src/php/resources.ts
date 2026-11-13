@@ -435,39 +435,25 @@ function generateMethod(
 
   if (isRedirect) {
     // Redirect endpoint: construct URL client-side instead of making HTTP request
-    const queryLines = buildQueryArray(op, hiddenParams, {
+    const query = buildQueryArray(op, hiddenParams, {
       materializeQueryDefaults,
       namespace: ctx.namespacePascal,
     });
     const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
     const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-    const needsQuery = queryLines.length > 0 || hasDefaults || hasInferred || hasGroups;
+    const needsQuery = query.lines.length > 0 || hasDefaults || hasInferred || hasGroups;
 
     if (needsQuery) {
-      const groupedParams = collectGroupedParamNames(op);
-      const hasOptionalQuery = op.queryParams.some(
-        (q) => !q.required && !hiddenParams.has(q.name) && !groupedParams.has(q.name),
-      );
-      if (hasOptionalQuery) {
-        lines.push('        $query = array_filter([');
-      } else if (queryLines.length > 0) {
-        lines.push('        $query = [');
-      } else {
-        lines.push('        $query = [');
-      }
-      for (const q of queryLines) {
+      lines.push(queryArrayOpen(query.nullable));
+      for (const q of query.lines) {
         lines.push(`            ${q}`);
       }
       // Inject constant defaults
       for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
         lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
       }
-      if (hasOptionalQuery) {
-        lines.push('        ], fn ($v) => $v !== null);');
-      } else {
-        lines.push('        ];');
-      }
+      lines.push(queryArrayClose(query.nullable));
       // Inject fields from client config
       for (const clientField of getOpInferFromClient(resolvedOp)) {
         lines.push(`        $query[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
@@ -479,16 +465,16 @@ function generateMethod(
       lines.push(`        return $this->client->buildUrl(path: ${path}, query: [], options: $options);`);
     }
   } else if (plan.isPaginated) {
-    const queryLines = buildQueryArray(op, undefined, { namespace: ctx.namespacePascal });
+    const query = buildQueryArray(op, undefined, { namespace: ctx.namespacePascal });
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-    const needsQuery = queryLines.length > 0 || hasGroups;
+    const needsQuery = query.lines.length > 0 || hasGroups;
     if (needsQuery) {
-      if (queryLines.length > 0) {
-        lines.push('        $query = array_filter([');
-        for (const q of queryLines) {
+      if (query.lines.length > 0) {
+        lines.push(queryArrayOpen(query.nullable));
+        for (const q of query.lines) {
           lines.push(`            ${q}`);
         }
-        lines.push('        ], fn ($v) => $v !== null);');
+        lines.push(queryArrayClose(query.nullable));
       } else {
         lines.push('        $query = [];');
       }
@@ -559,13 +545,14 @@ function generateMethod(
       }
     }
     // Build query params if present
-    const deleteQueryLines = buildQueryArray(op, undefined, { bodyModel, namespace: ctx.namespacePascal });
+    const deleteQuery = buildQueryArray(op, undefined, { bodyModel, namespace: ctx.namespacePascal });
+    const deleteQueryLines = deleteQuery.lines;
     if (deleteQueryLines.length > 0) {
-      lines.push('        $query = array_filter([');
+      lines.push(queryArrayOpen(deleteQuery.nullable));
       for (const q of deleteQueryLines) {
         lines.push(`            ${q}`);
       }
-      lines.push('        ], fn ($v) => $v !== null);');
+      lines.push(queryArrayClose(deleteQuery.nullable));
     }
 
     lines.push('        $this->client->request(');
@@ -618,11 +605,12 @@ function generateMethod(
     if ((op.parameterGroups?.length ?? 0) > 0) {
       lines.push(...generateGroupDispatch(op, '        ', '$body'));
     }
-    const queryLines = buildQueryArray(op, hiddenParams, { bodyModel, namespace: ctx.namespacePascal });
+    const query = buildQueryArray(op, hiddenParams, { bodyModel, namespace: ctx.namespacePascal });
+    const queryLines = query.lines;
     if (queryLines.length > 0) {
-      lines.push('        $query = array_filter([');
+      lines.push(queryArrayOpen(query.nullable));
       for (const q of queryLines) lines.push(`            ${q}`);
-      lines.push('        ], fn ($v) => $v !== null);');
+      lines.push(queryArrayClose(query.nullable));
     }
     lines.push('        $response = $this->client->request(');
     lines.push(`            method: '${httpMethod}',`);
@@ -643,36 +631,22 @@ function generateMethod(
       lines.push('        return $response;');
     }
   } else {
-    const queryLines = buildQueryArray(op, hiddenParams, { namespace: ctx.namespacePascal });
+    const query = buildQueryArray(op, hiddenParams, { namespace: ctx.namespacePascal });
     const hasDefaults = Object.keys(getOpDefaults(resolvedOp)).length > 0;
     const hasInferred = getOpInferFromClient(resolvedOp).length > 0;
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-    const needsQuery = queryLines.length > 0 || hasDefaults || hasInferred || hasGroups;
+    const needsQuery = query.lines.length > 0 || hasDefaults || hasInferred || hasGroups;
 
     if (needsQuery) {
-      const groupedParams = collectGroupedParamNames(op);
-      const hasOptionalQuery = op.queryParams.some(
-        (q) => !q.required && !hiddenParams.has(q.name) && !groupedParams.has(q.name),
-      );
-      if (hasOptionalQuery) {
-        lines.push('        $query = array_filter([');
-      } else if (queryLines.length > 0) {
-        lines.push('        $query = [');
-      } else {
-        lines.push('        $query = [');
-      }
-      for (const q of queryLines) {
+      lines.push(queryArrayOpen(query.nullable));
+      for (const q of query.lines) {
         lines.push(`            ${q}`);
       }
       // Inject constant defaults
       for (const [key, value] of Object.entries(getOpDefaults(resolvedOp))) {
         lines.push(`            ${phpStringLiteral(key)} => ${phpLiteral(value)},`);
       }
-      if (hasOptionalQuery) {
-        lines.push('        ], fn ($v) => $v !== null);');
-      } else {
-        lines.push('        ];');
-      }
+      lines.push(queryArrayClose(query.nullable));
       // Inject fields from client config
       for (const clientField of getOpInferFromClient(resolvedOp)) {
         lines.push(`        $query[${phpStringLiteral(clientField)}] = ${clientFieldExpression(clientField)};`);
@@ -876,29 +850,63 @@ export function buildParamNames(
   return { body, query };
 }
 
+/** The entries of a `$query` literal, and whether any of them can hold `null`. */
+interface QueryArray {
+  lines: string[];
+  /**
+   * True when at least one entry's value can be `null`, so the literal needs
+   * the `!== null` filter to drop the keys the caller left unset. When every
+   * value is non-nullable the filter is dead code, and PHPStan rejects the
+   * comparison as always true.
+   */
+  nullable: boolean;
+}
+
 function buildQueryArray(
   op: Operation,
   hiddenParams?: Set<string>,
   opts?: { materializeQueryDefaults?: boolean; bodyModel?: Model | null; namespace?: string },
-): string[] {
+): QueryArray {
   const queryParamMap = buildParamNames(op, opts?.bodyModel ?? null, hiddenParams ?? new Set()).query;
-  return op.queryParams
-    .filter((q) => queryParamMap.has(q.name))
-    .map((q) => {
-      const phpName = queryParamMap.get(q.name)!;
-      if (isEnumType(q.type)) {
-        // Mirrors the signature: only materialized enum defaults are
-        // non-nullable, so other optional enum params use the nullsafe op.
-        const hasEnumDefault = shouldMaterializeQueryDefault(q, opts?.materializeQueryDefaults ?? true);
-        const nullsafe = q.required || hasEnumDefault ? '' : '?';
-        return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->value,`;
-      }
-      if (isDateTimeType(q.type)) {
-        // The helper passes `null` through; `array_filter` then drops the key.
-        return `${phpStringLiteral(q.name)} => ${dateTimeWireExpr(opts?.namespace ?? 'WorkOS', `$${phpName}`)},`;
-      }
-      return `${phpStringLiteral(q.name)} => $${phpName},`;
-    });
+  const materializeDefaults = opts?.materializeQueryDefaults ?? true;
+  const visible = op.queryParams.filter((q) => queryParamMap.has(q.name));
+  const lines = visible.map((q) => {
+    const phpName = queryParamMap.get(q.name)!;
+    if (isEnumType(q.type)) {
+      // Mirrors the signature: only materialized enum defaults are
+      // non-nullable, so other optional enum params use the nullsafe op.
+      const hasEnumDefault = shouldMaterializeQueryDefault(q, materializeDefaults);
+      const nullsafe = q.required || hasEnumDefault ? '' : '?';
+      return `${phpStringLiteral(q.name)} => $${phpName}${nullsafe}->value,`;
+    }
+    if (isDateTimeType(q.type)) {
+      // The helper passes `null` through; `array_filter` then drops the key.
+      return `${phpStringLiteral(q.name)} => ${dateTimeWireExpr(opts?.namespace ?? 'WorkOS', `$${phpName}`)},`;
+    }
+    return `${phpStringLiteral(q.name)} => $${phpName},`;
+  });
+  return { lines, nullable: visible.some((q) => queryParamMayBeNull(q, materializeDefaults)) };
+}
+
+/**
+ * Whether the argument a query param is passed as can be `null`. Mirrors the
+ * signature `buildMethodParams` writes: a required param and an enum param
+ * with a materialized default are typed non-nullable; every other optional
+ * param is `?T $x = null`, and a nullable type is `?T` wherever it sits.
+ */
+function queryParamMayBeNull(param: Parameter, materializeDefaults: boolean): boolean {
+  if (param.type.kind === 'nullable') return true;
+  return !param.required && !shouldMaterializeQueryDefault(param, materializeDefaults);
+}
+
+/** Opens a `$query` literal: filtered when an entry can be `null`, plain otherwise. */
+function queryArrayOpen(nullable: boolean): string {
+  return nullable ? '        $query = array_filter([' : '        $query = [';
+}
+
+/** Closes what `queryArrayOpen` opened. */
+function queryArrayClose(nullable: boolean): string {
+  return nullable ? '        ], fn ($v) => $v !== null);' : '        ];';
 }
 
 function shouldMaterializeQueryDefault(param: Parameter, enabled: boolean): boolean {
