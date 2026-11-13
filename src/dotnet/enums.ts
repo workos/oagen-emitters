@@ -128,6 +128,10 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       usedNames.add(memberName);
 
       if (v.description) {
+        // StyleCop SA1514: a documentation header is preceded by a blank line
+        // unless it opens the enum body. Undocumented members stay packed.
+        const previous = lines[lines.length - 1];
+        if (previous !== '' && previous !== '    {') lines.push('');
         lines.push(`        /// <summary>${escapeXml(v.description)}</summary>`);
       }
       if (v.deprecated) {

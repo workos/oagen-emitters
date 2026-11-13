@@ -23,6 +23,7 @@ import {
 import { fieldSwiftType, mapTypeRef } from './type-map.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { renderDocComment, renderParameterDocs } from './doc-comments.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Generate one Swift resource struct per mount group. Each operation becomes an
@@ -265,7 +266,7 @@ function renderMethod(resolved: ResolvedOperation, mountName: string, method: st
 
   // --- assemble body -------------------------------------------------------
   const lines: string[] = [];
-  const doc = docComment(op.description, '    ');
+  const doc = docComment(operationDoc(op), '    ');
   if (doc) lines.push(doc);
   const paramNotes = renderParameterDocs(
     [
@@ -348,7 +349,7 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
   const ordered = orderMethodParams(params);
 
   const lines: string[] = [];
-  const doc = docComment(op.description, '    ');
+  const doc = docComment(operationDoc(op), '    ');
   if (doc) lines.push(doc);
   const paramNotes = renderParameterDocs(
     ordered.map((param) => ({

@@ -374,4 +374,116 @@ describe('dotnet/enums', () => {
     expect(files[0].content).toContain('[EnumMember(Value = "10_YEARS")]');
     expect(files[0].content).toContain('Value10Years,');
   });
+
+  describe('documented members', () => {
+    const service: Service = {
+      name: 'Agents',
+      operations: [
+        {
+          name: 'validateCredential',
+          httpMethod: 'get',
+          path: '/agents/validate',
+          pathParams: [],
+          queryParams: [{ name: 'type', type: { kind: 'enum', name: 'CredentialType' }, required: false }],
+          headerParams: [],
+          response: { kind: 'primitive', type: 'unknown' },
+          errors: [],
+          injectIdempotencyKey: false,
+        },
+      ],
+    };
+    const generate = (credentialType: Enum): string => {
+      const enums = [credentialType];
+      const files = generateEnums(enums, { ...ctx, spec: { ...emptySpec, services: [service], enums } });
+      expect(files).toHaveLength(1);
+      return files[0].content;
+    };
+
+    // StyleCop SA1514 fails the SDK build when a documentation header follows
+    // another member without a blank line between them.
+    it('precedes each documentation header with a blank line', () => {
+      const content = generate({
+        name: 'CredentialType',
+        values: [
+          { name: 'API_KEY', value: 'api_key', description: 'An agent API key.' },
+          { name: 'ACCESS_TOKEN', value: 'access_token', description: 'An agent access token.' },
+          { name: 'LEGACY', value: 'legacy' },
+          { name: 'SESSION', value: 'session', deprecated: true, description: 'Use `access_token` instead.' },
+        ],
+      });
+
+      expect(content).toContain(
+        [
+          '        [EnumMember(Value = "unknown")]',
+          '        Unknown,',
+          '',
+          '        /// <summary>An agent API key.</summary>',
+          '        [EnumMember(Value = "api_key")]',
+          '        ApiKey,',
+          '',
+          '        /// <summary>An agent access token.</summary>',
+          '        [EnumMember(Value = "access_token")]',
+          '        AccessToken,',
+          '        [EnumMember(Value = "legacy")]',
+          '        Legacy,',
+          '',
+          '        /// <summary>Use `access_token` instead.</summary>',
+          '        [System.Obsolete("This value is deprecated. Use `access_token` instead.")]',
+          '        [EnumMember(Value = "session")]',
+          '        Session,',
+          '    }',
+        ].join('\n'),
+      );
+    });
+
+    it('opens the enum body with a documentation header when a default leads', () => {
+      const content = generate({
+        name: 'CredentialType',
+        default: 'api_key',
+        values: [
+          { name: 'API_KEY', value: 'api_key', description: 'An agent API key.' },
+          { name: 'ACCESS_TOKEN', value: 'access_token', description: 'An agent access token.' },
+        ],
+      });
+
+      expect(content).toContain(
+        [
+          '    {',
+          '        /// <summary>An agent API key.</summary>',
+          '        [EnumMember(Value = "api_key")]',
+          '        ApiKey = 0,',
+          '',
+          '        /// <summary>An agent access token.</summary>',
+          '        [EnumMember(Value = "access_token")]',
+          '        AccessToken = 1,',
+          '',
+          '        [EnumMember(Value = "unknown")]',
+          '        Unknown = 99,',
+          '    }',
+        ].join('\n'),
+      );
+    });
+
+    it('keeps undocumented members packed', () => {
+      const content = generate({
+        name: 'CredentialType',
+        values: [
+          { name: 'API_KEY', value: 'api_key' },
+          { name: 'ACCESS_TOKEN', value: 'access_token' },
+        ],
+      });
+
+      expect(content).toContain(
+        [
+          '        Unknown,',
+          '',
+          '        [EnumMember(Value = "api_key")]',
+          '        ApiKey,',
+          '        [EnumMember(Value = "access_token")]',
+          '        AccessToken,',
+          '    }',
+        ].join('\n'),
+      );
+    });
+  });
 });

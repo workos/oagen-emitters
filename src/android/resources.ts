@@ -28,6 +28,7 @@ import { fieldKotlinType, mapTypeRef, implicitImportsFor } from './type-map.js';
 import { resolveTypeImports, renderImportBlock } from './imports.js';
 import { generateWrapperMethods } from './wrappers.js';
 import { renderMethodDoc } from './doc-comments.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Generate one Kotlin resource class per mount group. Each operation becomes a
@@ -260,7 +261,7 @@ function renderMethod(
   const lines: string[] = [];
   lines.push(
     ...renderMethodDoc(
-      op.description,
+      operationDoc(op),
       [
         ...ordered.map((param) => ({
           name: param.name,
@@ -276,7 +277,7 @@ function renderMethod(
       '    ',
     ),
   );
-  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(op.description, 'operation')}`);
+  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(operationDoc(op), 'operation')}`);
 
   lines.push(`    public suspend fun ${method}(`);
   for (const p of ordered) {
@@ -336,7 +337,7 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
   const lines: string[] = [];
   lines.push(
     ...renderMethodDoc(
-      op.description,
+      operationDoc(op),
       ordered.map((param) => ({
         name: param.name,
         description: param.description,
@@ -346,7 +347,7 @@ function renderUrlBuilderMethod(resolved: ResolvedOperation, method: string, ctx
       '    ',
     ),
   );
-  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(op.description, 'operation')}`);
+  if (op.deprecated) lines.push(`    ${deprecatedAnnotation(operationDoc(op), 'operation')}`);
 
   if (ordered.length === 0) {
     lines.push(`    public fun ${method}(): String {`);
@@ -469,7 +470,7 @@ function renderAutoPagingMethod(
     ),
   );
   if (resolved.operation.deprecated) {
-    lines.push(`    ${deprecatedAnnotation(resolved.operation.description, 'operation')}`);
+    lines.push(`    ${deprecatedAnnotation(operationDoc(resolved.operation), 'operation')}`);
   }
   lines.push(`    public fun ${name}(`);
   for (const p of passthrough) {

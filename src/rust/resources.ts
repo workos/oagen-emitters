@@ -24,6 +24,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { resolveWrapperParams, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 import { bearerOverrideScheme } from '../shared/security.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Generate one resource file per mount target under `src/resources/`, plus a
@@ -821,7 +822,7 @@ function bearerOverrideToken(op: Operation): string | null {
  * `cargo clippy -D warnings` turns that lint into a build failure.
  */
 function deprecatedDelegatorAttrs(op: Operation): string[] {
-  return [`    ${deprecatedAttr(op.description, 'operation')}`, '    #[allow(deprecated)]'];
+  return [`    ${deprecatedAttr(operationDoc(op), 'operation')}`, '    #[allow(deprecated)]'];
 }
 
 function renderMethod(
@@ -871,7 +872,7 @@ function renderMethod(
 
   // `_with_options` variant — per-request idempotency keys, custom headers, etc.
   sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
-  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(operationDoc(op), 'operation')}`);
   const argsOpts = [
     '&self',
     ...pathArgList,
@@ -965,7 +966,7 @@ function renderUrlBuilderMethod(
 
   const sig: string[] = [];
   for (const line of methodDocLines(op)) sig.push(`    ${line}`);
-  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(operationDoc(op), 'operation')}`);
   const args = ['&self', ...pathArgList, ...(emptyParams ? [] : [`params: ${paramsType}`])];
   const headSig = `    pub fn ${method}(${args.join(', ')}) -> Result<String, Error> {`;
   if (headSig.length <= 100) {
@@ -1271,7 +1272,7 @@ function renderWrapperMethod(
 
   const sig: string[] = [];
   const docLines: string[] = [];
-  const desc = (op.description ?? '').trim();
+  const desc = (operationDoc(op) ?? '').trim();
   if (desc) {
     for (const raw of desc.split('\n')) {
       const t = raw.trim();
@@ -1300,7 +1301,7 @@ function renderWrapperMethod(
 
   // `_with_options` variant.
   sig.push(`    /// Variant of [\`Self::${method}\`] that accepts per-request [\`crate::RequestOptions\`].`);
-  if (op.deprecated) sig.push(`    ${deprecatedAttr(op.description, 'operation')}`);
+  if (op.deprecated) sig.push(`    ${deprecatedAttr(operationDoc(op), 'operation')}`);
   const argsOpts = ['&self', ...pathArgList, `params: ${paramsType}`, 'options: Option<&crate::RequestOptions>'];
   const optsSig = `    pub async fn ${method}_with_options(${argsOpts.join(', ')}) -> Result<${returnType}, Error> {`;
   if (optsSig.length <= 100) {
@@ -1447,8 +1448,9 @@ function rustDefaultExpr(value: unknown, ref: TypeRef, isOptional: boolean, ctx:
 
 function methodDocLines(op: Operation): string[] {
   const lines: string[] = [];
-  if (op.description && op.description.trim().length > 0) {
-    lines.push(...docCommentLines(op.description));
+  const doc = operationDoc(op);
+  if (doc) {
+    lines.push(...docCommentLines(doc));
   } else {
     lines.push(`/// ${op.httpMethod.toUpperCase()} ${op.path}`);
   }

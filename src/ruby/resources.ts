@@ -36,6 +36,7 @@ import {
 import { isListWrapperModel, isPaginatedBareArray } from '../shared/model-utils.js';
 import { generateWrapperMethods, collectWrapperResponseModels } from './wrappers.js';
 import { buildGroupOwnerMap, collectVariantsForMountTarget, emitInlineVariantClass } from './parameter-groups.js';
+import { operationDoc } from '../shared/operation-doc.js';
 
 /**
  * Generate Ruby resource (service) classes from IR services.
@@ -224,7 +225,7 @@ function emitUrlBuilderMethod(args: {
   const lines: string[] = [];
 
   // YARD docs.
-  const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
+  const summary = operationDoc(op) ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
   lines.push(`    # ${summary.split('\n')[0] ?? ''}`);
   lines.push('    # Builds the URL client-side; no HTTP request is made.');
   if (op.deprecated) lines.push('    # @deprecated');
@@ -1003,7 +1004,7 @@ function buildYardDoc(
   variantClassRef: (group: ParameterGroup, variantName: string) => string,
 ): string[] {
   const lines: string[] = [];
-  const summary = op.description ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
+  const summary = operationDoc(op) ?? `${op.httpMethod.toUpperCase()} ${op.path}`;
   const firstLine = summary.split('\n')[0] ?? '';
   lines.push(`# ${firstLine}`);
   if (op.deprecated) {
