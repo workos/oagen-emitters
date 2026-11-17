@@ -60,48 +60,6 @@ export function domainFieldName(field: { name: string; domainName?: string }): s
   return toSnakeCase(field.domainName ?? field.name);
 }
 
-/**
- * Python builtins that should not be shadowed by parameter names.
- * When a path/query param name collides, suffix with underscore.
- */
-const PYTHON_BUILTIN_NAMES = new Set([
-  'type',
-  'id',
-  'list',
-  'dict',
-  'set',
-  'map',
-  'filter',
-  'input',
-  'object',
-  'format',
-  'hash',
-  'range',
-  'dir',
-  'max',
-  'min',
-  'next',
-  'open',
-  'print',
-  'len',
-  'str',
-  'int',
-  'float',
-  'bool',
-  'bytes',
-  'tuple',
-  'super',
-]);
-
-/**
- * Safe parameter name for path/query params that avoids shadowing Python builtins.
- * Body field names should continue to use fieldName() to preserve wire-key compatibility.
- */
-export function safeParamName(name: string): string {
-  const snake = toSnakeCase(name);
-  return PYTHON_BUILTIN_NAMES.has(snake) ? `${snake}_` : snake;
-}
-
 /** snake_case module/directory name. */
 export function moduleName(name: string): string {
   return toSnakeCase(name);

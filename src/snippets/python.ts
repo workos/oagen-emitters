@@ -1,6 +1,6 @@
 import type { SnippetArg, SnippetEmitter } from '@workos/oagen';
 import { collectSnippetArgs, collectWrapperArgs, toSnakeCase } from '@workos/oagen';
-import { fieldName, safeParamName } from '../python/naming.js';
+import { fieldName } from '../python/naming.js';
 
 const INDENT = '    ';
 
@@ -46,7 +46,10 @@ function pythonKeyword(arg: SnippetArg, collisions: Set<string>): string {
     const base = fieldName(arg.wireName);
     return collisions.has(arg.wireName) ? `body_${base}` : base;
   }
-  return safeParamName(arg.wireName);
+  // Path and query params must be named exactly as the Python SDK emitter names
+  // them (`fieldName`, see src/python/resources.ts), or the snippet passes a
+  // keyword the generated method does not accept (e.g. `id_=` for `id`).
+  return fieldName(arg.wireName);
 }
 
 function renderCall(accessor: string, method: string, args: PyArg[]): string {

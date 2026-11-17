@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Model, Service } from '@workos/oagen';
 import { runSnippetEmitters } from '@workos/oagen';
 import { pythonSnippetEmitter } from '../../src/snippets/python.js';
+import { generateResources } from '../../src/python/resources.js';
 import { makeCtx, makeOp, makeSpec, makeStringField } from './_helpers.js';
 
 function runPython(services: Service[], models: Model[] = []): string {
@@ -17,7 +18,7 @@ describe('snippets/python', () => {
     expect(content).toContain('client.organizations.list_organizations()');
   });
 
-  it('renames Python builtin path params with a trailing underscore', () => {
+  it('names builtin path params exactly as the generated SDK method does', () => {
     const content = runPython([
       {
         name: 'Organizations',
@@ -37,9 +38,10 @@ describe('snippets/python', () => {
         ],
       },
     ]);
-    // Python builtins ('id', 'type') get an underscore via safeParamName,
-    // so the snippet exposes `id_=` instead of shadowing the builtin.
-    expect(content).toContain('client.organizations.get_organization(id_="org_123")');
+    // The generated SDK method is `get_organization(self, id: str, ...)`, so the
+    // snippet must pass `id=`; `id_=` raises TypeError against the real SDK.
+    expect(content).toContain('client.organizations.get_organization(id="org_123")');
+    expect(content).not.toContain('id_=');
   });
 
   it('expands required body fields as kwargs', () => {
@@ -69,5 +71,34 @@ describe('snippets/python', () => {
     );
     expect(content).toContain('name="Foo Corp"');
     expect(content).not.toContain('description');
+  });
+
+  it('uses the same path and query keywords as the generated SDK method', () => {
+    const str = { kind: 'primitive', type: 'string' } as const;
+    const services: Service[] = [
+      {
+        name: 'Radar',
+        operations: [
+          makeOp({
+            name: 'list_entries',
+            path: '/radar/lists/{id}',
+            pathParams: [{ name: 'id', type: str, required: true, example: 'list_123' }],
+            queryParams: [{ name: 'type', type: str, required: true, example: 'ip_address' }],
+          }),
+        ],
+      },
+    ];
+    const ctx = makeCtx(makeSpec(services));
+    const snippet = runSnippetEmitters([pythonSnippetEmitter], ctx)[0]!.content;
+    const sdk = generateResources(services, ctx)
+      .map((f) => f.content)
+      .join('\n');
+    for (const name of ['id', 'type']) {
+      // The SDK method declares the param as `        id: str,` (no underscore).
+      expect(sdk).toMatch(new RegExp(`^\\s+${name}: `, 'm'));
+      expect(sdk).not.toMatch(new RegExp(`^\\s+${name}_: `, 'm'));
+      expect(snippet).toContain(`${name}=`);
+      expect(snippet).not.toContain(`${name}_=`);
+    }
   });
 });
