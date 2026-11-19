@@ -481,6 +481,120 @@ describe('dotnet/resources', () => {
     expect(serviceFile.content).toContain('[System.Obsolete');
   });
 
+  it('marks every method of a deprecated operation Obsolete, not only the async one', () => {
+    // The compatibility wrapper calls the async method. A call to an obsolete
+    // member from a member that is not obsolete is CS0618, and WorkOS.net.csproj
+    // sets TreatWarningsAsErrors, so an unmarked wrapper fails the SDK build.
+    const models: Model[] = [
+      {
+        name: 'DirectoryUser',
+        fields: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+      },
+      {
+        name: 'DirectoryUserList',
+        fields: [
+          {
+            name: 'data',
+            type: { kind: 'array', items: { kind: 'model', name: 'DirectoryUser' } },
+            required: true,
+          },
+        ],
+      },
+    ];
+
+    const services: Service[] = [
+      {
+        name: 'DirectoryUsers',
+        operations: [
+          {
+            name: 'listDirectoryUsers',
+            description: 'List Directory Users.\n\nDeprecated. Use `GET /directories/{directoryId}/users` instead.',
+            httpMethod: 'get',
+            path: '/directory_users',
+            pathParams: [],
+            queryParams: [
+              { name: 'limit', type: { kind: 'primitive', type: 'integer' }, required: false },
+              { name: 'after', type: { kind: 'primitive', type: 'string' }, required: false },
+            ],
+            headerParams: [],
+            response: { kind: 'model', name: 'DirectoryUserList' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+            pagination: {
+              strategy: 'cursor',
+              param: 'after',
+              dataPath: 'data',
+              itemType: { kind: 'model', name: 'DirectoryUser' },
+            },
+          },
+          {
+            name: 'getDirectoryUser',
+            httpMethod: 'get',
+            path: '/directory_users/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'model', name: 'DirectoryUser' },
+            errors: [],
+            injectIdempotencyKey: false,
+            deprecated: true,
+          },
+          {
+            name: 'deleteDirectoryUser',
+            httpMethod: 'delete',
+            path: '/directory_users/{id}',
+            pathParams: [{ name: 'id', type: { kind: 'primitive', type: 'string' }, required: true }],
+            queryParams: [],
+            headerParams: [],
+            response: { kind: 'primitive', type: 'unknown' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+
+    primeEnumAliases([]);
+    const ctxWithServices: EmitterContext = {
+      ...ctx,
+      spec: { ...emptySpec, services, models },
+    };
+
+    const files = generateResources(services, ctxWithServices);
+    const content = files.find((f) => f.path.includes('DirectoryUsersService.cs'))!.content;
+    const lines = content.split('\n');
+
+    // Each public method, paired with the line directly above its signature.
+    const methods = lines
+      .map((line, i) => ({ signature: line.trim(), above: (lines[i - 1] ?? '').trim() }))
+      .filter((m) => m.signature.startsWith('public virtual '));
+    const isObsolete = (name: string): boolean => {
+      const method = methods.find((m) => m.signature.includes(` ${name}(`));
+      expect(method, `${name} was not generated`).toBeDefined();
+      return method!.above.startsWith('[System.Obsolete(');
+    };
+
+    // The paginated deprecated operation: async method, wrapper, auto-pager.
+    expect(isObsolete('ListAsync')).toBe(true);
+    expect(isObsolete('List')).toBe(true);
+    expect(isObsolete('ListAutoPagingAsync')).toBe(true);
+
+    // The non-paginated deprecated operation: async method and wrapper.
+    expect(isObsolete('GetAsync')).toBe(true);
+    expect(isObsolete('Get')).toBe(true);
+
+    // The message distilled from the description is the same on all of them.
+    const listAttributes = lines.filter((l) =>
+      l.includes('[System.Obsolete("Deprecated. Use `GET /directories/{directoryId}/users` instead.")]'),
+    );
+    expect(listAttributes).toHaveLength(3);
+
+    // An operation that is not deprecated stays unmarked in the same class.
+    expect(isObsolete('DeleteAsync')).toBe(false);
+    expect(isObsolete('Delete')).toBe(false);
+  });
+
   it('generates parameter group abstract base + variant classes and query serialization', () => {
     const models: Model[] = [
       {
