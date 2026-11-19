@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.10](https://github.com/workos/oagen-emitters/compare/v0.25.9...v0.25.10) (2026-11-19)
+
+
+### Bug Fixes
+
+* **dotnet:** mark all methods of a deprecated op Obsolete ([#320](https://github.com/workos/oagen-emitters/issues/320)) ([1480abe](https://github.com/workos/oagen-emitters/commit/1480abef3f8205666322eb6ed130ac26eb1f92a8))
+* **python:** name snippet path and query params like the generated SDK ([#318](https://github.com/workos/oagen-emitters/issues/318)) ([f044576](https://github.com/workos/oagen-emitters/commit/f0445765b6c9099f87e77f1ea5a8e54edd9e7d8f))
+
 ## [0.25.9](https://github.com/workos/oagen-emitters/compare/v0.25.8...v0.25.9) (2026-11-13)
 
 
