@@ -757,6 +757,20 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
   };
 }
 
+/**
+ * The `[System.Obsolete]` line for a deprecated operation, or null.
+ *
+ * Every method generated for the operation carries it: the async method, its
+ * non-async compatibility wrapper and the auto-paging variant. The wrapper
+ * calls the async method, and a call to an obsolete member from a member that
+ * is not itself obsolete is CS0618, which the SDK project builds as an error.
+ */
+function obsoleteAttributeLine(op: Operation): string | null {
+  if (!op.deprecated) return null;
+  const msg = escapeCsAttributeString(deprecationMessage(operationDoc(op), 'operation'));
+  return `        [System.Obsolete("${msg}")]`;
+}
+
 function generateMethod(
   _serviceType: string,
   mountName: string,
@@ -844,10 +858,8 @@ function generateMethod(
     const respType = modelClassName(resolveModelName(plan.responseModelName));
     lines.push(`        /// <returns>The <see cref="${respType}"/> result.</returns>`);
   }
-  if (op.deprecated) {
-    const msg = escapeCsAttributeString(deprecationMessage(operationDoc(op), 'operation'));
-    lines.push(`        [System.Obsolete("${msg}")]`);
-  }
+  const obsolete = obsoleteAttributeLine(op);
+  if (obsolete) lines.push(obsolete);
 
   // Method signature
   const params: string[] = [];
@@ -1008,6 +1020,8 @@ function generateAutoPagingMethod(
   lines.push(`        /// <param name="requestOptions">Per-request configuration overrides.</param>`);
   lines.push(`        /// <param name="cancellationToken">Cancellation token.</param>`);
   lines.push(`        /// <returns>An async sequence of <see cref="${itemType}"/> items.</returns>`);
+  const obsolete = obsoleteAttributeLine(op);
+  if (obsolete) lines.push(obsolete);
 
   // Signature
   const params: string[] = [];
@@ -1157,6 +1171,8 @@ function generateCompatibilityMethod(
   args.push('cancellationToken');
 
   lines.push(`        /// <summary>Compatibility wrapper for <see cref="${asyncMethod}"/>.</summary>`);
+  const obsolete = obsoleteAttributeLine(op);
+  if (obsolete) lines.push(obsolete);
   lines.push(`        public virtual ${returnType} ${methodStem}(${params.join(', ')})`);
   lines.push('        {');
   lines.push(`            return this.${asyncMethod}(${args.join(', ')});`);
