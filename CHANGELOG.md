@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.11](https://github.com/workos/oagen-emitters/compare/v0.25.10...v0.25.11) (2026-11-20)
+
+
+### Bug Fixes
+
+* **snippets:** emit Go snippets that compile against workos-go v10 ([#321](https://github.com/workos/oagen-emitters/issues/321)) ([69e378a](https://github.com/workos/oagen-emitters/commit/69e378aa6efc99b3e69f0d63b780162278daab0e))
+
 ## [0.25.10](https://github.com/workos/oagen-emitters/compare/v0.25.9...v0.25.10) (2026-11-19)
 
 
