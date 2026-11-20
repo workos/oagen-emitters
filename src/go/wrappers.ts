@@ -1,5 +1,5 @@
 import { goStringLiteral, goStructTag } from './strings.js';
-import type { EmitterContext, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
+import type { EmitterContext, Field, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
 import {
   className as goClassName,
   fieldName as goFieldName,
@@ -104,7 +104,6 @@ function emitWrapperParamsStruct(
 
   for (const { paramName, field, isOptional } of wrapperParams) {
     const goField = goFieldName(paramName);
-    const goType = field ? resolveSimpleGoType(field.type) : 'string';
 
     if (field?.description) {
       const fdLines = field.description.split('\n').filter((l: string) => l.trim());
@@ -113,15 +112,23 @@ function emitWrapperParamsStruct(
         lines.push(`\t// ${fdLines[i].trim()}`);
       }
     }
-    if (isOptional) {
-      const optType = goType.startsWith('*') || goType.startsWith('[]') ? goType : `*${goType}`;
-      lines.push(`\t${goField} ${optType} ${goStructTag({ json: paramName + ',omitempty' })}`);
-    } else {
-      lines.push(`\t${goField} ${goType} ${goStructTag({ json: paramName })}`);
-    }
+    const goType = wrapperParamGoType(field, isOptional);
+    const jsonTag = isOptional ? paramName + ',omitempty' : paramName;
+    lines.push(`\t${goField} ${goType} ${goStructTag({ json: jsonTag })}`);
   }
 
   lines.push('}');
+}
+
+/**
+ * Go type of a wrapper params struct field. Optional params are pointers
+ * unless the type is already nil-able. Shared with the Go snippet emitter so
+ * samples assign values of exactly the type the SDK declares.
+ */
+export function wrapperParamGoType(field: Field | null, isOptional: boolean): string {
+  const goType = field ? resolveSimpleGoType(field.type) : 'string';
+  if (!isOptional) return goType;
+  return goType.startsWith('*') || goType.startsWith('[]') ? goType : `*${goType}`;
 }
 
 function emitWrapperMethod(
