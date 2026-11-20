@@ -265,7 +265,7 @@ function isBodyGroup(group: import('@workos/oagen').ParameterGroup, op: Operatio
  * that is a redeclaration error rather than a shadow — the group types have to
  * step aside.
  */
-function reservedTypeNames(ctx: EmitterContext): Set<string> {
+export function reservedTypeNames(ctx: EmitterContext): Set<string> {
   const reserved = new Set<string>();
   for (const model of ctx.spec.models) reserved.add(className(model.name));
   for (const enumDef of ctx.spec.enums) reserved.add(className(enumDef.name));
@@ -278,7 +278,7 @@ function groupInterfaceName(mountName: string, groupName: string, reserved: Set<
 }
 
 /** Variant struct type name (e.g. AuthorizationParentResourceRefByID). */
-function groupVariantTypeName(
+export function groupVariantTypeName(
   mountName: string,
   groupName: string,
   variantName: string,
@@ -295,7 +295,7 @@ function groupVariantTypeName(
  * Strips the group name prefix when present to avoid stuttering
  * (e.g. parent_resource_id in group parent_resource -> ID).
  */
-function deriveVariantFieldName(paramName: string, groupName: string): string {
+export function deriveVariantFieldName(paramName: string, groupName: string): string {
   const prefix = groupName + '_';
   const stripped = paramName.startsWith(prefix) ? paramName.slice(prefix.length) : paramName;
   return fieldName(stripped);
@@ -1331,14 +1331,14 @@ function bodyArgument(op: Operation): string {
   return 'params.Body';
 }
 
-function mapQueryParamType(name: string, type: import('@workos/oagen').TypeRef): string {
+export function mapQueryParamType(name: string, type: import('@workos/oagen').TypeRef): string {
   if (name === 'limit' && type.kind === 'primitive' && (type.type === 'integer' || type.type === 'number')) {
     return 'int';
   }
   return mapTypeRef(type);
 }
 
-function makeOptional(goType: string): string {
+export function makeOptional(goType: string): string {
   if (goType.startsWith('*') || goType.startsWith('[]') || goType.startsWith('map[')) {
     return goType;
   }
