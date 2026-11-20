@@ -21,6 +21,7 @@ import {
   sortPathParamsByTemplateOrder,
 } from '../go/resources.js';
 import { mapTypeRef, mapTypeRefValue } from '../go/type-map.js';
+import { wrapperParamGoType } from '../go/wrappers.js';
 import {
   buildHiddenParams,
   collectBodyFieldTypes,
@@ -145,12 +146,11 @@ function renderWrapperCall(
   const entries: Entry[] = [];
   for (const a of args) {
     const param = wrapperParams.get(a.wireName);
-    const type = param?.field?.type ?? a.field?.type;
-    const optional = param?.isOptional ?? false;
+    const field = param?.field ?? a.field;
     // Wrapper params structs type their fields with the wrapper emitter's
-    // simplified mapping (see src/go/wrappers.ts).
-    const goType = type ? wrapperGoType(type, optional) : optional ? '*string' : 'string';
-    entries.push({ key: fieldName(a.wireName), value: renderTyped(a.value, type, goType, ctx) });
+    // simplified mapping, not mapTypeRef.
+    const goType = wrapperParamGoType(field, param?.isOptional ?? false);
+    entries.push({ key: fieldName(a.wireName), value: renderTyped(a.value, field?.type, goType, ctx) });
   }
 
   return renderProgram({
@@ -429,53 +429,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function findModel(ctx: EmitterContext, name: string): Model | undefined {
   return ctx.spec.models.find((m) => m.name === name);
-}
-
-/**
- * Go types wrapper params structs use (src/go/wrappers.ts resolveSimpleGoType):
- * models are pointers, enums are named types, and single-variant unions
- * collapse to that variant.
- */
-function wrapperGoType(type: TypeRef, optional: boolean): string {
-  const base = simpleGoType(type);
-  if (!optional) return base;
-  return base.startsWith('*') || base.startsWith('[]') ? base : `*${base}`;
-}
-
-function simpleGoType(ref: TypeRef): string {
-  switch (ref.kind) {
-    case 'primitive':
-      switch (ref.type) {
-        case 'string':
-          return 'string';
-        case 'integer':
-          return 'int';
-        case 'number':
-          return 'float64';
-        case 'boolean':
-          return 'bool';
-        default:
-          return 'interface{}';
-      }
-    case 'nullable': {
-      const inner = simpleGoType(ref.inner);
-      if (inner.startsWith('*') || inner.startsWith('[]') || inner.startsWith('map[')) return inner;
-      return `*${inner}`;
-    }
-    case 'array':
-      return `[]${simpleGoType(ref.items)}`;
-    case 'model':
-      return `*${className(ref.name)}`;
-    case 'enum':
-      return className(ref.name);
-    case 'union': {
-      const nonNull = ref.variants.filter((v) => v.kind !== 'literal' || v.value !== null);
-      if (nonNull.length === 1) return simpleGoType(nonNull[0]!);
-      return 'interface{}';
-    }
-    default:
-      return 'interface{}';
-  }
 }
 
 // ---------------------------------------------------------------------------
