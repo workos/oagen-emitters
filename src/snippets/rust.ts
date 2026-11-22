@@ -105,8 +105,12 @@ interface Slot {
   fname: string;
   rust: string;
   required: boolean;
-  /** The value to pass; `null` leaves an optional field unset. */
-  value: (target: 'field' | 'ctor') => Node | null;
+  /**
+   * The value to pass; `null` leaves an optional field unset. `rust`
+   * overrides the field's type, e.g. for a `new` argument that keeps the
+   * inner type of a field that has since become optional.
+   */
+  value: (target: 'field' | 'ctor', rust?: string) => Node | null;
 }
 
 class Renderer {
@@ -142,15 +146,15 @@ class Renderer {
         if (source.kind === 'param') {
           const arg = byWire.get(`query:${source.param.name}`);
           const type = source.param.type;
-          value = (target) => {
-            if (arg) return this.typed(arg.value, type, f.rust, target);
-            if (f.required) return this.typed(this.examples.forParameter(source.param), type, f.rust, target);
+          value = (target, rust = f.rust) => {
+            if (arg) return this.typed(arg.value, type, rust, target);
+            if (f.required) return this.typed(this.examples.forParameter(source.param), type, rust, target);
             return null;
           };
         } else if (source.kind === 'group') {
           value = () => (f.required ? this.groupVariant(source.group, source.enumName, groups, module, byWire) : null);
         } else {
-          value = (target) => this.body(op, f.rust, bodyArgs, groups, module, byWire, target, f.required);
+          value = (target, rust = f.rust) => this.body(op, rust, bodyArgs, groups, module, byWire, target, f.required);
         }
         return { fname: f.fname, rust: f.rust, required: f.required, value };
       });
@@ -187,9 +191,9 @@ class Renderer {
         fname: f.fname,
         rust: f.rust,
         required: f.required,
-        value: (target) => {
-          if (arg) return this.typed(arg.value, type, f.rust, target);
-          if (f.required) return this.typed(this.examples.forType(type), type, f.rust, target);
+        value: (target, rust = f.rust) => {
+          if (arg) return this.typed(arg.value, type, rust, target);
+          if (f.required) return this.typed(this.examples.forType(type), type, rust, target);
           return null;
         },
       };
@@ -228,7 +232,7 @@ class Renderer {
       const slot = bySlot.get(p.name)!;
       // A retained parameter takes the inner type of its now-optional field.
       const rust = p.retained ? unwrapOption(slot.rust) : slot.rust;
-      return slot.value('ctor') ?? this.placeholder(rust, 'ctor');
+      return slot.value('ctor', rust) ?? this.placeholder(rust, 'ctor');
     });
     const built = call(`${name}::new`, ctorArgs);
     const inCtor = new Set(ctor.map((p) => p.name));
@@ -256,7 +260,10 @@ class Renderer {
     if (!required && bodyArgs.length === 0) return null;
     const bodyType = op.requestBody?.kind === 'nullable' ? op.requestBody.inner : op.requestBody;
     if (!bodyType) return null;
-    return this.typed(values, bodyType, rust, target);
+    // Only a model body is spread into fields; any other body (an array, a
+    // string, a map) is one value of its own shape.
+    const value = bodyType.kind === 'model' ? values : this.examples.forType(bodyType);
+    return this.typed(value, bodyType, rust, target);
   }
 
   /** A synthetic body: the body model's fields, with each parameter group as one enum field. */
@@ -428,7 +435,7 @@ class Renderer {
       return only ? this.typed(value, only, rust, 'field') : json(value);
     }
     this.use('', rust);
-    const index = type.variants.findIndex((v) => fits(value, v));
+    const index = unionVariantIndex(value, type);
     const at = index < 0 ? 0 : index;
     const arm = arms[at];
     const variant = type.variants[at];
@@ -489,6 +496,21 @@ class Renderer {
 }
 
 /** Whether a JSON example value can populate the IR variant `ref`. */
+/**
+ * The union variant `value` belongs to: the model its discriminator names,
+ * else the first variant whose shape fits it.
+ */
+function unionVariantIndex(value: unknown, type: Extract<TypeRef, { kind: 'union' }>): number {
+  const disc = type.discriminator;
+  if (disc && isPlainObject(value)) {
+    const tag = value[disc.property];
+    const target = typeof tag === 'string' ? disc.mapping[tag] : undefined;
+    const index = type.variants.findIndex((v) => v.kind === 'model' && v.name === target);
+    if (index >= 0) return index;
+  }
+  return type.variants.findIndex((v) => fits(value, v));
+}
+
 function fits(value: unknown, ref: TypeRef): boolean {
   switch (ref.kind) {
     case 'nullable':

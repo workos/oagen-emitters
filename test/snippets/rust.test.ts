@@ -43,23 +43,24 @@ const listThings: Service = {
   ],
 };
 
-/** An API surface whose `ListThingsParams::new` takes `b` before `a`. */
-function surface(language: string): NonNullable<EmitterContext['apiSurface']> {
+/** An API surface whose `typeName::new` takes `params` (by default `ListThingsParams::new(b, a)`). */
+function surface(
+  language: string,
+  typeName = 'ListThingsParams',
+  params = ['b', 'a'],
+): NonNullable<EmitterContext['apiSurface']> {
   return {
     language,
     extractedFrom: 'test',
     extractedAt: '',
     classes: {
-      ListThingsParams: {
-        name: 'ListThingsParams',
+      [typeName]: {
+        name: typeName,
         methods: {
           new: [
             {
               name: 'new',
-              params: [
-                { name: 'b', type: 'String', optional: false },
-                { name: 'a', type: 'String', optional: false },
-              ],
+              params: params.map((name) => ({ name, type: 'String', optional: false })),
               returnType: 'Self',
               async: false,
             },
@@ -174,6 +175,96 @@ describe('snippets/rust', () => {
     const ctx = makeRustCtx([listThings]);
     ctx.apiSurface = surface('rust');
     expect(render(ctx)).toContain('.list_things(ListThingsParams::new("second", "first"))');
+  });
+
+  it('passes a retained new() argument as its inner type, not Some(...)', () => {
+    // `body` is optional now, but the shipped `new(a, body)` still takes it.
+    const ctx = makeRustCtx(
+      [
+        {
+          name: 'Organizations',
+          operations: [
+            makeOp({
+              name: 'create_organization',
+              httpMethod: 'post',
+              path: '/organizations',
+              queryParams: [stringParam('a', 'first')],
+              requestBody: { kind: 'nullable', inner: { kind: 'model', name: 'CreateOrgReq' } },
+            }),
+          ],
+        },
+      ],
+      [{ name: 'CreateOrgReq', fields: [makeStringField('name', 'Foo Corp')] }],
+    );
+    ctx.apiSurface = surface('rust', 'CreateOrganizationParams', ['a', 'body']);
+    const content = render(ctx);
+    expect(content).toContain('CreateOrganizationParams::new(\n');
+    expect(content).toContain('CreateOrgReq {');
+    expect(content).not.toContain('Some(');
+  });
+
+  it('renders a non-model request body as its own example value', () => {
+    const content = render(
+      makeRustCtx([
+        {
+          name: 'Things',
+          operations: [
+            makeOp({
+              name: 'set_tags',
+              httpMethod: 'put',
+              path: '/things/tags',
+              requestBody: { kind: 'array', items: { kind: 'primitive', type: 'string' } },
+            }),
+          ],
+        },
+      ]),
+    );
+    expect(content).toContain('vec!["');
+    expect(content).not.toContain('"{}"');
+  });
+
+  it('picks the union variant its discriminator names', () => {
+    const content = render(
+      makeRustCtx(
+        [
+          {
+            name: 'Shapes',
+            operations: [
+              makeOp({
+                name: 'create_shape',
+                httpMethod: 'post',
+                path: '/shapes',
+                requestBody: { kind: 'model', name: 'CreateShape' },
+              }),
+            ],
+          },
+        ],
+        [
+          {
+            name: 'CreateShape',
+            fields: [
+              {
+                name: 'shape',
+                required: true,
+                type: {
+                  kind: 'union',
+                  variants: [
+                    { kind: 'model', name: 'Circle' },
+                    { kind: 'model', name: 'Square' },
+                  ],
+                  discriminator: { property: 'kind', mapping: { circle: 'Circle', square: 'Square' } },
+                },
+                example: { kind: 'square', side: 2 },
+              },
+            ],
+          },
+          { name: 'Circle', fields: [makeStringField('kind', 'circle'), makeStringField('radius', '1')] },
+          { name: 'Square', fields: [makeStringField('kind', 'square'), makeStringField('side', '2')] },
+        ],
+      ),
+    );
+    expect(content).toContain('Square {');
+    expect(content).not.toContain('Circle {');
   });
 
   it("ignores another language's API surface", () => {
