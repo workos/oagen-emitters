@@ -64,31 +64,31 @@ function promoteIso8601TypeRef(type: TypeRef, description: string | undefined): 
   return promote(type);
 }
 
-function promoteFieldType(f: Field): Field {
+export function promoteFieldType(f: Field): Field {
   const promoted = promoteIso8601TypeRef(f.type, f.description);
   return promoted === f.type ? f : { ...f, type: promoted };
 }
 
 /**
- * Generate Kotlin `data class` models. Each model becomes a separate `.kt`
- * file under `com.workos.models`. Discriminated unions emit a sealed class
- * with Jackson `@JsonTypeInfo` / `@JsonSubTypes` annotations so the base type
- * picks the right variant at deserialization time.
- *
- * List wrappers (`{ data, list_metadata }`) and the shared `ListMetadata`
- * model are skipped — the hand-maintained runtime provides [Page]/[ListMetadata].
+ * Decide which models collapse onto another: structurally identical models
+ * become `typealias`es of a canonical class (two passes, so models that only
+ * differed by referencing aliased nested types collide too). Java callers
+ * cannot see a `typealias`, so the Java snippet emitter uses this map to name
+ * the class that actually exists.
  */
-export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
-  primeReservedTypeNames(ctx.spec);
-  if (models.length === 0) return [];
-
+export function computeModelAliases(
+  models: Model[],
+  ctx: EmitterContext,
+): {
+  aliasOf: Map<string, string>;
+  skipAsListWrapper: (m: Model) => boolean;
+  skipAsListMetadata: (m: Model) => boolean;
+} {
   // First pass: call mapTypeRef on every model field so discriminator info is
   // registered before we start emitting parents.
   for (const model of models) {
     for (const field of model.fields) mapTypeRef(field.type);
   }
-
-  const files: GeneratedFile[] = [];
 
   // Wrappers referenced as a non-paginated response (e.g. `VersionListResponse`
   // for `GET /vault/v1/kv/{id}/versions`) must still be emitted — the resource
@@ -150,6 +150,25 @@ export function generateModels(models: Model[], ctx: EmitterContext): GeneratedF
       aliasOf.set(sorted[i], canonical);
     }
   }
+
+  return { aliasOf, skipAsListWrapper, skipAsListMetadata };
+}
+
+/**
+ * Generate Kotlin `data class` models. Each model becomes a separate `.kt`
+ * file under `com.workos.models`. Discriminated unions emit a sealed class
+ * with Jackson `@JsonTypeInfo` / `@JsonSubTypes` annotations so the base type
+ * picks the right variant at deserialization time.
+ *
+ * List wrappers (`{ data, list_metadata }`) and the shared `ListMetadata`
+ * model are skipped — the hand-maintained runtime provides [Page]/[ListMetadata].
+ */
+export function generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
+  primeReservedTypeNames(ctx.spec);
+  if (models.length === 0) return [];
+
+  const { aliasOf, skipAsListWrapper, skipAsListMetadata } = computeModelAliases(models, ctx);
+  const files: GeneratedFile[] = [];
 
   // A canonical an in-scope alias points at must exist after the run even
   // when it is itself out of scope and brand-new (it would be dropped) or on
@@ -258,16 +277,7 @@ function emitDataClass(model: Model): GeneratedFile {
     const implClause = implementsEvent ? ' : WorkOSEvent' : '';
     lines.push(`data class ${typeName}(`);
 
-    // Emit non-defaulted params first, then defaulted — Kotlin requires
-    // non-defaulted params before defaulted ones. Literal-typed fields always
-    // receive a default, so they sort after plain required fields.
-    const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
-    const ordered = [...model.fields].sort((a, b) => {
-      const aDef = hasDefault(a);
-      const bDef = hasDefault(b);
-      if (aDef === bDef) return 0;
-      return aDef ? 1 : -1;
-    });
+    const ordered = constructorFieldOrder(model);
     // When implementing WorkOSEvent, matching fields need `override`.
     const overrideFields = implementsEvent ? new Set(['id', 'event', 'createdAt']) : new Set<string>();
     const rendered = renderFields(ordered, overrideFields);
@@ -428,6 +438,24 @@ function emitWorkOSEvent(eventMapping: Array<{ wireValue: string; modelName: str
     content: lines.join('\n'),
     overwriteExisting: true,
   };
+}
+
+/**
+ * A model's fields in data-class constructor order: non-defaulted params
+ * first, then defaulted — Kotlin requires non-defaulted params before
+ * defaulted ones. Literal-typed fields always receive a default, so they sort
+ * after plain required fields. Duplicate property names keep the first field
+ * (see [renderFields]). The Java snippet emitter passes constructor arguments
+ * in this order.
+ */
+export function constructorFieldOrder(model: Model): Field[] {
+  const hasDefault = (f: Field): boolean => !f.required || f.type.kind === 'literal';
+  return [...model.fields].sort((a, b) => {
+    const aDef = hasDefault(a);
+    const bDef = hasDefault(b);
+    if (aDef === bDef) return 0;
+    return aDef ? 1 : -1;
+  });
 }
 
 function renderFields(fields: Field[], overrideFields: Set<string> = new Set()): string[] {

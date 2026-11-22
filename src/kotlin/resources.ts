@@ -7,6 +7,7 @@ import type {
   ResolvedOperation,
   TypeRef,
   Field,
+  ParameterGroup,
 } from '@workos/oagen';
 import { planOperation } from '@workos/oagen';
 import { mapTypeRef, mapTypeRefOptional, implicitImportsFor } from './type-map.js';
@@ -312,17 +313,33 @@ export function methodBaselineParams(ctx: EmitterContext, apiClass: string, meth
   return ctx.apiSurface?.classes[apiClass]?.methods[method]?.[0]?.params;
 }
 
+/** Where a Kotlin method parameter's value comes from. */
+export type KotlinParamSource =
+  | { kind: 'path'; param: Parameter }
+  | { kind: 'query'; param: Parameter }
+  | { kind: 'group'; group: ParameterGroup }
+  | { kind: 'body'; field: Field; patch: boolean }
+  | { kind: 'requestOptions' };
+
+/** One parameter of a generated Kotlin method, in declaration order. */
+export interface KotlinMethodParam extends SuspendParam {
+  optional: boolean;
+  source: KotlinParamSource;
+}
+
 /**
- * Render a single SDK method for an operation.
+ * The signature [renderMethod] emits for `op`: parameter order (including the
+ * api-surface baseline's pinned slots), defaults, and whether the method keeps
+ * `@JvmOverloads`. The Java snippet emitter reads it so a positional call
+ * matches the generated method exactly.
  */
-function renderMethod(
+export function planKotlinMethod(
   mountName: string,
   method: string,
   op: Operation,
   ctx: EmitterContext,
   resolvedOp: ResolvedOperation | undefined,
-  imports: Set<string>,
-): string {
+) {
   const plan = planOperation(op);
   const hidden = buildHiddenParams(resolvedOp);
   const defaults = getOpDefaults(resolvedOp);
@@ -339,18 +356,6 @@ function renderMethod(
   const bodyFields = bodyModel
     ? bodyModel.fields.filter((f) => !hidden.has(f.name) && !groupedParamNames.has(f.name)).map(promoteFieldType)
     : [];
-
-  // Track imports we need
-  for (const p of [...pathParams, ...queryParams]) registerTypeImports(p.type, imports, ctx);
-  for (const f of bodyFields) registerTypeImports(f.type, imports, ctx);
-  const paginatedItemName = resolvePaginatedItemName(plan.paginatedItemModelName, ctx);
-  if (plan.responseModelName && !plan.isPaginated) {
-    imports.add(`com.workos.models.${className(plan.responseModelName)}`);
-  }
-  if (paginatedItemName) {
-    imports.add(`com.workos.models.${className(paginatedItemName)}`);
-    imports.add('com.fasterxml.jackson.core.type.TypeReference');
-  }
 
   // Deduplicate: path params take precedence; query params second; body last.
   // If a body field collides with a path/query param, rename the body field's
@@ -390,11 +395,13 @@ function renderMethod(
 
   // Tracks each declaration with its bare Kotlin parameter name so the suspend
   // overload (emitted alongside the blocking version) can forward arguments.
-  let suspendParams: SuspendParam[] = [];
-  const pushParam = (decl: string, name: string) => {
-    suspendParams.push({ decl, name });
+  const planned: KotlinMethodParam[] = [];
+  const pushParam = (decl: string, name: string, source: KotlinParamSource) => {
+    planned.push({ decl, name, optional: decl.includes(' = '), source });
   };
-  for (const pp of pathParams) pushParam(`    ${propertyName(pp.name)}: String`, propertyName(pp.name));
+  for (const pp of pathParams) {
+    pushParam(`    ${propertyName(pp.name)}: String`, propertyName(pp.name), { kind: 'path', param: pp });
+  }
 
   const sortedQuery = [...uniqueQuery].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
   const sortedBodyFields = [...bodyFields].sort((a, b) => (a.required === b.required ? 0 : a.required ? -1 : 1));
@@ -413,6 +420,7 @@ function renderMethod(
       pushParam(
         renderParam(qp.name, qp.type, qp.required, method.startsWith('list') && qp.name === 'limit'),
         propertyName(qp.name),
+        { kind: 'query', param: qp },
       );
     }
 
@@ -421,26 +429,33 @@ function renderMethod(
       if (group.optional === required) continue;
       const sealedName = sealedGroupName(group);
       const prop = groupParamNames.get(group.name)!;
-      pushParam(required ? `    ${prop}: ${sealedName}` : `    ${prop}: ${sealedName}? = null`, prop);
+      pushParam(required ? `    ${prop}: ${sealedName}` : `    ${prop}: ${sealedName}? = null`, prop, {
+        kind: 'group',
+        group,
+      });
     }
 
     for (const bf of sortedBodyFields) {
       if (bf.required !== required || sharedQueryBodyParams.has(bf.name)) continue;
       if (isPatch && !bf.required) {
         const baseType = mapTypeRef(bf.type);
-        imports.add('com.workos.common.http.PatchField');
         pushParam(
           `    ${bodyParamNames.get(bf.name)!}: PatchField<${baseType}> = PatchField.Absent`,
           bodyParamNames.get(bf.name)!,
+          { kind: 'body', field: bf, patch: true },
         );
       } else {
-        pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!);
+        pushParam(renderParamNamed(bodyParamNames.get(bf.name)!, bf.type, bf.required), bodyParamNames.get(bf.name)!, {
+          kind: 'body',
+          field: bf,
+          patch: false,
+        });
       }
     }
   }
 
   // Per-request options trailer (always optional)
-  pushParam('    requestOptions: RequestOptions? = null', 'requestOptions');
+  pushParam('    requestOptions: RequestOptions? = null', 'requestOptions', { kind: 'requestOptions' });
 
   // Keep the shipped signature's positional slots (the api-surface baseline
   // sdk-generate.sh passes for a live checkout); every newer parameter goes
@@ -448,22 +463,16 @@ function renderMethod(
   // keeps its meaning or fails to compile.
   const apiClass = resolveApiClassName(mountName, buildExportedClassNameSet(ctx));
   const baseline = methodBaselineParams(ctx, apiClass, method);
-  const ordered = preserveParameterOrder(
-    suspendParams.map((p) => ({ ...p, optional: p.decl.includes(' = ') })),
-    baseline,
-    {
-      language: 'kotlin',
-      label: `${apiClass}.${method}`,
-      // Only the order is pinned: a parameter the schema relaxed keeps its slot
-      // and its new default, since Kotlin binds positional arguments by slot
-      // whether or not later parameters are defaulted. Kotlin also accepts a
-      // required parameter after defaulted ones: callers name it or pass every
-      // argument, and `@JvmOverloads` is dropped below.
-      allowRequiredAfterOptional: true,
-    },
-  );
-  suspendParams = ordered.params.map(({ decl, name }) => ({ decl, name }));
-  const params = suspendParams.map((p) => p.decl);
+  const ordered = preserveParameterOrder(planned, baseline, {
+    language: 'kotlin',
+    label: `${apiClass}.${method}`,
+    // Only the order is pinned: a parameter the schema relaxed keeps its slot
+    // and its new default, since Kotlin binds positional arguments by slot
+    // whether or not later parameters are defaulted. Kotlin also accepts a
+    // required parameter after defaulted ones: callers name it or pass every
+    // argument, and `@JvmOverloads` is dropped below.
+    allowRequiredAfterOptional: true,
+  });
   // `@JvmOverloads` emits one overload per defaulted parameter, omitting it
   // and every defaulted parameter after it. Two baseline changes make an old
   // Java call bind a different slot through those overloads: a parameter that
@@ -478,6 +487,72 @@ function renderMethod(
   const relaxedBehindDefault = (p: { name: string; optional: boolean }, i: number) =>
     p.optional && baselineOptional.get(p.name) === false && ordered.params.slice(0, i).some((q) => q.optional);
   const jvmOverloads = !ordered.pinned || !ordered.params.some((p, i) => nowRequired(p) || relaxedBehindDefault(p, i));
+
+  return {
+    plan,
+    defaults,
+    inferFromClient,
+    httpMethod,
+    pathParams,
+    hasGroups,
+    queryParams,
+    bodyFields,
+    sortedQuery,
+    sortedBodyFields,
+    bodyParamNames,
+    groupParamNames,
+    isPatch,
+    params: ordered.params,
+    jvmOverloads,
+  };
+}
+
+/**
+ * Render a single SDK method for an operation.
+ */
+function renderMethod(
+  mountName: string,
+  method: string,
+  op: Operation,
+  ctx: EmitterContext,
+  resolvedOp: ResolvedOperation | undefined,
+  imports: Set<string>,
+): string {
+  const {
+    plan,
+    defaults,
+    inferFromClient,
+    httpMethod,
+    pathParams,
+    hasGroups,
+    queryParams,
+    bodyFields,
+    sortedQuery,
+    sortedBodyFields,
+    bodyParamNames,
+    groupParamNames,
+    isPatch,
+    params: planned,
+    jvmOverloads,
+  } = planKotlinMethod(mountName, method, op, ctx, resolvedOp);
+
+  // Track imports we need
+  for (const p of [...pathParams, ...queryParams]) registerTypeImports(p.type, imports, ctx);
+  for (const f of bodyFields) registerTypeImports(f.type, imports, ctx);
+  const paginatedItemName = resolvePaginatedItemName(plan.paginatedItemModelName, ctx);
+  if (plan.responseModelName && !plan.isPaginated) {
+    imports.add(`com.workos.models.${className(plan.responseModelName)}`);
+  }
+  if (paginatedItemName) {
+    imports.add(`com.workos.models.${className(paginatedItemName)}`);
+    imports.add('com.fasterxml.jackson.core.type.TypeReference');
+  }
+  if (planned.some((p) => p.source.kind === 'body' && p.source.patch)) {
+    imports.add('com.workos.common.http.PatchField');
+  }
+
+  const suspendParams: SuspendParam[] = planned.map(({ decl, name }) => ({ decl, name }));
+  const params = suspendParams.map((p) => p.decl);
 
   const returnType = resolveReturnType(plan, imports, ctx);
   const isPaginated = plan.isPaginated && paginatedItemName !== null;
@@ -1469,7 +1544,7 @@ function emitGroupBodyDispatch(group: import('@workos/oagen').ParameterGroup, pr
   return lines;
 }
 
-function sealedGroupName(group: import('@workos/oagen').ParameterGroup): string {
+export function sealedGroupName(group: import('@workos/oagen').ParameterGroup): string {
   // groupTypeBaseName, not group.name: where two operations' declarations of one
   // group diverge, oagen qualifies the base name so each gets its own sealed
   // type instead of both collapsing onto one that fits only one of them.

@@ -36,45 +36,7 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   primeReservedTypeNames(ctx.spec);
   if (enums.length === 0) return [];
 
-  // Reset the canonical map on every generation run (guards against re-entry).
-  enumCanonicalMap.clear();
-
-  // --- Dedup: group enums by a hash of their sorted wire values. ---
-  const hashGroups = new Map<string, Enum[]>();
-  for (const enumDef of enums) {
-    if (enumDef.values.length === 0) continue;
-    const hash = enumWireHash(enumDef);
-    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
-    hashGroups.get(hash)!.push(enumDef);
-  }
-
-  // Within each group, pick the shortest className as canonical.
-  const aliasOf = new Map<string, string>(); // enum name → canonical enum name
-  const sharedSortEmitters = new Set<string>();
-  for (const [, group] of hashGroups) {
-    if (group.length <= 1) {
-      if (group.length === 1 && isSharedSortOrderEnum(group[0])) {
-        enumCanonicalMap.set(group[0].name, 'SortOrder');
-        sharedSortEmitters.add(group[0].name);
-      }
-      continue;
-    }
-    if (group.every(isSharedSortOrderEnum)) {
-      const [canonical, ...rest] = [...group].sort((a, b) => a.name.localeCompare(b.name));
-      sharedSortEmitters.add(canonical.name);
-      for (const enumDef of [canonical, ...rest]) enumCanonicalMap.set(enumDef.name, 'SortOrder');
-      continue;
-    }
-    const sorted = [...group].sort(
-      (a, b) =>
-        className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
-    );
-    const canonical = sorted[0];
-    for (let i = 1; i < sorted.length; i++) {
-      aliasOf.set(sorted[i].name, canonical.name);
-      enumCanonicalMap.set(sorted[i].name, canonical.name);
-    }
-  }
+  const { aliasOf, sharedSortEmitters } = primeEnumCanonicalMap(enums);
 
   const files: GeneratedFile[] = [];
   // A scoped run also writes the enums a forced model reaches (see
@@ -132,23 +94,13 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     lines.push('  @JsonEnumDefaultValue');
     lines.push(`  Unknown(${ktStringLiteral('unknown')}),`);
 
-    const seenNames = new Set<string>(['Unknown']);
-    const seenWire = new Set<string>(['unknown']);
     const members: string[] = [];
+    const memberNames = enumMemberNames(enumDef, typeName);
 
     for (const v of enumDef.values) {
       const wire = String(v.value);
-      if (seenWire.has(wire)) continue;
-      seenWire.add(wire);
-
-      let memberName = pascalName(wire);
-      if (!memberName || /^[0-9]/.test(memberName)) memberName = `Value${memberName || wire}`;
-      if (memberName === typeName || seenNames.has(memberName)) {
-        let suffix = 2;
-        while (seenNames.has(`${memberName}${suffix}`)) suffix += 1;
-        memberName = `${memberName}${suffix}`;
-      }
-      seenNames.add(memberName);
+      const memberName = memberNames.get(wire);
+      if (memberName === undefined) continue;
 
       if (v.description?.trim()) {
         members.push(`  /** ${escapeKdoc(v.description.split('\n')[0].trim())} */`);
@@ -196,7 +148,87 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   return files;
 }
 
-function canonicalEnumTypeName(enumDef: Enum): string {
+/**
+ * Fill [enumCanonicalMap] for `enums`: enums with identical wire values
+ * collapse onto the one with the shortest class name, and asc/desc enums onto
+ * `SortOrder`. Java callers cannot see the `typealias` files the aliases
+ * become, so the Java snippet emitter primes this too and names the canonical
+ * class.
+ */
+export function primeEnumCanonicalMap(enums: Enum[]): {
+  aliasOf: Map<string, string>;
+  sharedSortEmitters: Set<string>;
+} {
+  // Reset the canonical map on every generation run (guards against re-entry).
+  enumCanonicalMap.clear();
+
+  // --- Dedup: group enums by a hash of their sorted wire values. ---
+  const hashGroups = new Map<string, Enum[]>();
+  for (const enumDef of enums) {
+    if (enumDef.values.length === 0) continue;
+    const hash = enumWireHash(enumDef);
+    if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+    hashGroups.get(hash)!.push(enumDef);
+  }
+
+  // Within each group, pick the shortest className as canonical.
+  const aliasOf = new Map<string, string>(); // enum name → canonical enum name
+  const sharedSortEmitters = new Set<string>();
+  for (const [, group] of hashGroups) {
+    if (group.length <= 1) {
+      if (group.length === 1 && isSharedSortOrderEnum(group[0])) {
+        enumCanonicalMap.set(group[0].name, 'SortOrder');
+        sharedSortEmitters.add(group[0].name);
+      }
+      continue;
+    }
+    if (group.every(isSharedSortOrderEnum)) {
+      const [canonical, ...rest] = [...group].sort((a, b) => a.name.localeCompare(b.name));
+      sharedSortEmitters.add(canonical.name);
+      for (const enumDef of [canonical, ...rest]) enumCanonicalMap.set(enumDef.name, 'SortOrder');
+      continue;
+    }
+    const sorted = [...group].sort(
+      (a, b) =>
+        className(a.name).length - className(b.name).length || className(a.name).localeCompare(className(b.name)),
+    );
+    const canonical = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      aliasOf.set(sorted[i].name, canonical.name);
+      enumCanonicalMap.set(sorted[i].name, canonical.name);
+    }
+  }
+
+  return { aliasOf, sharedSortEmitters };
+}
+
+/**
+ * Kotlin constant name for each wire value of `enumDef` (first occurrence of a
+ * duplicated wire value wins). `Unknown` is reserved for the
+ * forward-compatibility sentinel.
+ */
+export function enumMemberNames(enumDef: Enum, typeName: string): Map<string, string> {
+  const seenNames = new Set<string>(['Unknown']);
+  const names = new Map<string, string>([['unknown', 'Unknown']]);
+  for (const v of enumDef.values) {
+    const wire = String(v.value);
+    if (names.has(wire)) continue;
+    let memberName = pascalName(wire);
+    if (!memberName || /^[0-9]/.test(memberName)) memberName = `Value${memberName || wire}`;
+    if (memberName === typeName || seenNames.has(memberName)) {
+      let suffix = 2;
+      while (seenNames.has(`${memberName}${suffix}`)) suffix += 1;
+      memberName = `${memberName}${suffix}`;
+    }
+    seenNames.add(memberName);
+    names.set(wire, memberName);
+  }
+  // `unknown` is emitted once as the sentinel, never as a regular member.
+  names.delete('unknown');
+  return names;
+}
+
+export function canonicalEnumTypeName(enumDef: Enum): string {
   return isSharedSortOrderEnum(enumDef) ? 'SortOrder' : className(enumDef.name);
 }
 
