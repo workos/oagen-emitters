@@ -67,6 +67,12 @@ export class UnionRegistry {
     return name;
   }
 
+  /** The arms of the registered union named `name`, in declaration order. */
+  armsOf(name: string): readonly { name: string; type: string }[] | undefined {
+    for (const u of this.byKey.values()) if (u.name === name) return u.arms;
+    return undefined;
+  }
+
   /**
    * Render every registered union as a Rust source file (including a leading
    * `use serde::...;` line).

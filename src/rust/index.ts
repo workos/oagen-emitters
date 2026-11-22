@@ -44,7 +44,7 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
  * discriminated base whose IR fields the parser stripped gets its original
  * fields restored to avoid losing variant data.
  */
-function enrichModelsForRust(models: Model[]): Model[] {
+export function enrichModelsForRust(models: Model[]): Model[] {
   const enriched = enrichModelsFromSpec(models);
   const originalByName = new Map(models.map((m) => [m.name, m]));
   return enriched.map((m) => {
