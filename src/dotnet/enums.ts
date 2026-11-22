@@ -1,4 +1,4 @@
-import type { Enum, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
+import type { Enum, EnumValue, EmitterContext, GeneratedFile, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import {
   className,
@@ -58,17 +58,6 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
       [...aliasOf.entries()].some(([alias, canon]) => canon === enumDef.name && referencedEnums.has(alias));
     if (!isReferenced) continue;
 
-    // Deduplicate values
-    const seenValues = new Set<string>();
-    const uniqueValues: typeof enumDef.values = [];
-    for (const v of enumDef.values) {
-      const vs = String(v.value);
-      if (!seenValues.has(vs)) {
-        seenValues.add(vs);
-        uniqueValues.push(v);
-      }
-    }
-
     const lines: string[] = [];
     lines.push(`namespace ${ctx.namespacePascal}`);
     lines.push('{');
@@ -86,47 +75,16 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
     // ordinal 0 so `default(EnumType)` returns that variant. Other members
     // get explicit ascending ordinals, and the Unknown sentinel is pushed
     // to a high explicit ordinal (99) so it never sits at 0.
-    const defaultMatch =
-      enumDef.default !== undefined ? uniqueValues.find((v) => v.value === enumDef.default) : undefined;
+    const { defaultMatch, orderedValues } = orderEnumValues(enumDef);
 
-    const orderedValues = defaultMatch
-      ? [defaultMatch, ...uniqueValues.filter((v) => v !== defaultMatch)]
-      : uniqueValues;
-
-    const usedNames = new Set<string>();
-    const usedWireValues = new Set<string>();
-
-    if (defaultMatch) {
-      // Reserve the sentinel name and wire value so spec values that collide
-      // with "unknown"/Unknown still get the existing skip/dedup behavior.
-      usedNames.add('Unknown');
-      usedWireValues.add('unknown');
-    } else {
+    if (!defaultMatch) {
       // Existing behavior: Unknown sentinel at ordinal 0.
       lines.push(`        [EnumMember(Value = "unknown")]`);
       lines.push(`        Unknown,`);
       lines.push('');
-      usedNames.add('Unknown');
-      usedWireValues.add('unknown');
     }
 
-    for (let i = 0; i < orderedValues.length; i++) {
-      const v = orderedValues[i];
-      // Skip values whose wire representation collides with the sentinel
-      if (usedWireValues.has(String(v.value))) continue;
-      usedWireValues.add(String(v.value));
-      let memberName = className(String(v.value));
-      // C# identifiers cannot start with a digit (e.g. wire value "1_MONTH"
-      // pascal-cases to "1Month"); EnumMember keeps the wire value intact.
-      if (/^[0-9]/.test(memberName)) memberName = `Value${memberName}`;
-      // Avoid collision with the type itself or previously used names
-      if (memberName === typeName || usedNames.has(memberName)) {
-        let suffix = 2;
-        while (usedNames.has(`${memberName}${suffix}`)) suffix++;
-        memberName = `${memberName}${suffix}`;
-      }
-      usedNames.add(memberName);
-
+    for (const { value: v, index: i, memberName } of enumMembers(orderedValues, typeName)) {
       if (v.description) {
         // StyleCop SA1514: a documentation header is preceded by a blank line
         // unless it opens the enum body. Undocumented members stay packed.
@@ -170,6 +128,74 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
   }
 
   return files;
+}
+
+/**
+ * An enum's distinct values in declaration order, with the spec default (when
+ * it names a value) moved first so `default(EnumType)` returns it.
+ */
+function orderEnumValues(enumDef: Enum): { defaultMatch?: EnumValue; orderedValues: EnumValue[] } {
+  // Deduplicate values
+  const seenValues = new Set<string>();
+  const uniqueValues: EnumValue[] = [];
+  for (const v of enumDef.values) {
+    const vs = String(v.value);
+    if (!seenValues.has(vs)) {
+      seenValues.add(vs);
+      uniqueValues.push(v);
+    }
+  }
+  const defaultMatch =
+    enumDef.default !== undefined ? uniqueValues.find((v) => v.value === enumDef.default) : undefined;
+  const orderedValues = defaultMatch ? [defaultMatch, ...uniqueValues.filter((v) => v !== defaultMatch)] : uniqueValues;
+  return { defaultMatch, orderedValues };
+}
+
+/**
+ * The members an enum declares after its `Unknown` sentinel: each value's C#
+ * name and its position in `orderedValues` (its ordinal when the default was
+ * promoted).
+ */
+function enumMembers(
+  orderedValues: EnumValue[],
+  typeName: string,
+): { value: EnumValue; index: number; memberName: string }[] {
+  // Reserve the sentinel name and wire value so spec values that collide
+  // with "unknown"/Unknown still get the existing skip/dedup behavior.
+  const usedNames = new Set<string>(['Unknown']);
+  const usedWireValues = new Set<string>(['unknown']);
+  const members: { value: EnumValue; index: number; memberName: string }[] = [];
+  for (let i = 0; i < orderedValues.length; i++) {
+    const v = orderedValues[i]!;
+    // Skip values whose wire representation collides with the sentinel
+    if (usedWireValues.has(String(v.value))) continue;
+    usedWireValues.add(String(v.value));
+    let memberName = className(String(v.value));
+    // C# identifiers cannot start with a digit (e.g. wire value "1_MONTH"
+    // pascal-cases to "1Month"); EnumMember keeps the wire value intact.
+    if (/^[0-9]/.test(memberName)) memberName = `Value${memberName}`;
+    // Avoid collision with the type itself or previously used names
+    if (memberName === typeName || usedNames.has(memberName)) {
+      let suffix = 2;
+      while (usedNames.has(`${memberName}${suffix}`)) suffix++;
+      memberName = `${memberName}${suffix}`;
+    }
+    usedNames.add(memberName);
+    members.push({ value: v, index: i, memberName });
+  }
+  return members;
+}
+
+/**
+ * The C# member that represents wire value `value` of `enumDef`, as the
+ * generated enum declares it, or undefined when the enum has no such value.
+ */
+export function enumMemberName(enumDef: Enum, value: unknown): string | undefined {
+  const typeName = csTypeName(enumDef.name);
+  const member = enumMembers(orderEnumValues(enumDef).orderedValues, typeName).find(
+    (m) => String(m.value.value) === String(value),
+  );
+  return member?.memberName;
 }
 
 /**
