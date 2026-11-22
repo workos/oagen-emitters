@@ -79,15 +79,24 @@ describe('snippets/kotlin (Java-syntax output)', () => {
   });
 
   it("follows the shipped SDK's parameter order from a Kotlin API surface", () => {
-    // The shipped signature keeps a required parameter behind a defaulted one,
-    // so the call passes every slot.
     const ctx = makeKotlinCtx([createOrganization], [createOrgReq]);
     ctx.apiSurface = surface('kotlin', [
       { name: 'externalId', optional: true },
       { name: 'name', optional: false },
       { name: 'requestOptions', optional: true },
     ]);
-    expect(render(ctx)).toContain('workos.getOrganizations().create(null, "Foo Corp", null);');
+    expect(render(ctx)).toContain('workos.getOrganizations().create(null, "Foo Corp");');
+  });
+
+  it('passes every slot when a required parameter follows requestOptions', () => {
+    // `name` is required now but missing from the surface, so the SDK appends
+    // it after `requestOptions` and ships the method without @JvmOverloads.
+    const ctx = makeKotlinCtx([createOrganization], [createOrgReq]);
+    ctx.apiSurface = surface('kotlin', [
+      { name: 'externalId', optional: true },
+      { name: 'requestOptions', optional: true },
+    ]);
+    expect(render(ctx)).toContain('workos.getOrganizations().create(null, null, "Foo Corp");');
   });
 
   it("ignores another language's API surface", () => {

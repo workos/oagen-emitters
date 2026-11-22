@@ -112,10 +112,16 @@ class Renderer {
     for (const a of args) byWire.set(`${a.source}:${a.wireName}`, a);
 
     const slots = signature.params.map((p) => this.slot(p, op, mountName, byWire));
+    // A required parameter after `requestOptions` was added as required on
+    // top of the surface's own baseline, and the release that added it has no
+    // `@JvmOverloads` (the surface does not record annotations). Passing every
+    // slot compiles with or without the overloads.
+    const requestOptionsAt = signature.params.findIndex((p) => p.source.kind === 'requestOptions');
+    const appendedRequired = signature.params.slice(requestOptionsAt + 1).some((p) => !p.optional);
     return {
       accessor: accessorGetter(mountName),
       method,
-      args: trimSlots(slots, signature.jvmOverloads),
+      args: trimSlots(slots, signature.jvmOverloads && !appendedRequired),
       needsClientId: (resolved.inferFromClient ?? []).includes('client_id'),
     };
   }
@@ -375,11 +381,7 @@ function modelAliases(ctx: EmitterContext): Map<string, string> {
  */
 function trimSlots(slots: Slot[], jvmOverloads: boolean): Node[] {
   let end = slots.length;
-  // A shipped signature can keep a required parameter behind defaulted ones.
-  // The release that added it dropped `@JvmOverloads`, which the surface does
-  // not record, so pass every slot: that call compiles either way.
-  const requiredAfterOptional = slots.some((s, i) => !s.optional && slots.slice(0, i).some((q) => q.optional));
-  if (jvmOverloads && !requiredAfterOptional) {
+  if (jvmOverloads) {
     while (end > 0 && slots[end - 1]!.optional && slots[end - 1]!.value === null) end -= 1;
   }
   return slots.slice(0, end).map((s) => s.value ?? expr(s.filler));
