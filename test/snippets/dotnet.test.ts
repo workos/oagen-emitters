@@ -203,6 +203,33 @@ describe('snippets/dotnet', () => {
     expect(content).toContain('Phone = "+15555550100",');
   });
 
+  it('keeps an object no union model matches as the union map', () => {
+    const content = runDotnet(
+      [createOrganization],
+      [
+        {
+          name: 'CreateOrgReq',
+          fields: [
+            {
+              name: 'contact',
+              type: {
+                kind: 'union',
+                variants: [
+                  { kind: 'model', name: 'EmailContact' },
+                  { kind: 'map', valueType: { kind: 'primitive', type: 'string' } },
+                ],
+              },
+              required: true,
+              example: { pager: '555' },
+            },
+          ],
+        },
+        { name: 'EmailContact', fields: [makeStringField('email', 'a@b.co')] },
+      ],
+    );
+    expect(content).toContain('Contact = new Dictionary<string, string> { { "pager", "555" } },');
+  });
+
   it('keeps the SDK spec aliases when another spec was rendered in between', () => {
     const enums: Enum[] = ['OrgState', 'OrgStatus'].map((name) => ({
       name,

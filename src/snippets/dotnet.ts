@@ -260,11 +260,12 @@ class Renderer {
 
   /**
    * The model variant whose fields cover the most of the example's keys
-   * (the first on a tie), so the example's fields survive.
+   * (the first on a tie), so the example's fields survive. A variant must
+   * cover at least `minScore` keys; with no match a map variant keeps them all.
    */
-  private bestModelVariant(value: Record<string, unknown>, variants: TypeRef[]): TypeRef | undefined {
+  private bestModelVariant(value: Record<string, unknown>, variants: TypeRef[], minScore: number): TypeRef | undefined {
     let best: TypeRef | undefined;
-    let bestScore = -1;
+    let bestScore = minScore - 1;
     for (const v of variants) {
       if (v.kind !== 'model') continue;
       const model = this.state.models.get(resolveModelName(v.name)) ?? this.state.models.get(v.name);
@@ -296,8 +297,9 @@ class Renderer {
       const target = typeof mapped === 'string' ? type.discriminator?.mapping[mapped] : undefined;
       pick =
         (target && variants.find((v) => v.kind === 'model' && v.name === target)) ||
-        this.bestModelVariant(value, variants) ||
-        variants.find((v) => v.kind === 'map');
+        this.bestModelVariant(value, variants, 1) ||
+        variants.find((v) => v.kind === 'map') ||
+        this.bestModelVariant(value, variants, 0);
     } else if (Array.isArray(value)) {
       pick = variants.find((v) => v.kind === 'array');
     } else {
