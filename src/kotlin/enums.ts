@@ -96,11 +96,14 @@ export function generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile
 
     const members: string[] = [];
     const memberNames = enumMemberNames(enumDef, typeName);
+    // A repeated wire value keeps only its first constant.
+    const emittedWire = new Set<string>();
 
     for (const v of enumDef.values) {
       const wire = String(v.value);
       const memberName = memberNames.get(wire);
-      if (memberName === undefined) continue;
+      if (memberName === undefined || emittedWire.has(wire)) continue;
+      emittedWire.add(wire);
 
       if (v.description?.trim()) {
         members.push(`  /** ${escapeKdoc(v.description.split('\n')[0].trim())} */`);

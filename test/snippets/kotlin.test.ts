@@ -144,6 +144,27 @@ describe('snippets/kotlin (Java-syntax output)', () => {
     expect(content).toContain('new DomainData("foo-corp.com")');
   });
 
+  it('constructs a fieldless model with its no-argument constructor', () => {
+    const content = render(
+      makeKotlinCtx(
+        [createOrganization],
+        [
+          {
+            name: 'CreateOrgReq',
+            fields: [
+              makeStringField('name', 'Foo Corp'),
+              { name: 'settings', type: { kind: 'model', name: 'OrgSettings' }, required: true },
+            ],
+          },
+          { name: 'OrgSettings', fields: [] },
+        ],
+      ),
+    );
+    expect(content).toContain('import com.workos.models.OrgSettings;');
+    expect(content).toContain('new OrgSettings()');
+    expect(content).not.toContain('Map.of');
+  });
+
   it('passes path parameters before body fields', () => {
     const content = render(
       makeKotlinCtx(

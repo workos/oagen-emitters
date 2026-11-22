@@ -1,5 +1,6 @@
 import type {
   EmitterContext,
+  Enum,
   ExampleBuilder,
   Model,
   Operation,
@@ -30,7 +31,9 @@ import {
   sortPathParamsByTemplateOrder,
   type KotlinMethodParam,
 } from '../kotlin/resources.js';
-import { mapTypeRef } from '../kotlin/type-map.js';
+import { discriminatedUnions, mapTypeRef } from '../kotlin/type-map.js';
+import { prepareKotlinModels } from '../kotlin/index.js';
+import { getSyntheticEnums } from '../shared/model-utils.js';
 import { resolveKotlinWrapperParams } from '../kotlin/wrappers.js';
 import { isHandwrittenOverride } from '../kotlin/overrides.js';
 import { collectBodyFieldTypes } from '../shared/resolved-ops.js';
@@ -64,8 +67,9 @@ export const kotlinSnippetEmitter: SnippetEmitter = {
     // Type and enum names resolve the same way the SDK emitter resolves them;
     // Java cannot see the `typealias` files aliased enums become.
     primeReservedTypeNames(ctx.spec);
-    primeEnumCanonicalMap(ctx.spec.enums);
-    const r = new Renderer(ctx, examples, modelAliases(ctx));
+    const state = kotlinState(ctx);
+    primeEnumCanonicalMap(state.enums);
+    const r = new Renderer(ctx, examples, state);
     const call =
       resolved.wrappers && resolved.wrappers.length > 0
         ? r.wrapperCall(resolved, resolved.wrappers[0]!)
@@ -94,7 +98,7 @@ class Renderer {
   constructor(
     private readonly ctx: EmitterContext,
     private readonly examples: ExampleBuilder,
-    private readonly aliasOf: Map<string, string>,
+    private readonly state: KotlinState,
   ) {}
 
   operationCall(resolved: ResolvedOperation): Call {
@@ -285,7 +289,7 @@ class Renderer {
   private enumValue(value: unknown, enumName: string): Node {
     const canonicalName = enumCanonicalMap.get(enumName) ?? enumName;
     const enumDef =
-      this.ctx.spec.enums.find((e) => e.name === canonicalName) ?? this.ctx.spec.enums.find((e) => e.name === enumName);
+      this.state.enums.find((e) => e.name === canonicalName) ?? this.state.enums.find((e) => e.name === enumName);
     const typeName = mapTypeRef({ kind: 'enum', name: enumName });
     this.imports.add(`com.workos.types.${typeName}`);
     const wire = String(value);
@@ -296,10 +300,17 @@ class Renderer {
   private model(value: unknown, modelName: string): Node {
     // Structurally identical models are typealiases of one class in the SDK;
     // Java can only name that class.
-    const canonical = this.aliasOf.get(modelName) ?? modelName;
-    const model = findModel(this.ctx, canonical);
-    if (!model || model.fields.length === 0 || !isPlainObject(value)) return this.untyped(value);
+    const canonical = this.state.aliasOf.get(modelName) ?? modelName;
+    const model = this.state.models.get(canonical);
+    if (!model || !isPlainObject(value)) return this.untyped(value);
     const typeName = className(canonical);
+    if (model.fields.length === 0) {
+      // A fieldless discriminated base is a sealed union with no constructor;
+      // any other fieldless model is a plain `class` with one.
+      if (discriminatedUnions.has(typeName)) return this.untyped(value);
+      this.imports.add(`com.workos.models.${typeName}`);
+      return newObject(typeName, []);
+    }
     this.imports.add(`com.workos.models.${typeName}`);
     // Data-class constructors have no @JvmOverloads: Java passes every
     // parameter, in constructor order, with null for absent optional fields.
@@ -363,15 +374,31 @@ class Renderer {
   }
 }
 
-const aliasCache = new WeakMap<object, Map<string, string>>();
+interface KotlinState {
+  /** The models the SDK emits classes for, after its own preparation. */
+  models: Map<string, Model>;
+  /** Model name → the class its `typealias` points at. */
+  aliasOf: Map<string, string>;
+  /** Spec enums plus the inline enums model preparation synthesizes. */
+  enums: Enum[];
+}
 
-function modelAliases(ctx: EmitterContext): Map<string, string> {
-  let aliases = aliasCache.get(ctx.spec);
-  if (!aliases) {
-    aliases = computeModelAliases(ctx.spec.models, ctx).aliasOf;
-    aliasCache.set(ctx.spec, aliases);
+const stateCache = new WeakMap<object, KotlinState>();
+
+/** Prepare the spec's models the way the Kotlin SDK emitter does, once per spec. */
+function kotlinState(ctx: EmitterContext): KotlinState {
+  let state = stateCache.get(ctx.spec);
+  if (!state) {
+    const models = prepareKotlinModels(ctx.spec.models);
+    const enums = [...ctx.spec.enums, ...getSyntheticEnums()];
+    state = {
+      models: new Map(models.map((m) => [m.name, m])),
+      aliasOf: computeModelAliases(models, ctx).aliasOf,
+      enums,
+    };
+    stateCache.set(ctx.spec, state);
   }
-  return aliases;
+  return state;
 }
 
 /**
@@ -405,10 +432,6 @@ function toInt(value: unknown): number {
 
 function findService(ctx: EmitterContext, op: Operation): Service | undefined {
   return ctx.spec.services.find((s) => s.operations.includes(op));
-}
-
-function findModel(ctx: EmitterContext, name: string): Model | undefined {
-  return ctx.spec.models.find((m) => m.name === name);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
