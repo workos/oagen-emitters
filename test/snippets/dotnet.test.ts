@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Enum, Model, Service } from '@workos/oagen';
 import { runSnippetEmitters } from '@workos/oagen';
 import { dotnetSnippetEmitter } from '../../src/snippets/dotnet.js';
+import { generateResources } from '../../src/dotnet/resources.js';
 import { makeCtx, makeOp, makeSpec, makeStringField } from './_helpers.js';
 
 function runDotnet(services: Service[], models: Model[] = [], enums: Enum[] = []): string {
@@ -149,5 +150,138 @@ describe('snippets/dotnet', () => {
         '});',
       ].join('\n'),
     );
+  });
+
+  it('renders the Unknown sentinel for the wire value unknown', () => {
+    const content = runDotnet(
+      [createOrganization],
+      [
+        {
+          name: 'CreateOrgReq',
+          fields: [{ name: 'state', type: { kind: 'enum', name: 'OrgState' }, required: true, example: 'unknown' }],
+        },
+      ],
+      [
+        {
+          name: 'OrgState',
+          values: [
+            { name: 'unknown', value: 'unknown' },
+            { name: 'active', value: 'active' },
+          ],
+        },
+      ],
+    );
+    expect(content).toContain('State = OrgState.Unknown,');
+  });
+
+  it('picks the union model whose fields match the example', () => {
+    const content = runDotnet(
+      [createOrganization],
+      [
+        {
+          name: 'CreateOrgReq',
+          fields: [
+            {
+              name: 'contact',
+              type: {
+                kind: 'union',
+                variants: [
+                  { kind: 'model', name: 'EmailContact' },
+                  { kind: 'model', name: 'PhoneContact' },
+                ],
+              },
+              required: true,
+              example: { phone: '+15555550100' },
+            },
+          ],
+        },
+        { name: 'EmailContact', fields: [makeStringField('email', 'a@b.co')] },
+        { name: 'PhoneContact', fields: [makeStringField('phone', '+15555550100')] },
+      ],
+    );
+    expect(content).toContain('Contact = new PhoneContact');
+    expect(content).toContain('Phone = "+15555550100",');
+  });
+
+  it('keeps the SDK spec aliases when another spec was rendered in between', () => {
+    const enums: Enum[] = ['OrgState', 'OrgStatus'].map((name) => ({
+      name,
+      values: [
+        { name: 'active', value: 'active' },
+        { name: 'inactive', value: 'inactive' },
+      ],
+    }));
+    const models: Model[] = [
+      {
+        name: 'CreateOrgReq',
+        fields: [{ name: 'status', type: { kind: 'enum', name: 'OrgStatus' }, required: true, example: 'active' }],
+      },
+    ];
+    const specA = makeSpec([createOrganization], models);
+    specA.enums = enums;
+    const ctxA = makeCtx(specA);
+    const first = runSnippetEmitters([dotnetSnippetEmitter], ctxA)[0]!.content;
+    runSnippetEmitters([dotnetSnippetEmitter], makeCtx(makeSpec([createOrganization], [])));
+    expect(runSnippetEmitters([dotnetSnippetEmitter], ctxA)[0]!.content).toBe(first);
+  });
+
+  describe('parameter groups', () => {
+    const idParam = (name: string) => ({
+      name,
+      type: { kind: 'primitive' as const, type: 'string' as const },
+      required: true,
+    });
+    const auditLogs: Service = {
+      name: 'AuditLogs',
+      operations: [
+        makeOp({
+          name: 'setRetention',
+          httpMethod: 'put',
+          path: '/audit_logs_retention',
+          parameterGroups: [
+            {
+              name: 'retention',
+              optional: false,
+              variants: [{ name: 'period', parameters: [idParam('retention_period')] }],
+            },
+          ],
+        }),
+        makeOp({
+          name: 'setRetentionGroup',
+          httpMethod: 'put',
+          path: '/audit_logs_retention_group',
+          parameterGroups: [
+            {
+              name: 'retention_group',
+              optional: false,
+              variants: [{ name: 'slug', parameters: [idParam('retention_group_slug')] }],
+            },
+            {
+              name: 'owner',
+              optional: false,
+              variants: [{ name: 'slug', parameters: [idParam('owner_slug')] }],
+            },
+          ],
+        }),
+      ],
+    };
+    const models: Model[] = [
+      { name: 'AuditLogsRetention', fields: [makeStringField('retention_period_in_days', '30')] },
+    ];
+
+    it('names each group variant class the way the SDK declares it', () => {
+      const ctx = makeCtx(makeSpec([auditLogs], models));
+      const results = runSnippetEmitters([dotnetSnippetEmitter], ctx);
+      const options = generateResources([auditLogs], ctx).find((f) => f.path.endsWith('Options.cs'))!.content;
+      const groupSnippet = results.find((r) => r.content.includes('SetRetentionGroupAsync'))!.content;
+      const classes = [...groupSnippet.matchAll(/new (\w+)\n/g)]
+        .map((m) => m[1]!)
+        .filter((c) => !c.endsWith('Options'));
+      expect(classes).toHaveLength(2);
+      expect(new Set(classes).size).toBe(2);
+      for (const cls of classes) expect(options).toContain(`public class ${cls} : `);
+      expect(groupSnippet).toMatch(/RetentionGroup = new \w+\n\s*\{\n\s*RetentionGroupSlug = /);
+      expect(groupSnippet).toMatch(/Owner = new \w+\n\s*\{\n\s*OwnerSlug = /);
+    });
   });
 });

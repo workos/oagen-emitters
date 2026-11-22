@@ -26,7 +26,7 @@ import {
 } from '../dotnet/naming.js';
 import { planOptionsParam, resolveGroupClassNames, sortPathParamsByTemplateOrder } from '../dotnet/resources.js';
 import { mapTypeRef, resolveEnumTypeName, resolveModelName } from '../dotnet/type-map.js';
-import { collectGroupedParamNames } from '../shared/resolved-ops.js';
+import { collectGroupedParamNames, groupByMount, groupTypeBaseName } from '../shared/resolved-ops.js';
 import { bearerOverrideScheme } from '../shared/security.js';
 import { getSyntheticEnums } from '../shared/model-utils.js';
 
@@ -65,20 +65,29 @@ interface DotnetState {
   discriminatorProperties: Map<string, string>;
   /** Single-value enum name → its value, for fields the SDK sets itself. */
   enumConstByName: Map<string, string>;
+  /** Mount name → its operations, in the order the SDK generates them. */
+  mountOperations: Map<string, Operation[]>;
 }
 
 const stateCache = new WeakMap<object, DotnetState>();
+/** The spec whose aliases and reserved names the SDK emitter last published. */
+let primedSpec: object | undefined;
 
 /**
- * Generate the SDK's enums and models once per spec. Generation publishes the
- * enum and model aliases that `mapTypeRef` resolves names through, so the
- * snippets name types the way the SDK does.
+ * Generate the SDK's enums and models for `ctx.spec`. Generation publishes the
+ * enum and model aliases and reserved type names that `mapTypeRef` and the
+ * naming helpers read, so the snippets name types the way the SDK does. That
+ * state is shared by the whole process, so it is published again whenever a
+ * different spec was rendered last.
  */
 function dotnetState(ctx: EmitterContext): DotnetState {
-  let state = stateCache.get(ctx.spec);
-  if (!state) {
+  if (primedSpec !== ctx.spec) {
     dotnetEmitter.generateEnums(ctx.spec.enums, ctx);
     dotnetEmitter.generateModels(ctx.spec.models, ctx);
+    primedSpec = ctx.spec;
+  }
+  let state = stateCache.get(ctx.spec);
+  if (!state) {
     const prepared = prepareDotnetModels(ctx.spec.models);
     const enums = [...ctx.spec.enums, ...getSyntheticEnums()];
     state = {
@@ -88,6 +97,7 @@ function dotnetState(ctx: EmitterContext): DotnetState {
       enumConstByName: new Map(
         ctx.spec.enums.filter((e) => e.values.length === 1).map((e) => [e.name, String(e.values[0]!.value)]),
       ),
+      mountOperations: new Map([...groupByMount(ctx)].map(([name, group]) => [name, group.operations])),
     };
     stateCache.set(ctx.spec, state);
   }
@@ -165,13 +175,14 @@ class Renderer {
   private groups(op: Operation, mountName: string, args: SnippetArg[]): Assignment[] {
     const groups = op.parameterGroups ?? [];
     if (groups.length === 0) return [];
-    const names = resolveGroupClassNames(mountName, [op], this.ctx);
+    // Names are claimed across the whole mount, as the SDK resolves them.
+    const operations = this.state.mountOperations.get(mountName) ?? [op];
+    const names = resolveGroupClassNames(mountName, operations, this.ctx);
     const out: Assignment[] = [];
     for (const group of groups) {
       const variant = pickVariant(group, args);
       if (!variant) continue;
-      const classes = [...names.values()].find((n) => n.variants.has(variant.name));
-      const variantClass = classes?.variants.get(variant.name);
+      const variantClass = names.get(groupTypeBaseName(group))?.variants.get(variant.name);
       if (!variantClass) continue;
       const optional = new Set(variant.optionalParameters ?? []);
       const members: Assignment[] = [];
@@ -247,6 +258,26 @@ class Renderer {
     return initializer(cls, assignments);
   }
 
+  /**
+   * The model variant whose fields cover the most of the example's keys
+   * (the first on a tie), so the example's fields survive.
+   */
+  private bestModelVariant(value: Record<string, unknown>, variants: TypeRef[]): TypeRef | undefined {
+    let best: TypeRef | undefined;
+    let bestScore = -1;
+    for (const v of variants) {
+      if (v.kind !== 'model') continue;
+      const model = this.state.models.get(resolveModelName(v.name)) ?? this.state.models.get(v.name);
+      const fields = new Set(model?.fields.map((f) => f.name) ?? []);
+      const score = Object.keys(value).filter((k) => fields.has(k)).length;
+      if (score > bestScore) {
+        best = v;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
   /** A required single-value field the SDK initializes and keeps read-only. */
   private isConstField(field: Field): boolean {
     return field.required && singleValueConstInitializer(field.type, this.state.enumConstByName) !== null;
@@ -265,7 +296,8 @@ class Renderer {
       const target = typeof mapped === 'string' ? type.discriminator?.mapping[mapped] : undefined;
       pick =
         (target && variants.find((v) => v.kind === 'model' && v.name === target)) ||
-        variants.find((v) => v.kind === 'model' || v.kind === 'map');
+        this.bestModelVariant(value, variants) ||
+        variants.find((v) => v.kind === 'map');
     } else if (Array.isArray(value)) {
       pick = variants.find((v) => v.kind === 'array');
     } else {

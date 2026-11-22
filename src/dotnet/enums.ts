@@ -191,6 +191,8 @@ function enumMembers(
  * generated enum declares it, or undefined when the enum has no such value.
  */
 export function enumMemberName(enumDef: Enum, value: unknown): string | undefined {
+  // Every generated enum declares the `Unknown` sentinel for wire value `unknown`.
+  if (String(value) === 'unknown') return 'Unknown';
   const typeName = csTypeName(enumDef.name);
   const member = enumMembers(orderEnumValues(enumDef).orderedValues, typeName).find(
     (m) => String(m.value.value) === String(value),
