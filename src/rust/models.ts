@@ -181,7 +181,7 @@ function renderModel(model: Model, registry: UnionRegistry, tagField?: string): 
  * the struct compiles; serde `rename` preserves the original wire name in every
  * case.
  */
-function resolveFieldNames(fields: Field[]): string[] {
+export function resolveFieldNames(fields: Field[]): string[] {
   const used = new Set<string>();
   const out: string[] = [];
   for (const f of fields) {

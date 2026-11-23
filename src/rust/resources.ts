@@ -188,7 +188,7 @@ function renderMountGroup(
 // individual `renderParamsStruct` calls just stamp their request and reference
 // the resulting Rust names.
 
-interface GroupEnumSpec {
+export interface GroupEnumSpec {
   name: string;
   variants: Array<{
     name: string;
@@ -196,7 +196,7 @@ interface GroupEnumSpec {
   }>;
 }
 
-interface SyntheticBodySpec {
+export interface SyntheticBodySpec {
   /** PascalCase type name (e.g. `CheckBody`). */
   name: string;
   /** Body model fields that survive after grouped-field removal. */
@@ -216,7 +216,7 @@ interface SyntheticBodySpec {
   }>;
 }
 
-class GroupEmitter {
+export class GroupEmitter {
   private enums: GroupEnumSpec[] = [];
   private bodies: SyntheticBodySpec[] = [];
   private seenEnums = new Set<string>();
@@ -258,6 +258,16 @@ class GroupEmitter {
       this.enums.push({ name, variants });
     }
     return name;
+  }
+
+  /** The registered parameter-group enum named `name`. */
+  enumSpec(name: string): GroupEnumSpec | undefined {
+    return this.enums.find((e) => e.name === name);
+  }
+
+  /** The registered synthetic body struct named `name`. */
+  bodySpec(name: string): SyntheticBodySpec | undefined {
+    return this.bodies.find((b) => b.name === name);
   }
 
   /** Register a synthetic body struct, returning its PascalCase Rust name. */
@@ -384,7 +394,7 @@ class GroupEmitter {
  * `optionalParameters` are the exception — `registerEnum` re-wraps those in
  * `Option<…>` so they can be left out of that payload.
  */
-function rustTypeForGroupParam(type: TypeRef): string {
+export function rustTypeForGroupParam(type: TypeRef): string {
   const rust = mapTypeRef(type);
   if (rust.startsWith('Option<')) return rust.slice('Option<'.length, -1);
   return rust;
@@ -397,14 +407,33 @@ function classifyGroup(group: ParameterGroup, op: Operation): 'query' | 'body' {
   return allInQuery ? 'query' : 'body';
 }
 
-function renderParamsStruct(
+/** One field of an operation's params struct, in declaration order. */
+export interface RustParamsField {
+  fname: string;
+  rust: string;
+  required: boolean;
+  /** Spec default materialized into `Default::default()` / `new(…)`. */
+  defaultExpr: string | null;
+  source:
+    | { kind: 'param'; param: Parameter; isQuery: boolean }
+    | { kind: 'group'; group: ParameterGroup; enumName: string }
+    | { kind: 'body' };
+}
+
+/**
+ * The fields of an operation's params struct: visible query, header and
+ * cookie params, then query-side parameter groups, then the request body.
+ * Body-side parameter groups fold into a synthetic body type registered on
+ * `groupEmitter`. The Rust snippet emitter builds call sites from this plan.
+ */
+export function planParamsStruct(
   name: string,
   op: Operation,
   resolved: ResolvedOperation,
   registry: UnionRegistry,
   ctx: EmitterContext,
   groupEmitter: GroupEmitter,
-): string {
+): RustParamsField[] {
   const bodyRequired = isBodyRequired(op);
   const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
   const materializeSpecDefaults = !resolved.urlBuilder;
@@ -413,12 +442,7 @@ function renderParamsStruct(
   // the enum field and must be omitted from the flat params struct.
   const queryGroupParamNames = new Set<string>();
   const bodyGroupParamNames = new Set<string>();
-  const queryGroupFields: Array<{
-    name: string;
-    rustType: string;
-    required: boolean;
-    doc?: string;
-  }> = [];
+  const queryGroupFields: RustParamsField[] = [];
   const bodyGroupFields: Array<{
     name: string;
     rustType: string;
@@ -428,32 +452,24 @@ function renderParamsStruct(
   for (const group of op.parameterGroups ?? []) {
     const enumName = groupEmitter.registerEnum(group);
     const rustType = group.optional ? `Option<${enumName}>` : enumName;
-    const groupField = {
-      name: fieldName(group.name),
-      rustType,
-      required: !group.optional,
-      doc: undefined as string | undefined,
-    };
     if (classifyGroup(group, op) === 'query') {
       for (const v of group.variants) for (const p of v.parameters) queryGroupParamNames.add(p.name);
-      queryGroupFields.push(groupField);
+      queryGroupFields.push({
+        fname: fieldName(group.name),
+        rust: rustType,
+        required: !group.optional,
+        defaultExpr: null,
+        source: { kind: 'group', group, enumName },
+      });
     } else {
       for (const v of group.variants) for (const p of v.parameters) bodyGroupParamNames.add(p.name);
-      bodyGroupFields.push(groupField);
+      bodyGroupFields.push({ name: fieldName(group.name), rustType, required: !group.optional, doc: undefined });
     }
   }
 
-  type FieldInfo = {
-    fname: string;
-    rust: string;
-    required: boolean;
-    defaultExpr: string | null;
-    doc?: string;
-  };
-  const fields: FieldInfo[] = [];
-  const fieldLines: string[] = [];
+  const fields: RustParamsField[] = [];
   const seen = new Set<string>();
-  const emitField = (p: Parameter, opts: { isQuery?: boolean } = {}) => {
+  const planField = (p: Parameter, isQuery: boolean) => {
     if (hidden.has(p.name)) return;
     if (queryGroupParamNames.has(p.name)) return;
     const fname = fieldName(p.name);
@@ -473,6 +489,86 @@ function renderParamsStruct(
       materializeSpecDefaults && p.default != null
         ? rustDefaultExpr(p.default, p.type, rust.startsWith('Option<'), ctx)
         : null;
+    fields.push({
+      fname,
+      rust,
+      required: !!p.required && !rust.startsWith('Option<'),
+      defaultExpr,
+      source: { kind: 'param', param: p, isQuery },
+    });
+  };
+
+  for (const p of op.queryParams) planField(p, true);
+  for (const p of op.headerParams) planField(p, false);
+  for (const p of op.cookieParams ?? []) planField(p, false);
+
+  // Query-side parameter group fields. Flattened so the encoder sees the
+  // variant's own fields at the params struct's top level.
+  fields.push(...queryGroupFields);
+
+  if (op.requestBody) {
+    let bodyType: string;
+    if (bodyGroupFields.length > 0) {
+      // Synthesise a body struct that replaces the grouped fields with a
+      // flattened enum. The original body model keeps the flat optional
+      // fields (it's shared with other consumers); the synthetic type is
+      // op-local and serialises with the parameter group's variant in
+      // strongly-typed form.
+      bodyType = registerSyntheticBody(op, name, bodyGroupParamNames, bodyGroupFields, ctx, registry, groupEmitter);
+    } else {
+      bodyType = mapTypeRef(op.requestBody, { hint: `${name}Body`, registry });
+    }
+    if (!bodyRequired && !bodyType.startsWith('Option<')) {
+      bodyType = makeOptional(bodyType);
+    }
+    fields.push({ fname: 'body', rust: bodyType, required: bodyRequired, defaultExpr: null, source: { kind: 'body' } });
+  }
+  return fields;
+}
+
+/**
+ * Whether a params struct gets `Default`: derived when every field is optional
+ * and no field has a spec-level default; a manual `impl Default` when some
+ * do, since `Option<T>::default()` is `None`, not `Some(<spec default>)`.
+ * Structs with a required field have no `Default`.
+ */
+export function paramsDefaultKind(
+  fields: ReadonlyArray<{ required: boolean; defaultExpr: string | null }>,
+): 'derive' | 'manual' | 'none' {
+  if (fields.some((f) => f.required)) return 'none';
+  return fields.some((f) => f.defaultExpr !== null) ? 'manual' : 'derive';
+}
+
+function renderParamsStruct(
+  name: string,
+  op: Operation,
+  resolved: ResolvedOperation,
+  registry: UnionRegistry,
+  ctx: EmitterContext,
+  groupEmitter: GroupEmitter,
+): string {
+  const bodyRequired = isBodyRequired(op);
+  const fields = planParamsStruct(name, op, resolved, registry, ctx, groupEmitter);
+  const fieldLines: string[] = [];
+  for (const f of fields) {
+    const { fname, rust } = f;
+    if (f.source.kind === 'group') {
+      fieldLines.push('    #[serde(flatten)]');
+      if (!f.required) {
+        fieldLines.push('    #[serde(skip_serializing_if = "Option::is_none")]');
+      }
+      fieldLines.push(`    pub ${fname}: ${rust},`);
+      continue;
+    }
+    if (f.source.kind === 'body') {
+      fieldLines.push('    /// Request body sent with this call.');
+      if (bodyRequired) fieldLines.push('    ///');
+      if (bodyRequired) fieldLines.push('    /// Required.');
+      fieldLines.push('    #[serde(skip)]');
+      fieldLines.push(`    pub body: ${rust},`);
+      continue;
+    }
+    const { param: p, isQuery } = f.source;
     // Field-level documentation derived from the spec.
     const desc = p.description?.trim();
     if (desc) {
@@ -492,7 +588,7 @@ function renderParamsStruct(
     // Vec query params with `style: form, explode: false` (the comma-joined
     // wire format) need a custom serializer — serde alone serialises Vec as
     // an array, which our query encoder unrolls into repeated keys.
-    if (opts.isQuery && p.explode === false && isVecType(rust)) {
+    if (isQuery && p.explode === false && isVecType(rust)) {
       fieldLines.push(
         rust.startsWith('Option<')
           ? '    #[serde(serialize_with = "crate::query::serialize_comma_separated_opt")]'
@@ -504,70 +600,10 @@ function renderParamsStruct(
     }
     if (p.deprecated) fieldLines.push(`    ${deprecatedAttr(p.description, 'parameter')}`);
     fieldLines.push(`    pub ${fname}: ${rust},`);
-    fields.push({
-      fname,
-      rust,
-      required: !!p.required && !rust.startsWith('Option<'),
-      defaultExpr,
-    });
-  };
-
-  for (const p of op.queryParams) emitField(p, { isQuery: true });
-  for (const p of op.headerParams) emitField(p);
-  for (const p of op.cookieParams ?? []) emitField(p);
-
-  // Query-side parameter group fields. Flattened so the encoder sees the
-  // variant's own fields at the params struct's top level.
-  for (const g of queryGroupFields) {
-    fieldLines.push('    #[serde(flatten)]');
-    if (!g.required) {
-      fieldLines.push('    #[serde(skip_serializing_if = "Option::is_none")]');
-    }
-    fieldLines.push(`    pub ${g.name}: ${g.rustType},`);
-    fields.push({
-      fname: g.name,
-      rust: g.rustType,
-      required: g.required,
-      defaultExpr: null,
-    });
   }
 
-  if (op.requestBody) {
-    let bodyType: string;
-    if (bodyGroupFields.length > 0) {
-      // Synthesise a body struct that replaces the grouped fields with a
-      // flattened enum. The original body model keeps the flat optional
-      // fields (it's shared with other consumers); the synthetic type is
-      // op-local and serialises with the parameter group's variant in
-      // strongly-typed form.
-      bodyType = registerSyntheticBody(op, name, bodyGroupParamNames, bodyGroupFields, ctx, registry, groupEmitter);
-    } else {
-      bodyType = mapTypeRef(op.requestBody, { hint: `${name}Body`, registry });
-    }
-    if (!bodyRequired && !bodyType.startsWith('Option<')) {
-      bodyType = makeOptional(bodyType);
-    }
-    fieldLines.push('    /// Request body sent with this call.');
-    if (bodyRequired) fieldLines.push('    ///');
-    if (bodyRequired) fieldLines.push('    /// Required.');
-    fieldLines.push('    #[serde(skip)]');
-    fieldLines.push(`    pub body: ${bodyType},`);
-    fields.push({
-      fname: 'body',
-      rust: bodyType,
-      required: bodyRequired,
-      defaultExpr: null,
-    });
-  }
-
-  // Default-derive only when every field is optional and no field has a
-  // spec-level default. Spec defaults need a manual `impl Default` since
-  // `Option<T>::default()` is `None`, not `Some(<spec default>)`.
-  const requiredFields = fields.filter((f) => f.required);
-  const allOptional = fields.length === 0 || requiredFields.length === 0;
-  const hasSpecDefault = fields.some((f) => f.defaultExpr !== null);
-  const canDeriveDefault = allOptional && !hasSpecDefault;
-  const derives = canDeriveDefault ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
+  const defaultKind = paramsDefaultKind(fields);
+  const derives = defaultKind === 'derive' ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
 
   const out: string[] = [];
   if (fieldLines.length === 0) {
@@ -579,7 +615,7 @@ function renderParamsStruct(
   // Manual `Default` impl when every field is optional but some have
   // spec-level defaults — `Default::default()` now returns those values
   // instead of `None`.
-  if (allOptional && hasSpecDefault) {
+  if (defaultKind === 'manual') {
     const defaultInitLines = fields.map((f) => `            ${f.fname}: ${f.defaultExpr ?? 'Default::default()'},`);
     out.push('');
     out.push(`impl Default for ${name} {`);
@@ -809,7 +845,7 @@ function ctorParamInit(p: CtorParam): string {
  * `get_profile` requires an OAuth access token rather than the WorkOS API
  * key). Returns the snake_case parameter name to use for the override.
  */
-function bearerOverrideToken(op: Operation): string | null {
+export function bearerOverrideToken(op: Operation): string | null {
   const override = bearerOverrideScheme(op);
   if (override === null) return null;
   return fieldName(override);
@@ -1139,22 +1175,23 @@ function renderAutoPagingMethod(
   return sig.join('\n');
 }
 
-function renderWrapperParamsStruct(
+/** One field of a wrapper method's params struct. */
+export interface RustWrapperParamsField {
+  fname: string;
+  rust: string;
+  required: boolean;
+  defaultExpr: string | null;
+  param: ResolvedWrapperParam;
+}
+
+/** The fields of a wrapper method's params struct, in declaration order. */
+export function planWrapperParamsStruct(
   name: string,
-  _op: Operation,
-  _wrapper: ResolvedWrapper,
   params: ResolvedWrapperParam[],
   registry: UnionRegistry,
   ctx: EmitterContext,
-): string {
-  type FieldInfo = {
-    fname: string;
-    rust: string;
-    required: boolean;
-    defaultExpr: string | null;
-  };
-  const fields: FieldInfo[] = [];
-  const fieldLines: string[] = [];
+): RustWrapperParamsField[] {
+  const fields: RustWrapperParamsField[] = [];
   const seen = new Set<string>();
   for (const rp of params) {
     const fname = fieldName(rp.paramName);
@@ -1171,6 +1208,28 @@ function renderWrapperParamsStruct(
     }
     if (rp.isOptional && !rust.startsWith('Option<')) rust = makeOptional(rust);
     rust = applySecretRedaction(rust, rp.paramName, rp.field ?? undefined);
+    const fieldDefault = rp.field?.default;
+    const required = !rp.isOptional && !rust.startsWith('Option<');
+    const defaultExpr =
+      fieldDefault != null && rp.field
+        ? rustDefaultExpr(fieldDefault, rp.field.type, rust.startsWith('Option<'), ctx)
+        : null;
+    fields.push({ fname, rust, required, defaultExpr, param: rp });
+  }
+  return fields;
+}
+
+function renderWrapperParamsStruct(
+  name: string,
+  _op: Operation,
+  _wrapper: ResolvedWrapper,
+  params: ResolvedWrapperParam[],
+  registry: UnionRegistry,
+  ctx: EmitterContext,
+): string {
+  const fields = planWrapperParamsStruct(name, params, registry, ctx);
+  const fieldLines: string[] = [];
+  for (const { fname, rust, required, param: rp } of fields) {
     const desc = rp.field?.description?.trim();
     if (desc) {
       for (const c of paramDocComment(desc)) fieldLines.push(`    ${c}`);
@@ -1180,7 +1239,6 @@ function renderWrapperParamsStruct(
       if (desc) fieldLines.push('    ///');
       fieldLines.push(`    /// Defaults to \`${formatDefault(fieldDefault)}\`.`);
     }
-    const required = !rp.isOptional && !rust.startsWith('Option<');
     if (required) {
       if (desc || fieldDefault != null) fieldLines.push('    ///');
       fieldLines.push('    /// Required.');
@@ -1192,21 +1250,13 @@ function renderWrapperParamsStruct(
       fieldLines.push(`    #[serde(rename = ${JSON.stringify(rp.paramName)})]`);
     }
     fieldLines.push(`    pub ${fname}: ${rust},`);
-    const defaultExpr =
-      fieldDefault != null && rp.field
-        ? rustDefaultExpr(fieldDefault, rp.field.type, rust.startsWith('Option<'), ctx)
-        : null;
-    fields.push({ fname, rust, required, defaultExpr });
   }
 
   // Mirror the regular params struct: derive `Default` only when every field
   // is optional and no field carries a spec-level default; spec defaults need
   // a manual `impl Default` (Option<T>::default() is None).
-  const requiredFields = fields.filter((f) => f.required);
-  const allOptional = fields.length === 0 || requiredFields.length === 0;
-  const hasSpecDefault = fields.some((f) => f.defaultExpr !== null);
-  const canDeriveDefault = allOptional && !hasSpecDefault;
-  const derives = canDeriveDefault ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
+  const defaultKind = paramsDefaultKind(fields);
+  const derives = defaultKind === 'derive' ? 'Debug, Clone, Default, Serialize' : 'Debug, Clone, Serialize';
 
   const out: string[] = [];
   if (fieldLines.length === 0) {
@@ -1215,7 +1265,7 @@ function renderWrapperParamsStruct(
     out.push(`#[derive(${derives})]`, `pub struct ${name} {`, ...fieldLines, '}');
   }
 
-  if (allOptional && hasSpecDefault) {
+  if (defaultKind === 'manual') {
     const defaultInitLines = fields.map((f) => `            ${f.fname}: ${f.defaultExpr ?? 'Default::default()'},`);
     out.push('');
     out.push(`impl Default for ${name} {`);
@@ -1494,7 +1544,7 @@ export function isInlineEnvelopeList(op: Operation): boolean {
  * `serde_json::Value` that's almost always `Object({})` — and it lets the
  * caller `?` the result without an unused-variable warning.
  */
-function isEmptyResponse(op: Operation): boolean {
+export function isEmptyResponse(op: Operation): boolean {
   if (!op.response) return true;
   if (op.response.kind === 'primitive' && op.response.type === 'unknown') return true;
   return false;
@@ -1511,7 +1561,7 @@ function isBodyRequired(op: Operation): boolean {
  * inferred from the client or supplied as a default. Such methods take no
  * `params:` arg in the public API and skip the empty struct entirely.
  */
-function isEmptyParams(op: Operation, resolved: ResolvedOperation): boolean {
+export function isEmptyParams(op: Operation, resolved: ResolvedOperation): boolean {
   if (op.requestBody) return false;
   const hidden = new Set<string>([...Object.keys(resolved.defaults ?? {}), ...(resolved.inferFromClient ?? [])]);
   const grouped = new Set<string>();
