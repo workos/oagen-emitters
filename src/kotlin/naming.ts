@@ -347,16 +347,44 @@ export function ktLiteral(value: string | number | boolean): string {
 /**
  * Map a wire field name to the expression that reads it off a WorkOS client
  * instance (used for inferFromClient fields).
+ *
+ * `client_secret` is never read off the client's API key directly. It comes
+ * from the hand-written `WorkOS.clientSecret(method): String?` accessor, which
+ * returns the API key, returns null for a client that has none and may leave
+ * the field out, or throws for a client that cannot make the call at all.
+ * A file that calls it needs {@link CLIENT_SECRET_IMPORT}.
+ *
+ * @param method Kotlin expression for the calling method's name, used by the
+ *   accessor in its error message.
  */
-export function clientFieldExpression(field: string): string {
+export function clientFieldExpression(field: string, method: string): string {
   switch (field) {
     case 'client_id':
       return 'clientId';
     case 'client_secret':
-      return 'apiKey';
+      return `clientSecret(${method})`;
     default:
       return propertyName(field);
   }
+}
+
+/**
+ * Import for the client-secret accessor. `WorkOS.kt` is generated, so the
+ * accessor is not a member of the class: it is an extension function in a
+ * hand-written file in package `com.workos`. Kotlin resolves an extension from
+ * another package only through an import, and generated API classes live in
+ * `com.workos.<service>`.
+ */
+export const CLIENT_SECRET_IMPORT = 'com.workos.clientSecret';
+
+/**
+ * Whether generated Kotlin code calls the client-secret accessor. Matches the
+ * call that {@link clientFieldExpression} renders, not the bare name: a method
+ * can have a parameter called `clientSecret` without calling the accessor, and
+ * an import it does not use fails the SDK's lint.
+ */
+export function callsClientSecret(code: string): boolean {
+  return code.includes('workos.clientSecret(');
 }
 
 /** Convert snake_case / camelCase to a human-readable lowercase phrase for docs. */

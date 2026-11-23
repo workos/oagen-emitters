@@ -7,6 +7,7 @@ import {
   unexportedName,
 } from './naming.js';
 import { sortPathParamsByTemplateOrder, paramsStructName } from './resources.js';
+import { CLIENT_SECRET_LOCAL, clientSecretLines } from './client-secret.js';
 import { resolveWrapperParams, formatWrapperDescription, type ResolvedWrapperParam } from '../shared/wrapper-utils.js';
 import { lowerFirstForDoc, fieldDocComment } from '../shared/naming-utils.js';
 
@@ -166,6 +167,11 @@ function emitWrapperMethod(
     lines.push(`func (s *${serviceType}) ${method}(${sigParams.join(', ')}) error {`);
   }
 
+  // The client-secret accessor returns an error, so once it has been called
+  // `err` is declared and the request below assigns to it instead.
+  const resolvesClientSecret = wrapper.inferFromClient.includes('client_secret');
+  const errAssign = resolvesClientSecret ? '=' : ':=';
+
   // Build typed body struct — defaults + required params set at literal,
   // inferred + optional fields assigned after (conditional on presence).
   const bodyType = wrapperBodyStructName(wrapper);
@@ -188,6 +194,9 @@ function emitWrapperMethod(
   // Inferred fields from client config — omitempty handles the unset case
   for (const inferred of wrapper.inferFromClient) {
     const goField = goFieldName(inferred);
+    if (inferred === 'client_secret') {
+      lines.push(...clientSecretLines(method, responseType ? 'nil, err' : 'err'));
+    }
     lines.push(`\tbody.${goField} = ${clientFieldExpression(inferred)}`);
   }
 
@@ -217,7 +226,7 @@ function emitWrapperMethod(
   if (responseType) {
     lines.push(`\tvar result ${responseType}`);
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, &result, opts)`,
+      `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, &result, opts)`,
     );
     lines.push('\tif err != nil {');
     lines.push('\t\treturn nil, err');
@@ -225,7 +234,7 @@ function emitWrapperMethod(
     lines.push('\treturn &result, nil');
   } else {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, nil, opts)`,
+      `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, nil, body, nil, opts)`,
     );
     lines.push('\treturn err');
   }
@@ -240,13 +249,16 @@ function goLiteral(value: string | number | boolean): string {
   return String(value);
 }
 
-/** Get the Go expression for reading a client config field. */
+/**
+ * Get the Go expression for reading a client config field. `client_secret` is
+ * the local that `clientSecretLines` declares, never a field of the client.
+ */
 function clientFieldExpression(field: string): string {
   switch (field) {
     case 'client_id':
       return 's.client.clientID';
     case 'client_secret':
-      return 's.client.apiKey';
+      return CLIENT_SECRET_LOCAL;
     default:
       return `s.client.${lowerFirstSafe(goFieldName(field))}`;
   }

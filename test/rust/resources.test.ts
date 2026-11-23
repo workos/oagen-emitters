@@ -291,15 +291,62 @@ describe('rust/resources', () => {
     expect(f.content).toContain('let mut body = serde_json::json!({');
     expect(f.content).toContain('if !self.client.client_id().is_empty() {');
     expect(f.content).toContain('body["client_id"] = serde_json::Value::String(self.client.client_id().to_string());');
-    expect(f.content).toContain('if !self.client.api_key().is_empty() {');
+    // client_secret comes from the client's accessor: `None` omits the field,
+    // and `?` returns its error before any request is made.
     expect(f.content).toContain(
-      'body["client_secret"] = serde_json::Value::String(self.client.api_key().to_string());',
+      [
+        '        let client_secret = self.client.client_secret("authenticate_with_code")?;',
+        '        if let Some(client_secret) = client_secret {',
+        '            body["client_secret"] = serde_json::Value::String(client_secret.to_string());',
+        '        }',
+      ].join('\n'),
     );
+    expect(f.content.indexOf('self.client.client_secret(')).toBeLessThan(f.content.indexOf('.request_with_body_opts('));
+    expect(f.content).not.toContain('self.client.api_key()');
     expect(f.content).not.toContain('"client_id": "",');
     expect(f.content).not.toContain('"client_secret": "",');
-    expect(f.content).not.toContain('"client_secret": self.client.api_key()');
     // Defaults are still emitted as literal JSON values.
     expect(f.content).toContain('"grant_type": "authorization_code"');
+  });
+
+  it('resolves an inferred client_secret through the accessor in a URL builder', () => {
+    const services: Service[] = [
+      {
+        name: 'SSO',
+        operations: [
+          {
+            name: 'getAuthorizationUrl',
+            httpMethod: 'get',
+            path: '/sso/authorize',
+            pathParams: [],
+            queryParams: [{ name: 'redirect_uri', type: { kind: 'primitive', type: 'string' }, required: true }],
+            headerParams: [],
+            response: { kind: 'model', name: 'SsoAuthorizeUrlResponse' },
+            errors: [],
+            injectIdempotencyKey: false,
+          },
+        ],
+      },
+    ];
+    const baseCtx = ctxWithResolved(services);
+    const ctx: EmitterContext = {
+      ...baseCtx,
+      resolvedOperations: baseCtx.resolvedOperations!.map((r) => ({
+        ...r,
+        urlBuilder: true,
+        inferFromClient: ['client_id', 'client_secret'],
+      })),
+    };
+    const f = generateResources(services, ctx, new UnionRegistry()).find((x) => x.path === 'src/resources/sso.rs')!;
+    expect(f.content).toContain(
+      [
+        '        let client_secret = self.client.client_secret("get_authorization_url")?;',
+        '        if let Some(client_secret) = client_secret {',
+        '            overlay.insert("client_secret".to_string(), serde_json::Value::String(client_secret.to_string()));',
+        '        }',
+      ].join('\n'),
+    );
+    expect(f.content).not.toContain('self.client.api_key()');
   });
 
   it('throws on an unrecognized inferFromClient field instead of dropping it', () => {

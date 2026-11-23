@@ -260,15 +260,23 @@ export function csLiteral(value: string | number | boolean): string {
   return String(value);
 }
 
-/** Map a wire field name to the WorkOSClient property expression. */
-export function clientFieldExpression(field: string): string {
+/**
+ * C# expression for the value of an inferFromClient field.
+ *
+ * `client_id` is required: `RequireClientId()` fails with a clear error instead
+ * of a 422 from the API. `client_secret` is never read off the client's API
+ * key directly: the hand-written `GetClientSecret()` accessor returns the key,
+ * or throws for a client that has none and cannot make the call. It learns the
+ * calling method's name through `[CallerMemberName]`, so no argument is passed.
+ */
+export function inferredFieldValue(field: string): string {
   switch (field) {
     case 'client_id':
-      return 'ClientId';
+      return 'this.Client.RequireClientId()';
     case 'client_secret':
-      return 'ApiKey';
+      return 'this.Client.GetClientSecret()';
     default:
-      return fieldName(field);
+      return `this.Client.${fieldName(field)} ?? string.Empty`;
   }
 }
 

@@ -298,7 +298,24 @@ describe('elixir/resources', () => {
     const content = files[0].content;
     expect(content).toContain('Acme.Client.merge_defaults(%{"grant_type" => "authorization_code"})');
     expect(content).toContain('Acme.Client.put_inferred("client_id", client.client_id)');
-    expect(content).toContain('Acme.Client.put_inferred("client_secret", client.api_key)');
+    // client_secret goes through the client's accessor, named after the function.
+    expect(content).toContain('|> Acme.Client.put_client_secret(client, "get_profile_and_token")');
+    expect(content).not.toContain('client.api_key');
+  });
+
+  it('fills an inferred client_secret through the accessor on url-builder operations', () => {
+    const services: Service[] = [
+      { name: 'SSO', operations: [makeOp({ name: 'getAuthorizationUrl', path: '/sso/authorize' })] },
+    ];
+    const ctx = ctxFor(services);
+    ctx.resolvedOperations = buildResolvedOps(services).map((r) => ({
+      ...r,
+      urlBuilder: true,
+      inferFromClient: ['client_id', 'client_secret'],
+    }));
+    const content = generateResources(services, ctx)[0].content;
+    expect(content).toContain('|> Acme.Client.put_client_secret(client, "get_authorization_url")');
+    expect(content).not.toContain('client.api_key');
   });
 
   it('emits union-split wrapper methods alongside the base operation', () => {
@@ -350,7 +367,10 @@ describe('elixir/resources', () => {
     expect(content).toContain('def authenticate_with_password(client, params \\\\ %{}, opts \\\\ []) do');
     // Wrapper pins the grant type and fills client credentials.
     expect(content).toContain('Acme.Client.merge_defaults(%{"grant_type" => "password"})');
-    expect(content).toContain('Acme.Client.put_inferred("client_secret", client.api_key)');
+    expect(content).toContain('Acme.Client.put_inferred("client_id", client.client_id)');
+    // client_secret goes through the client's accessor, named after the wrapper.
+    expect(content).toContain('|> Acme.Client.put_client_secret(client, "authenticate_with_password")');
+    expect(content).not.toContain('client.api_key');
     // Wrapper posts to the same path and casts the wrapper response model.
     expect(content).toContain('Acme.Client.request(client, :post, "/user_management/authenticate", params, opts)');
     expect(content).toContain('{:ok, Acme.AuthenticateResponse.t()} | {:error, Acme.Error.error()}');

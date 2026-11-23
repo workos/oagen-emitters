@@ -27,6 +27,8 @@ import {
   resolveMethodName,
   ktLiteral,
   clientFieldExpression,
+  callsClientSecret,
+  CLIENT_SECRET_IMPORT,
   deprecatedAnnotation,
   escapeReserved,
   humanize,
@@ -237,6 +239,9 @@ function generateApiClass(
     if (simple === 'WorkOS' || simple === 'RequestOptions') return true;
     return new RegExp(`\\b${simple}\\b`).test(allText);
   });
+  // Added here rather than through the name filter above, which would also
+  // keep it for a method that merely has a `clientSecret` parameter.
+  if (callsClientSecret(allText)) filteredImports.push(CLIENT_SECRET_IMPORT);
 
   const lines: string[] = [];
   lines.push(`package ${pkg}`);
@@ -609,6 +614,7 @@ function renderMethod(
       .filter((bf) => bf.name !== 'grant_type' && bf.name !== 'client_id' && bf.name !== 'client_secret')
       .map((bf) => `      ${ktLiteral(bf.name)} to ${bodyParamNames.get(bf.name)!}`);
     lines.push(`    return authenticate(`);
+    lines.push(`      caller = ${ktLiteral(method)},`);
     lines.push(`      grantType = ${ktLiteral(grantType)},`);
     lines.push(`      requestOptions = requestOptions,`);
     for (let i = 0; i < entryLines.length; i++) {
@@ -674,7 +680,9 @@ function renderMethod(
         // Client-inferred fields may be nullable (e.g. clientId). Skip when
         // null rather than serializing "null" into the URL.
         for (const k of inferFromClient) {
-          lines.push(`    workos.${clientFieldExpression(k)}?.let { params += ${ktLiteral(k)} to it }`);
+          lines.push(
+            `    workos.${clientFieldExpression(k, ktLiteral(method))}?.let { params += ${ktLiteral(k)} to it }`,
+          );
         }
       }
     }
@@ -694,7 +702,7 @@ function renderMethod(
         bodyEntries.push(`      ${ktLiteral(k)} to ${ktLiteral(v)}`);
       }
       for (const k of inferFromClient) {
-        bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k)}`);
+        bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k, ktLiteral(method))}`);
       }
       if (bodyEntries.length > 0) {
         // ktlint: "A multiline expression should start on a new line"
@@ -1254,6 +1262,7 @@ function pickNamedQueryParam(sorted: Parameter[], name: string): string {
 function generateAuthenticateHelper(): string[] {
   return [
     '  private fun authenticate(',
+    '    caller: String,',
     '    grantType: String,',
     '    requestOptions: RequestOptions?,',
     '    vararg entries: Pair<String, Any?>',
@@ -1263,7 +1272,7 @@ function generateAuthenticateHelper(): string[] {
     '        *entries,',
     '        "grant_type" to grantType,',
     '        "client_id" to workos.clientId,',
-    '        "client_secret" to workos.apiKey',
+    `        "client_secret" to workos.${clientFieldExpression('client_secret', 'caller')}`,
     '      )',
     '    val config =',
     '      RequestConfig(',

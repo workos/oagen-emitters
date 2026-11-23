@@ -110,9 +110,7 @@ function emitWrapperMethod(
 
   // Inferred fields from client config
   for (const field of wrapper.inferFromClient) {
-    const expr = clientFieldExpression(field);
-    lines.push(`        if ${expr} is not None:`);
-    lines.push(`            body["${field}"] = ${expr}`);
+    lines.push(...inferredFieldLines(field, 'body', method));
   }
 
   // Optional exposed params
@@ -170,15 +168,42 @@ export function pythonLiteral(value: string | number | boolean): string {
 }
 
 /** Get the Python expression for reading a client config field. */
-export function clientFieldExpression(field: string): string {
+function clientFieldExpression(field: string): string {
   switch (field) {
     case 'client_id':
       return 'self._client.client_id';
-    case 'client_secret':
-      return 'self._client._api_key';
     default:
       return `self._client.${toSnakeCase(field)}`;
   }
+}
+
+/**
+ * Lines that copy an inferFromClient field into the `target` dict (`body` or
+ * `params`) when the client has a value for it.
+ *
+ * `client_secret` is never read off the client directly. It comes from the
+ * hand-written `_client_secret(method)` accessor, which returns the API key,
+ * returns None for a client that has none and may leave the field out, or
+ * raises for a client that cannot make the call at all.
+ *
+ * @param method Python method name, used by the accessor in its error message.
+ * @param unlessPresent Fill the field only when the caller has not already put
+ *   it in `target`. The accessor is not called when the caller passed a value.
+ */
+export function inferredFieldLines(field: string, target: string, method: string, unlessPresent = false): string[] {
+  const key = pythonStringLiteral(field);
+  if (field === 'client_secret') {
+    const pad = unlessPresent ? '    ' : '';
+    return [
+      ...(unlessPresent ? [`        if ${key} not in ${target}:`] : []),
+      `        ${pad}client_secret = self._client._client_secret(${pythonStringLiteral(method)})`,
+      `        ${pad}if client_secret is not None:`,
+      `        ${pad}    ${target}[${key}] = client_secret`,
+    ];
+  }
+  const expr = clientFieldExpression(field);
+  const absent = unlessPresent ? `${key} not in ${target} and ` : '';
+  return [`        if ${absent}${expr} is not None:`, `            ${target}[${key}] = ${expr}`];
 }
 
 /** Resolve a TypeRef to a simple Python type string. */

@@ -22,7 +22,7 @@ import {
   serviceTypeName,
   localName,
   csLiteral,
-  clientFieldExpression,
+  inferredFieldValue,
   httpMethodCs,
   httpMethodHelperName,
   escapeXml,
@@ -917,13 +917,7 @@ function generateMethod(
       lines.push(`            options.${fieldName(key)} = ${csLiteral(value as string | number | boolean)};`);
     }
     for (const field of inferFromClient) {
-      if (field === 'client_id') {
-        lines.push(`            options.${fieldName(field)} = this.Client.RequireClientId();`);
-      } else {
-        lines.push(
-          `            options.${fieldName(field)} = this.Client.${clientFieldExpression(field)} ?? string.Empty;`,
-        );
-      }
+      lines.push(`            options.${fieldName(field)} = ${inferredFieldValue(field)};`);
     }
   }
 

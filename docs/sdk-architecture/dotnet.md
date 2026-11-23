@@ -244,8 +244,8 @@ public async Task<AuthenticationResponse> AuthenticateWithPassword(
     CancellationToken cancellationToken = default)
 {
     options.GrantType = "password";
-    options.ClientId = this.Client.ClientId;
-    options.ClientSecret = this.Client.ApiKey;
+    options.ClientId = this.Client.RequireClientId();
+    options.ClientSecret = this.Client.GetClientSecret();
     var request = new WorkOSRequest
     {
         Method = HttpMethod.Post,

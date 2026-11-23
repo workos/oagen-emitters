@@ -10,12 +10,46 @@ The goal is to prevent a generated SDK from being "surface-complete but behavior
 - Do not use mutable global, static, or module-level auth/config state unless it is an explicit backward-compatibility shim.
 - If compatibility shims exist, they must not become the source of truth for new generated methods.
 - Operations that need `client_id`, `client_secret`, API key, or similar client config must read them from the client instance or validated request context.
+- An operation that sends the API key as `client_secret` must not read the key itself. It calls the client's hand-written client-secret accessor (see [Client Secret Accessor](#client-secret-accessor)), which decides what a client without an API key does.
 - Per-request options must be supported consistently across the runtime and generated methods. At minimum, support:
   - extra headers
   - timeout override
   - retry override
   - base URL override
   - idempotency key override
+
+### Client Secret Accessor
+
+Sign-in and token-exchange operations authenticate the application by sending the API key in the request as `client_secret` (`inferFromClient: ['client_secret']` in the operation hints). Not every client has an API key, and what a client without one should do is a property of the client, not of the operation. Generated code therefore asks the client, through one hand-written accessor per SDK, and contains no rule of its own.
+
+The accessor has three outcomes:
+
+- The client has an API key: return it.
+- The client has no API key and may make the call without a client secret (a public client running a PKCE flow): return the value that leaves `client_secret` out of the request.
+- The client has no API key and can never make the call: fail before any request is sent, with the SDK's configuration error.
+
+Most accessors take the name of the calling method, for their error message. The emitter passes the name as the SDK spells it.
+
+| Language | Generated call                                         | Accessor returns              | Leaves the field out | Failure                  |
+| -------- | ------------------------------------------------------ | ----------------------------- | -------------------- | ------------------------ |
+| Go       | `s.client.clientSecret("Method")`                      | `(string, error)`             | `""`                 | error, returned as-is    |
+| Python   | `self._client._client_secret("method")`                | `Optional[str]`               | `None`               | raises                   |
+| Ruby     | `@client.client_secret('method')`                      | `String` or `nil`             | `nil`                | raises                   |
+| PHP      | `$this->client->requireApiKey()`                       | `string`                      | never                | throws                   |
+| .NET     | `this.Client.GetClientSecret()`                        | `string`                      | never                | throws                   |
+| Kotlin   | `workos.clientSecret("method")`                        | `String?`                     | `null`               | throws                   |
+| Elixir   | `Client.put_client_secret(params, client, "function")` | the params map                | map unchanged        | raises                   |
+| Rust     | `self.client.client_secret("method")?`                 | `Result<Option<&str>, Error>` | `None`               | `Err`, propagated by `?` |
+
+Notes:
+
+- Go returns the accessor's error from the generated method, so only an operation with a request body can infer `client_secret`. Inferring it into a query string fails generation: a URL builder returns a bare string and a paginated method an iterator, and neither can return the error.
+- .NET passes no argument. The accessor declares `[CallerMemberName] string method = ""`, and the compiler supplies the name.
+- Kotlin's accessor is an extension function, `internal fun WorkOS.clientSecret(method: String): String?`, in a hand-written file in package `com.workos`. It cannot be a member of `WorkOS`, because `WorkOS.kt` is generated. Kotlin resolves an extension from another package only through an import, so every generated class that calls the accessor imports `com.workos.clientSecret`, and no other class does.
+- PHP's `requireApiKey()` predates this contract. It takes no method name and refuses every client without an API key, public clients included: those exchange codes through the hand-maintained PKCE helper.
+- Elixir's accessor takes and returns the params map so that it can keep a `client_secret` the caller passed, as `put_inferred/3` does for other fields.
+- Where a caller can supply the secret another way, generated code checks that first and does not call the accessor. Ruby's `request_options[:api_key]` replaces the client's API key for one request, as bearer token and as client secret, in wrappers and operation-level methods alike. An override parameter of a URL builder works the same way.
+- The iOS and Android SDKs are public-client SDKs and read the configured key directly. The Node SDK's sign-in methods are hand-maintained.
 
 ## 2. HTTP Runtime Behavior
 
