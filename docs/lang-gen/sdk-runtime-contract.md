@@ -45,6 +45,7 @@ Notes:
 
 - Go returns the accessor's error from the generated method, so only an operation with a request body can infer `client_secret`. Inferring it into a query string fails generation: a URL builder returns a bare string and a paginated method an iterator, and neither can return the error.
 - .NET passes no argument. The accessor declares `[CallerMemberName] string method = ""`, and the compiler supplies the name.
+- Kotlin's accessor is an extension function, `internal fun WorkOS.clientSecret(method: String): String?`, in a hand-written file in package `com.workos`. It cannot be a member of `WorkOS`, because `WorkOS.kt` is generated. Kotlin resolves an extension from another package only through an import, so every generated class that calls the accessor imports `com.workos.clientSecret`, and no other class does.
 - PHP's `requireApiKey()` predates this contract. It takes no method name and refuses every client without an API key, public clients included: those exchange codes through the hand-maintained PKCE helper.
 - Elixir's accessor takes and returns the params map so that it can keep a `client_secret` the caller passed, as `put_inferred/3` does for other fields.
 - Where a caller can supply the secret another way (Ruby's `request_options[:api_key]`, an override parameter of a URL builder), generated code checks that first and does not call the accessor.

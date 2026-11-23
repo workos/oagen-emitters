@@ -27,6 +27,8 @@ import {
   resolveMethodName,
   ktLiteral,
   clientFieldExpression,
+  callsClientSecret,
+  CLIENT_SECRET_IMPORT,
   deprecatedAnnotation,
   escapeReserved,
   humanize,
@@ -237,6 +239,9 @@ function generateApiClass(
     if (simple === 'WorkOS' || simple === 'RequestOptions') return true;
     return new RegExp(`\\b${simple}\\b`).test(allText);
   });
+  // Added here rather than through the name filter above, which would also
+  // keep it for a method that merely has a `clientSecret` parameter.
+  if (callsClientSecret(allText)) filteredImports.push(CLIENT_SECRET_IMPORT);
 
   const lines: string[] = [];
   lines.push(`package ${pkg}`);

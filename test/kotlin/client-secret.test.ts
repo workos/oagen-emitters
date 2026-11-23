@@ -3,9 +3,16 @@ import type { EmitterContext, Service } from '@workos/oagen';
 import { generateResources } from '../../src/kotlin/resources.js';
 import { clientSecretContext, clientSecretServices, clientSecretSpec } from '../shared/client-secret-fixture.js';
 
+const ACCESSOR_IMPORT = 'import com.workos.clientSecret';
+
 function generate(ctx: EmitterContext = clientSecretContext()): Record<string, string> {
   const files = generateResources(ctx.spec.services, ctx);
   return Object.fromEntries(files.map((f) => [f.path, f.content]));
+}
+
+/** The `import` lines of a generated Kotlin file, in file order. */
+function importsOf(content: string): string[] {
+  return content.split('\n').filter((line) => line.startsWith('import '));
 }
 
 describe('kotlin/client secret', () => {
@@ -30,6 +37,43 @@ describe('kotlin/client secret', () => {
       ),
     );
     expect(content).not.toContain('workos.apiKey');
+    expect(importsOf(content)).toContain(ACCESSOR_IMPORT);
+  });
+
+  it('imports the accessor, an extension function in com.workos, where it is called', () => {
+    // The generated class is in a service package, and Kotlin resolves an
+    // extension function from another package only through an import.
+    const content = generate()['src/main/kotlin/com/workos/sso/SSO.kt'];
+
+    expect(content).toContain('package com.workos.sso');
+    const imports = importsOf(content);
+    expect(imports.filter((line) => line === ACCESSOR_IMPORT)).toHaveLength(1);
+    // Sorted with the rest, as the SDK's lint requires.
+    expect(imports).toEqual([...imports].sort());
+    expect(imports.indexOf('import com.workos.WorkOS')).toBeLessThan(imports.indexOf(ACCESSOR_IMPORT));
+    expect(imports.indexOf(ACCESSOR_IMPORT)).toBeLessThan(imports.indexOf('import com.workos.common.http.bodyOf'));
+  });
+
+  it('does not import the accessor into a class that never calls it', () => {
+    // No inferred client_secret, but a body field and so a parameter named
+    // `clientSecret`: the bare name is not a call, and an unused import fails
+    // the SDK's lint.
+    const base = clientSecretContext();
+    const ctx: EmitterContext = {
+      ...base,
+      resolvedOperations: base.resolvedOperations!.map((r) => ({
+        ...r,
+        defaults: undefined,
+        inferFromClient: undefined,
+        wrappers: undefined,
+      })) as never,
+    };
+    const content = generate(ctx)['src/main/kotlin/com/workos/sso/SSO.kt'];
+
+    expect(content).toContain('    clientSecret: String,');
+    expect(content).toContain('"client_secret" to clientSecret');
+    expect(content).not.toContain('workos.clientSecret(');
+    expect(importsOf(content)).not.toContain(ACCESSOR_IMPORT);
   });
 
   it('fills client_secret from the client accessor on an operation-level hint', () => {
@@ -61,6 +105,7 @@ describe('kotlin/client secret', () => {
     expect(content).toContain('        "client_secret" to workos.clientSecret("authenticateWithPassword")');
     expect(content).not.toContain('private fun authenticate(');
     expect(content).not.toContain('workos.apiKey');
+    expect(importsOf(content)).toContain(ACCESSOR_IMPORT);
   });
 
   it('fills an inferred client_secret query parameter from the client accessor', () => {
@@ -99,5 +144,6 @@ describe('kotlin/client secret', () => {
 
     expect(content).toContain('    workos.clientSecret("getProfile")?.let { params += "client_secret" to it }');
     expect(content).not.toContain('workos.apiKey');
+    expect(importsOf(content)).toContain(ACCESSOR_IMPORT);
   });
 });
