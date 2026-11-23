@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.25.11](https://github.com/workos/oagen-emitters/compare/v0.25.10...v0.25.11) (2026-11-23)
+
+
+### Bug Fixes
+
+* **dotnet:** render C# snippets that compile against the .NET SDK ([#325](https://github.com/workos/oagen-emitters/issues/325)) ([607ba4b](https://github.com/workos/oagen-emitters/commit/607ba4b4afa3305d89851e3302a52a7ba0dba463))
+* **kotlin:** render Java snippets that compile against the Kotlin SDK ([#323](https://github.com/workos/oagen-emitters/issues/323)) ([02e1fdf](https://github.com/workos/oagen-emitters/commit/02e1fdff166f88230bd2ed139a775c3b46322ec1))
+* **rust:** render Rust snippets that compile against the Rust SDK ([#324](https://github.com/workos/oagen-emitters/issues/324)) ([4ac39be](https://github.com/workos/oagen-emitters/commit/4ac39be66b214101ff7143ce1112a06f9b395600))
+* **snippets:** emit Go snippets that compile against workos-go v10 ([#321](https://github.com/workos/oagen-emitters/issues/321)) ([69e378a](https://github.com/workos/oagen-emitters/commit/69e378aa6efc99b3e69f0d63b780162278daab0e))
+
 ## [0.25.10](https://github.com/workos/oagen-emitters/compare/v0.25.9...v0.25.10) (2026-11-19)
 
 
