@@ -13,6 +13,7 @@ import {
   className,
   clientSecretExpression,
   fieldName,
+  requestClientSecretExpression,
   bodyFieldKwargRenames,
   fileName,
   methodName,
@@ -609,10 +610,9 @@ function emitMethod(args: {
       bodyEntries.push(`${rubyStringLit(k)} => ${lit}`);
     }
     for (const fc of inferFromClient) {
-      // A per-request `api_key` wins, and then the accessor is not called.
-      const optKey = fc === 'client_secret' ? 'api_key' : fc;
-      const value = fc === 'client_secret' ? clientSecretExpression(method) : `@client.${fc}`;
-      bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || ${value})`);
+      const value =
+        fc === 'client_secret' ? requestClientSecretExpression(method) : `(request_options[:${fc}] || @client.${fc})`;
+      bodyEntries.push(`${rubyStringLit(fc)} => ${value}`);
     }
     // Track whether any literal entry can be nil — defaults/inferFromClient
     // resolve to non-nil values, so only optional body kwargs are nilable.

@@ -16,8 +16,26 @@ describe('ruby/client secret', () => {
     const content = generate()['lib/workos/user_management.rb'];
 
     expect(content).toContain("        'client_id' => @client.client_id,");
-    expect(content).toContain("        'client_secret' => @client.client_secret('authenticate_with_password'),");
+    expect(content).toContain("@client.client_secret('authenticate_with_password')");
     expect(content).not.toContain('@client.api_key');
+  });
+
+  it('prefers a per-request api_key over the accessor in a wrapper', () => {
+    // The runtime sends a per-request api_key as the bearer token, so it is
+    // the client secret too. Checked first, so that the accessor is not
+    // called, and cannot refuse, when the caller supplied a key.
+    const wrapper = generate()['lib/workos/user_management.rb'];
+
+    expect(wrapper).toContain(
+      "        'client_secret' => (request_options[:api_key] || @client.client_secret('authenticate_with_password')),",
+    );
+    expect(wrapper).not.toContain("'client_secret' => @client.client_secret(");
+    expect(wrapper).toContain('      request_options: {}');
+
+    // The same shape as the operation-level method.
+    expect(generate()['lib/workos/sso.rb']).toContain(
+      "        'client_secret' => (request_options[:api_key] || @client.client_secret('get_profile_and_token')),",
+    );
   });
 
   it('fills client_secret from the client accessor on an operation-level hint', () => {

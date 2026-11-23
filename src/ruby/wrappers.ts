@@ -1,5 +1,5 @@
 import type { EmitterContext, Operation, ResolvedOperation, ResolvedWrapper } from '@workos/oagen';
-import { className, clientSecretExpression, fieldName, safeParamName } from './naming.js';
+import { className, fieldName, requestClientSecretExpression, safeParamName } from './naming.js';
 import { resolveWrapperParams, formatWrapperDescription } from '../shared/wrapper-utils.js';
 import { mapTypeRefForYard } from './type-map.js';
 
@@ -111,7 +111,7 @@ function emitWrapperMethod(
     bodyEntries.push(`${rubyStringLit(k)} => ${lit}`);
   }
   for (const fc of wrapper.inferFromClient) {
-    const value = fc === 'client_secret' ? clientSecretExpression(method) : `@client.${fc}`;
+    const value = fc === 'client_secret' ? requestClientSecretExpression(method) : `@client.${fc}`;
     bodyEntries.push(`${rubyStringLit(fc)} => ${value}`);
   }
   for (const wp of wrapperParams) {

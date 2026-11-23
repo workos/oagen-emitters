@@ -48,7 +48,7 @@ Notes:
 - Kotlin's accessor is an extension function, `internal fun WorkOS.clientSecret(method: String): String?`, in a hand-written file in package `com.workos`. It cannot be a member of `WorkOS`, because `WorkOS.kt` is generated. Kotlin resolves an extension from another package only through an import, so every generated class that calls the accessor imports `com.workos.clientSecret`, and no other class does.
 - PHP's `requireApiKey()` predates this contract. It takes no method name and refuses every client without an API key, public clients included: those exchange codes through the hand-maintained PKCE helper.
 - Elixir's accessor takes and returns the params map so that it can keep a `client_secret` the caller passed, as `put_inferred/3` does for other fields.
-- Where a caller can supply the secret another way (Ruby's `request_options[:api_key]`, an override parameter of a URL builder), generated code checks that first and does not call the accessor.
+- Where a caller can supply the secret another way, generated code checks that first and does not call the accessor. Ruby's `request_options[:api_key]` replaces the client's API key for one request, as bearer token and as client secret, in wrappers and operation-level methods alike. An override parameter of a URL builder works the same way.
 - The iOS and Android SDKs are public-client SDKs and read the configured key directly. The Node SDK's sign-in methods are hand-maintained.
 
 ## 2. HTTP Runtime Behavior
