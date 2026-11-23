@@ -380,12 +380,20 @@ function groupsNeedJsonConvert(operations: Operation[], models: Model[]): boolea
  * `RequestOptions?`/`CancellationToken` pair. Mirrors the signature
  * construction in generateMethod.
  */
-function leadingParamCount(
+/** What an operation's options class would carry. */
+interface OptionsVisibility {
+  /** The request body has a field the caller sets (or is not a model). */
+  hasVisibleBodyFields: boolean;
+  /** The method takes an options class at all. */
+  hasParams: boolean;
+}
+
+function optionsVisibility(
   op: Operation,
   plan: OperationPlan,
   ctx: EmitterContext,
   resolvedOp?: ResolvedOperation,
-): number {
+): OptionsVisibility {
   const hidden = buildHiddenParams(resolvedOp);
   const groupedParams = collectGroupedParamNames(op);
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
@@ -399,7 +407,46 @@ function leadingParamCount(
   } else if (hasBody) {
     hasVisibleBodyFields = true;
   }
-  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
+  return { hasVisibleBodyFields, hasParams: hasVisibleBodyFields || hasVisibleQueryParams || hasGroups };
+}
+
+/** The options parameter of an operation's generated method. */
+export interface OptionsParamPlan {
+  /** The options class the method takes. */
+  optionsClass: string;
+  /** False when the parameter is `options = null`. */
+  required: boolean;
+}
+
+/**
+ * The options parameter of the method generated for `op`, or null when the
+ * method takes none. A method takes a required options object when its request
+ * body has fields the caller sets; list methods and query-only methods take an
+ * optional one.
+ */
+export function planOptionsParam(
+  op: Operation,
+  mountName: string,
+  methodStem: string,
+  ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
+): OptionsParamPlan | null {
+  const plan = planOperation(op);
+  const { hasVisibleBodyFields, hasParams } = optionsVisibility(op, plan, ctx, resolvedOp);
+  if (!hasParams) return null;
+  return {
+    optionsClass: optionsClassName(mountName, methodStem),
+    required: hasVisibleBodyFields && !plan.isPaginated,
+  };
+}
+
+function leadingParamCount(
+  op: Operation,
+  plan: OperationPlan,
+  ctx: EmitterContext,
+  resolvedOp?: ResolvedOperation,
+): number {
+  const { hasParams } = optionsVisibility(op, plan, ctx, resolvedOp);
   const hasBearerOverride = bearerOverrideScheme(op) !== null;
   return op.pathParams.length + (hasBearerOverride ? 1 : 0) + (hasParams ? 1 : 0);
 }
@@ -585,18 +632,8 @@ function generateOptionsFile(mountName: string, operations: Operation[], ctx: Em
 
     const groupedParams = collectGroupedParamNames(op);
     const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-    const hasVisibleQueryParams =
-      op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
     const hasBody = plan.hasBody && op.requestBody;
-    let hasVisibleBodyFields = false;
-    if (hasBody && op.requestBody?.kind === 'model') {
-      const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-      if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
-    } else if (hasBody) {
-      hasVisibleBodyFields = true;
-    }
-
-    if (!hasVisibleQueryParams && !hasVisibleBodyFields && !hasGroups) continue;
+    if (!optionsVisibility(op, plan, ctx, resolvedOp).hasParams) continue;
 
     emittedOptions.add(optionsClass);
     hasOptions = true;
@@ -787,22 +824,9 @@ function generateMethod(
   const isPaginated = plan.isPaginated;
   const isDelete = plan.isDelete;
   const hasBody = plan.hasBody && op.requestBody;
-  const hidden = buildHiddenParams(resolvedOp);
-  const groupedParams = collectGroupedParamNames(op);
   const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  const hasVisibleQueryParams =
-    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
-
-  let hasVisibleBodyFields = false;
-  if (hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-    if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
-  } else if (hasBody) {
-    hasVisibleBodyFields = true;
-  }
-
-  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
-  const optionsClass = hasParams ? optionsClassName(mountName, methodStem) : null;
+  const optionsParam = planOptionsParam(op, mountName, methodStem, ctx, resolvedOp);
+  const optionsClass = optionsParam?.optionsClass ?? null;
   const hasHidden = hasHiddenParams(resolvedOp);
 
   // Per-operation Bearer token auth (e.g., SSO GetProfile uses access_token instead of API key)
@@ -869,9 +893,9 @@ function generateMethod(
   if (hasBearerOverride && bearerParamName) {
     params.push(`string ${localName(bearerParamName)}`);
   }
-  if (optionsClass) {
-    const isRequired = hasVisibleBodyFields && !isPaginated;
-    params.push(isRequired ? `${optionsClass} options` : `${optionsClass}? options = null`);
+  if (optionsParam) {
+    const { optionsClass, required } = optionsParam;
+    params.push(required ? `${optionsClass} options` : `${optionsClass}? options = null`);
   }
   if (!isUrlBuilder) {
     params.push('RequestOptions? requestOptions = null');
@@ -884,8 +908,7 @@ function generateMethod(
 
   // Inject hidden params
   if (hasHidden && optionsClass) {
-    const isOptionalParam = !hasVisibleBodyFields || isPaginated;
-    if (isOptionalParam) {
+    if (!optionsParam?.required) {
       lines.push(`            options ??= new ${optionsClass}();`);
     }
     const defaults = getOpDefaults(resolvedOp);
@@ -1118,22 +1141,7 @@ function generateCompatibilityMethod(
   resolvedOp?: ResolvedOperation,
 ): string {
   const lines: string[] = [];
-  const hidden = buildHiddenParams(resolvedOp);
-  const groupedParams = collectGroupedParamNames(op);
-  const hasGroups = (op.parameterGroups?.length ?? 0) > 0;
-  const hasVisibleQueryParams =
-    op.queryParams.filter((qp) => !hidden.has(qp.name) && !groupedParams.has(qp.name)).length > 0;
-
-  let hasVisibleBodyFields = false;
-  if (plan.hasBody && op.requestBody?.kind === 'model') {
-    const bodyModel = ctx.spec.models.find((m) => op.requestBody?.kind === 'model' && m.name === op.requestBody.name);
-    if (bodyModel) hasVisibleBodyFields = bodyModel.fields.some((f) => !hidden.has(f.name));
-  } else if (plan.hasBody && op.requestBody) {
-    hasVisibleBodyFields = true;
-  }
-
-  const hasParams = hasVisibleBodyFields || hasVisibleQueryParams || hasGroups;
-  const optionsClass = hasParams ? optionsClassName(mountName, methodStem) : null;
+  const optionsParam = planOptionsParam(op, mountName, methodStem, ctx, resolvedOp);
 
   let returnType = 'Task';
   if (plan.isPaginated && op.pagination) {
@@ -1159,9 +1167,9 @@ function generateCompatibilityMethod(
     args.push(bearerLocal);
   }
 
-  if (optionsClass) {
-    const isRequired = hasVisibleBodyFields && !plan.isPaginated;
-    params.push(isRequired ? `${optionsClass} options` : `${optionsClass}? options = null`);
+  if (optionsParam) {
+    const { optionsClass, required } = optionsParam;
+    params.push(required ? `${optionsClass} options` : `${optionsClass}? options = null`);
     args.push('options');
   }
 

@@ -94,6 +94,60 @@ function variantFileExistsAfterRun(variantModelName: string, ctx: EmitterContext
   return fileExistsAfterRun(relPath, isModelInScope(canonical, ctx), ctx);
 }
 
+/** The models the .NET SDK emits, with the discriminator context they need. */
+export interface DotnetModels {
+  models: Model[];
+  discCtx: DiscriminatorContext;
+  /** Discriminated base model name → its discriminator. */
+  modelDiscriminators: Map<string, { property: string; mapping: Record<string, string> }>;
+}
+
+/**
+ * Restore fields on discriminated base models. enrichModelsFromSpec clears
+ * fields for dispatcher-capable languages; C# uses inheritance instead:
+ * the base class keeps its common fields and variant classes extend it.
+ */
+function restoreDiscriminatedBases(models: Model[], enriched: Model[]): DotnetModels {
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  const discriminatorBases = new Set<string>();
+  const variantToBase = new Map<string, string>();
+  const modelDiscriminators = new Map<string, { property: string; mapping: Record<string, string> }>();
+
+  const dotnetModels = enriched.map((m) => {
+    const disc = (m as any).discriminator;
+    if (disc && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        discriminatorBases.add(m.name);
+        modelDiscriminators.set(m.name, disc);
+        for (const variantName of Object.values(disc.mapping) as string[]) {
+          variantToBase.set(variantName, m.name);
+        }
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+
+  // Build a map of base model name → discriminator wire-property name so the
+  // model emitter can mark the discriminator field as internal-set.
+  const discriminatorProperties = new Map<string, string>();
+  for (const [baseName, disc] of modelDiscriminators) {
+    discriminatorProperties.set(baseName, disc.property);
+  }
+
+  const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase, discriminatorProperties };
+  return { models: dotnetModels, discCtx, modelDiscriminators };
+}
+
+/**
+ * The models as the .NET SDK emits them: enriched from the spec, with
+ * discriminated bases keeping their common fields.
+ */
+export function prepareDotnetModels(models: Model[]): DotnetModels {
+  return restoreDiscriminatedBases(models, enrichModelsFromSpec(models));
+}
+
 export const dotnetEmitter: Emitter = {
   language: 'dotnet',
 
@@ -109,38 +163,7 @@ export const dotnetEmitter: Emitter = {
       primeEnumAliases([...c.spec.enums, ...synEnumsForModels]);
     }
 
-    // Restore fields on discriminated base models. enrichModelsFromSpec clears
-    // fields for dispatcher-capable languages; C# uses inheritance instead:
-    // the base class keeps its common fields and variant classes extend it.
-    const originalByName = new Map(models.map((m) => [m.name, m]));
-    const discriminatorBases = new Set<string>();
-    const variantToBase = new Map<string, string>();
-    const modelDiscriminators = new Map<string, { property: string; mapping: Record<string, string> }>();
-
-    const dotnetModels = enriched.map((m) => {
-      const disc = (m as any).discriminator;
-      if (disc && m.fields.length === 0) {
-        const original = originalByName.get(m.name);
-        if (original && original.fields.length > 0) {
-          discriminatorBases.add(m.name);
-          modelDiscriminators.set(m.name, disc);
-          for (const variantName of Object.values(disc.mapping) as string[]) {
-            variantToBase.set(variantName, m.name);
-          }
-          return { ...m, fields: original.fields };
-        }
-      }
-      return m;
-    });
-
-    // Build a map of base model name → discriminator wire-property name so the
-    // model emitter can mark the discriminator field as internal-set.
-    const discriminatorProperties = new Map<string, string>();
-    for (const [baseName, disc] of modelDiscriminators) {
-      discriminatorProperties.set(baseName, disc.property);
-    }
-
-    const discCtx: DiscriminatorContext = { discriminatorBases, variantToBase, discriminatorProperties };
+    const { models: dotnetModels, discCtx, modelDiscriminators } = restoreDiscriminatedBases(models, enriched);
     const files = generateModels(dotnetModels, c, discCtx);
 
     // Generate discriminator converters for oneOf unions with discriminator

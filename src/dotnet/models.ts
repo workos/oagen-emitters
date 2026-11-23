@@ -1,4 +1,4 @@
-import type { Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
+import type { Field, Model, EmitterContext, GeneratedFile, TypeRef, Service } from '@workos/oagen';
 import { walkTypeRef } from '@workos/oagen';
 import {
   mapTypeRef,
@@ -220,9 +220,8 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
       // override (e.g. wire `connection_type` → domain `Type`). The wire key
       // passed to `emitJsonPropertyAttributes` below still derives from
       // `field.name`.
-      let csFieldName = domainFieldName(field);
-      const collidesWithClassName = csFieldName === csClassName;
-      if (collidesWithClassName) csFieldName = `${csFieldName}Value`;
+      const csFieldName = modelPropertyName(field, csClassName);
+      const collidesWithClassName = csFieldName !== domainFieldName(field);
       // When the domain rename diverges from the wire key, the SnakeCaseLower
       // naming policy can't recover the wire name from the property — pin it.
       const hasDomainOverride = domainFieldName(field) !== fieldName(field.name);
@@ -403,6 +402,15 @@ export function generateModels(models: Model[], ctx: EmitterContext, discCtx?: D
 }
 
 /**
+ * The C# property a model field becomes: its domain name, with `Value`
+ * appended when that would equal the enclosing class's name.
+ */
+export function modelPropertyName(field: Field, csClassName: string): string {
+  const name = domainFieldName(field);
+  return name === csClassName ? `${name}Value` : name;
+}
+
+/**
  * Compute the name of the discriminator converter class for a field whose
  * type is a discriminated union, mirroring the keying used in
  * `joinUnionVariants` (first IR model variant name + "DiscriminatorConverter").
@@ -437,7 +445,7 @@ function isDictionaryOfObject(csType: string): boolean {
  * field down with a const initializer and non-public setter. Returns null
  * for any other type.
  */
-function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, string>): string | null {
+export function singleValueConstInitializer(ref: TypeRef, enumConstByName: Map<string, string>): string | null {
   // OpenAPI `enum: [value]` (single-value) is normalized by the IR to a
   // LiteralType on the field, not an EnumRef. Emit per-type: booleans and
   // numbers are bare literals; strings get JSON-quoted.
