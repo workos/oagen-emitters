@@ -32,32 +32,40 @@ function ensureTrailingNewlines(files: GeneratedFile[]): GeneratedFile[] {
   return files;
 }
 
+/**
+ * The models the Kotlin SDK emits data classes for. The Java snippet emitter
+ * builds constructor calls from the same models.
+ */
+export function prepareKotlinModels(models: Model[]): Model[] {
+  const enriched = enrichModelsFromSpec(models);
+  // Kotlin uses sealed interfaces (WorkOSEvent) for event dispatch rather
+  // than class inheritance, so discriminated base models like EventSchema
+  // need their fields restored to be emitted as proper data classes.
+  // enrichModelsFromSpec clears fields for dispatcher-capable languages;
+  // restore the originals here so Kotlin emits a full data class.
+  const originalByName = new Map(models.map((m) => [m.name, m]));
+  const kotlinModels = enriched.map((m) => {
+    if ((m as any).discriminator && m.fields.length === 0) {
+      const original = originalByName.get(m.name);
+      if (original && original.fields.length > 0) {
+        return { ...m, fields: original.fields };
+      }
+    }
+    return m;
+  });
+  // Kotlin renders a discriminated-union field as its first variant's data
+  // class, so fields unique to later variants (organization_id on the user
+  // owner) are lost. Flatten such unions into one superset data class so
+  // every variant field is reachable.
+  return flattenDiscriminatedUnionFields(kotlinModels);
+}
+
 export const kotlinEmitter: Emitter = {
   language: 'kotlin',
 
   generateModels(models: Model[], ctx: EmitterContext): GeneratedFile[] {
     primeReservedTypeNames(ctx.spec);
-    const enriched = enrichModelsFromSpec(models);
-    // Kotlin uses sealed interfaces (WorkOSEvent) for event dispatch rather
-    // than class inheritance, so discriminated base models like EventSchema
-    // need their fields restored to be emitted as proper data classes.
-    // enrichModelsFromSpec clears fields for dispatcher-capable languages;
-    // restore the originals here so Kotlin emits a full data class.
-    const originalByName = new Map(models.map((m) => [m.name, m]));
-    const kotlinModels = enriched.map((m) => {
-      if ((m as any).discriminator && m.fields.length === 0) {
-        const original = originalByName.get(m.name);
-        if (original && original.fields.length > 0) {
-          return { ...m, fields: original.fields };
-        }
-      }
-      return m;
-    });
-    // Kotlin renders a discriminated-union field as its first variant's data
-    // class, so fields unique to later variants (organization_id on the user
-    // owner) are lost. Flatten such unions into one superset data class so
-    // every variant field is reachable.
-    return ensureTrailingNewlines(generateModels(flattenDiscriminatedUnionFields(kotlinModels), ctx));
+    return ensureTrailingNewlines(generateModels(prepareKotlinModels(models), ctx));
   },
 
   generateEnums(enums: Enum[], ctx: EmitterContext): GeneratedFile[] {
