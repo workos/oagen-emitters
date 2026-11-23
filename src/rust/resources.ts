@@ -1040,6 +1040,15 @@ function renderUrlBuilderMethod(
       sig.push(`        overlay.insert(${JSON.stringify(k)}.to_string(), serde_json::json!(${JSON.stringify(v)}));`);
     }
     for (const k of inferred) {
+      if (k === 'client_secret') {
+        sig.push(`        let client_secret = ${clientSecretExpression(method)};`);
+        sig.push('        if let Some(client_secret) = client_secret {');
+        sig.push(
+          `            overlay.insert(${JSON.stringify(k)}.to_string(), serde_json::Value::String(client_secret.to_string()));`,
+        );
+        sig.push('        }');
+        continue;
+      }
       sig.push(
         `        overlay.insert(${JSON.stringify(k)}.to_string(), serde_json::Value::String(${clientFieldExpression(k)}.to_string()));`,
       );
@@ -1384,7 +1393,9 @@ function renderWrapperMethod(
   // only when non-empty — a client configured without an API key (e.g. a
   // public client running a PKCE flow) must omit `client_secret` entirely
   // rather than send `""`, which the API rejects. Mirrors the Go emitter's
-  // `omitempty` on inferred fields.
+  // `omitempty` on inferred fields. `client_secret` comes from the client's
+  // accessor, whose `None` is that omission and whose error ends the call
+  // before a request is made.
   const inferredFields = wrapper.inferFromClient ?? [];
   sig.push(`        let ${inferredFields.length > 0 ? 'mut ' : ''}body = serde_json::json!({`);
   for (const [k, v] of Object.entries(wrapper.defaults ?? {})) {
@@ -1395,6 +1406,13 @@ function renderWrapperMethod(
   }
   sig.push('        });');
   for (const k of inferredFields) {
+    if (k === 'client_secret') {
+      sig.push(`        let client_secret = ${clientSecretExpression(method)};`);
+      sig.push('        if let Some(client_secret) = client_secret {');
+      sig.push(`            body[${JSON.stringify(k)}] = serde_json::Value::String(client_secret.to_string());`);
+      sig.push('        }');
+      continue;
+    }
     const expr = clientFieldExpression(k);
     sig.push(`        if !${expr}.is_empty() {`);
     sig.push(`            body[${JSON.stringify(k)}] = serde_json::Value::String(${expr}.to_string());`);
@@ -1423,14 +1441,26 @@ function clientFieldExpression(field: string): string {
   switch (field) {
     case 'client_id':
       return 'self.client.client_id()';
-    case 'client_secret':
-      return 'self.client.api_key()';
     default:
       throw new Error(
         `Rust emitter: no client-config accessor for inferFromClient field "${field}". ` +
           'Add a case to clientFieldExpression.',
       );
   }
+}
+
+/**
+ * Rust expression for the `client_secret` an operation sends from client
+ * config: `Option<&str>` after `?`. Generated code never reads the client's
+ * API key for it directly. The hand-written
+ * `Client::client_secret(&self, method: &str) -> Result<Option<&str>, Error>`
+ * returns the API key, `None` for a client that has none and may leave the
+ * field out, or an error for a client that cannot make the call at all.
+ *
+ * @param method Rust method name, used by the accessor in its error message.
+ */
+function clientSecretExpression(method: string): string {
+  return `self.client.client_secret(${JSON.stringify(method)})?`;
 }
 
 /** Multi-line `///` doc comment from a free-form description. */

@@ -167,6 +167,7 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
   ) {
     const grantType = wrapper.defaults.grant_type;
     lines.push(`    return authenticate(`);
+    lines.push(`      caller = ${ktLiteral(method)},`);
     lines.push(`      grantType = ${ktLiteral(grantType)},`);
     lines.push(`      requestOptions = requestOptions,`);
     const entryLines = resolvedParams.map((rp) => {
@@ -194,7 +195,7 @@ function emitWrapperMethod(resolvedOp: ResolvedOperation, wrapper: ResolvedWrapp
     bodyEntries.push(`      ${ktLiteral(k)} to ${ktLiteral(v)}`);
   }
   for (const k of wrapper.inferFromClient ?? []) {
-    bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k)}`);
+    bodyEntries.push(`      ${ktLiteral(k)} to workos.${clientFieldExpression(k, ktLiteral(method))}`);
   }
   if (bodyEntries.length > 0) {
     lines.push(`    val body =`);

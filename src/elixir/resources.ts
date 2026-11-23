@@ -165,8 +165,6 @@ function clientFieldExpr(field: string): string {
   switch (field) {
     case 'client_id':
       return 'client.client_id';
-    case 'client_secret':
-      return 'client.api_key';
     default:
       return `client.${functionName(field)}`;
   }
@@ -177,8 +175,21 @@ function clientFieldExpr(field: string): string {
  * Defaults always win (the whole point of a wrapper is pinning them); inferred
  * fields fill in only when the caller did not pass them. Empty when the
  * operation has no hidden params.
+ *
+ * `client_secret` is never read off the client struct here. The hand-written
+ * `Client.put_client_secret/3` fills it: with the API key, with nothing for a
+ * client that has none and may leave the field out, or by raising for a
+ * client that cannot make the call at all.
+ *
+ * @param fname Elixir function name, used by `put_client_secret/3` in its
+ *   error message.
  */
-function injectionLines(ns: string, defaults: Record<string, string | number | boolean>, inferred: string[]): string[] {
+function injectionLines(
+  ns: string,
+  defaults: Record<string, string | number | boolean>,
+  inferred: string[],
+  fname: string,
+): string[] {
   const defaultKeys = Object.keys(defaults);
   if (defaultKeys.length === 0 && inferred.length === 0) return [];
   const lines: string[] = [];
@@ -187,7 +198,11 @@ function injectionLines(ns: string, defaults: Record<string, string | number | b
   const entries = defaultKeys.map((k) => `"${escapeString(k)}" => ${elixirLiteral(defaults[k])}`).join(', ');
   lines.push(`      |> ${ns}.Client.merge_defaults(%{${entries}})`);
   for (const field of inferred) {
-    lines.push(`      |> ${ns}.Client.put_inferred("${escapeString(field)}", ${clientFieldExpr(field)})`);
+    if (field === 'client_secret') {
+      lines.push(`      |> ${ns}.Client.put_client_secret(client, "${escapeString(fname)}")`);
+    } else {
+      lines.push(`      |> ${ns}.Client.put_inferred("${escapeString(field)}", ${clientFieldExpr(field)})`);
+    }
   }
   lines.push('');
   return lines;
@@ -251,7 +266,7 @@ function renderMethod(resolved: ResolvedOperation, fname: string, ctx: EmitterCo
   const pathParams = pathParamInfos(op);
   const defaults = getOpDefaults(resolved);
   const inferred = getOpInferFromClient(resolved);
-  const injection = injectionLines(ns, defaults, inferred);
+  const injection = injectionLines(ns, defaults, inferred, fname);
   const hasParams = methodTakesParams(resolved);
   const isQueryMethod = ['get', 'delete', 'head'].includes(op.httpMethod);
 
@@ -369,7 +384,7 @@ function renderUrlBuilder(resolved: ResolvedOperation, fname: string, ctx: Emitt
   const pathParams = pathParamInfos(op);
   const defaults = getOpDefaults(resolved);
   const inferred = getOpInferFromClient(resolved);
-  const injection = injectionLines(ns, defaults, inferred);
+  const injection = injectionLines(ns, defaults, inferred, fname);
   const hidden = buildHiddenParams(resolved);
   const visibleQueryParams = op.queryParams.filter((p) => !hidden.has(p.name));
 
@@ -430,7 +445,7 @@ function renderWrapper(
   const wrapperParams = resolveWrapperParams(wrapper, ctx);
   const required = wrapperParams.filter((p) => !p.isOptional);
   const optional = wrapperParams.filter((p) => p.isOptional);
-  const injection = injectionLines(ns, wrapper.defaults, wrapper.inferFromClient);
+  const injection = injectionLines(ns, wrapper.defaults, wrapper.inferFromClient, wname);
 
   const responseRef: TypeRef =
     wrapper.responseModelName && names.modelNames.has(wrapper.responseModelName)

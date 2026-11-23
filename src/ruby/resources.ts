@@ -11,6 +11,7 @@ import type {
 import { planOperation } from '@workos/oagen';
 import {
   className,
+  clientSecretExpression,
   fieldName,
   bodyFieldKwargRenames,
   fileName,
@@ -324,13 +325,21 @@ function emitUrlBuilderMethod(args: {
   // Fields inferred from client config. Override params are already in the
   // hash when the caller passed them explicitly — only fill when absent.
   for (const fc of inferFromClient) {
-    const clientProp = fc === 'client_secret' ? 'api_key' : fc;
+    if (fc === 'client_secret') {
+      // Resolved once, and not at all when the caller passed a value.
+      const pad = clientOverrides.has(fc) ? '  ' : '';
+      if (clientOverrides.has(fc)) lines.push(`      unless params.key?(${rubyStringLit(fc)})`);
+      lines.push(`      ${pad}client_secret = ${clientSecretExpression(method)}`);
+      lines.push(`      ${pad}params[${rubyStringLit(fc)}] = client_secret unless client_secret.nil?`);
+      if (clientOverrides.has(fc)) lines.push('      end');
+      continue;
+    }
     if (clientOverrides.has(fc)) {
       lines.push(
-        `      params[${rubyStringLit(fc)}] = @client.${clientProp} if !params.key?(${rubyStringLit(fc)}) && !@client.${clientProp}.nil?`,
+        `      params[${rubyStringLit(fc)}] = @client.${fc} if !params.key?(${rubyStringLit(fc)}) && !@client.${fc}.nil?`,
       );
     } else {
-      lines.push(`      params[${rubyStringLit(fc)}] = @client.${clientProp} unless @client.${clientProp}.nil?`);
+      lines.push(`      params[${rubyStringLit(fc)}] = @client.${fc} unless @client.${fc}.nil?`);
     }
   }
 
@@ -600,9 +609,10 @@ function emitMethod(args: {
       bodyEntries.push(`${rubyStringLit(k)} => ${lit}`);
     }
     for (const fc of inferFromClient) {
-      const clientProp = fc === 'client_secret' ? 'api_key' : fc;
+      // A per-request `api_key` wins, and then the accessor is not called.
       const optKey = fc === 'client_secret' ? 'api_key' : fc;
-      bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || @client.${clientProp})`);
+      const value = fc === 'client_secret' ? clientSecretExpression(method) : `@client.${fc}`;
+      bodyEntries.push(`${rubyStringLit(fc)} => (request_options[:${optKey}] || ${value})`);
     }
     // Track whether any literal entry can be nil — defaults/inferFromClient
     // resolve to non-nil values, so only optional body kwargs are nilable.

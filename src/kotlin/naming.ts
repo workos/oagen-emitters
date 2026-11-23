@@ -347,13 +347,21 @@ export function ktLiteral(value: string | number | boolean): string {
 /**
  * Map a wire field name to the expression that reads it off a WorkOS client
  * instance (used for inferFromClient fields).
+ *
+ * `client_secret` is never read off the client's API key directly. It comes
+ * from the hand-written `clientSecret(method): String?` accessor, which
+ * returns the API key, returns null for a client that has none and may leave
+ * the field out, or throws for a client that cannot make the call at all.
+ *
+ * @param method Kotlin expression for the calling method's name, used by the
+ *   accessor in its error message.
  */
-export function clientFieldExpression(field: string): string {
+export function clientFieldExpression(field: string, method: string): string {
   switch (field) {
     case 'client_id':
       return 'clientId';
     case 'client_secret':
-      return 'apiKey';
+      return `clientSecret(${method})`;
     default:
       return propertyName(field);
   }

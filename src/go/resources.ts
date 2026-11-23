@@ -34,6 +34,7 @@ import {
 } from '../shared/resolved-ops.js';
 import { lowerFirstForDoc, fieldDocComment, avoidReservedTypeName } from '../shared/naming-utils.js';
 import { generateWrapperMethods } from './wrappers.js';
+import { CLIENT_SECRET_LOCAL, assertNoClientSecretInQuery, clientSecretLines } from './client-secret.js';
 import { operationDoc } from '../shared/operation-doc.js';
 
 /**
@@ -753,6 +754,9 @@ function generateMethod(
   // Build path
   const pathExpr = buildPathExpr(op);
 
+  // Inferred fields of a URL builder or a GET go into the query string.
+  if (isUrlBuilder || isGet) assertNoClientSecretInQuery(getOpInferFromClient(resolvedOp), method);
+
   // URL-builder ops construct the URL client-side and return it without
   // performing any HTTP I/O.
   if (isUrlBuilder) {
@@ -845,13 +849,16 @@ function goLiteral(value: string | number | boolean): string {
   return String(value);
 }
 
-/** Get the Go expression for reading a client config field. */
+/**
+ * Get the Go expression for reading a client config field. `client_secret` is
+ * the local that `clientSecretLines` declares, never a field of the client.
+ */
 function clientFieldExpression(field: string): string {
   switch (field) {
     case 'client_id':
       return 's.client.clientID';
     case 'client_secret':
-      return 's.client.apiKey';
+      return CLIENT_SECRET_LOCAL;
     default:
       return `s.client.${lowerFirst(fieldName(field))}`;
   }
@@ -1162,6 +1169,9 @@ function emitBodyWithHiddenParams(
 ): void {
   const hidden = buildHiddenParams(resolvedOp);
   const bodyType = hiddenParamsBodyStructName(method);
+  // The client-secret accessor returns an error, so once it has been called
+  // `err` is declared and the request below assigns to it instead.
+  const errAssign = getOpInferFromClient(resolvedOp).includes('client_secret') ? '=' : ':=';
 
   const bodyModel =
     op.requestBody?.kind === 'model'
@@ -1190,6 +1200,9 @@ function emitBodyWithHiddenParams(
   // Inferred fields from client config — omitempty drops empty values
   for (const inferred of getOpInferFromClient(resolvedOp)) {
     const goField = fieldName(inferred);
+    if (inferred === 'client_secret') {
+      lines.push(...clientSecretLines(method, !isDelete && plan.responseModelName ? 'nil, err' : 'err'));
+    }
     lines.push(`\tbody.${goField} = ${clientFieldExpression(inferred)}`);
   }
 
@@ -1221,7 +1234,7 @@ function emitBodyWithHiddenParams(
   // Make the request
   if (isDelete) {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
+      `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
     );
     lines.push('\treturn err');
   } else if (plan.responseModelName) {
@@ -1229,7 +1242,7 @@ function emitBodyWithHiddenParams(
     if (isArrayResponse) {
       lines.push(`\tvar result []${respType}`);
       lines.push(
-        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
+        `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
       );
       lines.push('\tif err != nil {');
       lines.push('\t\treturn nil, err');
@@ -1238,7 +1251,7 @@ function emitBodyWithHiddenParams(
     } else {
       lines.push(`\tvar result ${respType}`);
       lines.push(
-        `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
+        `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, &result, opts)`,
       );
       lines.push('\tif err != nil {');
       lines.push('\t\treturn nil, err');
@@ -1247,7 +1260,7 @@ function emitBodyWithHiddenParams(
     }
   } else {
     lines.push(
-      `\t_, err := s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
+      `\t_, err ${errAssign} s.client.request(ctx, "${op.httpMethod.toUpperCase()}", ${pathExpr}, ${queryArg}, body, nil, opts)`,
     );
     lines.push('\treturn err');
   }

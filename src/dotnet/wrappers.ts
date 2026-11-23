@@ -4,7 +4,7 @@ import {
   methodName as csMethodName,
   localName,
   csLiteral,
-  clientFieldExpression,
+  inferredFieldValue,
   httpMethodHelperName,
   escapeXml,
   emitXmlDoc,
@@ -87,16 +87,9 @@ function emitWrapperMethod(
     lines.push(`            options.${csFieldName(key)} = ${csLiteral(value)};`);
   }
 
-  // Set inferred fields from client. ClientId is required: fail loudly via RequireClientId()
-  // so that callers who forgot to configure it get a clear error instead of a 422 from the API.
+  // Set inferred fields from client
   for (const field of wrapper.inferFromClient) {
-    if (field === 'client_id') {
-      lines.push(`            options.${csFieldName(field)} = this.Client.RequireClientId();`);
-    } else {
-      lines.push(
-        `            options.${csFieldName(field)} = this.Client.${clientFieldExpression(field)} ?? string.Empty;`,
-      );
-    }
+    lines.push(`            options.${csFieldName(field)} = ${inferredFieldValue(field)};`);
   }
 
   // Build path

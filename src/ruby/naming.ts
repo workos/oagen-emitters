@@ -33,6 +33,19 @@ const RUBY_RESERVED_CLASS_NAMES = new Set([
   'Data',
 ]);
 
+/**
+ * Ruby expression for the `client_secret` an operation sends from client
+ * config. Generated code never reads the client's API key for it directly: the
+ * hand-written `client_secret(method)` accessor returns the API key, returns
+ * nil for a client that has none and may leave the field out, or raises for a
+ * client that cannot make the call at all.
+ *
+ * @param method Ruby method name, used by the accessor in its error message.
+ */
+export function clientSecretExpression(method: string): string {
+  return `@client.client_secret('${method.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')`;
+}
+
 /** PascalCase class name with acronym preservation. */
 export function className(name: string): string {
   let result = applyAcronymFixes(toPascalCase(stripUrnPrefix(name)));

@@ -45,7 +45,7 @@ import {
   generateSyncWrapperMethods,
   generateAsyncWrapperMethods,
   pythonLiteral,
-  clientFieldExpression,
+  inferredFieldLines,
 } from './wrappers.js';
 import { buildPythonPathExpression } from './path-expression.js';
 import { computeSchemaPlacement } from './shared-schemas.js';
@@ -191,6 +191,8 @@ function methodParamType(ref: TypeRef, specEnumNames: Set<string>): string {
 
 /** Metadata returned by emitMethodSignature, consumed by docstring & body emitters. */
 interface SignatureMetadata {
+  /** Python method name, as emitted in the signature. */
+  method: string;
   returnType: string;
   pathParamNames: Set<string>;
   isArrayResponse: boolean;
@@ -427,7 +429,7 @@ function emitMethodSignature(
 
   lines.push(`    ) -> ${returnType}:`);
 
-  return { returnType, pathParamNames, isArrayResponse, isRedirect, bearerOverride };
+  return { method, returnType, pathParamNames, isArrayResponse, isRedirect, bearerOverride };
 }
 
 /**
@@ -618,7 +620,7 @@ function emitMethodBody(
   ctx: EmitterContext,
   resolvedOp?: ResolvedOperation,
 ): void {
-  const { pathParamNames, isArrayResponse, isRedirect, bearerOverride } = meta;
+  const { method, pathParamNames, isArrayResponse, isRedirect, bearerOverride } = meta;
   const isPaginated = plan.isPaginated;
   const awaitPrefix = isAsync ? 'await ' : '';
   const usesClientCredentialDefaults = false;
@@ -689,13 +691,7 @@ function emitMethodBody(
       // caller passed them explicitly — only fill from config when absent.
       if (opInferFromClient.length > 0) {
         for (const field of opInferFromClient) {
-          const expr = clientFieldExpression(field);
-          if (clientOverrides.has(field)) {
-            lines.push(`        if ${pythonStringLiteral(field)} not in params and ${expr} is not None:`);
-          } else {
-            lines.push(`        if ${expr} is not None:`);
-          }
-          lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
+          lines.push(...inferredFieldLines(field, 'params', method, clientOverrides.has(field)));
         }
       }
       if (usesClientCredentialDefaults) {
@@ -747,9 +743,7 @@ function emitMethodBody(
     // Inject fields from client config
     if (opInferFromClient.length > 0) {
       for (const field of opInferFromClient) {
-        const expr = clientFieldExpression(field);
-        lines.push(`        if ${expr} is not None:`);
-        lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
+        lines.push(...inferredFieldLines(field, 'params', method));
       }
     }
     // isinstance dispatch for parameter groups
@@ -799,9 +793,7 @@ function emitMethodBody(
         // Inject fields from client config into body
         if (opInferFromClient.length > 0) {
           for (const field of opInferFromClient) {
-            const expr = clientFieldExpression(field);
-            lines.push(`        if ${expr} is not None:`);
-            lines.push(`            body[${pythonStringLiteral(field)}] = ${expr}`);
+            lines.push(...inferredFieldLines(field, 'body', method));
           }
         }
         // isinstance dispatch for parameter groups into body
@@ -845,9 +837,7 @@ function emitMethodBody(
       // Inject fields from client config into body
       if (opInferFromClient.length > 0) {
         for (const field of opInferFromClient) {
-          const expr = clientFieldExpression(field);
-          lines.push(`        if ${expr} is not None:`);
-          lines.push(`            body[${pythonStringLiteral(field)}] = ${expr}`);
+          lines.push(...inferredFieldLines(field, 'body', method));
         }
       }
       // isinstance dispatch for parameter groups into body
@@ -969,13 +959,7 @@ function emitMethodBody(
       // caller passed them explicitly — only fill from config when absent.
       if (opInferFromClient.length > 0) {
         for (const field of opInferFromClient) {
-          const expr = clientFieldExpression(field);
-          if (clientOverrides.has(field)) {
-            lines.push(`        if ${pythonStringLiteral(field)} not in params and ${expr} is not None:`);
-          } else {
-            lines.push(`        if ${expr} is not None:`);
-          }
-          lines.push(`            params[${pythonStringLiteral(field)}] = ${expr}`);
+          lines.push(...inferredFieldLines(field, 'params', method, clientOverrides.has(field)));
         }
       }
       if (usesClientCredentialDefaults) {
