@@ -91,19 +91,6 @@ function renderMountGroup(
   _lookup: Map<string, ResolvedOperation>,
 ): string {
   const struct = mountStructName(mountName);
-  const lines: string[] = [];
-  lines.push('use crate::client::Client;');
-  lines.push('#[allow(unused_imports)]');
-  lines.push('use crate::enums::*;');
-  lines.push('use crate::error::Error;');
-  lines.push('#[allow(unused_imports)]');
-  lines.push('use crate::models::*;');
-  lines.push('use serde::Serialize;');
-  lines.push('');
-  lines.push(`pub struct ${struct}<'a> {`);
-  lines.push("    pub(crate) client: &'a Client,");
-  lines.push('}');
-  lines.push('');
 
   // Parameter-group enums and synthetic body types are emitted once per
   // distinct shape per file (a single mount). Collect them up front so
@@ -156,6 +143,26 @@ function renderMountGroup(
     const autoPaging = renderAutoPagingMethod(op, resolved, paramsType, m, ctx);
     if (autoPaging) methods.push(autoPaging);
   }
+
+  // The header is rendered after the operations so the imports can follow
+  // what the file actually contains.
+  const lines: string[] = [];
+  lines.push('use crate::client::Client;');
+  lines.push('#[allow(unused_imports)]');
+  lines.push('use crate::enums::*;');
+  lines.push('use crate::error::Error;');
+  lines.push('#[allow(unused_imports)]');
+  lines.push('use crate::models::*;');
+  // Only the params structs name `Serialize` unqualified (the wrapper methods
+  // that do so always ship with one; group types spell out `serde::Serialize`).
+  // A mount whose operations take path parameters alone renders no params
+  // struct, and the SDK's `clippy -D warnings` rejects the unused import.
+  if (paramsStructs.length > 0) lines.push('use serde::Serialize;');
+  lines.push('');
+  lines.push(`pub struct ${struct}<'a> {`);
+  lines.push("    pub(crate) client: &'a Client,");
+  lines.push('}');
+  lines.push('');
 
   // Group-related type definitions go between the file header and the params
   // structs so a single file's params can reference them by short name.

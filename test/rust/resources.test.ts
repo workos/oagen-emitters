@@ -426,6 +426,59 @@ describe('rust/resources', () => {
     expect(f.content).toContain('pub async fn get_user(&self, id: &str');
   });
 
+  it('imports Serialize only when the file renders a params struct', () => {
+    const getOp = (name: string, path: string, pathParamNames: string[]): Operation => ({
+      name,
+      httpMethod: 'get',
+      path,
+      pathParams: pathParamNames.map((p) => ({
+        name: p,
+        type: { kind: 'primitive', type: 'string' },
+        required: true,
+      })),
+      queryParams: [],
+      headerParams: [],
+      response: { kind: 'model', name: 'IssuerTrust' },
+      errors: [],
+      injectIdempotencyKey: false,
+    });
+    // Every operation takes path parameters alone, so no params struct is
+    // rendered and nothing in the file names `Serialize`.
+    const pathOnly: Service = {
+      name: 'IssuerTrusts',
+      operations: [
+        getOp('listIssuerTrusts', '/organizations/{organization_id}/issuer_trusts', ['organization_id']),
+        getOp('getIssuerTrust', '/organizations/{organization_id}/issuer_trusts/{id}', ['organization_id', 'id']),
+      ],
+    };
+    // One query parameter is enough to bring the params struct, and with it
+    // the derive, back.
+    const withQuery: Service = {
+      name: 'Widgets',
+      operations: [
+        {
+          ...getOp('listWidgets', '/widgets', []),
+          queryParams: [{ name: 'limit', required: false, type: { kind: 'primitive', type: 'integer' } }],
+        },
+      ],
+    };
+    const services = [pathOnly, withQuery];
+    const files = generateResources(services, ctxWithResolved(services), new UnionRegistry());
+    const bare = files.find((x) => x.path === 'src/resources/issuer_trusts.rs')!;
+    const withParams = files.find((x) => x.path === 'src/resources/widgets.rs')!;
+
+    expect(bare.content).toContain('pub async fn get_issuer_trust(');
+    expect(bare.content).not.toContain('Params');
+    expect(bare.content).not.toMatch(/\bSerialize\b/);
+
+    expect(withParams.content).toContain('pub struct ListWidgetsParams {');
+    expect(withParams.content).toContain('use serde::Serialize;\n');
+    // The import stays in the header, ahead of the resource struct.
+    expect(withParams.content.indexOf('use serde::Serialize;')).toBeLessThan(
+      withParams.content.indexOf("pub struct WidgetsApi<'a> {"),
+    );
+  });
+
   it('emits a URL-builder method when resolved.urlBuilder is true', () => {
     const services: Service[] = [
       {
