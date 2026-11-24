@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.12](https://github.com/workos/oagen-emitters/compare/v0.25.11...v0.25.12) (2026-11-24)
+
+
+### Bug Fixes
+
+* **rust:** import Serialize only where it is used ([#327](https://github.com/workos/oagen-emitters/issues/327)) ([80c8a6a](https://github.com/workos/oagen-emitters/commit/80c8a6a0b4edc920f61f89be81506673097c6113))
+
 ## [0.25.11](https://github.com/workos/oagen-emitters/compare/v0.25.10...v0.25.11) (2026-11-23)
 
 
